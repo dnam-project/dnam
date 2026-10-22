@@ -1,4 +1,4 @@
-"""Empirical & Mathematical Verification Suite for NAM Architecture 3 (A3).
+"""Empirical & Mathematical Verification Suite for Dynamic Neural Audio Modeler (DNAM Architecture 3 / A3).
 
 Tests and verifies:
 1. Division-Free Algebraic Polynomial ADAA (`PolyADAA`):
@@ -78,7 +78,7 @@ def test_1_poly_adaa_algebraic_exactness_and_aliasing() -> None:
     # 1C. Compare 8-Layer Cascaded Distortion at f0 = 3,450 Hz:
     # - NAM A2 LeakyReLU(0.01)
     # - Post-ADAA High-Pass Extrapolator (1.5*A[n] - 0.5*A[n-1]) -> boosts Nyquist aliasing by +6 dB/layer
-    # - NAM A3 1x Passive B-Spline PolyADAA (0.875*A[n] + 0.125*A[n-1]) -> 1 eval/sample, zero Nyquist boost
+    # - DNAM A3 1x Passive B-Spline PolyADAA (0.875*A[n] + 0.125*A[n-1]) -> 1 eval/sample, zero Nyquist boost
     f0 = 3450.0
     x = 1.6 * np.sin(2.0 * np.pi * f0 * t)
 
@@ -126,7 +126,7 @@ def test_1_poly_adaa_algebraic_exactness_and_aliasing() -> None:
     alias_a3_db = 20.0 * math.log10(np.linalg.norm(spec_a3[alias_mask]) / np.max(spec_a3))
 
     print(f"  8-Layer NAM A2 LeakyReLU(0.01) Aliasing-to-Carrier:  {alias_a2_db:.2f} dBc")
-    print(f"  8-Layer NAM A3 1x B-Spline PolyADAA Aliasing:        {alias_a3_db:.2f} dBc")
+    print(f"  8-Layer DNAM A3 1x B-Spline PolyADAA Aliasing:       {alias_a3_db:.2f} dBc")
     print(f"  8-Layer Aliasing Reduction (A3 vs A2):               {alias_a2_db - alias_a3_db:.2f} dB")
     assert (alias_a2_db - alias_a3_db) > 35.0
 
@@ -449,7 +449,7 @@ def test_7_h2_log_pole_init_and_end_to_end_pytorch_a3() -> None:
     print(f"  H2-Normalized SSM Impulse Energy Deviation (r in 0.5..0.998): {max_h2_dev:.2e} (EXACT 1.0000!)")
     assert max_h2_dev < 1e-4
 
-    # 7B. End-to-End PyTorch NAM A3 System Identification:
+    # 7B. End-to-End PyTorch DNAM A3 System Identification:
     # Verify Step-0 Dual-Ridge float64 Wiener-Hopf Warm-Start + Adam(weight_decay=0.0) + Step-N Cholesky Export Polish
     torch.manual_seed(42)
     L = 4096
@@ -796,7 +796,7 @@ def test_8_parametric_control_bus_and_multistem_conditioning() -> None:
     assert star_err < 1e-7
     assert u_delay_post_min == 0.08
 
-    # 8G. Single-Checkpoint (.nam-ckpt) Iterative Stem Expansion via Node-Anchored Newton Basis
+    # 8G. Single-Checkpoint (.dnam-ckpt) Iterative Stem Expansion via Node-Anchored Newton Basis
     # & Factorized Per-Stem Audio Sufficient Statistics {G_audio^(s), C_audio^(s)}
     # Verify 1: Node-Anchored Newton Basis psi_k(u) = prod_{j=1}^k (u - u_j) in fixed declared_range [0, 10]
     # leaves old stems at gain=2.0 (u1=-0.6) and gain=8.0 (u2=+0.6) with ZERO perturbation when gain=10.0 (u3=+1.0) is added!
@@ -867,7 +867,7 @@ def test_8_parametric_control_bus_and_multistem_conditioning() -> None:
     iter_vs_full_err = float(torch.max(torch.abs(w_ckpt_iter - w_kron)).item())
 
     print(
-        f"  Factorized .nam-ckpt Iterative Update (6->7 stems):  Val ESR {esr_val_before_iter:.2f} dB -> {esr_val_after_iter:.2f} dB "
+        f"  Factorized .dnam-ckpt Iterative Update (6->7 stems): Val ESR {esr_val_before_iter:.2f} dB -> {esr_val_after_iter:.2f} dB "
         f"(Diff vs Full Retrain = {iter_vs_full_err:.2e})"
     )
     assert esr_val_after_iter < esr_val_before_iter - 5.0

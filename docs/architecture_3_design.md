@@ -1,9 +1,9 @@
-# Neural Amp Modeler — Architecture 3 (A3) Specification ("Tri-Physics" Selective-SSM, DFDN & Parametric Control Architecture)
+# Dynamic Neural Audio Modeler (DNAM) — Architecture 3 (A3) Specification ("Tri-Physics" Selective-SSM, DFDN & Parametric Control Architecture)
 
 **Target Capabilities:** True-Stereo Amp/Preamp Drive, User-Definable Continuous (`range`) & Discrete (`switch`) Controls trained from Multi-Stem Captures, Instantaneous Blocking Distortion & Power-Supply Sag, Optical/Bias & Harmonic Tremolo, 3D Leslie Rotary Speaker (Doppler + Beaming), Pre- & Post-Drive Phasers/Wah/Uni-Vibe, Dense Acoustic & Cabinet IRs, True Through-Zero & Resonant Jet Flangers, Stereo Chorus, Tape Echoes (with Wow/Flutter), Ping-Pong Delays, Spring Reverb Drip, and Lush Modulated Reverbs  
 **Target Embedded Silicon:** Co-designed for **Rockchip RK3582** (Darkglass Anagram: ARM Cortex-A76 + Cortex-A55 128-bit NEON) and desktop/mobile SIMD — **100% 16-byte vector aligned (`C=4` Lite / `C=8` Full), zero `FSQRT`, zero `FDIV`, and zero transcendentals at both $48\text{ kHz}$ and $3\text{ kHz}$**  
 **Hardware Footprint:** **$2.6\times$ FASTER than NAM A2** ($\sim 4,625\text{ MACs/sample}$ vs. A2's $12,146\text{ MACs/sample}$), **$0\text{ extra MACs/sample}$ at $48\text{ kHz}$ when user knobs are static**, **$96\%$ smaller L1 cache footprint**, and **native $44.1\text{--}96\text{ kHz}$ sample-rate adaptability**  
-**Core Stability Guarantee:** Unconditional BIBO, Lyapunov, $\mathcal{H}_2$-Norm, and Zero-DC stability across all internal states and user knob/switch combinations, backed by **Non-Stop 3-Phase Control-Space Clamping & Single-Checkpoint (`.nam-ckpt`) Iterative Stem Expansion**  
+**Core Stability Guarantee:** Unconditional BIBO, Lyapunov, $\mathcal{H}_2$-Norm, and Zero-DC stability across all internal states and user knob/switch combinations, backed by **Non-Stop 3-Phase Control-Space Clamping & Single-Checkpoint (`.dnam-ckpt`) Iterative Stem Expansion**  
 **Verification Suite:** Empirically verified across all 8 test suites in [`verify_a3_architecture.py`](../scripts/verify_a3_architecture.py)
 
 ---
@@ -29,7 +29,7 @@ Architecture 3 preserves the proven insights of **NAM A2** (co-prime dilations, 
 | **13** | **Blind Phase-Locked Teacher Extractor $\to$ 4-Harmonic Fourier LFO** | Naive fixed-frequency sine LFO during training | Tracks analog RC oscillator thermal drift during training (discarded at export) and learns **triangle, sawtooth, asymmetric Uni-Vibe lamp, or rotary LFO shapes** via a 4-harmonic Chebyshev shaper |
 | **14** | **Node-Anchored Newton/Lobatto HDMR-FM Control Bus (`Range` & `Switch`)** | $48\text{ kHz}$ FiLM concatenation & dense MLP corner hallucination | Evaluates user knobs/switches at $3\text{ kHz}$ (**$0\text{ MACs/sample}$ at $48\text{ kHz}$ when static**) via a Node-Anchored Newton/Lobatto basis $\psi_{p,k}(u_p) = \prod_{j=1}^k(u_p - u_{p,j})$ ($K_p = \min(U_p-1, 3)$) + $O(P \cdot R)$ Factorization Machine, achieving **$-38.46\text{ dB}$ ESR** on unseen 3-way combinations |
 | **15** | **Step-0 Order-Statistic Transport + Variance Gating + Dual-Pointer Switch Crossfade** | Double-echo channel crossfading, parasitic knob coupling & switch teleport clicks | Matches sorted delays/poles across stems at Step 0 (**$3.41 \times 10^{-13}\text{ ms}$ unseen delay error**), gates off invariant subsystems (`Gate=0.0`), and uses a $128$-sample raised-cosine dual-pointer crossfade on discrete delay switches (**$50.7\times$ smoother, zero Doppler warp**) |
-| **16** | **Non-Stop 3-Phase Control Audit & Factorized-Kronecker `.nam-ckpt` Resume** | Blocking prompts, stale pre-summed Gram matrices & full retraining on stem additions | Runs **100% unattended** and saves a **single `.nam-ckpt`** with **per-stem factorized audio sufficient statistics** $\{\mathbf{G}_{\text{audio}}^{(s)}, \mathbf{C}_{\text{audio}}^{(s)}\}$ ($130\text{ KB/stem}$) so range expansions, degree upgrades & SVD rotations assemble in $<1\text{ ms}$ (**$1.05 \times 10^{-9}$ parity**) |
+| **16** | **Non-Stop 3-Phase Control Audit & Factorized-Kronecker `.dnam-ckpt` Resume** | Blocking prompts, stale pre-summed Gram matrices & full retraining on stem additions | Runs **100% unattended** and saves a **single `.dnam-ckpt`** with **per-stem factorized audio sufficient statistics** $\{\mathbf{G}_{\text{audio}}^{(s)}, \mathbf{C}_{\text{audio}}^{(s)}\}$ ($130\text{ KB/stem}$) so range expansions, degree upgrades & SVD rotations assemble in $<1\text{ ms}$ (**$1.05 \times 10^{-9}$ parity**) |
 | **17** | **Dual-Ridge `float64` SVD-Kronecker Wiener-Hopf Warm-Start & Export Polish** | Cold random init, `float32` normal-equation overflow & collinear user metadata | Projects user controls onto their orthonormal SVD subspace and solves the 16-tap stereo head in `float64` at Step 0 (**$-25.39\text{ dB}$ ESR**), trains with `Adam(weight_decay=0.0)` + warmup, and applies a Step-$N$ Cholesky Export Polish (**$-47.63\text{ dB}$ ESR**) |
 | **18** | **Continuous-Time ZOH Parameterization & Hardware `FTZ`/`DAZ`** | Fixed $48\text{ kHz}$ weights & IIR denormal CPU spikes | Stores poles/delays in physical continuous time for native **$44.1\text{--}96\text{ kHz}$** loading, and enforces `FPCR.FZ = 1` (`FTZ`/`DAZ`) so decaying IIR/FDN tails never trigger subnormal CPU stalls |
 
@@ -146,7 +146,7 @@ flowchart TD
 ## 4. Non-Stop 3-Phase Control Audit, Training Protocol & Single-Checkpoint Iterative Resume
 
 > [!IMPORTANT]
-> **Non-Stop Unattended Execution + Post-Run Iterative Stem Expansion:** Because training can take significant time, the 3-Phase Control-Space Audit runs **100% non-blocking**. When the user returns after completion, they immediately have a **finished, playable, 100% stable `.nam` v3 model**, a **Consolidated Audit & Stem Prescription Report**, and **one single `.nam-ckpt` file** that allows adding missing stems **$4\times\text{--}10\times$ faster** than retraining from scratch.
+> **Non-Stop Unattended Execution + Post-Run Iterative Stem Expansion:** Because training can take significant time, the 3-Phase Control-Space Audit runs **100% non-blocking**. When the user returns after completion, they immediately have a **finished, playable, 100% stable `.dnam` v3 model**, a **Consolidated Audit & Stem Prescription Report**, and **one single `.dnam-ckpt` file** that allows adding missing stems **$4\times\text{--}10\times$ faster** than retraining from scratch.
 
 ### 4.1 Non-Stop 3-Phase Control-Space Audit & Automatic Clamping Lifecycle
 1. **Phase 1 — Pre-Training Step-0 Audit ($< 200\text{ ms}$ Before Epoch 1, Non-Blocking Live Banner):**
@@ -158,11 +158,11 @@ flowchart TD
      $$\mathcal{L}_{\text{barrier}} = \lambda_{\text{bar}} \sum_{(\mathbf{u}_c, \mathbf{s}_c) \in \mathcal{V}_{\text{corners}}} \operatorname{relu}\!\Big(\operatorname{sg}\!\big(\boldsymbol{\theta}_{\text{main}}(\mathbf{u}_c, \mathbf{s}_c)\big) + \Delta\boldsymbol{\theta}_{\text{FM}}(\mathbf{u}_c, \mathbf{s}_c) - \boldsymbol{\theta}_{\text{safe}}\Big)^2$$
      the barrier steers the 2nd-order Factorization Machine interaction weights $\Delta\boldsymbol{\theta}_{\text{FM}}$ away from unstable corners with **exact $0.00 \times 10^0$ gradient interference** on the recorded main-effect stems.
    * **Periodic Dynamic Rail-Lockup Check (`[CLAMP-RAIL]`, Every 10 Epochs):** Runs a $2,048$-sample synthetic burst through the corners under `torch.no_grad()` to detect if cascaded `PolyADAA` stages hit $>95\%$ hard-rail lockup ($|u_n| = 1.0$), tightening conditional corner bounds dynamically during training.
-3. **Phase 3 — Post-Training & Post-Polish Export Certification Audit (At `.nam` v3 Export):**
+3. **Phase 3 — Post-Training & Post-Polish Export Certification Audit (At `.dnam` v3 Export):**
    * **`[CLAMP-DYNAMIC]` (Combined Knob + Learned LFO/Envelope Excursion Clamp):** Audits the worst-case dynamic peak/trough across all controls using the finalized LFO and envelope depths $\mathbf{w}_{r,c}, \mathbf{w}_{\tau,m}$:
      $$r_{c,\text{worst}}(\mathbf{u}, \mathbf{s}) = r_{\text{high},c}(\mathbf{u}, \mathbf{s}) + |\mathbf{w}_{r,c}|^\top \mathbf{m}_{\text{max}} \le 0.9995, \qquad \tau_{m,\text{min}}(\mathbf{u}, \mathbf{s}) = \tau_{0,m}(\mathbf{u}, \mathbf{s}) - |\mathbf{w}_{\tau,m}|^\top \mathbf{m}_{\text{max}} \ge 4.0$$
      and tightens `safe_clamped_range` / `conditional_max` if a wide learned LFO sweep could cause a causal buffer underflow at extreme knob settings.
-   * **`[CLAMP-HEAD-GAIN]` (Post-Polish SVD Head Spectral Gain Clamp):** Evaluates the 32-point FFT of the polished 16-tap stereo head $\mathbf{W}_{\text{head}}(\mathbf{u}, \mathbf{s})$ across all corners; if any unrecorded corner exhibits a $> +6\text{ dB}$ spectral peak above the loudest training stem, an ellipsoidal trust-region clamp $\|\mathbf{z}_{\text{head}}\|_2 \le \rho_{\text{head}}$ is baked into the `.nam` v3 file.
+   * **`[CLAMP-HEAD-GAIN]` (Post-Polish SVD Head Spectral Gain Clamp):** Evaluates the 32-point FFT of the polished 16-tap stereo head $\mathbf{W}_{\text{head}}(\mathbf{u}, \mathbf{s})$ across all corners; if any unrecorded corner exhibits a $> +6\text{ dB}$ spectral peak above the loudest training stem, an ellipsoidal trust-region clamp $\|\mathbf{z}_{\text{head}}\|_2 \le \rho_{\text{head}}$ is baked into the `.dnam` v3 file.
 
 ### 4.2 4-Stage Deterministic Training & Export Polish Pipeline
 1. **Stage 1 — Step-0 Per-Stem System-ID & Order-Statistic Transport Fit:**
@@ -172,30 +172,30 @@ flowchart TD
 3. **Stage 3 — `Adam(weight_decay = 0.0)` + 20-Step Linear LR Warmup + Per-Stem `State-Carry TBPTT`:**
    Optimizes the floor-regularized energy-normalized loss across stems with `weight_decay = 0.0`, a 20-step linear LR warmup, Stop-Gradient Corner Barrier $\mathcal{L}_{\text{barrier}}$, Proximal Group-Lasso ($L_{2,1}$) subsystem pruning, and per-stem VRAM State Bank slots.
 4. **Stage 4 — Step-$N$ `float64` Cholesky Export Polish ($\lambda_{\text{polish}} = 10^{-6}\bar{\tau}$):**
-   Re-solves $\mathbf{W}_{\text{head,aug}}$ in `float64` with tight ridge $\lambda_{\text{polish}} = 10^{-6}\bar{\tau}$ (**reaching $-47.63\text{ dB}$ stereo ESR**), runs the Phase-3 Export Certification Audit, and writes both the playable `.nam` v3 model and the single `.nam-ckpt` iterative checkpoint.
+   Re-solves $\mathbf{W}_{\text{head,aug}}$ in `float64` with tight ridge $\lambda_{\text{polish}} = 10^{-6}\bar{\tau}$ (**reaching $-47.63\text{ dB}$ stereo ESR**), runs the Phase-3 Export Certification Audit, and writes both the playable `.dnam` v3 model and the single `.dnam-ckpt` iterative checkpoint.
 
-### 4.3 Single-Checkpoint (`.nam-ckpt`) Two-Tier Iterative Stem Expansion ($4\times\text{--}10\times$ Faster)
+### 4.3 Single-Checkpoint (`.dnam-ckpt`) Two-Tier Iterative Stem Expansion ($4\times\text{--}10\times$ Faster)
 > [!TIP]
-> **Why `.nam-ckpt` Stores Factorized Per-Stem Audio Matrices $\{\mathbf{G}_{\text{audio}}^{(s)}, \mathbf{C}_{\text{audio}}^{(s)}\}$ Instead of a Pre-Summed Kronecker Matrix:** If `.nam-ckpt` stored only the pre-collapsed sum $\mathbf{G}_{\text{old}} = \sum_s \tilde{\mathbf{\Phi}}_s^\top \tilde{\mathbf{\Phi}}_s$ ($3.28\text{ MB}$), then adding a new stem that changes the polynomial degree $K_p$, unlocks a new switch option, or rotates the SVD control subspace $\mathbf{P}_{\text{svd}}$ would invalidate $\mathbf{G}_{\text{old}}$ because the old control coordinates $\boldsymbol{\psi}_s$ were already baked in. Instead, `.nam-ckpt` stores the **un-entangled per-stem audio sufficient statistics** $\mathbf{G}_{\text{audio}}^{(s)} = \mathbf{\Phi}_s^\top \mathbf{\Phi}_s \in \mathbb{R}^{16C \times 16C}$ and $\mathbf{C}_{\text{audio}}^{(s)} = \mathbf{\Phi}_s^\top \mathbf{Y}_s \in \mathbb{R}^{16C \times 2}$ (only **$130\text{ KB/stem}$, $2.5\times$ smaller**!).
+> **Why `.dnam-ckpt` Stores Factorized Per-Stem Audio Matrices $\{\mathbf{G}_{\text{audio}}^{(s)}, \mathbf{C}_{\text{audio}}^{(s)}\}$ Instead of a Pre-Summed Kronecker Matrix:** If `.dnam-ckpt` stored only the pre-collapsed sum $\mathbf{G}_{\text{old}} = \sum_s \tilde{\mathbf{\Phi}}_s^\top \tilde{\mathbf{\Phi}}_s$ ($3.28\text{ MB}$), then adding a new stem that changes the polynomial degree $K_p$, unlocks a new switch option, or rotates the SVD control subspace $\mathbf{P}_{\text{svd}}$ would invalidate $\mathbf{G}_{\text{old}}$ because the old control coordinates $\boldsymbol{\psi}_s$ were already baked in. Instead, `.dnam-ckpt` stores the **un-entangled per-stem audio sufficient statistics** $\mathbf{G}_{\text{audio}}^{(s)} = \mathbf{\Phi}_s^\top \mathbf{\Phi}_s \in \mathbb{R}^{16C \times 16C}$ and $\mathbf{C}_{\text{audio}}^{(s)} = \mathbf{\Phi}_s^\top \mathbf{Y}_s \in \mathbb{R}^{16C \times 2}$ (only **$130\text{ KB/stem}$, $2.5\times$ smaller**!).
 
 1. **Tier 1 — Instant Factorized-Kronecker Control & Head Update ($< 5\text{ s}$, Zero Re-Pass Over Old Stems):**
    When the user adds new stems to lift a `[CLAMP-RANGE]`, `[CLAMP-SWITCH]`, or `[CLAMP-STABILITY]` warning, the trainer unlocks the orthogonal Node-Anchored Newton/Switch/FM column, forward-passes **only the new stem(s)** to append $\mathbf{G}_{\text{audio}}^{(s_{\text{new}})}, \mathbf{C}_{\text{audio}}^{(s_{\text{new}})}$, recomputes the updated SVD projector $\mathbf{P}_{\text{svd,new}}$ across all stem metadata in microseconds, and reconstructs the exact global Kronecker system in $< 1\text{ ms}$ via the Kronecker identity:
    $$\mathbf{G}_{\text{updated}} = \sum_{s=1}^{S_{\text{total}}} \mathbf{G}_{\text{audio}}^{(s)} \otimes \big(\boldsymbol{\psi}_s^{\text{new}} \boldsymbol{\psi}_s^{\text{new}\top}\big), \qquad \mathbf{C}_{\text{updated}} = \sum_{s=1}^{S_{\text{total}}} \mathbf{C}_{\text{audio}}^{(s)} \otimes \boldsymbol{\psi}_s^{\text{new}}$$
    (**Verified in `Test 8G`:** improves unseen corner ESR from **$-26.68\text{ dB} \to -38.46\text{ dB}$** with **$1.05 \times 10^{-9}$ weight parity** vs. full retraining from scratch and **$4.44 \times 10^{-16}$ old-stem perturbation**.)
 2. **Tier 2 — Warm-Started Backbone Fine-Tuning ($\sim 15\text{--}20\%$ Epochs, When New Circuit Physics Is Added):**
-   If the Tier-1 residual ESR on a newly added stem exceeds threshold (e.g., adding a high-gain `"lead"` or `"fuzz"` stem to a clean-only checkpoint), the trainer resets the head from $\{\mathbf{G}_{\text{audio}}^{(s)}, \mathbf{C}_{\text{audio}}^{(s)}\}$ using the training ridge $\lambda_{\text{init}} = 10^{-3}\bar{\tau}$ in $5\text{ ms}$, runs 20–30 warm `Adam` epochs ($70\%$ new stem batch weight + $30\%$ old stem replay), and re-polishes with $\lambda_{\text{polish}} = 10^{-6}\bar{\tau}$, overwriting the same single `.nam-ckpt` file.
+   If the Tier-1 residual ESR on a newly added stem exceeds threshold (e.g., adding a high-gain `"lead"` or `"fuzz"` stem to a clean-only checkpoint), the trainer resets the head from $\{\mathbf{G}_{\text{audio}}^{(s)}, \mathbf{C}_{\text{audio}}^{(s)}\}$ using the training ridge $\lambda_{\text{init}} = 10^{-3}\bar{\tau}$ in $5\text{ ms}$, runs 20–30 warm `Adam` epochs ($70\%$ new stem batch weight + $30\%$ old stem replay), and re-polishes with $\lambda_{\text{polish}} = 10^{-6}\bar{\tau}$, overwriting the same single `.dnam-ckpt` file.
 
 ---
 
-## 5. Deployment: `.nam` v3 Container, Continuous-Time ZOH Rescaling & Hardware `FTZ`/`DAZ`
+## 5. Deployment: `.dnam` v3 Container, Continuous-Time ZOH Rescaling & Hardware `FTZ`/`DAZ`
 
 1. **Continuous-Time ZOH Sample-Rate Adaptability ($44.1\text{--}96\text{ kHz}$) & Denormal Immunity (`FTZ`/`DAZ`):**
    Stores pole decay rates $\gamma_c$, frequencies $f_{0,c}$, LFO frequencies $f_{\text{lfo},j}$, and FDN delays $\tau_{0,m}$ (in ms) in continuous time for native rescaling to any host sample rate $f_s$, and enforces `FPCR.FZ = 1` (`FTZ`/`DAZ`) at audio callback entry.
-2. **Single-File Slimmable & Parametric `.nam` v3 Schema:**
+2. **Single-File Slimmable & Parametric `.dnam` v3 Schema:**
    ```json
    {
      "version": "3.0.0",
-     "architecture": "NAM_A3_TriPhysics",
+     "architecture": "DNAM_A3_TriPhysics",
      "sample_rate_train_hz": 48000,
      "io_config": { "inputs": 2, "outputs": 2, "stereo_mode": "true_stereo_mid_side" },
      "slimmable_tiers": {
@@ -232,7 +232,7 @@ flowchart TD
 
 All 8 mathematical, optimization, and PyTorch verification suites in [`verify_a3_architecture.py`](../scripts/verify_a3_architecture.py) pass with zero errors:
 
-| Verification Test Suite | Baseline / Naive Behavior | Verified NAM A3 Behavior | Status |
+| Verification Test Suite | Baseline / Naive Behavior | Verified DNAM A3 Behavior | Status |
 | :--- | :---: | :---: | :---: |
 | **1. Division-Free Algebraic `PolyADAA` Exactness** | Requires `FDIV` + branch at $\Delta u \to 0$ | **$5.25 \times 10^{-14}$ error** with $0$ `FDIV`, $0$ `FSQRT`, $0$ branches | **PASS** |
 | **2. 8-Layer Cascaded Aliasing ($f_0 = 3.45\text{ kHz}$)** | $-23.20\text{ dBc}$ (NAM A2 `LeakyReLU`) | **$-62.08\text{ dBc}$ ($38.87\text{ dB}$ reduction)** via $1\times$ B-Spline `PolyADAA` | **PASS** |
@@ -243,9 +243,9 @@ All 8 mathematical, optimization, and PyTorch verification suites in [`verify_a3
 | **7. Surrogate Delay + Dual-Ridge `float64` Polish** | Lagrange stuck ($54.52$-samp error) / Cold $+0.01\text{ dB}$ | **$0.0035$-samp delay lock**, Step-0 **$-25.39\text{ dB}$** $\to$ Polish **$-47.63\text{ dB}$ ESR** | **PASS** |
 | **8. Parametric Control Bus & Pre-Flight Clamping** | Double-echo crossfade / Unbounded corner explosion | **$3.41 \times 10^{-13}\text{ ms}$ delay interp**, **$50.7\times$ smoother switch**, **$-38.46\text{ dB}$ unseen combo ESR**, all 3 range/switch/corner hazards caught & clamped at Step 0 | **PASS** |
 
-### Final Benchmark on Rockchip RK3582 (Darkglass Anagram): NAM A2 vs. NAM A3
+### Final Benchmark on Rockchip RK3582 (Darkglass Anagram): NAM A2 vs. DNAM A3
 
-| Hardware / DSP Metric | NAM A2 Lite (Mono) | **NAM A3 Lite (Stereo)** | NAM A2 Full (Mono) | **NAM A3 Full (Stereo)** |
+| Hardware / DSP Metric | NAM A2 Lite (Mono) | **DNAM A3 Lite (Stereo)** | NAM A2 Full (Mono) | **DNAM A3 Full (Stereo)** |
 | :--- | :---: | :---: | :---: | :---: |
 | **Channels ($C$) / FDN Lines ($M$)** | $C = 3$ (Unaligned) | **$C = 4$ (1 NEON reg), $M = 4$** | $C = 8$, No FDN | **$C = 8$ (2 NEON regs), $M = 8$** |
 | **Core 1 Architecture** | 23 Dilated Conv | **8 Conv + 4 Selective RG-LRU** | 23 Dilated Conv | **8 Conv + 4 Selective RG-LRU** |

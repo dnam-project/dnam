@@ -1,12 +1,12 @@
 # Empirical Verification Suite (8 Test Suites) & Automated Guardrails
 
-All implementations of **Neural Audio Modeler (Architecture 3)** must pass the **8 Empirical Mathematical, Numerical & PyTorch Verification Suites** (`Test 1` through `Test 8G`) and the **Automated Guardrail Tests** specified below.
+All implementations of **Dynamic Neural Audio Modeler (DNAM Architecture 3)** must pass the **8 Empirical Mathematical, Numerical & PyTorch Verification Suites** (`Test 1` through `Test 8G`) and the **Automated Guardrail Tests** specified below.
 
 ---
 
 ## 1. Summary of the 8 Empirical Verification Suites
 
-| Verification Test Suite | Baseline / Naive Behavior | Verified NAM A3 Requirement | Target Threshold |
+| Verification Test Suite | Baseline / Naive Behavior | Verified DNAM A3 Requirement | Target Threshold |
 | :--- | :---: | :---: | :---: |
 | **1. Division-Free Algebraic `PolyADAA` Exactness** | Requires `FDIV` + branch at $\Delta u \to 0$ | **$5.25 \times 10^{-14}$ error** with $0$ `FDIV`, $0$ `FSQRT`, $0$ branches | `max_alg_err < 1e-12` |
 | **2. 8-Layer Cascaded Aliasing ($f_0 = 3.45\text{ kHz}$)** | $-23.20\text{ dBc}$ (NAM A2 `LeakyReLU`) | **$-62.08\text{ dBc}$ ($38.87\text{ dB}$ reduction)** via $1\times$ B-Spline `PolyADAA` | `(alias_a2_db - alias_a3_db) > 35.0` |
@@ -15,7 +15,7 @@ All implementations of **Neural Audio Modeler (Architecture 3)** must pass the *
 | **5. `M-UFDN` $+20\text{ dBFS}$ Spike + $1.18\times$ Loop Gain + DC** | Unbounded explosion / DC rail lockup | Peak **$0.9850 \le V_{\text{ceil}}$**, DC **$1.03 \times 10^{-6}$**, quiet tail decays | `out_peak <= v_ceil`, `abs(final_dc) < 1e-5` |
 | **6. Givens + Householder Stereo Matrix $\mathbf{U}(\psi, \mathbf{v})$** | Fixed ping-pong or non-unitary | **$< 1.0 \times 10^{-14}$ orthogonality error** across all $\psi \in [0, \pi/2]$ | `ortho_err < 1e-14`, `max_eig_err < 1e-14` |
 | **7. Surrogate Delay + Dual-Ridge `float64` Polish** | Lagrange stuck ($54.52$-samp error) / Cold $+0.01\text{ dB}$ | **$0.0035$-samp delay lock**, Step-0 **$-25.39\text{ dB}$** $\to$ Polish **$-47.63\text{ dB}$ ESR** | `err_surr < 0.01`, `esr_polished < -45.0` |
-| **8. Parametric Control Bus, 3-Phase Audit & `.nam-ckpt` Resume** | Double-echo crossfade / Corner explosion / Full retrain | **$3.41 \times 10^{-13}\text{ ms}$ delay interp**, **$50.7\times$ smoother switch**, **$-38.46\text{ dB}$ unseen combo ESR**, **`1.05e-9` `.nam-ckpt` parity** | `val_esr < -35.0`, `iter_vs_full_err < 1e-8` |
+| **8. Parametric Control Bus, 3-Phase Audit & `.dnam-ckpt` Resume** | Double-echo crossfade / Corner explosion / Full retrain | **$3.41 \times 10^{-13}\text{ ms}$ delay interp**, **$50.7\times$ smoother switch**, **$-38.46\text{ dB}$ unseen combo ESR**, **`1.05e-9` `.dnam-ckpt` parity** | `val_esr < -35.0`, `iter_vs_full_err < 1e-8` |
 
 ---
 
@@ -24,7 +24,7 @@ All implementations of **Neural Audio Modeler (Architecture 3)** must pass the *
 Port the following verified reference suite directly into `tests/test_architecture_3_verification.py`:
 
 ```python
-"""Empirical & Mathematical Verification Suite for NAM Architecture 3 (A3)."""
+"""Empirical & Mathematical Verification Suite for DNAM Architecture 3 (A3)."""
 
 from __future__ import annotations
 
@@ -72,7 +72,7 @@ def test_1_poly_adaa_algebraic_exactness_and_aliasing() -> None:
     max_alg_err = float(np.max(np.abs(quot_div - quot_nodiv)))
     assert max_alg_err < 1e-12
 
-    # 1C. 8-Layer Cascaded Distortion at f0 = 3,450 Hz: NAM A2 LeakyReLU(0.01) vs NAM A3 1x B-Spline PolyADAA
+    # 1C. 8-Layer Cascaded Distortion at f0 = 3,450 Hz: NAM A2 LeakyReLU(0.01) vs DNAM A3 1x B-Spline PolyADAA
     f0 = 3450.0
     x = 1.6 * np.sin(2.0 * np.pi * f0 * t)
 
@@ -545,5 +545,5 @@ def test_8_parametric_control_bus_and_multistem_conditioning() -> None:
 In addition to `test_architecture_3_verification.py`, `tests/test_guardrails.py` must enforce:
 1. **`test_guardrail_agents_md_progressive_disclosure_budgets`:** Verifies that root [`AGENTS.md`](../AGENTS.md) is `< 5,000` bytes and every scoped `AGENTS.md` is `< 2,500` bytes.
 2. **`test_guardrail_documentation_markdown_links_valid`:** Parses all Markdown files (`AGENTS.md`, `README.md`, `CONTRIBUTING.md`, `CLA.md`, and `docs/**/*.md`), strips fenced code blocks and inline code spans, and verifies that every relative link resolves to an existing file on disk.
-3. **`test_guardrail_clamp_registry_integrity`:** Parses `CL-01`..`CL-18` in [`clamp_and_audit_registry.md`](clamp_and_audit_registry.md) and verifies that all 18 clamps are present and map to existing modules under `src/nam_a3/`.
-4. **`test_guardrail_fail_fast_schema_validation`:** Verifies that `.nam` v3 schema loading raises explicit `ValueError` / `ValidationError` on missing or malformed `controls_schema`, invalid sample rates, or unaligned channel counts ($C \notin \{4, 8\}$).
+3. **`test_guardrail_clamp_registry_integrity`:** Parses `CL-01`..`CL-18` in [`clamp_and_audit_registry.md`](clamp_and_audit_registry.md) and verifies that all 18 clamps are present and map to existing modules under `src/dnam/`.
+4. **`test_guardrail_fail_fast_schema_validation`:** Verifies that `.dnam` v3 schema loading raises explicit `ValueError` / `ValidationError` on missing or malformed `controls_schema`, invalid sample rates, or unaligned channel counts ($C \notin \{4, 8\}$).

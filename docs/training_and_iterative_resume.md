@@ -1,6 +1,6 @@
-# 4-Stage Deterministic Training Pipeline & Single-Checkpoint (`.nam-ckpt`) Iterative Resume
+# 4-Stage Deterministic Training Pipeline & Single-Checkpoint (`.dnam-ckpt`) Iterative Resume
 
-Architecture 3 replaces cold random initialization and fragile single-precision normal equations with a **4-Stage Deterministic System-Identification & Export Polish Pipeline** paired with **Single-Checkpoint (`.nam-ckpt`) Two-Tier Iterative Stem Expansion**.
+Architecture 3 replaces cold random initialization and fragile single-precision normal equations with a **4-Stage Deterministic System-Identification & Export Polish Pipeline** paired with **Single-Checkpoint (`.dnam-ckpt`) Two-Tier Iterative Stem Expansion**.
 
 ---
 
@@ -38,17 +38,17 @@ At the end of training, freeze the nonlinear backbone, recompute the exact per-s
 
 ---
 
-## 2. Single-Checkpoint (`.nam-ckpt`) Two-Tier Iterative Stem Expansion
+## 2. Single-Checkpoint (`.dnam-ckpt`) Two-Tier Iterative Stem Expansion
 
 > [!IMPORTANT]
-> **Why Only ONE `.nam-ckpt` File Is Needed & Why It Stores Factorized Per-Stem Audio Matrices $\{\mathbf{G}_{\text{audio}}^{(s)}, \mathbf{C}_{\text{audio}}^{(s)}\}$:**
+> **Why Only ONE `.dnam-ckpt` File Is Needed & Why It Stores Factorized Per-Stem Audio Matrices $\{\mathbf{G}_{\text{audio}}^{(s)}, \mathbf{C}_{\text{audio}}^{(s)}\}$:**
 > Training runs **non-stop** to completion and outputs:
-> 1. The finished, playable `.nam` v3 model (with any necessary safety clamps active).
+> 1. The finished, playable `.dnam` v3 model (with any necessary safety clamps active).
 > 2. A **Consolidated Audit & Stem Prescription Report** telling the user which optional stems would lift any active clamps.
-> 3. **One single `.nam-ckpt` file** containing the backbone weights, per-stem metadata, and the **un-entangled per-stem `float64` audio matrices** $\{\mathbf{G}_{\text{audio}}^{(s)} = \mathbf{\Phi}_s^\top \mathbf{\Phi}_s \in \mathbb{R}^{16C \times 16C},\; \mathbf{C}_{\text{audio}}^{(s)} = \mathbf{\Phi}_s^\top \mathbf{Y}_s \in \mathbb{R}^{16C \times 2}\}$ (**only $130\text{ KB/stem}$, $2.5\times$ smaller than a pre-summed Kronecker Gram matrix**).
+> 3. **One single `.dnam-ckpt` file** containing the backbone weights, per-stem metadata, and the **un-entangled per-stem `float64` audio matrices** $\{\mathbf{G}_{\text{audio}}^{(s)} = \mathbf{\Phi}_s^\top \mathbf{\Phi}_s \in \mathbb{R}^{16C \times 16C},\; \mathbf{C}_{\text{audio}}^{(s)} = \mathbf{\Phi}_s^\top \mathbf{Y}_s \in \mathbb{R}^{16C \times 2}\}$ (**only $130\text{ KB/stem}$, $2.5\times$ smaller than a pre-summed Kronecker Gram matrix**).
 
 ### Why Pre-Summed Kronecker Matrices Fail on Stem Additions (Mathematical Proof)
-If `.nam-ckpt` stored only the pre-collapsed sum $\mathbf{G}_{\text{old}} = \sum_{s=1}^S \mathbf{G}_{\text{audio}}^{(s)} \otimes (\tilde{\boldsymbol{\psi}}_s \tilde{\boldsymbol{\psi}}_s^\top)$, then adding a new stem $s_{\text{new}}$ that:
+If `.dnam-ckpt` stored only the pre-collapsed sum $\mathbf{G}_{\text{old}} = \sum_{s=1}^S \mathbf{G}_{\text{audio}}^{(s)} \otimes (\tilde{\boldsymbol{\psi}}_s \tilde{\boldsymbol{\psi}}_s^\top)$, then adding a new stem $s_{\text{new}}$ that:
 - increases a knob's polynomial degree $K_p$ (e.g., $1 \to 2$ or $2 \to 3$),
 - unlocks a previously unobserved `switch` option, or
 - rotates the SVD principal control subspace projector $\mathbf{P}_{\text{svd}} \to \mathbf{P}_{\text{svd,new}}$
@@ -57,11 +57,11 @@ would **invalidate $\mathbf{G}_{\text{old}}$** because the old control vectors $
 By storing the **audio-only** matrices $\{\mathbf{G}_{\text{audio}}^{(s)}, \mathbf{C}_{\text{audio}}^{(s)}\}$ per stem $s$, the trainer can recompute $\mathbf{P}_{\text{svd,new}}$ and updated control vectors $\tilde{\boldsymbol{\psi}}_s^{\text{new}}$ for **all old and new stems in microseconds** and assemble the exact new global Kronecker system in **$< 1\text{ ms}$ with zero audio re-evaluation of old stems**:
 $$\mathbf{G}_{\text{updated}} = \sum_{s=1}^{S + S_{\text{new}}} \mathbf{G}_{\text{audio}}^{(s)} \otimes \Big(\tilde{\boldsymbol{\psi}}_s^{\text{new}} \big(\tilde{\boldsymbol{\psi}}_s^{\text{new}}\big)^\top\Big), \qquad \mathbf{C}_{\text{updated}} = \sum_{s=1}^{S + S_{\text{new}}} \mathbf{C}_{\text{audio}}^{(s)} \otimes \tilde{\boldsymbol{\psi}}_s^{\text{new}}$$
 
-### Two-Tier Resume Execution (`nam-train --resume model.nam-ckpt --add-stems ...`)
+### Two-Tier Resume Execution (`dnam-train --resume model.dnam-ckpt --add-stems ...`)
 1. **Tier 1 — Instant Factorized-Kronecker Control & Head Update ($< 5\text{ seconds}$, $100\times$ Faster):**
    - Forward-passes **only the newly added stem(s)** through the frozen backbone to compute $\mathbf{G}_{\text{audio}}^{(s_{\text{new}})}, \mathbf{C}_{\text{audio}}^{(s_{\text{new}})}$.
    - Updates the Node-Anchored Newton/Lobatto basis (`0.00` perturbation on old stems) and SVD projector $\mathbf{P}_{\text{svd,new}}$, assembles $\mathbf{G}_{\text{updated}}, \mathbf{C}_{\text{updated}}$ in $< 1\text{ ms}$, and solves the Cholesky polish ($\lambda_{\text{polish}} = 10^{-6}\bar{\tau}$).
    - **Verified in `Test 8G`:** Improves unseen 3-way validation ESR from **$-26.68\text{ dB} \to -38.46\text{ dB}$** with **$1.05 \times 10^{-9}$ weight parity** against full retraining from scratch!
 2. **Tier 2 — Warm-Started Backbone Fine-Tuning ($\sim 15\text{--}20\%$ Epochs, $4\times\text{--}6\times$ Faster):**
    - Automatically triggered only if the Tier-1 residual ESR on the newly added stem(s) exceeds the target threshold (e.g., adding a high-gain `"fuzz"` or `"ultra"` stem whose nonlinear saturation harmonics were absent from a clean-only checkpoint).
-   - Re-solves the head from $\{\mathbf{G}_{\text{audio}}^{(s)}, \mathbf{C}_{\text{audio}}^{(s)}\}$ using the conservative ridge $\lambda_{\text{init}} = 10^{-3}\bar{\tau}$ in $5\text{ ms}$ (un-pinning the polish before `Adam` steps), runs 20–30 warm `Adam` epochs ($70\%$ new stem batch sampling + $30\%$ old stem replay), and re-runs the Stage-4 Cholesky Polish ($\lambda_{\text{polish}} = 10^{-6}\bar{\tau}$), updating both `.nam` v3 and `.nam-ckpt`.
+   - Re-solves the head from $\{\mathbf{G}_{\text{audio}}^{(s)}, \mathbf{C}_{\text{audio}}^{(s)}\}$ using the conservative ridge $\lambda_{\text{init}} = 10^{-3}\bar{\tau}$ in $5\text{ ms}$ (un-pinning the polish before `Adam` steps), runs 20–30 warm `Adam` epochs ($70\%$ new stem batch sampling + $30\%$ old stem replay), and re-runs the Stage-4 Cholesky Polish ($\lambda_{\text{polish}} = 10^{-6}\bar{\tau}$), updating both `.dnam` v3 and `.dnam-ckpt`.

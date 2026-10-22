@@ -19,6 +19,8 @@ docs/.vitepress/cache/
 packages/nodejs/dist/
 
 # Model artifacts & audio
+*.dnam
+*.dnam-ckpt
 *.nam
 *.nam-ckpt
 *.wav
