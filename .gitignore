@@ -1,0 +1,24 @@
+# Python / uv
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+.coverage
+dist/
+build/
+*.egg-info/
+
+# Rust / Cargo
+target/
+
+# Node.js / VitePress
+node_modules/
+docs/.vitepress/dist/
+docs/.vitepress/cache/
+packages/nodejs/dist/
+
+# Model artifacts & audio
+*.nam
+*.nam-ckpt
+*.wav
