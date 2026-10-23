@@ -70,3 +70,16 @@ Start with [`AGENTS.md`](AGENTS.md) and [`docs/index.md`](docs/index.md):
 10. **[`.dnam` v3 Container Schema & Continuous-Time ZOH Sample-Rate Rescaling](docs/dnam_v3_container_schema.md)**
 11. **[Monorepo Implementation Blueprint (Web Docs, Python, Native DSP, Plugin & Node.js WASM)](docs/monorepo_implementation_guide.md)**
 12. **[Empirical Verification Suite (8 Test Suites) & Automated Guardrails](docs/verification_and_guardrails.md)**
+
+---
+
+## Contributing & License
+
+We welcome contributions! All commits must be signed off (`git commit -s`) under our [Contributor License Agreement (`CLA.md`)](CLA.md). See [`CONTRIBUTING.md`](CONTRIBUTING.md) for engineering, numerical, and documentation standards, and [`AGENTS.md`](AGENTS.md) for AI agent discovery guidelines.
+
+Licensed under the [DNAM Source-Available & Branding License 1.0.0 (`LICENSE`)](LICENSE):
+- **Hardware & Closed-Source Plugin Linking Allowed:** Hardware manufacturers and software developers may link `dnam-engine` (and `packages/python`, `packages/nodejs`) into commercial hardware firmware and closed-source audio plugins without open-sourcing their own host or plugin code.
+- **Mandatory DNAM Branding & Format Integrity:** Products linking `dnam-engine` or loading `.dnam` models must retain user-facing **"DNAM"** ("Dynamic Neural Audio Modeler" / **"Powered by DNAM"**) branding and unmodified `.dnam` container compatibility (no white-labeling or proprietary rebranding).
+- **No Standalone Rebranded Resale:** Repackaging or rebranding the standalone reference plugin (`packages/plugin`), trainer (`packages/trainer`), or web studio (`packages/web`) for resale or paid cloud hosting is prohibited.
+
+For bespoke OEM or commercial licensing inquiries, contact **Peter Nguyen** (<peter@phn.dev>).

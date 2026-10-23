@@ -1,0 +1,163 @@
+# DNAM Source-Available & Branding License 1.0.0
+
+Required Notice: Copyright 2026 Peter Nguyen <peter@phn.dev>
+
+## Acceptance
+
+In order to get any license under these terms, you must agree to them as both
+strict obligations and conditions to all your licenses.
+
+## Copyright License
+
+The licensor grants you a copyright license for the software to do everything
+you might do with the software that would otherwise infringe the licensor's
+copyright in it for any permitted purpose. However, you may only distribute or
+link the software according to [Distribution & Hardware/Plugin Linking
+License](#distribution--hardwareplugin-linking-license) and [Mandatory DNAM
+Branding & Format Integrity](#mandatory-dnam-branding--format-integrity), and
+make changes or new works based on the software according to [Changes and New
+Works License](#changes-and-new-works-license).
+
+## Distribution & Hardware/Plugin Linking License
+
+The licensor grants you an additional copyright license to distribute copies of
+the software (with changes and new works permitted by [Changes and New Works
+License](#changes-and-new-works-license)) and to statically or dynamically link
+`dnam-engine` (and its language bindings in `packages/python` and
+`packages/nodejs`) into commercial and noncommercial hardware devices, embedded
+DSP firmware, and closed-source or open-source audio plugins (including VST3,
+CLAP, AU, AAX, and Standalone formats) and host applications.
+
+Linking `dnam-engine` into your own hardware firmware or closed-source audio
+plugin does not require you to disclose the source code of your own independent
+firmware, plugin, or host application, provided that you strictly comply with
+[Mandatory DNAM Branding & Format Integrity](#mandatory-dnam-branding--format-integrity).
+
+## Mandatory DNAM Branding & Format Integrity
+
+Your license to distribute, embed, or link any part of the software in any
+hardware device, firmware, audio plugin, or software application is strictly
+conditioned on all of the following:
+
+1. **Mandatory User-Facing DNAM Branding (No White-Labeling):** Any hardware
+   device, embedded firmware, closed-source or open-source audio plugin, or
+   software application that links, embeds, or executes `dnam-engine` (or its
+   bindings) or loads `.dnam` models must visibly identify and credit the
+   modeling technology as **"DNAM"** ("Dynamic Neural Audio Modeler") or
+   **"Powered by DNAM"** wherever the modeling engine, effect block/module, or
+   model loader is presented to end users (including plugin GUI faceplates or
+   headers, hardware screen block/module selectors, model/preset browsers,
+   "About" views, and product documentation/specifications). You may not
+   white-label, rebrand, obscure, or market `dnam-engine` or the DNAM modeling
+   architecture under a substitute proprietary technology name.
+2. **`.dnam` Container & Schema Integrity:** Any product or tool that loads,
+   saves, generates, or exchanges DNAM models must preserve the unmodified
+   `.dnam` and `.dnam-ckpt` file extensions and internal schema identifiers
+   (`"architecture": "DNAM_A3_TriPhysics"`), and may not rename, disguise, or
+   re-wrap `.dnam` files into a proprietary file extension or container format
+   to obscure their origin.
+3. **Required Notices:** You must ensure that anyone who gets a copy of any
+   part of the software from you (in source or binary form, including within
+   product documentation or "About" notices of hardware devices and plugins)
+   also gets a copy of these terms, as well as copies of any plain-text lines
+   beginning with `Required Notice:` that the licensor provided with the
+   software. For example:
+
+> Required Notice: Copyright 2026 Peter Nguyen <peter@phn.dev>
+
+## Conditional Trademark License
+
+Solely to enable your compliance with [Mandatory DNAM Branding & Format
+Integrity](#mandatory-dnam-branding--format-integrity), the licensor grants you
+a royalty-free, worldwide, non-exclusive, non-transferable, revocable license to
+display the **"DNAM"**, **"Dynamic Neural Audio Modeler"**, and **"Powered by
+DNAM"** names and marks strictly to truthfully identify integrated `dnam-engine`
+functionality and `.dnam` model compatibility in compliant hardware and
+software products. You may not register or claim ownership of any trademark,
+service mark, or domain name confusingly similar to **"DNAM"**, nor use the
+marks in a manner that disparages the project or implies official endorsement
+or sponsorship of your company by the licensor.
+
+## Permitted Purposes & Anti-Resale Perimeter
+
+Any commercial or noncommercial purpose is a permitted purpose, **except** for:
+
+1. **No Standalone Rebranded Resale or Hosted Cloning:** Selling, licensing for
+   a fee, or offering to third parties as a hosted or managed cloud service a
+   rebranded, white-labeled, or repackaged version of the project's standalone
+   reference plugin (`packages/plugin`), differentiable trainer
+   (`packages/trainer`), or web studio (`packages/web`) where the primary value
+   of the product or service is substantially the software itself without
+   substantial independent hardware or software functionality; or
+2. **No Unbranded / White-Labeled Distribution:** Providing any hardware device,
+   firmware, plugin, or software product that links, embeds, or uses
+   `dnam-engine` or `.dnam` models while removing, obscuring, or replacing the
+   mandatory **DNAM** branding required under [Mandatory DNAM Branding & Format
+   Integrity](#mandatory-dnam-branding--format-integrity).
+
+## Changes and New Works License
+
+The licensor grants you an additional copyright license to make changes and new
+works based on the software for any permitted purpose, provided that any
+distributed changes or new works comply with [Mandatory DNAM Branding & Format
+Integrity](#mandatory-dnam-branding--format-integrity).
+
+## Patent License
+
+The licensor grants you a patent license for the software that covers patent
+claims the licensor can license, or becomes able to license, that you would
+infringe by using the software for a permitted purpose in compliance with these
+terms.
+
+## Fair Use
+
+You may have "fair use" rights for the software under the law. These terms do
+not limit them.
+
+## No Other Rights
+
+These terms do not allow you to sublicense or transfer any of your licenses to
+anyone else, or prevent the licensor from granting licenses (including bespoke
+commercial white-label or OEM licenses) to anyone else. These terms do not
+imply any other licenses.
+
+## Patent Defense
+
+If you make any written claim that the software infringes or contributes to
+infringement of any patent, your patent license for the software granted under
+these terms ends immediately. If your company makes such a claim, your patent
+license ends immediately for work on behalf of your company.
+
+## Violations
+
+The first time you are notified in writing that you have violated any of these
+terms, or done anything with the software not covered by your licenses, your
+licenses can nonetheless continue if you come into full compliance with these
+terms, and take practical steps to correct past violations, within 32 days of
+receiving notice. Otherwise, all your licenses end immediately.
+
+## No Liability
+
+***As far as the law allows, the software comes as is, without any warranty or
+condition, and the licensor will not be liable to you for any damages arising
+out of these terms or the use or nature of the software, under any kind of
+legal claim.***
+
+## Definitions
+
+The **licensor** is the individual or entity offering these terms, and the
+**software** is the software the licensor makes available under these terms.
+
+**You** refers to the individual or entity agreeing to these terms.
+
+**Your company** is any legal entity, sole proprietorship, or other kind of
+organization that you work for, plus all organizations that have control over,
+are under the control of, or are under common control with that organization.
+**Control** means ownership of substantially all the assets of an entity, or
+the power to direct its management and policies by vote, contract, or
+otherwise. Control can be direct or indirect.
+
+**Your licenses** are all the licenses granted to you for the software under
+these terms.
+
+**Use** means anything you do with the software requiring one of your licenses.

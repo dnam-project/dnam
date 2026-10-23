@@ -4,9 +4,9 @@ Welcome to the **Dynamic Neural Audio Modeler (DNAM Architecture 3)** monorepo. 
 
 ---
 
-## 1. Contributor License Agreement & Git Sign-Off
+## 1. License, Contributor License Agreement & Git Sign-Off
 
-All commits must include a `Signed-off-by` trailer (`git commit -s`) certifying agreement with [`CLA.md`](CLA.md).
+Dynamic Neural Audio Modeler (DNAM) is distributed under the [`DNAM Source-Available & Branding License 1.0.0`](LICENSE). All commits must include a `Signed-off-by` trailer (`git commit -s`) certifying agreement with [`CLA.md`](CLA.md).
 
 ---
 

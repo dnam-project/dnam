@@ -12,6 +12,7 @@ dynamic-neural-audio-modeler/
 ├── README.md                        # Project overview, benchmarks & quickstart
 ├── CONTRIBUTING.md                  # Engineering, numerical & documentation rules
 ├── CLA.md                           # Contributor License Agreement
+├── LICENSE                          # DNAM Source-Available & Branding License 1.0.0
 ├── pyproject.toml                   # uv workspace root -> ["packages/python", "packages/trainer"]
 ├── Cargo.toml                       # Cargo workspace root -> ["packages/engine", "packages/python", "packages/plugin"]
 ├── package.json                     # JS/TS workspace root -> ["packages/nodejs", "packages/web"]
