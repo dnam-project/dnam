@@ -387,6 +387,12 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
         self.zoh.sample_rate_host_hz
     }
 
+    /// Returns the cached [`ZohRescaledParams`] for the current host sample rate.
+    #[inline]
+    pub const fn zoh(&self) -> &ZohRescaledParams {
+        &self.zoh
+    }
+
     /// Returns the container's cryptographic [`VerificationStatus`].
     #[inline]
     pub const fn verification_status(&self) -> &VerificationStatus {
@@ -1011,6 +1017,7 @@ mod tests {
             DnamEngine::<ScalarBackend>::from_bytes(&container, Tier::Ultra, 48_000).unwrap();
         assert_eq!(engine.tier(), Tier::Ultra);
         assert_eq!(engine.sample_rate_hz(), 48_000);
+        assert_eq!(engine.zoh().sample_rate_host_hz, 48_000);
         assert!(engine.header().is_some());
         assert_eq!(engine.preamble().num_controls, 2);
         assert_eq!(engine.verification_status(), &VerificationStatus::Unsigned);

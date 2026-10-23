@@ -135,7 +135,7 @@ impl Drop for FtzDazGuard {
 }
 
 /// Lock-free, copyable `#[repr(C)]` telemetry snapshot for 60 fps UI visualizers
-/// (`TriPhysicsTelemetry.tsx`, `packages/plugin`, and `packages/nodejs`).
+/// (`TriPhysicsTelemetry.tsx`, `packages/plugin`, and `packages/js`).
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DnamTelemetrySnapshot {

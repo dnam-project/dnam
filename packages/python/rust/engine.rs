@@ -44,6 +44,7 @@ pub struct NativeDnamEngine {
     sample_rate_hz: u32,
     sample_rate_train_hz: u32,
     control_decimation_train: u8,
+    zoh: ZohRescaledParams,
 }
 
 #[pymethods]
@@ -70,11 +71,23 @@ impl NativeDnamEngine {
         )
         .map_err(dnam_err_to_py)?;
 
+        let zoh = ZohRescaledParams::compute(
+            sample_rate_train_hz,
+            sample_rate_hz,
+            control_decimation_train,
+            0.9993,
+            0.995,
+            64.0,
+            128,
+        )
+        .map_err(dnam_err_to_py)?;
+
         Ok(Self {
             inner,
             sample_rate_hz,
             sample_rate_train_hz,
             control_decimation_train,
+            zoh,
         })
     }
 
@@ -97,9 +110,21 @@ impl NativeDnamEngine {
             .reload_model_in_place_owned(container_bytes, target_tier, target_sr)
             .map_err(dnam_err_to_py)?;
 
+        let sample_rate_train_hz = preamble.sample_rate_train_hz;
+        let control_decimation_train = preamble.control_decimation.max(8);
+        self.zoh = ZohRescaledParams::compute(
+            sample_rate_train_hz,
+            target_sr,
+            control_decimation_train,
+            0.9993,
+            0.995,
+            64.0,
+            128,
+        )
+        .map_err(dnam_err_to_py)?;
         self.sample_rate_hz = target_sr;
-        self.sample_rate_train_hz = preamble.sample_rate_train_hz;
-        self.control_decimation_train = preamble.control_decimation.max(8);
+        self.sample_rate_train_hz = sample_rate_train_hz;
+        self.control_decimation_train = control_decimation_train;
         Ok(())
     }
 
@@ -123,6 +148,16 @@ impl NativeDnamEngine {
         self.inner
             .set_sample_rate(sample_rate_hz)
             .map_err(dnam_err_to_py)?;
+        self.zoh = ZohRescaledParams::compute(
+            self.sample_rate_train_hz,
+            sample_rate_hz,
+            self.control_decimation_train,
+            0.9993,
+            0.995,
+            64.0,
+            128,
+        )
+        .map_err(dnam_err_to_py)?;
         self.sample_rate_hz = sample_rate_hz;
         Ok(())
     }
@@ -355,16 +390,7 @@ impl NativeDnamEngine {
     /// Returns a dictionary snapshot of `DnamTelemetrySnapshot` and `ZohRescaledParams`.
     pub fn telemetry<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         let snap = self.inner.telemetry_snapshot();
-        let zoh = ZohRescaledParams::compute(
-            self.sample_rate_train_hz,
-            self.sample_rate_hz,
-            self.control_decimation_train,
-            0.9993,
-            0.995,
-            64.0,
-            128,
-        )
-        .map_err(dnam_err_to_py)?;
+        let zoh = &self.zoh;
 
         let dict = PyDict::new(py);
         dict.set_item("active_tier", snap.active_tier)?;

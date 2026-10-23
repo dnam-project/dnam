@@ -32,7 +32,7 @@ DNAM is organized as a multi-language workspace under `packages/*`. Before modif
 | :--- | :--- | :--- | :--- |
 | **Rust SIMD Engine (`dnam-engine`)** | `packages/engine/` | [`packages/engine/AGENTS.md`](packages/engine/AGENTS.md) | [`packages/engine/CONTRIBUTING.md`](packages/engine/CONTRIBUTING.md) |
 | **Python Engine (`dnam_engine`)** | `packages/python/` | [`packages/python/AGENTS.md`](packages/python/AGENTS.md) | [`packages/python/CONTRIBUTING.md`](packages/python/CONTRIBUTING.md) |
-| **Node.js / WASM SDK** | `packages/nodejs/` | *(Phase 2B)* | [`docs/monorepo_implementation_guide.md`](docs/monorepo_implementation_guide.md) |
+| **JS / WebAudio SDK (`@dnam-project/engine`)** | `packages/js/` | [`packages/js/AGENTS.md`](packages/js/AGENTS.md) | [`packages/js/CONTRIBUTING.md`](packages/js/CONTRIBUTING.md) |
 | **PyTorch 4-Stage Trainer** | `packages/trainer/` | *(Phase 3)* | [`docs/training_and_iterative_resume.md`](docs/training_and_iterative_resume.md) |
 | **VST3 / CLAP / Standalone Plugin** | `packages/plugin/` | *(Phase 4)* | [`docs/monorepo_implementation_guide.md`](docs/monorepo_implementation_guide.md) |
 | **Web Docs & Interactive Studio** | `packages/web/` | *(Phase 5)* | [`docs/monorepo_implementation_guide.md`](docs/monorepo_implementation_guide.md) |
@@ -41,7 +41,7 @@ DNAM is organized as a multi-language workspace under `packages/*`. Before modif
 
 ## 3. Workspace Setup & Verification Commands
 
-DNAM uses **`cargo`** (Rust 2024 edition, `1.85+`) for native crates and **`uv`** (Python `3.14`) for Python packages and workspace verification:
+DNAM uses **`cargo`** (Rust 2024 edition, `1.85+`) for native crates, **`uv`** (Python `3.14`) for Python packages, and **`pnpm`** for JS/TS packages:
 
 ```bash
 # Sync Python workspace dependencies and build the release editable PyO3 extension
@@ -58,8 +58,15 @@ uv run ruff check
 uv run pyrefly check --min-severity=warn
 uv run pytest packages/python/tests --cov=dnam_engine --cov-report=term-missing --cov-fail-under=95
 
-# Run the statistical performance benchmark suite
+# Run the Python statistical performance benchmark suite
 uv run pytest packages/python/tests/test_benchmarks.py --benchmark-enable
+
+# Run JS/TS Biome formatting & lints, TypeScript strict check, Vitest >= 95% coverage & benchmarks
+pnpm format:check
+pnpm lint
+pnpm typecheck
+pnpm coverage
+pnpm bench
 
 # Run the monorepo architectural, schema, and link-integrity guardrail verifier
 uv run python scripts/verify_dnam_architecture.py

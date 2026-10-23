@@ -1,0 +1,71 @@
+{
+  "name": "@dnam-project/engine",
+  "version": "0.1.0",
+  "description": "TypeScript, Node.js N-API, and WebAssembly SIMD128 / WebAudio AudioWorklet SDK for the Dynamic Neural Audio Modeler (DNAM / Tri-Physics)",
+  "type": "module",
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "main": "./dist/node.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "node": "./dist/node.js",
+      "browser": "./dist/browser.js",
+      "default": "./dist/index.js"
+    },
+    "./node": {
+      "types": "./dist/node.d.ts",
+      "default": "./dist/node.js"
+    },
+    "./browser": {
+      "types": "./dist/browser.d.ts",
+      "default": "./dist/browser.js"
+    },
+    "./schema": {
+      "types": "./dist/schema/index.d.ts",
+      "default": "./dist/schema/index.js"
+    },
+    "./worklet": {
+      "types": "./dist/worklet/index.d.ts",
+      "default": "./dist/worklet/index.js"
+    },
+    "./worklet-processor": {
+      "types": "./dist/worklet/processor.d.ts",
+      "default": "./dist/worklet-processor.js"
+    },
+    "./dnam_engine.wasm": "./dist/dnam_engine.wasm"
+  },
+  "scripts": {
+    "build:rust": "node ./scripts/build_wasm.mjs",
+    "build:js": "vite build && vite build --mode worklet && tsc -p tsconfig.json --emitDeclarationOnly",
+    "build": "pnpm run build:rust && pnpm run build:js",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "biome check ../../",
+    "format:check": "biome format ../../",
+    "test": "vitest run",
+    "coverage": "vitest run --coverage",
+    "bench": "vitest bench --run"
+  },
+  "dependencies": {
+    "@standard-schema/spec": "^1.1.0",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.6.2",
+    "@fast-check/vitest": "^0.5.0",
+    "@types/node": "^24.0.0",
+    "@vitest/coverage-v8": "^5.0.5",
+    "fast-check": "^4.10.2",
+    "typescript": "^5.8.3",
+    "vite": "^8.3.5",
+    "vitest": "^5.0.5"
+  }
+}

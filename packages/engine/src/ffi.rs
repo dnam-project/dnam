@@ -2,7 +2,7 @@
 //!
 //! Exposes a zero-allocation C-ABI surface over [`DynamicDnamEngine`](crate::DynamicDnamEngine)
 //! and [`DnamTelemetrySnapshot`](crate::DnamTelemetrySnapshot) for C/C++ audio hosts,
-//! `packages/nodejs` WASM `AudioWorkletProcessor`, and embedded firmware.
+//! `packages/js` WASM `AudioWorkletProcessor`, and embedded firmware.
 
 use alloc::boxed::Box;
 use core::slice;

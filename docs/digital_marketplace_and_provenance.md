@@ -123,7 +123,7 @@ Whenever a user uploads a `.dnam` model to the marketplace (for public sharing o
 
 ## 6. Layer 4: Commercial Marketplace UX, Auditioning, Royalty Splits & Storefront Metadata
 
-### 6.1 Zero-Leak Browser Auditioning (`packages/web` + `@dnam/nodejs`)
+### 6.1 Zero-Leak Browser Auditioning (`packages/web` + `@dnam-project/engine`)
 - Prospective buyers can audition commercial `.dnam` models directly in the browser using either **built-in multi-genre DI stems** or **their own live guitar/bass/synth via WebAudio (`AudioWorklet` WASM SIMD128)**.
 - To prevent un-purchased extraction of the commercial `Ultra` master during browser auditioning, the marketplace serves either:
   1. **Ephemeral Session-Watermarked `Lite` (`10.5 KB`) Preview Streams** (with a periodic gentle audition marker every 45 seconds), or

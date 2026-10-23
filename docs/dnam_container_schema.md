@@ -2,7 +2,7 @@
 
 Free from legacy NAM A2 text-JSON weight array constraints and Python `pickle` (`torch.save`) checkpoints, DNAM defines two companion **zero-copy, 64-byte cache-line and SIMD-aligned Hybrid Binary Container formats** engineered for **$< 50\text{ ns}$ `#[no_std]` hardware loading**:
 
-1. **`.dnam` (Magic `b"DNAM"`, Version `1.0`):** The single-file real-time deployment container ($10.5\text{ KB}$ `Lite` / $21.8\text{ KB}$ `Full` / $35.4\text{ KB}$ `Ultra` binary arena) loaded via zero-copy `mmap` or `Float32Array` view by the Rust SIMD engine (`packages/engine`), audio plugin (`packages/plugin`), Python wheel (`packages/python`), and Node.js/WASM runtime (`packages/nodejs`).
+1. **`.dnam` (Magic `b"DNAM"`, Version `1.0`):** The single-file real-time deployment container ($10.5\text{ KB}$ `Lite` / $21.8\text{ KB}$ `Full` / $35.4\text{ KB}$ `Ultra` binary arena) loaded via zero-copy `mmap` or `Float32Array` view by the Rust SIMD engine (`packages/engine`), audio plugin (`packages/plugin`), Python wheel (`packages/python`), and Node.js/WASM runtime (`packages/js`).
 2. **`.dnam-ckpt` (Magic `b"DNCK"`, Version `1.0`):** The deduplicated, `pickle`-free single-file iterative training checkpoint. Its leading tensor arenas (`Arena 0..2`) are **bit-for-bit identical** to the exported `.dnam` model, followed by `Arena 3` containing the tier-ordered **Column-Major Upper-Triangular (`uplo='U'`) `float64` audio sufficient statistics** $\{\operatorname{pack}_{\text{U}}\!\big(\mathbf{G}_{\text{audio}}^{(s)}\big),\; \mathbf{C}_{\text{audio}}^{(s)}\}$ (**$17.25\text{ KB/stem}$ `Lite` / $66.50\text{ KB/stem}$ `Full` / $147.75\text{ KB/stem}$ `Ultra`**—nearly $2\times$ smaller than full matrix storage and $100\%$ 64-byte aligned).
 
 ---

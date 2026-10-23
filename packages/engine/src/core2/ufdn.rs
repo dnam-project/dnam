@@ -123,6 +123,8 @@ pub struct ModulatedUfdn<'a, B: MathBackend> {
 
     /// Peak effective feedback loop gain $\max_m g_{\text{eff},m}[n]$ observed in the current block (for telemetry).
     pub max_effective_loop_gain: f32,
+    /// Pre-computed maximum `g_lin` for 1 group (`Lite`) and 2 groups (`Full`/`Ultra`).
+    cached_max_loop_gain: [f32; 2],
 
     /// Dynamic 64-byte aligned `fp16` delay storage (`0 KB` when inactive; up to `8 × 32,768 × 2 B = 512 KB` or `256 KB`).
     /// Packed as `[ring_len][2 groups * 4 lines = 8 u16]`, where 4 consecutive sample frames = 1 `AlignedFp16Block` (64 B).
@@ -161,6 +163,7 @@ impl<'a, B: MathBackend> ModulatedUfdn<'a, B> {
             tzf_dry_ring: [[0.0; 2]; CORE2_TZF_RING_LEN],
             tzf_write_pos: 0,
             max_effective_loop_gain: 0.0,
+            cached_max_loop_gain: [0.0; 2],
             delay_scratch: DelayScratchStorage::empty(),
             _backend: PhantomData,
         }
@@ -302,6 +305,10 @@ impl<'a, B: MathBackend> ModulatedUfdn<'a, B> {
         self.tau_ref_host = zoh.tau_ref_samples_host;
         self.xfade_samples_host = zoh.switch_xfade_samples_host.max(16);
         self.inv_xfade_samples_host = 1.0 / (self.xfade_samples_host as f32);
+
+        let max_g0 = self.groups[0].g_lin.iter().copied().fold(0.0_f32, f32::max);
+        let max_g1 = self.groups[1].g_lin.iter().copied().fold(max_g0, f32::max);
+        self.cached_max_loop_gain = [max_g0, max_g1];
 
         self.reset_state();
     }
@@ -486,27 +493,36 @@ impl<'a, B: MathBackend> ModulatedUfdn<'a, B> {
                 }
             }
 
-            // Early reflection tap + FDN stereo output projection
+            // Early reflection tap + FDN stereo output projection + In-loop Schroeder all-pass diffuser (CL-08)
             let d_early = self.read_cubic_lagrange_group(g, &self.groups[g].early_tap_samples);
             let gw = &self.groups[g];
-            for lane in 0..4 {
-                let early = gw.early_gain[lane] * d_early[lane];
-                wet_l += gw.c_fdn_left[lane] * d_read[lane] + early;
-                wet_r += gw.c_fdn_right[lane] * d_read[lane] + early;
+            let vd_read = B::Vec4::load(&d_read);
+            let vd_early = B::Vec4::load(&d_early);
+            let vearly = B::Vec4::load(&gw.early_gain).mul(vd_early);
+            let vwet_l = vearly.fma(B::Vec4::load(&gw.c_fdn_left), vd_read);
+            let vwet_r = vearly.fma(B::Vec4::load(&gw.c_fdn_right), vd_read);
+            let wl_arr = vwet_l.to_array();
+            let wr_arr = vwet_r.to_array();
+            wet_l += wl_arr[0] + wl_arr[1] + wl_arr[2] + wl_arr[3];
+            wet_r += wr_arr[0] + wr_arr[1] + wr_arr[2] + wr_arr[3];
 
-                // In-loop Schroeder all-pass diffuser (CL-08):
-                // v_m[n] = -a_diff * d_m[n] + u_ap[n - D_ap]
-                // u_ap[n] = d_m[n] + a_diff * v_m[n]
+            let mut u_del = [0.0_f32; 4];
+            for lane in 0..4 {
                 let d_ap = gw.d_ap_samples[lane] & CORE2_ALLPASS_RING_MASK;
                 let ap_r = ap_w.wrapping_sub(d_ap) & CORE2_ALLPASS_RING_MASK;
-                let u_delayed = self.allpass_ring[g][lane][ap_r];
-                let a = gw.a_diff[lane];
-                let d_m = d_read[lane];
-                let v_m = -a * d_m + u_delayed;
-                let u_ap = d_m + a * v_m;
-                self.allpass_ring[g][lane][ap_w] = u_ap;
-                u_ap_out[g][lane] = v_m;
+                u_del[lane] = self.allpass_ring[g][lane][ap_r];
             }
+            let va = B::Vec4::load(&gw.a_diff);
+            let vu_del = B::Vec4::load(&u_del);
+            // v_m[n] = u_ap[n - D_ap] - a_diff * d_m[n]
+            let vv_m = vu_del.fms(va, vd_read);
+            // u_ap[n] = d_m[n] + a_diff * v_m[n]
+            let vu_ap = vd_read.fma(va, vv_m);
+            let u_ap_arr = vu_ap.to_array();
+            for lane in 0..4 {
+                self.allpass_ring[g][lane][ap_w] = u_ap_arr[lane];
+            }
+            vv_m.store(&mut u_ap_out[g]);
         }
         self.allpass_write_pos = (ap_w + 1) & CORE2_ALLPASS_RING_MASK;
 
@@ -563,12 +579,11 @@ impl<'a, B: MathBackend> ModulatedUfdn<'a, B> {
                 &mut self.dc_y_prev[g],
                 &mut s_next,
             );
-            for lane in 0..4 {
-                if gw.g_lin[lane] > self.max_effective_loop_gain {
-                    self.max_effective_loop_gain = gw.g_lin[lane];
-                }
-            }
             self.write_fp16_group(g, w_pos, &s_next);
+        }
+        let max_g = self.cached_max_loop_gain[groups - 1];
+        if max_g > self.max_effective_loop_gain {
+            self.max_effective_loop_gain = max_g;
         }
 
         self.write_pos = (w_pos + 1) & self.ring_mask;

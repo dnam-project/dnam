@@ -17,11 +17,14 @@ build/
 # Rust / Cargo
 target/
 
-# Node.js / VitePress
+# Node.js / Vite / Vitest
 node_modules/
+coverage/
+.vitest/
 docs/.vitepress/dist/
 docs/.vitepress/cache/
-packages/nodejs/dist/
+packages/js/dist/
+packages/js/coverage/
 
 # Model artifacts & audio
 *.dnam

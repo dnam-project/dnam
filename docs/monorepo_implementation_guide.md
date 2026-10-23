@@ -14,8 +14,10 @@ dynamic-neural-audio-modeler/
 ├── CLA.md                           # Contributor License Agreement
 ├── LICENSE                          # DNAM Source-Available & Branding License 1.0.0
 ├── pyproject.toml                   # uv workspace root -> ["packages/python", "packages/trainer"]
-├── Cargo.toml                       # Cargo workspace root -> ["packages/engine", "packages/python", "packages/plugin"]
-├── package.json                     # JS/TS workspace root -> ["packages/nodejs", "packages/web"]
+├── Cargo.toml                       # Cargo workspace root -> ["packages/engine", "packages/python", "packages/js"]
+├── pnpm-workspace.yaml              # pnpm workspace root -> ["packages/js", "packages/web"]
+├── package.json                     # JS/TS workspace root -> ["packages/js", "packages/web"]
+├── biome.json                       # Strict agentic @biomejs/biome configuration
 ├── docs/                            # 1. Pure Single-Source-of-Truth (SSOT) Markdown Specifications
 │   ├── index.md
 │   ├── architecture_design.md
@@ -97,27 +99,39 @@ dynamic-neural-audio-modeler/
     │       ├── test_dsp.py          # PolyAdaa, SelectiveRgLru & ModulatedUfdn unit & Hypothesis property tests
     │       ├── test_provenance.py   # JCS SHA-256, ChaCha20, Dual-Mechanism buyer watermarking & 160-D hash property tests
     │       └── test_engine.py       # Callable DnamEngine, SIMD vs. Scalar parity, hot-reload, ControlRack & property tests
-    ├── nodejs/                      # Layer 2B: Packaged Node.js & WebAudio Library for Rust Engine (@dnam/nodejs)
+    ├── js/                          # Layer 2B: Packaged Node.js & WebAudio Library for Rust Engine (@dnam-project/engine)
     │   ├── AGENTS.md                # Scoped router (< 2,500 B)
+    │   ├── CONTRIBUTING.md          # Package contributing & verification guide
     │   ├── README.md                # Package overview & quickstart
-    │   ├── Cargo.toml               # Native N-API cdylib linking packages/engine (cargo-zigbuild ready)
-    │   ├── build.rs                 # Target-aware dynamic N-API symbol resolution flags
-    │   ├── package.json
-    │   ├── tsconfig.json
+    │   ├── Cargo.toml               # Unified Dual-Target Rust crate (dnam-js: N-API v8 host + wasm32 SIMD128)
+    │   ├── build.rs                 # Conditional napi-build setup for non-wasm32 targets
+    │   ├── package.json             # @dnam-project/engine multi-entry exports (., ./browser, ./node, ./worklet, ./wasm)
+    │   ├── tsconfig.json            # Strict TypeScript 6.0 configuration
+    │   ├── vite.config.ts           # Vite 8 library mode bundler + Vitest 5 / coverage-v8 config
     │   ├── scripts/
     │   │   └── build_wasm.mjs       # Builds Native N-API (.node via cargo/zigbuild) + WASM SIMD128 (.wasm)
-    │   ├── src/
-    │   │   ├── lib.rs               # Thin zero-copy Rust N-API v8 bindings
-    │   │   ├── index.ts             # Public TypeScript SDK barrel exports
-    │   │   ├── types.ts             # Domain interfaces & telemetry types
-    │   │   ├── model.ts             # validateDnamModel, clampControlValues & computeZohRescaledParams
-    │   │   ├── processor.ts         # Idiomatic DnamProcessor interface (auto: native N-API | WASM SIMD128)
-    │   │   ├── worklet.ts           # Ready-to-register WebAudio DnamAudioWorkletProcessor
-    │   │   └── backends/
-    │   │       ├── native.ts        # Low-level Node-API driver
-    │   │       └── wasm.ts          # Low-level synchronous WebAssembly SIMD128 driver
-    │   └── test/
-    │       └── dnam.test.mjs        # Node.js test runner + fast-check property tests & >=95% coverage
+    │   ├── rust/                    # Shared Dual-Target Rust Core + Target Glue
+    │   │   ├── lib.rs               # Conditional module router (napi_bindings vs wasm_ffi)
+    │   │   ├── engine.rs            # Shared EngineCore (DynamicDnamEngine, backend selection, planar/interleaved)
+    │   │   ├── container.rs         # Shared container validation, builder, 4 KB editor, ZOH, clamping & uplo='U'
+    │   │   ├── dsp.rs               # Shared Reference DSP stateful processors & algebraic kernels
+    │   │   ├── provenance.rs        # Shared JCS SHA-256, Ed25519 messages, ChaCha20, Tardos/Gauge & 160-D hash
+    │   │   ├── napi_bindings.rs     # #[cfg(not(target_arch = "wasm32"))] safe napi-rs v3 bindings + AsyncTask
+    │   │   └── wasm_ffi.rs          # #[cfg(target_arch = "wasm32")] linear-memory C-ABI exports + arena allocator
+    │   ├── src/                     # Idiomatic TypeScript & WebAudio SDK
+    │   │   ├── index.ts             # Universal barrel export (prefers Native N-API on Node/Bun, falls back to WASM)
+    │   │   ├── browser.ts           # Zero-node-imports browser / bundler entry point
+    │   │   ├── node.ts              # Explicit Node.js N-API entry point
+    │   │   ├── errors.ts            # Typed error hierarchy (DnamError, DnamValidationError, DnamContainerError, etc.)
+    │   │   ├── container.ts         # First-class DnamContainer, GramMatrix (uplo='U') & crc32c
+    │   │   ├── control.ts           # ControlRack, ControlSpace, LobattoBasis, Rank4Fm & Chebyshev/softclip helpers
+    │   │   ├── dsp.ts               # Stateful PolyAdaa, SelectiveRgLru, ModulatedUfdn & algebraic primitives
+    │   │   ├── provenance.ts        # JCS digest, Ed25519 messages, ChaCha20 arena, buyer watermarks & 160-D hash
+    │   │   ├── engine.ts            # DnamEngine (process, processPlanar, processMonoToStereo, processAsync, reload)
+    │   │   ├── schema/              # Runtime validators, frozen models & power-skew UI mappers
+    │   │   ├── drivers/             # Unified DnamDriver contract (wasm.ts & native.ts)
+    │   │   └── worklet/             # Lock-free SharedArrayBuffer Seqlock/Ring, DnamAudioWorkletProcessor & DnamWorkletNode
+    │   └── test/                    # Modular Vitest + fast-check Unit, Property, Parity & Benchmark Suite (>= 95% cov)
     ├── trainer/                     # Layer 3A: PyTorch 4-Stage Differentiable Trainer & .dnam-ckpt Solver
     │   ├── AGENTS.md                # Scoped router (< 2,500 B)
     │   ├── pyproject.toml           # Imports packages/python (dnam-engine) as Reference DSP
@@ -190,7 +204,7 @@ dynamic-neural-audio-modeler/
   6. **`ClampAuditVisualizer` ([`clamp_and_audit_registry.md`](clamp_and_audit_registry.md)):** Interactive 2D/switch control-space coverage map demonstrating Phase 1 (`[CLAMP-RANGE]`, `[CLAMP-SWITCH]`, `[CLAMP-STABILITY]`), Phase 2 (`[CLAMP-RAIL]`), and Phase 3 (`[CLAMP-DYNAMIC]`, `[CLAMP-HEAD-GAIN]`), plus a filterable `CL-01`..`CL-18` registry inspector.
   7. **`ZohRescalerVisualizer` ([`dnam_container_schema.md`](dnam_container_schema.md)):** Interactive host sample-rate selector ($44.1\text{--}96\text{ kHz}$) verifying invariant Hz frequency response under Continuous-Time ZOH rescaling.
 - **Interactive React WASM Modeler Plugin (`packages/web/src/components/plugin/DnamPluginRack.tsx`):**
-  - Mounted via `<DnamPluginRack client:only="react" />` and powered by the WASM SIMD128 build of `packages/engine` and `packages/nodejs` (`@dnam/nodejs`).
+  - Mounted via `<DnamPluginRack client:only="react" />` and powered by the WASM SIMD128 build of `packages/engine` and `packages/js` (`@dnam-project/engine`).
   - Dynamically renders rotary knobs (`range`) and discrete selectors (`switch`) from any loaded `.dnam` model's `controls_schema`, enforcing `safe_clamped_range`, `active_options`, and `conditional_max` bounds with real-time `clamp_warning` badges, built-in DI guitar/synth test stems, live WebAudio microphone/instrument input, and $60\text{ fps}$ DSP telemetry.
 
 ---
@@ -219,7 +233,7 @@ A single zero-allocation Rust crate (`packages/engine`, `dnam-engine`) compiles 
 
 ---
 
-## 4. Deliverable 3: Packaged Python & Node.js Engine Libraries (`packages/python/`, `packages/nodejs/`)
+## 4. Deliverable 3: Packaged Python & Node.js / WebAudio Engine Libraries (`packages/python/`, `packages/js/`)
 
 Both Layer 2 packages wrap a **thin, zero-copy Rust FFI binding core** inside an **idiomatic, strictly-typed target-language interface**, support cross-compilation via **`zig` (`maturin --zig` / `cargo-zigbuild`)**, and enforce a full target-language code-quality suite (formatter, linter, strict type checker, unit + property-based tests, and $\ge 95\%$ test coverage in the target language without duplicating Rust-side unit/coverage tests on the FFI glue crates).
 
@@ -237,16 +251,15 @@ Both Layer 2 packages wrap a **thin, zero-copy Rust FFI binding core** inside an
      - `engine.py` (`DnamEngine`): Callable stereo/mono processor with `pedalboard`-compatible duck-typing (`y = engine(x, sample_rate=None, *, buffer_size=None, reset=False, mono_downmix=False, out=None)` and `engine.process(...)`, defaulting mono `(N,)` / `(1, N)` input to true-stereo `(2, N)` output via `process_mono_to_stereo`, plus `process_planar`), explicit `backend="auto" | BackendKind` selection, zero-allocation hot-reloading (`engine.reload(...)`), Pythonic `@property` accessors (`engine.tier`, `engine.sample_rate`, `engine.backend`, `engine.telemetry`, `engine.container`, `engine.controls`), and context-manager support.
 - **Modular Test & Code-Quality Suite (`tests/{conftest,strategies,test_schema,test_container,test_control,test_dsp,test_provenance,test_engine}.py`):** Enforces `uv run ruff format --check`, `uv run ruff check`, `uv run pyrefly check` (`preset = "strict"`, zero `# type: ignore`), `uv run pytest` with `hypothesis[numpy,crosshair]` & `hypothesis-jsonschema` property-based/symbolic tests, and `pytest-cov` (`--cov=dnam_engine --cov-fail-under=95`).
 
-### 4.2 Packaged Node.js & WebAudio Engine Library (`packages/nodejs/` — Phase 2B)
-- **Dual Native N-API + WebAssembly SIMD128 Architecture & Cross-Compilation:**
-  1. **Native N-API Addon (`src/lib.rs`, `build.rs` $\to$ `dist/dnam_nodejs.<platform>-<arch>.node`):** Zero-C-dependency Rust `cdylib` using Node-API v8 to operate **zero-copy** on V8 `Float32Array`/`Uint8Array` buffers with native hardware SIMD (`ARM SME`, `ARM64 NEON`, `x86 AVX2+FMA`), hardware `FTZ`/`DAZ`, and `__crc32cd`. Cross-compiles cleanly via `cargo zigbuild --package dnam-nodejs --target <triple> --release`.
-  2. **WebAssembly SIMD128 Module (`dist/dnam_engine.wasm`):** Compiled from `packages/engine` (`wasm32-unknown-unknown` with `-C target-feature=+simd128`) and bundled for synchronous instantiation inside browser `AudioWorkletGlobalScope` and portable JS runtimes.
-- **Idiomatic TypeScript / WebAudio Interface (`src/{types,model,processor,worklet,index}.ts`):**
-  1. `validateDnamModel(input: Uint8Array | ArrayBuffer | unknown): DnamModel`: Validates binary `.dnam`/`.dnam-ckpt` containers or JSON headers and attaches `ui_hints` power-skew mappers (`normalizedToPhysical`, `physicalToNormalized`).
-  2. `clampControlValues(model: DnamModel, rawControls: Record<string, number | string>): ClampedControlsResult`: Applies `[CLAMP-RANGE]`, `[CLAMP-SWITCH]`, and `[CLAMP-STABILITY]` (`conditional_max`/`conditional_min`) rules identically to Rust and Python.
-  3. `DnamProcessor`: Idiomatic stereo/mono block processor (`[Symbol.dispose]()` + `FinalizationRegistry`, control updates by ID or index, preset loading) supporting `backend: "auto" | "native" | "wasm"`.
-  4. `DnamAudioWorkletProcessor`: Ready-to-register WebAudio `AudioWorkletProcessor` class (`128`-sample render quantum = 8 Control-Bus ticks at $48\text{ kHz}$).
-- **Node.js / TypeScript Code-Quality Suite:** Enforces `@biomejs/biome` (`format:check`, `lint`), `tsc --noEmit` (`strict: true`), `node --test` + `fast-check` property-based tests (including differential parity between `"native"` N-API and `"wasm"` SIMD128), and $\ge 95\%$ test coverage.
+### 4.2 Packaged Node.js & WebAudio Engine Library (`packages/js/` — Phase 2B)
+- **Unified Dual-Target Rust Core (`rust/{lib,engine,container,dsp,provenance,napi_bindings,wasm_ffi}.rs`):**
+  1. **Native N-API v8 Addon (`dist/dnam_js.<platform>-<arch>.node`):** Safe Rust (`#[deny(unsafe_code)]`) `cdylib` using `napi-rs` v3 (`Float32Array`, `Float64Array`, `Uint8Array` zero-copy slices + libuv `AsyncTask` background rendering) with native hardware SIMD (`ARM SME`, `ARM64 NEON`, `x86 AVX2+FMA`), hardware `FTZ`/`DAZ`, and `__crc32cd`. Cross-compiles cleanly via `cargo zigbuild --package dnam-js --target <triple> --release`.
+  2. **WebAssembly SIMD128 Module (`dist/dnam_engine.wasm`):** Compiled from the exact same shared Rust core in `packages/js/rust/` (`wasm32-unknown-unknown` with `-C target-feature=+simd128`) for synchronous instantiation inside browser `AudioWorkletGlobalScope` and portable JS runtimes.
+- **Idiomatic TypeScript & WebAudio SDK (`src/` $\to$ `@dnam-project/engine`):**
+  1. **Multi-Entry Exports:** `@dnam-project/engine` (universal auto-detect), `@dnam-project/engine/browser` (pure WASM, zero `node:*` imports), `@dnam-project/engine/node` (explicit native N-API), `@dnam-project/engine/worklet` (`AudioWorkletGlobalScope`), and `@dnam-project/engine/wasm`.
+  2. **Symmetric Domain Model (`DnamContainer`, `GramMatrix`, `ControlSpace`, `ControlRack`, `LobattoBasis`, `Rank4Fm`, `PolyAdaa`, `SelectiveRgLru`, `ModulatedUfdn`, `DnamEngine`):** Mirrors `packages/python` with `Float32Array`/`Float64Array` zero-copy semantics, `processAsync` libuv worker pool rendering, `[Symbol.dispose]()` + `FinalizationRegistry` lifecycle safety, and 5-Layer provenance/watermarking APIs.
+  3. **Dual-Mode WebAudio `AudioWorklet` Architecture (`DnamAudioWorkletProcessor`, `DnamWorkletNode`):** Zero-allocation $128\text{-sample}$ render quantum (`8` Control-Bus ticks at $48\text{ kHz}$) with automatic `SharedArrayBuffer` lock-free atomic parameter slots (`Atomics.store`/`load`) and `Seqlock` $60\text{ fps}$ telemetry (`SharedTelemetryView`), plus automatic `MessagePort` fallback when `crossOriginIsolated === false`.
+- **Node.js / TypeScript Code-Quality Suite:** Enforces `@biomejs/biome` (`pnpm format:check`, `pnpm lint`), `tsc --noEmit` (`strict: true`), `vitest` + `fast-check` property-based tests (including differential parity between `"native"` N-API and `"wasm"` SIMD128), `vitest bench --run` statistical benchmarks, and `@vitest/coverage-v8` ($\ge 95\%$ test coverage).
 
 ---
 

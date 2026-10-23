@@ -24,7 +24,7 @@ The licensor grants you an additional copyright license to distribute copies of
 the software (with changes and new works permitted by [Changes and New Works
 License](#changes-and-new-works-license)) and to statically or dynamically link
 `dnam-engine` (and its language bindings in `packages/python` and
-`packages/nodejs`) into commercial and noncommercial hardware devices, embedded
+`packages/js`) into commercial and noncommercial hardware devices, embedded
 DSP firmware, and closed-source or open-source audio plugins (including VST3,
 CLAP, AU, AAX, and Standalone formats) and host applications.
 

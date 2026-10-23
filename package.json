@@ -1,0 +1,22 @@
+{
+  "name": "dnam-workspace",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@12.9.0",
+  "description": "Dynamic Neural Audio Modeler (DNAM / Tri-Physics) JavaScript, TypeScript & WebAudio Workspace",
+  "license": "LicenseRef-DNAM-1.0.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/dnam-project/dnam.git"
+  },
+  "scripts": {
+    "build": "pnpm --filter @dnam-project/engine run build",
+    "test": "pnpm --filter @dnam-project/engine run test",
+    "coverage": "pnpm --filter @dnam-project/engine run coverage",
+    "bench": "pnpm --filter @dnam-project/engine run bench",
+    "lint": "pnpm --filter @dnam-project/engine run lint",
+    "format:check": "pnpm --filter @dnam-project/engine run format:check",
+    "typecheck": "pnpm --filter @dnam-project/engine run typecheck"
+  }
+}

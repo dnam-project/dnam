@@ -4,10 +4,7 @@ use dnam_engine::control::{
     eval_chebyshev_lfo_4harm_f64, eval_newton_lobatto_basis_f64, eval_rank4_fm_interaction_f64,
     eval_trust_region_softclip_f64,
 };
-use dnam_engine::core1::{
-    poly_adaa_algebraic_f64, poly_adaa_slice_f64, poly_adaa_step_f64, selective_rglru_slice_f64,
-    selective_rglru_step_f64,
-};
+use dnam_engine::core1::{poly_adaa_algebraic_f64, selective_rglru_step_f64};
 use dnam_engine::core2::{
     cubic_lagrange_weights_f64, givens_householder_mix_8ch_f64, mufdn_coercive_step_f64,
     mufdn_slice_f64,
@@ -33,27 +30,16 @@ pub fn native_poly_adaa_step(
     beta: f64,
     delta: f64,
     r_ac: f64,
-    mut u_prev: f64,
-    mut a_prev: f64,
-    mut m_dc: f64,
+    u_prev: f64,
+    a_prev: f64,
+    m_dc: f64,
 ) -> (f64, f64, f64, f64) {
     let u_curr = ((x + b_conv) * (2.0 / 3.0)).clamp(-1.0, 1.0);
     let a_curr = poly_adaa_algebraic_f64(u_prev, u_curr, beta, delta);
     let y_nl = 0.875 * a_curr + 0.125 * a_prev;
     let m_dc_curr = r_ac * m_dc + (1.0 - r_ac) * y_nl;
-    u_prev = u_curr;
-    a_prev = a_curr;
-    m_dc = m_dc_curr;
-    let y = if b_conv == 0.0 {
-        let mut up = u_prev;
-        let mut ap = a_prev;
-        let mut md = m_dc;
-        let _ = poly_adaa_step_f64(x, alpha, beta, delta, r_ac, &mut up, &mut ap, &mut md);
-        alpha * x + (y_nl - m_dc_curr)
-    } else {
-        alpha * x + (y_nl - m_dc_curr)
-    };
-    (y, u_prev, a_prev, m_dc)
+    let y = alpha * x + (y_nl - m_dc_curr);
+    (y, u_curr, a_curr, m_dc_curr)
 }
 
 /// Processes a contiguous `f64` slice through `PolyADAA`, starting from `(u_prev, a_prev, m_dc)`
@@ -86,33 +72,22 @@ pub fn native_poly_adaa_scan<'py>(
         .map_err(|_| PyValueError::new_err("[DNAM-VALIDATION] output must be contiguous"))?;
 
     if reset {
-        poly_adaa_slice_f64(inp, out, b_conv, alpha, beta, delta, r_ac);
         let u_rest = (b_conv * (2.0 / 3.0)).clamp(-1.0, 1.0);
         let u2 = u_rest * u_rest;
         let g_rest = beta * u_rest * (1.5 - 0.5 * u2) + delta * (u2 - u2 * u2);
         u_prev = u_rest;
         a_prev = g_rest;
         m_dc = g_rest;
-        for &x in inp {
-            let u_curr = ((x + b_conv) * (2.0 / 3.0)).clamp(-1.0, 1.0);
-            let a_curr = poly_adaa_algebraic_f64(u_prev, u_curr, beta, delta);
-            let y_nl = 0.875 * a_curr + 0.125 * a_prev;
-            let m_dc_curr = r_ac * m_dc + (1.0 - r_ac) * y_nl;
-            u_prev = u_curr;
-            a_prev = a_curr;
-            m_dc = m_dc_curr;
-        }
-    } else {
-        for (&x, y) in inp.iter().zip(out.iter_mut()) {
-            let u_curr = ((x + b_conv) * (2.0 / 3.0)).clamp(-1.0, 1.0);
-            let a_curr = poly_adaa_algebraic_f64(u_prev, u_curr, beta, delta);
-            let y_nl = 0.875 * a_curr + 0.125 * a_prev;
-            let m_dc_curr = r_ac * m_dc + (1.0 - r_ac) * y_nl;
-            u_prev = u_curr;
-            a_prev = a_curr;
-            m_dc = m_dc_curr;
-            *y = alpha * x + (y_nl - m_dc_curr);
-        }
+    }
+    for (&x, y) in inp.iter().zip(out.iter_mut()) {
+        let u_curr = ((x + b_conv) * (2.0 / 3.0)).clamp(-1.0, 1.0);
+        let a_curr = poly_adaa_algebraic_f64(u_prev, u_curr, beta, delta);
+        let y_nl = 0.875 * a_curr + 0.125 * a_prev;
+        let m_dc_curr = r_ac * m_dc + (1.0 - r_ac) * y_nl;
+        u_prev = u_curr;
+        a_prev = a_curr;
+        m_dc = m_dc_curr;
+        *y = alpha * x + (y_nl - m_dc_curr);
     }
     Ok((u_prev, a_prev, m_dc))
 }
@@ -180,10 +155,13 @@ pub fn native_selective_rglru_scan<'py>(
         .as_slice_mut()
         .map_err(|_| PyValueError::new_err("[DNAM-VALIDATION] output must be contiguous"))?;
 
-    if reset && z_re == 0.0 && z_im == 0.0 {
-        selective_rglru_slice_f64(
-            inp,
-            out,
+    if reset {
+        z_re = 0.0;
+        z_im = 0.0;
+    }
+    for (&x, y) in inp.iter().zip(out.iter_mut()) {
+        *y = selective_rglru_step_f64(
+            x,
             r_low,
             dr_span,
             w_sel,
@@ -192,44 +170,9 @@ pub fn native_selective_rglru_scan<'py>(
             c_imag,
             u_rot_cos,
             u_rot_sin,
+            &mut z_re,
+            &mut z_im,
         );
-        z_re = 0.0;
-        z_im = 0.0;
-        for &x in inp {
-            let _ = selective_rglru_step_f64(
-                x,
-                r_low,
-                dr_span,
-                w_sel,
-                b_gamma_norm,
-                c_real,
-                c_imag,
-                u_rot_cos,
-                u_rot_sin,
-                &mut z_re,
-                &mut z_im,
-            );
-        }
-    } else {
-        if reset {
-            z_re = 0.0;
-            z_im = 0.0;
-        }
-        for (&x, y) in inp.iter().zip(out.iter_mut()) {
-            *y = selective_rglru_step_f64(
-                x,
-                r_low,
-                dr_span,
-                w_sel,
-                b_gamma_norm,
-                c_real,
-                c_imag,
-                u_rot_cos,
-                u_rot_sin,
-                &mut z_re,
-                &mut z_im,
-            );
-        }
     }
     Ok((z_re, z_im))
 }

@@ -1,0 +1,147 @@
+{
+  "$schema": "https://biomejs.dev/schemas/2.6.2/schema.json",
+  "vcs": {
+    "enabled": true,
+    "clientKind": "git",
+    "useIgnoreFile": true
+  },
+  "files": {
+    "ignoreUnknown": true,
+    "includes": [
+      "packages/js/src/**/*.ts",
+      "packages/js/test/**/*.ts",
+      "packages/js/scripts/**/*.mjs",
+      "packages/js/*.ts",
+      "packages/js/*.json",
+      "package.json",
+      "biome.json"
+    ]
+  },
+  "formatter": {
+    "enabled": true,
+    "indentStyle": "space",
+    "indentWidth": 2,
+    "lineWidth": 100,
+    "lineEnding": "lf"
+  },
+  "javascript": {
+    "formatter": {
+      "quoteStyle": "double",
+      "semicolons": "always",
+      "trailingCommas": "all",
+      "arrowParentheses": "always"
+    }
+  },
+  "linter": {
+    "enabled": true,
+    "rules": {
+      "correctness": {
+        "noUnusedVariables": "error",
+        "noUnusedImports": "error",
+        "noUnusedFunctionParameters": "error",
+        "noUnusedPrivateClassMembers": "error",
+        "noUndeclaredVariables": "error",
+        "noUndeclaredDependencies": "error",
+        "useExhaustiveDependencies": "error"
+      },
+      "suspicious": {
+        "noExplicitAny": "error",
+        "noImplicitAnyLet": "error",
+        "noDoubleEquals": "error",
+        "noConsole": "error",
+        "noDebugger": "error",
+        "noVar": "error",
+        "noFallthroughSwitchClause": "error",
+        "noAsyncPromiseExecutor": "error",
+        "noMisleadingInstantiator": "error",
+        "useNamespaceKeyword": "error"
+      },
+      "style": {
+        "noNonNullAssertion": "error",
+        "noParameterAssign": "error",
+        "useConst": "error",
+        "useImportType": "error",
+        "useExportType": "error",
+        "useNodejsImportProtocol": "error",
+        "useDefaultSwitchClause": "error",
+        "useConsistentArrayType": {
+          "level": "error",
+          "options": { "syntax": "shorthand" }
+        },
+        "useNumberNamespace": "error",
+        "useSingleVarDeclarator": "error"
+      },
+      "performance": {
+        "noAccumulatingSpread": "error",
+        "noDelete": "error"
+      },
+      "complexity": {
+        "noBannedTypes": "error",
+        "noUselessConstructor": "error",
+        "noUselessTernary": "error",
+        "noUselessTypeConstraint": "error",
+        "useOptionalChain": "error",
+        "useLiteralKeys": "off"
+      }
+    }
+  },
+  "overrides": [
+    {
+      "includes": [
+        "packages/js/src/browser.ts",
+        "packages/js/src/drivers/wasm.ts",
+        "packages/js/src/schema/**/*.ts",
+        "packages/js/src/worklet/**/*.ts"
+      ],
+      "linter": {
+        "rules": {
+          "style": {
+            "noRestrictedImports": {
+              "level": "error",
+              "options": {
+                "paths": {
+                  "node:fs": "Node.js filesystem imports are forbidden in browser/worklet/schema modules.",
+                  "node:path": "Node.js path imports are forbidden in browser/worklet/schema modules.",
+                  "node:module": "Node.js module imports are forbidden in browser/worklet/schema modules.",
+                  "node:url": "Node.js url imports are forbidden in browser/worklet/schema modules.",
+                  "node:buffer": "Use Web-standard Uint8Array/ArrayBuffer instead of node:buffer.",
+                  "node:child_process": "Node.js child_process is forbidden in browser/worklet/schema modules."
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "includes": [
+        "packages/js/src/worklet/processor.ts",
+        "packages/js/src/worklet/shared_memory.ts"
+      ],
+      "linter": {
+        "rules": {
+          "style": {
+            "noRestrictedImports": {
+              "level": "error",
+              "options": {
+                "paths": {
+                  "zod": "AudioWorkletGlobalScope modules must remain 100% zero-dependency."
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "includes": ["packages/js/scripts/**/*.mjs", "packages/js/test/**/*.ts"],
+      "linter": {
+        "rules": {
+          "suspicious": {
+            "noConsole": "off"
+          }
+        }
+      }
+    }
+  ]
+}
