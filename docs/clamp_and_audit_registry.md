@@ -1,6 +1,6 @@
 # Non-Stop 3-Phase Control-Space Audit & Clamp Registry (`CL-01`..`CL-18`)
 
-Because neural audio training can run unattended for extended periods, **Architecture 3 never blocks or pauses training on user confirmation prompts**. Instead, it executes a **Non-Stop 3-Phase Control-Space Audit & Automatic Clamping Pipeline** that guarantees every exported `.dnam` v3 model is 100% stable across all user knob and switch combinations.
+Because neural audio training can run unattended for extended periods, **DNAM never blocks or pauses training on user confirmation prompts**. Instead, it executes a **Non-Stop 3-Phase Control-Space Audit & Automatic Clamping Pipeline** that guarantees every exported `.dnam` model is 100% stable across all user knob and switch combinations.
 
 ---
 
@@ -25,24 +25,24 @@ Immediately upon loading the user's `controls_schema` and stem metadata at Step 
 2. **Periodic Dynamic Rail-Lockup Audit (`[CLAMP-RAIL]`, Every 10 Epochs):**
    Runs a $2,048$-sample synthetic burst through the corners under `torch.no_grad()`; if cascaded `PolyADAA` stages hit $> 95\%$ hard-rail saturation ($|u_n| = 1.0$), records a conditional gain ceiling.
 
-### Phase 3 — Post-Training & Post-Polish Export Certification Audit (At `.dnam` v3 Export)
+### Phase 3 — Post-Training & Post-Polish Export Certification Audit (At `.dnam` Export)
 1. **`[CLAMP-DYNAMIC]` (Combined Knob + Learned LFO/Envelope Excursion Clamp, `CL-17`):**
    Audits the worst-case dynamic peak and trough across all controls using the finalized LFO and envelope depths $\mathbf{w}_{r,c}, \mathbf{w}_{\tau,m}$:
    $$r_{c,\text{worst}}(\mathbf{u}, \mathbf{s}) = r_{\text{high},c}(\mathbf{u}, \mathbf{s}) + |\mathbf{w}_{r,c}|^\top \mathbf{m}_{\text{max}} \le 0.9995$$
    $$\tau_{m,\text{min}}(\mathbf{u}, \mathbf{s}) = \tau_{0,m}(\mathbf{u}, \mathbf{s}) - |\mathbf{w}_{\tau,m}|^\top \mathbf{m}_{\text{max}} \ge 4.0\text{ samples}$$
    If a wide learned chorus/flanger LFO sweep at `delay = 0.0` would dip below the 4-sample Cubic Lagrange causal margin, tightens `safe_clamped_range` (e.g., `[0.00, 1.00] -> [0.08, 1.00]` in `Test 8F`).
 2. **`[CLAMP-HEAD-GAIN]` (Post-Polish SVD Head Spectral Gain Clamp, `CL-17`):**
-   Evaluates the 32-point FFT of the polished 16-tap stereo head $\mathbf{W}_{\text{head}}(\mathbf{u}, \mathbf{s})$ across all corners; if any unrecorded corner exhibits a $> +6.0\text{ dB}$ spectral peak above the loudest training stem, bakes an ellipsoidal trust-region norm clamp $\|\mathbf{z}_{\text{head}}\|_2 \le \rho_{\text{head}}$ into the `.dnam` v3 file.
+   Evaluates the 32-point FFT of the polished 16-tap stereo head $\mathbf{W}_{\text{head}}(\mathbf{u}, \mathbf{s})$ across all corners; if any unrecorded corner exhibits a $> +6.0\text{ dB}$ spectral peak above the loudest training stem, bakes an ellipsoidal trust-region norm clamp $\|\mathbf{z}_{\text{head}}\|_2 \le \rho_{\text{head}}$ into the `.dnam` file.
 
 ---
 
 ## 2. Consolidated Post-Training Audit & Stem Prescription Report
 
-Upon completion, the trainer writes the playable `.dnam` v3 file, the `.dnam-ckpt` checkpoint, and prints a **Consolidated Audit & Stem Prescription Report**:
+Upon completion, the trainer writes the playable `.dnam` file, the `.dnam-ckpt` checkpoint, and prints a **Consolidated Audit & Stem Prescription Report**:
 
 ```text
 ================================================================================
-DNAM A3 TRAINING COMPLETE — EXPORTED: model.dnam (100% STABLE) | model.dnam-ckpt
+DNAM TRAINING COMPLETE — EXPORTED: model.dnam (100% STABLE) | model.dnam-ckpt
 ================================================================================
 Active Control Clamps Applied (4):
   1. [CLAMP-RANGE]     'gain': Clamped declared [0.0, 10.0] -> safe [2.0, 8.0]

@@ -46,7 +46,7 @@ Because $|H_{\text{ap}}(e^{i\omega})| \equiv 1.0 \;\forall\omega$, the diffuser 
 - **$a_{\text{diff},m} \in [-0.75, 0.0)$:** Frequency-dependent group-delay dispersion (chirp) for ** Tank Spring Reverb "Drip"**.
 
 ### 2.2 $O(M)$ Givens + Householder Orthogonal Stereo Feedback Matrix $\mathbf{U}(\psi, \mathbf{v})$
-Instead of a fixed permutation (which cannot smoothly interpolate between Dual-Mono and Ping-Pong) or a dense $M \times M$ matrix ($64\text{ MACs}$), Architecture 3 pairs a block-diagonal $2\times 2$ **Givens Stereo Rotation** $\mathbf{R}(\psi)$ (evaluated at $3\text{ kHz}$ via the algebraic unit-circle rotor `CL-03`) with a unit-norm **Householder Reflection** $\mathbf{H}(\mathbf{v}) = \mathbf{I}_M - 2\mathbf{v}\mathbf{v}^\top$ ($\|\mathbf{v}\|_2 = 1$):
+Instead of a fixed permutation (which cannot smoothly interpolate between Dual-Mono and Ping-Pong) or a dense $M \times M$ matrix ($64\text{ MACs}$), DNAM pairs a block-diagonal $2\times 2$ **Givens Stereo Rotation** $\mathbf{R}(\psi)$ (evaluated at $3\text{ kHz}$ via the algebraic unit-circle rotor `CL-03`) with a unit-norm **Householder Reflection** $\mathbf{H}(\mathbf{v}) = \mathbf{I}_M - 2\mathbf{v}\mathbf{v}^\top$ ($\|\mathbf{v}\|_2 = 1$):
 $$\mathbf{U}(\psi, \mathbf{v}) = \mathbf{H}(\mathbf{v})\,\mathbf{R}(\psi), \qquad \mathbf{q}[n] = \mathbf{U}(\psi, \mathbf{v})\,\mathbf{p}[n]$$
 In `Test 5`, $\mathbf{U}(\psi, \mathbf{v})$ satisfies $\|\mathbf{U}^\top \mathbf{U} - \mathbf{I}_M\|_\infty < 10^{-14}$ with all $|\lambda_i(\mathbf{U})| \equiv 1.000000000000$, smoothly spanning:
 - **$\psi = 0, \mathbf{v} = \mathbf{0}$:** Independent **Dual-Mono** delay lines.
@@ -60,7 +60,7 @@ In `Test 5`, $\mathbf{U}(\psi, \mathbf{v})$ satisfies $\|\mathbf{U}^\top \mathbf
 ### 3.1 Passband-Normalized $5\text{ Hz}$ In-Loop DC Blocker (`CL-09`)
 In a self-oscillating feedback loop (e.g., dub tape delay repeats at $> 100\%$ feedback with asymmetric cubic/even saturation), any unblocked DC component integrates to the saturation rail and locks up the delay line. However, an unnormalized high-pass filter $\frac{1 - z^{-1}}{1 - R_{\text{dc}} z^{-1}}$ has Nyquist gain $\frac{2}{1 + R_{\text{dc}}} > 1.0$, which violates loop passivity!
 
-Architecture 3 scales the numerator by the exact passband normalizer $\alpha_{\text{dc}} = \frac{1 + R_{\text{dc}}}{2}$ ($R_{\text{dc}} = 0.995$, `CL-09`):
+DNAM scales the numerator by the exact passband normalizer $\alpha_{\text{dc}} = \frac{1 + R_{\text{dc}}}{2}$ ($R_{\text{dc}} = 0.995$, `CL-09`):
 $$H_{\text{dc}}(z) = \frac{1 + R_{\text{dc}}}{2} \cdot \frac{1 - z^{-1}}{1 - R_{\text{dc}} z^{-1}} \implies \tilde{q}_m[n] = \alpha_{\text{dc}}\big(q_m[n] - q_m[n-1]\big) + R_{\text{dc}}\,\tilde{q}_m[n-1]$$
 This guarantees **exact $0.0000$ gain at $0\text{ Hz}$ (DC)** and **exact $1.0000$ ceiling at Nyquist** ($|H_{\text{dc}}(e^{i\omega})| \le 1.0000 \;\forall\omega$).
 

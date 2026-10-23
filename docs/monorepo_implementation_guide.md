@@ -1,6 +1,6 @@
 # Monorepo Implementation Guide (Web Docs, Python, Native DSP, Plugin & Node.js WASM)
 
-This document defines the concrete architecture, directory structure, build configurations, and hardware/runtime requirements for all five deliverables in the **Dynamic Neural Audio Modeler (DNAM Architecture 3)** monorepo.
+This document defines the concrete architecture, directory structure, build configurations, and hardware/runtime requirements for all deliverables in the **Dynamic Neural Audio Modeler (DNAM)** monorepo.
 
 ---
 
@@ -18,18 +18,18 @@ dynamic-neural-audio-modeler/
 ├── package.json                     # JS/TS workspace root -> ["packages/nodejs", "packages/web"]
 ├── docs/                            # 1. Pure Single-Source-of-Truth (SSOT) Markdown Specifications
 │   ├── index.md
-│   ├── architecture_3_design.md
+│   ├── architecture_design.md
 │   ├── architecture_overview.md
 │   ├── core1_hybrid_ssm_and_polyadaa.md
 │   ├── core2_modulated_ufdn.md
 │   ├── parametric_control_bus.md
 │   ├── training_and_iterative_resume.md
 │   ├── clamp_and_audit_registry.md
-│   ├── dnam_v3_container_schema.md
+│   ├── dnam_container_schema.md
 │   ├── monorepo_implementation_guide.md
 │   └── verification_and_guardrails.md
 ├── scripts/
-│   └── verify_a3_architecture.py    # Executable 8-suite empirical verification reference
+│   └── verify_dnam_architecture.py  # Executable 8-suite empirical verification reference
 └── packages/                        # 2. All 6 Monorepo Packages (3-Layer Architecture)
     ├── engine/                      # Layer 1: Pure Rust Zero-Allocation SIMD Engine Core (dnam-engine)
     │   ├── AGENTS.md                # Scoped router (< 2,500 B)
@@ -80,13 +80,13 @@ dynamic-neural-audio-modeler/
     │   │       │   ├── __init__.py
     │   │       │   ├── surrogate_delay.py
     │   │       │   └── kronecker_head.py
-    │   │       └── schema/          # Pydantic v2 .dnam v3 / .dnam-ckpt schemas & ZOH rescaling
+    │   │       └── schema/          # Pydantic v2 .dnam / .dnam-ckpt schemas & ZOH rescaling
     │   │           ├── AGENTS.md    # Scoped router (< 2,500 B)
     │   │           ├── __init__.py
     │   │           └── models.py
     │   └── tests/
     │       ├── AGENTS.md            # Scoped router (< 2,500 B)
-    │       ├── test_architecture_3_verification.py  # All 8 empirical verification suites
+    │       ├── test_dnam_verification.py  # All 8 empirical verification suites
     │       └── test_guardrails.py   # AGENTS.md byte budgets, link checker & CL-01..18 verifier
     ├── plugin/                      # Layer 3B: Rust Real-Time Audio Plugin (VST3 / CLAP / Standalone)
     │   ├── AGENTS.md                # Scoped router (< 2,500 B)
@@ -128,10 +128,10 @@ dynamic-neural-audio-modeler/
   4. **`ControlBusVisualizer` ([`parametric_control_bus.md`](parametric_control_bus.md)):** Interactive node count ($U_p = 2..6$) showing **Cardinality-Bounded Node-Anchored Newton/Lobatto basis** ($K_p = \min(U_p-1, 3)$), Centered ANOVA + Rank-4 Factorization Machine surfaces, and **Order-Statistic Optimal-Transport** LFO trajectory matching.
   5. **`KroneckerResumeVisualizer` ([`training_and_iterative_resume.md`](training_and_iterative_resume.md)):** Visualizes the **Envelope-Guided Surrogate Delay Gradient** convex loss basin and interactive `.dnam-ckpt` rank-1 stem addition ($\{\mathbf{G}_{\text{audio}}^{(s)}, \mathbf{C}_{\text{audio}}^{(s)}\}$, $0.00\text{ dB}$ old-stem drift).
   6. **`ClampAuditVisualizer` ([`clamp_and_audit_registry.md`](clamp_and_audit_registry.md)):** Interactive 2D/switch control-space coverage map demonstrating Phase 1 (`[CLAMP-RANGE]`, `[CLAMP-SWITCH]`, `[CLAMP-STABILITY]`), Phase 2 (`[CLAMP-RAIL]`), and Phase 3 (`[CLAMP-DYNAMIC]`, `[CLAMP-HEAD-GAIN]`), plus a filterable `CL-01`..`CL-18` registry inspector.
-  7. **`ZohRescalerVisualizer` ([`dnam_v3_container_schema.md`](dnam_v3_container_schema.md)):** Interactive host sample-rate selector ($44.1\text{--}96\text{ kHz}$) verifying invariant Hz frequency response under Continuous-Time ZOH rescaling.
+  7. **`ZohRescalerVisualizer` ([`dnam_container_schema.md`](dnam_container_schema.md)):** Interactive host sample-rate selector ($44.1\text{--}96\text{ kHz}$) verifying invariant Hz frequency response under Continuous-Time ZOH rescaling.
 - **Interactive React WASM Modeler Plugin (`packages/web/src/components/plugin/DnamPluginRack.tsx`):**
   - Mounted via `<DnamPluginRack client:only="react" />` and powered by the WASM SIMD128 build of `packages/engine` and `packages/nodejs` (`@dnam/nodejs`).
-  - Dynamically renders rotary knobs (`range`) and discrete selectors (`switch`) from any loaded `.dnam` v3 model's `controls_schema`, enforcing `safe_clamped_range`, `active_options`, and `conditional_max` bounds with real-time `clamp_warning` badges, built-in DI guitar/synth test stems, live WebAudio microphone/instrument input, and $60\text{ fps}$ DSP telemetry.
+  - Dynamically renders rotary knobs (`range`) and discrete selectors (`switch`) from any loaded `.dnam` model's `controls_schema`, enforcing `safe_clamped_range`, `active_options`, and `conditional_max` bounds with real-time `clamp_warning` badges, built-in DI guitar/synth test stems, live WebAudio microphone/instrument input, and $60\text{ fps}$ DSP telemetry.
 
 ---
 
@@ -162,13 +162,13 @@ A single zero-allocation Rust crate (`packages/engine`, `dnam-engine`) compiles 
 ### 4.1 Packaged Python Engine Library (`packages/python/`)
 - **Build & Packaging:** Built via **`PyO3` + `maturin`** (`packages/python/pyproject.toml` and `packages/python/Cargo.toml`) into a standalone, lightweight Python wheel (`dnam-engine`) that depends only on `numpy` (no PyTorch dependency required for inference users).
 - **Zero-Copy NumPy & Reference DSP API:**
-  1. `DnamEngine`: Zero-copy NumPy stereo block processor (`process_block(left_in, right_in)`), `.dnam` v3 loader, Continuous-Time ZOH sample-rate adapter, and 3-Phase control clamper.
+  1. `DnamEngine`: Zero-copy NumPy stereo block processor (`process_block(left_in, right_in)`), `.dnam` loader, Continuous-Time ZOH sample-rate adapter, and 3-Phase control clamper.
   2. Reference DSP Primitives (`poly_adaa`, `selective_rglru`, `modulated_ufdn`, `control_bus`): Direct Python bindings to the exact Rust `packages/engine` kernels, imported by `packages/trainer` as the canonical Reference DSP and certification oracle.
 
 ### 4.2 Packaged Node.js & WebAudio Engine Library (`packages/nodejs/`)
 - **Package Exports (`packages/nodejs/src/index.ts`, `@dnam/nodejs`):**
-  1. `validateDnamV3Model(json: unknown): DnamV3Model`: Validates `.dnam` v3 containers and returns typed control metadata and active clamp warnings.
-  2. `clampControlValues(model: DnamV3Model, rawControls: Record<string, number | string>)`: Applies `[CLAMP-RANGE]`, `[CLAMP-SWITCH]`, and `[CLAMP-STABILITY]` (`conditional_max`) rules identically to the Rust and Python bindings and returns normalized declared-range coordinates $u_p \in [-1, +1]$.
+  1. `validateDnamModel(json: unknown): DnamModel`: Validates `.dnam` containers and returns typed control metadata and active clamp warnings.
+  2. `clampControlValues(model: DnamModel, rawControls: Record<string, number | string>)`: Applies `[CLAMP-RANGE]`, `[CLAMP-SWITCH]`, and `[CLAMP-STABILITY]` (`conditional_max`) rules identically to the Rust and Python bindings and returns normalized declared-range coordinates $u_p \in [-1, +1]$.
   3. `DnamProcessor`: Synchronous stereo block processor backed by `packages/engine` (WASM SIMD128 / N-API) for Node.js CLI/server audio rendering and WebAudio `AudioWorkletProcessor` integration.
   4. `DnamAudioWorkletProcessor`: Ready-to-register WebAudio `AudioWorkletProcessor` class using pre-allocated `Float32Array` ring buffers (`128`-sample render quantum = 8 Control-Bus ticks per quantum at $48\text{ kHz}$).
 
@@ -187,7 +187,7 @@ A single zero-allocation Rust crate (`packages/engine`, `dnam-engine`) compiles 
 - **Plugin Topologies Supported:** True-Stereo (`2 -> 2`), Mono-to-Stereo (`1 -> 2`, where `x_mid = L_in, x_side = 0`), and Dual-Mono (`2 -> 2` with Givens angle $\psi = 0$).
 - **Dynamic `controls_schema` Parameter Binding:**
   - Pre-allocates lock-free `AtomicU32` (for `f32` `range` bits) and `AtomicUsize` (for `switch` option indices) slots.
-  - When a `.dnam` v3 file is loaded, maps each entry in `controls_schema` to a host parameter with automatic enforcement of `safe_clamped_range`, `active_options`, and `conditional_max` ceilings.
+  - When a `.dnam` file is loaded, maps each entry in `controls_schema` to a host parameter with automatic enforcement of `safe_clamped_range`, `active_options`, and `conditional_max` ceilings.
   - Displays any non-null `clamp_warning` badge in the plugin UI so the user knows when a knob or switch is safety-clamped by the model's training coverage.
 - **Host Sample-Rate Adaptation (`prepare_to_play` / `initialize`):**
-  Calls `engine.set_sample_rate(host_sample_rate_hz)` to apply the exact Continuous-Time ZOH rescaling formulas from [`dnam_v3_container_schema.md`](dnam_v3_container_schema.md).
+  Calls `engine.set_sample_rate(host_sample_rate_hz)` to apply the exact Continuous-Time ZOH rescaling formulas from [`dnam_container_schema.md`](dnam_container_schema.md).

@@ -1,4 +1,4 @@
-"""Empirical & Mathematical Verification Suite for Dynamic Neural Audio Modeler (DNAM Architecture 3 / A3).
+"""Empirical & Mathematical Verification Suite for Dynamic Neural Audio Modeler (DNAM).
 
 Tests and verifies:
 1. Division-Free Algebraic Polynomial ADAA (`PolyADAA`):
@@ -78,7 +78,7 @@ def test_1_poly_adaa_algebraic_exactness_and_aliasing() -> None:
     # 1C. Compare 8-Layer Cascaded Distortion at f0 = 3,450 Hz:
     # - NAM A2 LeakyReLU(0.01)
     # - Post-ADAA High-Pass Extrapolator (1.5*A[n] - 0.5*A[n-1]) -> boosts Nyquist aliasing by +6 dB/layer
-    # - DNAM A3 1x Passive B-Spline PolyADAA (0.875*A[n] + 0.125*A[n-1]) -> 1 eval/sample, zero Nyquist boost
+    # - DNAM 1x Passive B-Spline PolyADAA (0.875*A[n] + 0.125*A[n-1]) -> 1 eval/sample, zero Nyquist boost
     f0 = 3450.0
     x = 1.6 * np.sin(2.0 * np.pi * f0 * t)
 
@@ -91,7 +91,7 @@ def test_1_poly_adaa_algebraic_exactness_and_aliasing() -> None:
         d2 = d * d
         return 1.5 * m - 0.5 * m * (m2 + d2) + 0.15 * ((m2 + (1.0 / 3.0) * d2) - (m2 * m2 + 2.0 * m2 * d2 + 0.2 * d2 * d2))
 
-    def a3_1x_bspline_adaa_layer(sig: np.ndarray) -> np.ndarray:
+    def dnam_1x_bspline_adaa_layer(sig: np.ndarray) -> np.ndarray:
         s_m1 = np.roll(sig, 1)
         a_curr = eval_alg_adaa(s_m1, sig)
         y_nl = 0.875 * a_curr + 0.125 * np.roll(a_curr, 1)
@@ -103,11 +103,11 @@ def test_1_poly_adaa_algebraic_exactness_and_aliasing() -> None:
         z = np.where(v >= 0.0, v, 0.01 * v) - max(bias, 0.01 * bias)
         return 0.2 * sig + 0.65 * z
 
-    y_a3 = x.copy()
+    y_dnam = x.copy()
     y_a2 = x.copy()
     biases = [0.35, -0.40, 0.30, -0.35, 0.45, -0.30, 0.35, -0.40]
     for b in biases:
-        y_a3 = a3_1x_bspline_adaa_layer(y_a3)
+        y_dnam = dnam_1x_bspline_adaa_layer(y_dnam)
         y_a2 = leaky_layer(y_a2, b)
 
     sl = slice(2000, n_samples - 2000)
@@ -116,19 +116,19 @@ def test_1_poly_adaa_algebraic_exactness_and_aliasing() -> None:
     freqs = np.fft.rfftfreq(n_win, d=1.0 / fs)
 
     spec_a2 = np.abs(np.fft.rfft(y_a2[sl] * win))
-    spec_a3 = np.abs(np.fft.rfft(y_a3[sl] * win))
+    spec_dnam = np.abs(np.fft.rfft(y_dnam[sl] * win))
 
     alias_mask = freqs > 60.0
     for m_harm in range(1, 7):
         alias_mask &= np.abs(freqs - m_harm * f0) > 60.0
 
     alias_a2_db = 20.0 * math.log10(np.linalg.norm(spec_a2[alias_mask]) / np.max(spec_a2))
-    alias_a3_db = 20.0 * math.log10(np.linalg.norm(spec_a3[alias_mask]) / np.max(spec_a3))
+    alias_dnam_db = 20.0 * math.log10(np.linalg.norm(spec_dnam[alias_mask]) / np.max(spec_dnam))
 
     print(f"  8-Layer NAM A2 LeakyReLU(0.01) Aliasing-to-Carrier:  {alias_a2_db:.2f} dBc")
-    print(f"  8-Layer DNAM A3 1x B-Spline PolyADAA Aliasing:       {alias_a3_db:.2f} dBc")
-    print(f"  8-Layer Aliasing Reduction (A3 vs A2):               {alias_a2_db - alias_a3_db:.2f} dB")
-    assert (alias_a2_db - alias_a3_db) > 35.0
+    print(f"  8-Layer DNAM 1x B-Spline PolyADAA Aliasing:          {alias_dnam_db:.2f} dBc")
+    print(f"  8-Layer Aliasing Reduction (DNAM vs A2):             {alias_a2_db - alias_dnam_db:.2f} dB")
+    assert (alias_a2_db - alias_dnam_db) > 35.0
 
 
 def test_2_selective_rglru_radial_polar_vs_cartesian() -> None:
@@ -434,7 +434,7 @@ def test_6_surrogate_delay_gradient_optimization() -> None:
     assert err_surr < 0.01
 
 
-def test_7_h2_log_pole_init_and_end_to_end_pytorch_a3() -> None:
+def test_7_h2_log_pole_init_and_end_to_end_pytorch_dnam() -> None:
     print("\n=== Test 7: H2-Normalized Log-Pole Init, Step-0 Wiener-Hopf Warm-Start & Cholesky Polish ===")
     import torch
 
@@ -449,7 +449,7 @@ def test_7_h2_log_pole_init_and_end_to_end_pytorch_a3() -> None:
     print(f"  H2-Normalized SSM Impulse Energy Deviation (r in 0.5..0.998): {max_h2_dev:.2e} (EXACT 1.0000!)")
     assert max_h2_dev < 1e-4
 
-    # 7B. End-to-End PyTorch DNAM A3 System Identification:
+    # 7B. End-to-End PyTorch DNAM System Identification:
     # Verify Step-0 Dual-Ridge float64 Wiener-Hopf Warm-Start + Adam(weight_decay=0.0) + Step-N Cholesky Export Polish
     torch.manual_seed(42)
     L = 4096
@@ -881,6 +881,6 @@ if __name__ == "__main__":
     test_4_mufdn_lyapunov_and_dc_stability()
     test_5_givens_householder_orthogonality()
     test_6_surrogate_delay_gradient_optimization()
-    test_7_h2_log_pole_init_and_end_to_end_pytorch_a3()
+    test_7_h2_log_pole_init_and_end_to_end_pytorch_dnam()
     test_8_parametric_control_bus_and_multistem_conditioning()
-    print("\nALL 8 ARCHITECTURE 3 MATHEMATICAL, OPTIMIZATION & PYTORCH VERIFICATION SUITES PASSED!")
+    print("\nALL 8 DNAM MATHEMATICAL, OPTIMIZATION & PYTORCH VERIFICATION SUITES PASSED!")

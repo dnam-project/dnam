@@ -53,7 +53,7 @@ conditioned on all of the following:
 2. **`.dnam` Container & Schema Integrity:** Any product or tool that loads,
    saves, generates, or exchanges DNAM models must preserve the unmodified
    `.dnam` and `.dnam-ckpt` file extensions and internal schema identifiers
-   (`"architecture": "DNAM_A3_TriPhysics"`), and may not rename, disguise, or
+   (`"architecture": "DNAM_TriPhysics"`), and may not rename, disguise, or
    re-wrap `.dnam` files into a proprietary file extension or container format
    to obscure their origin.
 3. **Required Notices:** You must ensure that anyone who gets a copy of any

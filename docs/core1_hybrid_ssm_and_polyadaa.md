@@ -39,7 +39,7 @@ Two subtle pitfalls arise when cascading ADAA1 across 8 layers:
 1. **Pitfall A (Full-Signal Midpoint Droop):** Applying ADAA's implicit $\cos(\omega/2)$ midpoint filter to the linear passband causes **$-48.16\text{ dB}$ treble loss at $16\text{ kHz}$** across 8 layers.
 2. **Pitfall B (Post-ADAA High-Pass Extrapolation Aliasing Amplification):** Applying a post-ADAA high-pass inverse filter ($1.5\mathcal{A}_c[n] - 0.5\mathcal{A}_c[n-1]$) amplifies Nyquist-folded aliasing by **$+6.02\text{ dB}$ ($2.0\times$) per layer**, degrading 8-layer aliasing to $-26.42\text{ dBc}$.
 
-**The Architecture 3 Solution (`CL-02`):**
+**The DNAM Solution (`CL-02`):**
 1. **Separate the Un-Delayed Linear Passband:** Evaluate the linear residual path $\alpha_c x_c[n]$ directly without the ADAA delay filter (**$0.00\text{ dB}$ linear passband droop up to $24\text{ kHz}$**).
 2. **Apply the Passive $1\times$ Quadratic B-Spline Blend (`0.875, 0.125`) + $5\text{ Hz}$ AC Coupling ($R_{\text{ac}} = 0.9993$) to the Nonlinear Path:**
    $$\tilde{y}_{\text{nl},c}[n] = 0.875 \, \mathcal{A}_c[n] + 0.125 \, \mathcal{A}_c[n-1]$$
@@ -57,7 +57,7 @@ In a complex resonator with pole $\lambda_c = r_c e^{i\theta_c}$, resonance $Q$ 
 $$\lambda_{\text{cart}}(0.5) = \frac{1}{2}\lambda_{\text{low}} + \frac{1}{2}\lambda_{\text{high}} \implies |\lambda_{\text{cart}}(0.5)| = r_0 \cos\!\left(\frac{\theta_{\text{high}} - \theta_{\text{low}}}{2}\right) \ll r_0$$
 During a Wah or Phaser sweep ($\theta_{\text{low}} = 0.05\pi \to \theta_{\text{high}} = 0.40\pi$ at $r_0 = 0.992, Q = 125$), the Cartesian chord midpoint radius collapses to $r_{\text{mid}} = 0.847$, **destroying $94.8\%$ of the resonance $Q$ ($Q: 125.0 \to 6.5$)**!
 
-Architecture 3 eliminates the Cartesian chord dip via a **Radial-Polar Split**:
+DNAM eliminates the Cartesian chord dip via a **Radial-Polar Split**:
 - **At $3\text{ kHz}$ Control Rate (Every 16 Samples):** The Control Bus updates the **unit-circle complex rotor** $u_{\text{rot},c}[k] = e^{i\theta_{\text{ctrl},c}[k]}$ ($|u_{\text{rot},c}| \equiv 1.0$).
 - **At $48\text{ kHz}$ Audio Rate (Every Sample):** The instantaneous signal $x_c[n]$ modulates **only the scalar radius** $r_c[n] \in [r_{\text{low},c}, r_{\text{high},c}]$ along the radial ray $u_{\text{rot},c}$, preserving **$99.80\%$ of the target resonance $Q$ ($Q = 124.7$)**.
 

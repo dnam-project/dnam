@@ -1,16 +1,16 @@
-# `.dnam` v3 Container Schema, `.dnam-ckpt` Checkpoint & Continuous-Time ZOH Rescaling
+# `.dnam` Container Schema, `.dnam-ckpt` Checkpoint & Continuous-Time ZOH Rescaling
 
-Architecture 3 defines two companion file formats:
-1. **`.dnam` (Version `3.0.0`):** The lightweight, single-file real-time deployment container loaded by the native DSP engine (`crates/dnam-dsp`), audio plugin (`crates/dnam-plugin`), and Node.js/WASM runtime (`packages/nodejs`).
-2. **`.dnam-ckpt` (Version `3.0.0`):** The single-file iterative training checkpoint containing the model weights, control metadata, and per-stem factorized `float64` audio sufficient statistics $\{\mathbf{G}_{\text{audio}}^{(s)}, \mathbf{C}_{\text{audio}}^{(s)}\}$ ($130\text{ KB/stem}$).
+DNAM defines two companion file formats:
+1. **`.dnam` (Version `1.0.0`):** The lightweight, single-file real-time deployment container loaded by the native DSP engine (`crates/dnam-dsp`), audio plugin (`crates/dnam-plugin`), and Node.js/WASM runtime (`packages/nodejs`).
+2. **`.dnam-ckpt` (Version `1.0.0`):** The single-file iterative training checkpoint containing the model weights, control metadata, and per-stem factorized `float64` audio sufficient statistics $\{\mathbf{G}_{\text{audio}}^{(s)}, \mathbf{C}_{\text{audio}}^{(s)}\}$ ($130\text{ KB/stem}$).
 
 ---
 
 ## 1. Continuous-Time Zero-Order Hold (ZOH) Sample-Rate Adaptability ($44.1\text{--}96\text{ kHz}$)
 
-Whereas NAM A2 models are hard-locked to a single fixed training sample rate ($48\text{ kHz}$), `.dnam` v3 stores all pole decay rates $\gamma_c\text{ [s}^{-1}]$, pole frequencies $f_{0,c}\text{ [Hz]}$, LFO frequencies $f_{\text{lfo},j}\text{ [Hz]}$, and FDN delay times $\tau_{0,m}\text{ [ms]}$ in **continuous physical time**.
+Whereas NAM A2 models are hard-locked to a single fixed training sample rate ($48\text{ kHz}$), `.dnam` stores all pole decay rates $\gamma_c\text{ [s}^{-1}]$, pole frequencies $f_{0,c}\text{ [Hz]}$, LFO frequencies $f_{\text{lfo},j}\text{ [Hz]}$, and FDN delay times $\tau_{0,m}\text{ [ms]}$ in **continuous physical time**.
 
-When a `.dnam` v3 file trained at $f_{s,\text{train}} = 48,000\text{ Hz}$ is loaded by a DAW or host running at an arbitrary sample rate $f_{s,\text{host}} \in [44,100,\; 96,000]\text{ Hz}$, define the sample-rate ratio $\rho_{\text{sr}} = \frac{f_{s,\text{train}}}{f_{s,\text{host}}}$:
+When a `.dnam` file trained at $f_{s,\text{train}} = 48,000\text{ Hz}$ is loaded by a DAW or host running at an arbitrary sample rate $f_{s,\text{host}} \in [44,100,\; 96,000]\text{ Hz}$, define the sample-rate ratio $\rho_{\text{sr}} = \frac{f_{s,\text{train}}}{f_{s,\text{host}}}$:
 1. **Core 1B Complex Pole Radii & Angles:**
    $$r_c(f_{s,\text{host}}) = \big(r_c(f_{s,\text{train}})\big)^{\rho_{\text{sr}}} = \exp\!\left(-\frac{\gamma_c}{f_{s,\text{host}}}\right), \qquad \theta_c(f_{s,\text{host}}) = \rho_{\text{sr}} \, \theta_c(f_{s,\text{train}}) = \frac{2\pi f_{0,c}}{f_{s,\text{host}}}$$
 2. **Core 1B $\mathcal{H}_2$-Norm Input Normalizer:**
@@ -24,18 +24,18 @@ When a `.dnam` v3 file trained at $f_{s,\text{train}} = 48,000\text{ Hz}$ is loa
 
 ## 2. Slimmable Block-Diagonal Tiers (`Lite` $C=4, M=4$ vs. `Full` $C=8, M=8$)
 
-Every `.dnam` v3 file contains a single unified weight set structured with a **2-tier block-diagonal mask**:
+Every `.dnam` file contains a single unified weight set structured with a **2-tier block-diagonal mask**:
 - **`Lite` Tier ($C = 4\text{ channels}, M = 4\text{ FDN lines}$):** Occupies channels `0..3` (exact 128-bit `float32x4_t` single-register alignment). Convolutions and state-space recurrences on channels `0..3` never read from channels `4..7`.
 - **`Full` Tier ($C = 8\text{ channels}, M = 8\text{ FDN lines}$):** Occupies channels `0..7` (exact two-register `float32x4_t` alignment). Channels `4..7` may read from `0..7`, refining harmonic detail and spatial density without altering the `Lite` sub-network.
 
 ---
 
-## 3. Canonical `.dnam` v3 JSON Schema
+## 3. Canonical `.dnam` JSON Schema
 
 ```json
 {
-  "version": "3.0.0",
-  "architecture": "DNAM_A3_TriPhysics",
+  "version": "1.0.0",
+  "architecture": "DNAM_TriPhysics",
   "sample_rate_train_hz": 48000,
   "io_config": {
     "inputs": 2,
@@ -121,7 +121,7 @@ Every `.dnam` v3 file contains a single unified weight set structured with a **2
 ## 4. Canonical `.dnam-ckpt` Iterative Checkpoint Structure
 
 The `.dnam-ckpt` checkpoint stores:
-1. **`dnam_v3_model`:** The complete exported `.dnam` v3 dictionary above.
+1. **`dnam_model`:** The complete exported `.dnam` dictionary above.
 2. **`backbone_state_dict`:** Full `float32` PyTorch state dictionary of Core 1, Core 2, and the Control Bus.
 3. **`stems_registry`:** List of recorded stem descriptors, each containing:
    - `stem_id`: Unique string identifier

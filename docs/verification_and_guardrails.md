@@ -1,15 +1,15 @@
 # Empirical Verification Suite (8 Test Suites) & Automated Guardrails
 
-All implementations of **Dynamic Neural Audio Modeler (DNAM Architecture 3)** must pass the **8 Empirical Mathematical, Numerical & PyTorch Verification Suites** (`Test 1` through `Test 8G`) and the **Automated Guardrail Tests** specified below.
+All implementations of **Dynamic Neural Audio Modeler (DNAM)** must pass the **8 Empirical Mathematical, Numerical & PyTorch Verification Suites** (`Test 1` through `Test 8G`) and the **Automated Guardrail Tests** specified below.
 
 ---
 
 ## 1. Summary of the 8 Empirical Verification Suites
 
-| Verification Test Suite | Baseline / Naive Behavior | Verified DNAM A3 Requirement | Target Threshold |
+| Verification Test Suite | Baseline / Naive Behavior | Verified DNAM Requirement | Target Threshold |
 | :--- | :---: | :---: | :---: |
 | **1. Division-Free Algebraic `PolyADAA` Exactness** | Requires `FDIV` + branch at `Δu → 0` | **5.25 × 10⁻¹⁴ error** with 0 `FDIV`, 0 `FSQRT`, 0 branches | `max_alg_err < 1e-12` |
-| **2. 8-Layer Cascaded Aliasing (`f₀ = 3.45 kHz`)** | -23.20 dBc (NAM A2 `LeakyReLU`) | **-62.08 dBc (38.87 dB reduction)** via 1× B-Spline `PolyADAA` | `(alias_a2_db - alias_a3_db) > 35.0` |
+| **2. 8-Layer Cascaded Aliasing (`f₀ = 3.45 kHz`)** | -23.20 dBc (NAM A2 `LeakyReLU`) | **-62.08 dBc (38.87 dB reduction)** via 1× B-Spline `PolyADAA` | `(alias_a2_db - alias_dnam_db) > 35.0` |
 | **3. Selective RG-LRU Mid-Sweep `Q` & Algebraic Rotor** | `Q` drops 125.0 → 6.5 (94.8% loss) | **`Q = 124.7` (99.80%)**, rotor err **9.99 × 10⁻⁹** (`≤ 1.0`), scan **9.42 × 10⁻¹⁶** | `q_polar > 0.99 * q_orig`, `max_unit_val <= 1.0` |
 | **4. Modulated Delay Boundary Click Jerk (5 kHz)** | 0.04694 (Recursive Thiran clicks) | **0.00087 (54× smoother)** via 4-Tap Cubic Lagrange | `err_thiran_jerk > 15.0 * err_lagrange_jerk` |
 | **5. `M-UFDN` +20 dBFS Spike + 1.18× Loop Gain + DC** | Unbounded explosion / DC rail lockup | Peak **`0.9850 ≤ V_ceil`**, DC **1.03 × 10⁻⁶**, quiet tail decays | `out_peak <= v_ceil`, `abs(final_dc) < 1e-5` |
@@ -19,12 +19,12 @@ All implementations of **Dynamic Neural Audio Modeler (DNAM Architecture 3)** mu
 
 ---
 
-## 2. Reference Python Verification Suite (`packages/trainer/tests/test_architecture_3_verification.py`)
+## 2. Reference Python Verification Suite (`packages/trainer/tests/test_dnam_verification.py`)
 
-Port the following verified reference suite directly into `packages/trainer/tests/test_architecture_3_verification.py`:
+Port the following verified reference suite directly into `packages/trainer/tests/test_dnam_verification.py`:
 
 ```python
-"""Empirical & Mathematical Verification Suite for DNAM Architecture 3 (A3)."""
+"""Empirical & Mathematical Verification Suite for Dynamic Neural Audio Modeler (DNAM)."""
 
 from __future__ import annotations
 
@@ -72,7 +72,7 @@ def test_1_poly_adaa_algebraic_exactness_and_aliasing() -> None:
     max_alg_err = float(np.max(np.abs(quot_div - quot_nodiv)))
     assert max_alg_err < 1e-12
 
-    # 1C. 8-Layer Cascaded Distortion at f0 = 3,450 Hz: NAM A2 LeakyReLU(0.01) vs DNAM A3 1x B-Spline PolyADAA
+    # 1C. 8-Layer Cascaded Distortion at f0 = 3,450 Hz: NAM A2 LeakyReLU(0.01) vs DNAM 1x B-Spline PolyADAA
     f0 = 3450.0
     x = 1.6 * np.sin(2.0 * np.pi * f0 * t)
 
@@ -89,7 +89,7 @@ def test_1_poly_adaa_algebraic_exactness_and_aliasing() -> None:
             + 0.15 * ((m2 + (1.0 / 3.0) * d2) - (m2 * m2 + 2.0 * m2 * d2 + 0.2 * d2 * d2))
         )
 
-    def a3_1x_bspline_adaa_layer(sig: np.ndarray) -> np.ndarray:
+    def dnam_1x_bspline_adaa_layer(sig: np.ndarray) -> np.ndarray:
         s_m1 = np.roll(sig, 1)
         a_curr = eval_alg_adaa(s_m1, sig)
         y_nl = 0.875 * a_curr + 0.125 * np.roll(a_curr, 1)
@@ -101,10 +101,10 @@ def test_1_poly_adaa_algebraic_exactness_and_aliasing() -> None:
         z = np.where(v >= 0.0, v, 0.01 * v) - max(bias, 0.01 * bias)
         return 0.2 * sig + 0.65 * z
 
-    y_a3 = x.copy()
+    y_dnam = x.copy()
     y_a2 = x.copy()
     for b in [0.35, -0.40, 0.30, -0.35, 0.45, -0.30, 0.35, -0.40]:
-        y_a3 = a3_1x_bspline_adaa_layer(y_a3)
+        y_dnam = dnam_1x_bspline_adaa_layer(y_dnam)
         y_a2 = leaky_layer(y_a2, b)
 
     sl = slice(2000, n_samples - 2000)
@@ -112,15 +112,15 @@ def test_1_poly_adaa_algebraic_exactness_and_aliasing() -> None:
     win = np.blackman(n_win)
     freqs = np.fft.rfftfreq(n_win, d=1.0 / fs)
     spec_a2 = np.abs(np.fft.rfft(y_a2[sl] * win))
-    spec_a3 = np.abs(np.fft.rfft(y_a3[sl] * win))
+    spec_dnam = np.abs(np.fft.rfft(y_dnam[sl] * win))
 
     alias_mask = freqs > 60.0
     for m_harm in range(1, 7):
         alias_mask &= np.abs(freqs - m_harm * f0) > 60.0
 
     alias_a2_db = 20.0 * math.log10(float(np.linalg.norm(spec_a2[alias_mask]) / np.max(spec_a2)))
-    alias_a3_db = 20.0 * math.log10(float(np.linalg.norm(spec_a3[alias_mask]) / np.max(spec_a3)))
-    assert (alias_a2_db - alias_a3_db) > 35.0
+    alias_dnam_db = 20.0 * math.log10(float(np.linalg.norm(spec_dnam[alias_mask]) / np.max(spec_dnam)))
+    assert (alias_a2_db - alias_dnam_db) > 35.0
 
 
 def test_2_selective_rglru_radial_polar_vs_cartesian() -> None:
@@ -345,7 +345,7 @@ def test_6_surrogate_delay_gradient_optimization() -> None:
     assert abs(tau_surr - tau_true) < 0.01
 
 
-def test_7_h2_log_pole_init_and_end_to_end_pytorch_a3() -> None:
+def test_7_h2_log_pole_init_and_end_to_end_pytorch_dnam() -> None:
     import torch
 
     torch.manual_seed(42)
@@ -542,8 +542,8 @@ def test_8_parametric_control_bus_and_multistem_conditioning() -> None:
 
 ## 3. Automated Guardrail Test Suite (`packages/trainer/tests/test_guardrails.py`)
 
-In addition to `test_architecture_3_verification.py`, `packages/trainer/tests/test_guardrails.py` must enforce:
+In addition to `test_dnam_verification.py`, `packages/trainer/tests/test_guardrails.py` must enforce:
 1. **`test_guardrail_agents_md_progressive_disclosure_budgets`:** Verifies that root [`AGENTS.md`](../AGENTS.md) is `< 5,000` bytes and every scoped `AGENTS.md` is `< 2,500` bytes.
 2. **`test_guardrail_documentation_markdown_links_valid`:** Parses all Markdown files (`AGENTS.md`, `README.md`, `CONTRIBUTING.md`, `CLA.md`, and `docs/**/*.md`), strips fenced code blocks and inline code spans, and verifies that every relative link resolves to an existing file on disk.
 3. **`test_guardrail_clamp_registry_integrity`:** Parses `CL-01`..`CL-18` in [`clamp_and_audit_registry.md`](clamp_and_audit_registry.md) and verifies that all 18 clamps are present and map to existing modules under `packages/trainer/src/dnam_trainer/`.
-4. **`test_guardrail_fail_fast_schema_validation`:** Verifies that `.dnam` v3 schema loading raises explicit `ValueError` / `ValidationError` on missing or malformed `controls_schema`, invalid sample rates, or unaligned channel counts ($C \notin \{4, 8\}$).
+4. **`test_guardrail_fail_fast_schema_validation`:** Verifies that `.dnam` schema loading raises explicit `ValueError` / `ValidationError` on missing or malformed `controls_schema`, invalid sample rates, or unaligned channel counts ($C \notin \{4, 8\}$).

@@ -1,4 +1,4 @@
-# Architecture 3 Overview & 18 Verified Engineering Breakthroughs
+# DNAM Architecture Overview & 18 Verified Engineering Breakthroughs
 
 **Target Capabilities:** True-Stereo Amp/Preamp Drive, User-Definable Continuous (`range`) & Discrete (`switch`) Controls trained from Multi-Stem Captures, Instantaneous Blocking Distortion & Power-Supply Sag, Optical/Bias & Harmonic Tremolo, 3D Leslie Rotary Speaker (Doppler + Beaming), Pre- & Post-Drive Phasers/Wah/Uni-Vibe, Dense Acoustic & Cabinet IRs, True Through-Zero & Resonant Jet Flangers, Stereo Chorus, Tape Echoes (with Wow/Flutter), Ping-Pong Delays, Spring Reverb Drip, and Lush Modulated Reverbs.
 
@@ -10,7 +10,7 @@
 
 ## 1. The 18 Empirically Verified Engineering Breakthroughs
 
-Architecture 3 preserves the proven insights of **NAM A2** (co-prime local dilations, 16-tap output head, slimmable block-diagonal channel masks, ungated activations) while incorporating **eighteen structural breakthroughs** across **State-Space Models (S4D, Griffin RG-LRU)**, **Differentiable DSP (DAFx 2024–2026)**, **Parametric System Identification**, and **ARMv8.2-A NEON microarchitecture**:
+DNAM preserves the proven insights of **NAM A2** (co-prime local dilations, 16-tap output head, slimmable block-diagonal channel masks, ungated activations) while incorporating **eighteen structural breakthroughs** across **State-Space Models (S4D, Griffin RG-LRU)**, **Differentiable DSP (DAFx 2024–2026)**, **Parametric System Identification**, and **ARMv8.2-A NEON microarchitecture**:
 
 | # | Architectural Breakthrough | What It Replaces | Verified Physical, Numerical & Hardware Benefit |
 | :- | :--- | :--- | :--- |
@@ -80,14 +80,14 @@ flowchart TD
 
 ## 3. Comparison with Prior Art: NAM A2, GuitarML PROTEUS & NAM ParametricOD
 
-While **GuitarML PROTEUS** and **NAM ParametricOD** pioneered parametric neural guitar modeling, both rely on **1st-generation black-box sample-rate conditioning** restricted to short-memory overdrive/preamp circuits. **DNAM Architecture 3 ("Tri-Physics")** advances beyond NAM A2, GuitarML PROTEUS, and NAM ParametricOD across five structural dimensions:
+While **GuitarML PROTEUS** and **NAM ParametricOD** pioneered parametric neural guitar modeling, both rely on **1st-generation black-box sample-rate conditioning** restricted to short-memory overdrive/preamp circuits. **DNAM ("Tri-Physics")** advances beyond NAM A2, GuitarML PROTEUS, and NAM ParametricOD across five structural dimensions:
 
 ### 3.1 Side-by-Side Architectural & Capability Matrix
 
-| Dimension | **NAM A2** (Baseline) | **GuitarML PROTEUS** | **NAM ParametricOD** (S. Atkinson) | **DNAM Architecture 3 ("Tri-Physics")** |
+| Dimension | **NAM A2** (Baseline) | **GuitarML PROTEUS** | **NAM ParametricOD** (S. Atkinson) | **DNAM ("Tri-Physics")** |
 | :--- | :--- | :--- | :--- | :--- |
 | **Core Architecture** | 23-layer Dilated Conv FIR (`C=3` Lite / `C=8` Full) | 1-layer **LSTM (`hidden=40`)** via RTNeural | **Conditional WaveNet / LSTM** (fixed pedal layout) | **Core 1** (8 Conv + `PolyADAA` + 4 Selective Complex RG-LRU) + **Core 2** (`M-UFDN` Delay/Reverb) |
-| **Control Schema** | None (static snapshot) | **1–2 continuous knobs** (fixed input channels) | **Hardcoded pedal controls** (Drive, Tone, Level, Switch) | **Arbitrary user-defined `range` knobs & `switch` selectors** in `.dnam` v3 `controls_schema` |
+| **Control Schema** | None (static snapshot) | **1–2 continuous knobs** (fixed input channels) | **Hardcoded pedal controls** (Drive, Tone, Level, Switch) | **Arbitrary user-defined `range` knobs & `switch` selectors** in `.dnam` `controls_schema` |
 | **How Controls Enter the Model** | N/A | Concatenated to audio at **48 kHz every sample** (`[x[n], u₁, ...]`) | Concatenated / FiLM-injected at **48 kHz every sample** | Evaluated at **3 kHz (16× decimated)** via **Node-Anchored Newton/Lobatto + Rank-4 FM** |
 | **Extra CPU Cost per Knob (Static)** | N/A | Scales linearly with `P` at **48 kHz** | Scales with `P` across layers at **48 kHz** | **0 MACs/sample at 48 kHz** (cached until a knob moves) |
 | **Anti-Aliasing** | None (`LeakyReLU(0.01)` at 1× rate; -23.20 dBc) | None (`tanh` / `sigmoid` inside LSTM at 1× rate) | None (point-wise `tanh` / `ReLU` at 1× rate) | **1× B-Spline Division-Free Algebraic `PolyADAA`** (**-62.08 dBc, 38.87 dB less aliasing**, 0 `FDIV`) |
@@ -103,19 +103,19 @@ While **GuitarML PROTEUS** and **NAM ParametricOD** pioneered parametric neural 
 
 1. **$48\text{ kHz}$ Sample-Rate Concatenation vs. $3\text{ kHz}$ Zero-Overhead Control Hyper-Bus:**
    - **PROTEUS & ParametricOD** concatenate user knob values $[x[n], u_1, \dots, u_P]$ into the neural network at the **$48\text{ kHz}$ audio rate**, recomputing constant conditioning products $48,000\text{ times/sec}$ even when knobs are never touched, and shifting the internal DC bias of every recurrent cell.
-   - **DNAM A3** evaluates user controls at **$3\text{ kHz}$** (every 16 samples) and caches the collapsed parameters and $2 \times 16C$ stereo output head whenever knobs are stationary—costing **$0\text{ extra MACs/sample}$ at $48\text{ kHz}$** regardless of knob count.
+   - **DNAM** evaluates user controls at **$3\text{ kHz}$** (every 16 samples) and caches the collapsed parameters and $2 \times 16C$ stereo output head whenever knobs are stationary—costing **$0\text{ extra MACs/sample}$ at $48\text{ kHz}$** regardless of knob count.
 2. **Dense Multi-Knob Entanglement vs. Node-Anchored Newton/Lobatto HDMR + Factorization Machine:**
    - **PROTEUS & ParametricOD** pass controls through dense linear/recurrent projections with unconstrained cross-derivatives $\frac{\partial^2 y}{\partial u_1 \partial u_2}$, requiring dense multi-axis capture grids to avoid corner blowup when two knobs are turned up simultaneously.
-   - **DNAM A3** uses **Node-Anchored Newton/Lobatto main effects** + **Rank-4 Factorization Machine pairwise interactions** bounded by the **Phase-2 Stop-Gradient Corner Barrier ($\mathcal{L}_{\text{barrier}}$)**, enabling accurate generalization from sparse **1-knob-at-a-time ("Star") sweeps** (**$-38.46\text{ dB}$ ESR** on unseen 3-way combinations).
+   - **DNAM** uses **Node-Anchored Newton/Lobatto main effects** + **Rank-4 Factorization Machine pairwise interactions** bounded by the **Phase-2 Stop-Gradient Corner Barrier ($\mathcal{L}_{\text{barrier}}$)**, enabling accurate generalization from sparse **1-knob-at-a-time ("Star") sweeps** (**$-38.46\text{ dB}$ ESR** on unseen 3-way combinations).
 3. **Time-Varying Modulation, Delay & Reverb Controls (Solving the "Double-Echo" Ghosting Problem):**
    - **PROTEUS & ParametricOD** have no autonomous LFO state or variable fractional delay pointers. Training an LSTM or WaveNet on a delay pedal at `Time = 200 ms` and `Time = 400 ms` and setting the knob to `50%` crossfades weights to produce **two simultaneous echoes at $200\text{ ms}$ and $400\text{ ms}$** instead of a single echo at $300\text{ ms}$.
-   - **DNAM A3** pairs an autonomous $3\text{ kHz}$ **4-Harmonic Chebyshev LFO + 3-Band Envelope Follower** with **Core 2's Modulated Unitary FDN (`M-UFDN`)** and **Step-0 Order-Statistic Optimal Transport**, moving the physical fractional delay pointer $\tau_{0,m}(u)$ (**$3.41 \times 10^{-13}\text{ ms}$ accuracy**) and crossfading discrete switch delay jumps with a **128-sample raised-cosine dual-pointer crossfade** ($50.7\times$ smoother, zero Doppler warp).
+   - **DNAM** pairs an autonomous $3\text{ kHz}$ **4-Harmonic Chebyshev LFO + 3-Band Envelope Follower** with **Core 2's Modulated Unitary FDN (`M-UFDN`)** and **Step-0 Order-Statistic Optimal Transport**, moving the physical fractional delay pointer $\tau_{0,m}(u)$ (**$3.41 \times 10^{-13}\text{ ms}$ accuracy**) and crossfading discrete switch delay jumps with a **128-sample raised-cosine dual-pointer crossfade** ($50.7\times$ smoother, zero Doppler warp).
 4. **Division-Free Algebraic `PolyADAA` & Selective Complex RG-LRU vs. Un-Aliased LSTM `tanh`:**
    - **PROTEUS's** 40-unit LSTM executes $\sim 6,560\text{ MACs/sample}$ plus 80 `tanhf`/`sigmoidf` calls per sample at $1\times$ sample rate with zero anti-aliasing.
-   - **DNAM A3** uses **zero `FSQRT`, zero `FDIV`, and zero `libm` calls** at $48\text{ kHz}$ and $3\text{ kHz}$, achieving **$38.87\text{ dB}$ aliasing suppression** via $1\times$ Passive B-Spline Division-Free Algebraic `PolyADAA` while running True Stereo in **$\sim 1,245\text{ MACs/sample}$ (`Lite`)** and **$\sim 4,625\text{ MACs/sample}$ (`Full`)**.
+   - **DNAM** uses **zero `FSQRT`, zero `FDIV`, and zero `libm` calls** at $48\text{ kHz}$ and $3\text{ kHz}$, achieving **$38.87\text{ dB}$ aliasing suppression** via $1\times$ Passive B-Spline Division-Free Algebraic `PolyADAA` while running True Stereo in **$\sim 1,245\text{ MACs/sample}$ (`Lite`)** and **$\sim 4,625\text{ MACs/sample}$ (`Full`)**.
 5. **Non-Stop 3-Phase Control-Space Clamping & $< 5\text{ s}$ `.dnam-ckpt` Iterative Stem Expansion:**
    - **PROTEUS & ParametricOD** lack automatic control-space auditing and require full retraining from Epoch 0 if stems are added later.
-   - **DNAM A3** automatically clamps unobserved ranges (`[CLAMP-RANGE]`), unrecorded switches (`[CLAMP-SWITCH]`), and unstable multi-knob corners (`[CLAMP-STABILITY]`, `[CLAMP-DYNAMIC]`) without pausing training, and saves a single **`.dnam-ckpt`** file with factorized per-stem audio sufficient statistics $\{\mathbf{G}_{\text{audio}}^{(s)}, \mathbf{C}_{\text{audio}}^{(s)}\}$ ($130\text{ KB/stem}$) so users can add missing stems and lift clamps in **$< 5\text{ seconds}$** with **exact $0.00$ perturbation on old stems**.
+   - **DNAM** automatically clamps unobserved ranges (`[CLAMP-RANGE]`), unrecorded switches (`[CLAMP-SWITCH]`), and unstable multi-knob corners (`[CLAMP-STABILITY]`, `[CLAMP-DYNAMIC]`) without pausing training, and saves a single **`.dnam-ckpt`** file with factorized per-stem audio sufficient statistics $\{\mathbf{G}_{\text{audio}}^{(s)}, \mathbf{C}_{\text{audio}}^{(s)}\}$ ($130\text{ KB/stem}$) so users can add missing stems and lift clamps in **$< 5\text{ seconds}$** with **exact $0.00$ perturbation on old stems**.
 
 ---
 

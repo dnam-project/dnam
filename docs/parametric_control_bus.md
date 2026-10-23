@@ -14,7 +14,7 @@ Every $K_{\text{ctrl}} = 16\text{ samples}$ ($3\text{ kHz}$ at $f_s = 48\text{ k
 2. **Autonomous 4-Harmonic Chebyshev LFO Bank ($\boldsymbol{\phi}[k] \in \mathbb{R}^4$):**
    Two quadrature oscillator pairs advance on the unit circle at $3\text{ kHz}$ via complex multiplication $z_{\text{lfo},j}[k] = e^{i \cdot 16\omega_{\text{lfo},j}} z_{\text{lfo},j}[k-1]$ followed by the algebraic Newton unit-circle stabilizer $y_1 = 1.5 - 0.5|z_{\text{lfo},j}|^2$ (`CL-03`). A 4-harmonic Chebyshev polynomial shaper ($T_1(x) = x$, $T_2(x) = 2x^2 - 1$, $T_3(x) = 4x^3 - 3x$, $T_4(x) = 8x^4 - 8x^2 + 1$) transforms the pure sine wave into **triangle, sawtooth, asymmetric incandescent Uni-Vibe lamp, or rotary horn/drum LFO trajectories**.
 3. **Blind Phase-Locked Teacher Extractor (Training Only, Discarded at Export):**
-   Because physical analog RC/op-amp oscillators exhibit thermal frequency drift over a 3-minute capture, a lightweight 1D-CNN Teacher extracts instantaneous LFO phase $\hat{\phi}_{\text{teacher}}[k]$ from the target wet stem during training and fades out via cosine annealing so the exported `.dnam` v3 model runs 100% autonomously.
+   Because physical analog RC/op-amp oscillators exhibit thermal frequency drift over a 3-minute capture, a lightweight 1D-CNN Teacher extracts instantaneous LFO phase $\hat{\phi}_{\text{teacher}}[k]$ from the target wet stem during training and fades out via cosine annealing so the exported `.dnam` model runs 100% autonomously.
 
 ---
 

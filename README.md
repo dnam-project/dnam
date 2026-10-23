@@ -1,6 +1,6 @@
-# Dynamic Neural Audio Modeler (DNAM) — Architecture 3 ("Tri-Physics" Monorepo)
+# Dynamic Neural Audio Modeler (DNAM)
 
-**Dynamic Neural Audio Modeler (DNAM Architecture 3 / A3)** is a real-time true-stereo neural audio modeling, differentiable DSP, and parametric system-identification platform co-designed for embedded ARMv8.2-A NEON processors (**Rockchip RK3582 / Darkglass Anagram**), desktop **VST3/CLAP/AU** audio plugins, and browser/Node.js **WebAssembly (`AudioWorklet`)** runtimes.
+**Dynamic Neural Audio Modeler (DNAM)** is a real-time true-stereo neural audio modeling, differentiable DSP, and parametric system-identification platform co-designed for embedded ARMv8.2-A NEON processors (**Rockchip RK3582 / Darkglass Anagram**), desktop **VST3/CLAP/AU** audio plugins, and browser/Node.js **WebAssembly (`AudioWorklet`)** runtimes.
 
 It unifies **nonlinear amplifier/preamp drive**, **selective state-space filters (Wah, Phaser, Uni-Vibe, power-amp sag)**, **modulated delay-line effects (Through-Zero Flanger, Stereo Chorus, Tape Echo, Spring Reverb Drip, Lush Hall Reverb, Leslie Rotary)**, and **user-definable continuous (`range`) and discrete (`switch`) controls** trained from multi-stem captures—running **2.6× faster than NAM A2** (~4,625 MACs/sample vs. 12,146 MACs/sample) with **0 extra MACs/sample at 48 kHz when user knobs are static**.
 
@@ -10,19 +10,19 @@ It unifies **nonlinear amplifier/preamp drive**, **selective state-space filters
 
 | Component | Target Path | Description |
 | :--- | :--- | :--- |
-| **Canonical Specifications** | [`docs/`](docs/index.md) | Pure Single-Source-of-Truth (SSOT) mathematical, DSP, training, clamp registry (`CL-01..CL-18`), and `.dnam` v3 container specifications. |
+| **Canonical Specifications** | [`docs/`](docs/index.md) | Pure Single-Source-of-Truth (SSOT) mathematical, DSP, training, clamp registry (`CL-01..CL-18`), and `.dnam` container specifications. |
 | **Rust SIMD Engine Core** | `packages/engine/` | Zero-allocation, 16-byte SIMD-aligned (`C=4` Lite / `C=8` Full), `FTZ`/`DAZ`-enabled pure Rust engine (`dnam-engine`) with zero `FSQRT` or `FDIV` instructions at 48 kHz and 3 kHz. |
-| **Packaged Python Engine Library** | `packages/python/` | Standalone `PyO3` / `maturin` Python wheel wrapping `packages/engine` for zero-copy NumPy audio inference, `.dnam` v3 validation, 3-Phase control clamping, and canonical Reference DSP primitives. |
+| **Packaged Python Engine Library** | `packages/python/` | Standalone `PyO3` / `maturin` Python wheel wrapping `packages/engine` for zero-copy NumPy audio inference, `.dnam` validation, 3-Phase control clamping, and canonical Reference DSP primitives. |
 | **Packaged Node.js / WebAudio Library** | `packages/nodejs/` | Standalone TypeScript / npm package wrapping `packages/engine` via WebAssembly SIMD128 & N-API bindings + WebAudio `DnamAudioWorkletProcessor`. |
 | **PyTorch Differentiable Trainer** | `packages/trainer/` | PyTorch 4-stage deterministic trainer, `.dnam-ckpt` factorized Kronecker iterative stem expansion, Non-Stop 3-Phase Control-Space Clamping Audit, and 8-suite verification tests (imports `packages/python` as Reference DSP). |
-| **Real-Time Audio Plugin** | `packages/plugin/` | VST3/CLAP/Standalone audio plugin wrapping `packages/engine` with lock-free atomic parameter binding for dynamic `.dnam` v3 `controls_schema` (`range` & `switch`) and ZOH sample-rate rescaling (44.1–96 kHz). |
+| **Real-Time Audio Plugin** | `packages/plugin/` | VST3/CLAP/Standalone audio plugin wrapping `packages/engine` with lock-free atomic parameter binding for dynamic `.dnam` `controls_schema` (`range` & `switch`) and ZOH sample-rate rescaling (44.1–96 kHz). |
 | **Web Docs & React WASM Studio** | `packages/web/` | Astro + Starlight documentation website mounting `docs/*.md` as a comprehensive Specification section with interactive React/Canvas DSP visualizers + live React WASM (`AudioWorklet` SIMD128) Modeler Plugin. |
 
 ---
 
-## Hardware & DSP Benchmark (NAM A2 vs. DNAM A3)
+## Hardware & DSP Benchmark (NAM A2 vs. DNAM)
 
-| Hardware / DSP Metric | NAM A2 Lite (Mono) | **DNAM A3 Lite (Stereo)** | NAM A2 Full (Mono) | **DNAM A3 Full (Stereo)** |
+| Hardware / DSP Metric | NAM A2 Lite (Mono) | **DNAM Lite (Stereo)** | NAM A2 Full (Mono) | **DNAM Full (Stereo)** |
 | :--- | :---: | :---: | :---: | :---: |
 | **Channels (`C`) / FDN Lines (`M`)** | `C = 3` (Unaligned) | **`C = 4` (1 NEON reg), `M = 4`** | `C = 8`, No FDN | **`C = 8` (2 NEON regs), `M = 8`** |
 | **Core 1 Architecture** | 23 Dilated Conv | **8 Conv + 4 Selective RG-LRU** | 23 Dilated Conv | **8 Conv + 4 Selective RG-LRU** |
@@ -42,7 +42,7 @@ It unifies **nonlinear amplifier/preamp drive**, **selective state-space filters
 
 See [`docs/architecture_overview.md` §3](docs/architecture_overview.md#3-comparison-with-prior-art-nam-a2-guitarml-proteus--nam-parametricod) for the full technical comparison:
 
-| Capability | **GuitarML PROTEUS** | **NAM ParametricOD** | **DNAM Architecture 3 ("Tri-Physics")** |
+| Capability | **GuitarML PROTEUS** | **NAM ParametricOD** | **DNAM ("Tri-Physics")** |
 | :--- | :---: | :---: | :---: |
 | **Backbone** | 1-layer LSTM (`hidden=40`) | Conditional WaveNet / LSTM | **Core 1 (`PolyADAA` + Selective RG-LRU) + Core 2 (`M-UFDN`)** |
 | **Control Schema** | 1–2 continuous knobs | Hardcoded pedal layout | **Unlimited user-defined `range` knobs & `switch` selectors** |
@@ -59,15 +59,15 @@ See [`docs/architecture_overview.md` §3](docs/architecture_overview.md#3-compar
 Start with [`AGENTS.md`](AGENTS.md) and [`docs/index.md`](docs/index.md):
 
 1. **[Master Index & Agent Implementation Roadmap](docs/index.md)**
-2. **[Complete Architecture 3 Design Artifact (`architecture_3_design.md`)](docs/architecture_3_design.md)**
-3. **[Executable 8-Suite Empirical Verification Script (`verify_a3_architecture.py`)](scripts/verify_a3_architecture.py)**
-4. **[Architecture 3 Overview & 18 Verified Breakthroughs](docs/architecture_overview.md)**
+2. **[Complete DNAM Architecture Design Specification (`architecture_design.md`)](docs/architecture_design.md)**
+3. **[Executable 8-Suite Empirical Verification Script (`verify_dnam_architecture.py`)](scripts/verify_dnam_architecture.py)**
+4. **[DNAM Architecture Overview & 18 Verified Breakthroughs](docs/architecture_overview.md)**
 5. **[Core 1: Hybrid Dilated-Conv (`1x B-Spline PolyADAA`) & Selective Complex RG-LRU](docs/core1_hybrid_ssm_and_polyadaa.md)**
 6. **[Core 2: Unified Stereo In-Loop Diffusive Modulated Unitary FDN (`M-UFDN`)](docs/core2_modulated_ufdn.md)**
 7. **[Parametric Control Bus (`Range` & `Switch` Controls, Lobatto HDMR-FM & Order-Statistic Transport)](docs/parametric_control_bus.md)**
 8. **[4-Stage Training Pipeline & Single-Checkpoint (`.dnam-ckpt`) Iterative Stem Expansion](docs/training_and_iterative_resume.md)**
 9. **[Non-Stop 3-Phase Control-Space Audit & Clamp Registry (`CL-01`..`CL-18`)](docs/clamp_and_audit_registry.md)**
-10. **[`.dnam` v3 Container Schema & Continuous-Time ZOH Sample-Rate Rescaling](docs/dnam_v3_container_schema.md)**
+10. **[`.dnam` Container Schema & Continuous-Time ZOH Sample-Rate Rescaling](docs/dnam_container_schema.md)**
 11. **[Monorepo Implementation Blueprint (Web Docs, Python, Native DSP, Plugin & Node.js WASM)](docs/monorepo_implementation_guide.md)**
 12. **[Empirical Verification Suite (8 Test Suites) & Automated Guardrails](docs/verification_and_guardrails.md)**
 

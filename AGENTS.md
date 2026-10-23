@@ -1,6 +1,6 @@
-# Dynamic Neural Audio Modeler (DNAM A3) — Agent Development & Discovery Guide
+# Dynamic Neural Audio Modeler (DNAM) — Agent Development & Discovery Guide
 
-**Dynamic Neural Audio Modeler (DNAM Architecture 3 / "Tri-Physics")** is a real-time stereo neural audio modeling, differentiable DSP, and parametric system-identification monorepo unifying:
+**Dynamic Neural Audio Modeler (DNAM / "Tri-Physics")** is a real-time stereo neural audio modeling, differentiable DSP, and parametric system-identification monorepo unifying:
 1. **Core 1:** 12-layer Hybrid Dilated-Conv (`1x B-Spline PolyADAA`) + Radial-Polar Selective Complex RG-LRU stack.
 2. **Core 2:** Unified Stereo In-Loop Diffusive Modulated Unitary Feedback Delay Network (`M-UFDN`).
 3. **Control Bus:** $3\text{ kHz}$ Envelopes/LFOs + Node-Anchored Lobatto HDMR & Rank-4 Factorization Machine for `range` and `switch` controls, backed by **Non-Stop 3-Phase Control Clamping** and **Single-Checkpoint (`.dnam-ckpt`) Iterative Stem Expansion**.
@@ -12,7 +12,7 @@ All 6 packages live under `packages/*`, orchestrated by root manifests (`pyproje
 - **Python Engine (`packages/python/`):** `PyO3`/`maturin` wheel wrapping `packages/engine` with zero-copy NumPy inference and Reference DSP bindings.
 - **Node.js Engine (`packages/nodejs/`):** TypeScript SDK + WASM SIMD128 / N-API bindings for `packages/engine` + `DnamAudioWorkletProcessor`.
 - **PyTorch Trainer (`packages/trainer/`):** Manage with **`uv`** (`uv run pytest`, `uv run ruff check`, `uv run ruff format --check`, `uv run pyrefly check`). Target Python 3.14 (`py314`, `preset = "strict"`, no `# type: ignore`). Imports `packages/python` as Reference DSP.
-- **Audio Plugin (`packages/plugin/`):** Rust VST3/CLAP/Standalone plugin wrapping `packages/engine` with lock-free `.dnam` v3 bindings and ZOH rescaling ($44.1\text{--}96\text{ kHz}$).
+- **Audio Plugin (`packages/plugin/`):** Rust VST3/CLAP/Standalone plugin wrapping `packages/engine` with lock-free `.dnam` bindings and ZOH rescaling ($44.1\text{--}96\text{ kHz}$).
 - **Web Docs & Studio (`packages/web/`, `docs/`):** Astro + Starlight + React site mounting `docs/*.md` with interactive DSP visualizers and a live React + WASM Modeler Plugin.
 - **Git & CLA:** Sign off commits via `git commit -s` per [`CLA.md`](CLA.md) and [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
@@ -28,14 +28,14 @@ All 6 packages live under `packages/*`, orchestrated by root manifests (`pyproje
 | Subsystem / Domain | Canonical Documentation (SSOT) |
 | :--- | :--- |
 | **Master Index & Roadmap** | [`docs/index.md`](docs/index.md), [`docs/monorepo_implementation_guide.md`](docs/monorepo_implementation_guide.md) |
-| **Master Spec & Overview** | [`docs/architecture_3_design.md`](docs/architecture_3_design.md), [`docs/architecture_overview.md`](docs/architecture_overview.md) |
+| **Master Spec & Overview** | [`docs/architecture_design.md`](docs/architecture_design.md), [`docs/architecture_overview.md`](docs/architecture_overview.md) |
 | **Core 1: `PolyADAA` & RG-LRU** | [`docs/core1_hybrid_ssm_and_polyadaa.md`](docs/core1_hybrid_ssm_and_polyadaa.md) |
 | **Core 2: Diffusive `M-UFDN`** | [`docs/core2_modulated_ufdn.md`](docs/core2_modulated_ufdn.md) |
 | **Parametric Control Bus** | [`docs/parametric_control_bus.md`](docs/parametric_control_bus.md) |
 | **4-Stage Trainer & `.dnam-ckpt`** | [`docs/training_and_iterative_resume.md`](docs/training_and_iterative_resume.md) |
 | **3-Phase Audit & Clamps (`CL-XX`)** | [`docs/clamp_and_audit_registry.md`](docs/clamp_and_audit_registry.md) |
-| **`.dnam` v3 Schema & ZOH** | [`docs/dnam_v3_container_schema.md`](docs/dnam_v3_container_schema.md) |
-| **Verification & Guardrails** | [`scripts/verify_a3_architecture.py`](scripts/verify_a3_architecture.py), [`docs/verification_and_guardrails.md`](docs/verification_and_guardrails.md) |
+| **`.dnam` Schema & ZOH** | [`docs/dnam_container_schema.md`](docs/dnam_container_schema.md) |
+| **Verification & Guardrails** | [`scripts/verify_dnam_architecture.py`](scripts/verify_dnam_architecture.py), [`docs/verification_and_guardrails.md`](docs/verification_and_guardrails.md) |
 
 ## 4. Maintaining `AGENTS.md` & Documentation
 
