@@ -1,6 +1,6 @@
 # Core 2: Unified Stereo In-Loop Diffusive Modulated Unitary FDN (`M-UFDN`)
 
-Core 2 models all time-varying delay, modulation, spatial, dispersion, and reverberant phenomena within a single unified **Modulated Unitary Feedback Delay Network (`M-UFDN`)** with $M = 4$ (Lite) or $M = 8$ (Full) `fp16` delay lines and a shared-buffer 8-tap early reflection & 64-sample Through-Zero Flanger reference tap:
+Core 2 models all time-varying delay, modulation, spatial, dispersion, and reverberant phenomena within a single unified **Modulated Unitary Feedback Delay Network (`M-UFDN`)** with $M = 4$ (`Lite`) or $M = 8$ (`Full` & `Ultra`) `fp16` delay lines and a shared-buffer 8-tap early reflection & 64-sample Through-Zero Flanger reference tap:
 
 - **Micro Horizon ($0.2\text{--}8\text{ ms}$):** True Through-Zero Flanging ($\Delta\tau = 0.0\text{ ms}$), Resonant Jet Flanging, and Double-Tracking Comb Filters.
 - **Short Horizon ($8\text{--}45\text{ ms}$):** Quadrature Stereo Chorus, 3D Leslie Rotary Doppler Pitch Shift, Vibrato, and Slapback Doubling.

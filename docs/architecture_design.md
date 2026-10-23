@@ -1,8 +1,8 @@
 # Dynamic Neural Audio Modeler (DNAM) — Architecture Specification ("Tri-Physics" Selective-SSM, DFDN & Parametric Control Architecture)
 
 **Target Capabilities:** True-Stereo Amp/Preamp Drive, User-Definable Continuous (`range`) & Discrete (`switch`) Controls trained from Multi-Stem Captures, Instantaneous Blocking Distortion & Power-Supply Sag, Optical/Bias & Harmonic Tremolo, 3D Leslie Rotary Speaker (Doppler + Beaming), Pre- & Post-Drive Phasers/Wah/Uni-Vibe, Dense Acoustic & Cabinet IRs, True Through-Zero & Resonant Jet Flangers, Stereo Chorus, Tape Echoes (with Wow/Flutter), Ping-Pong Delays, Spring Reverb Drip, and Lush Modulated Reverbs  
-**Target Embedded Silicon:** Co-designed for **Rockchip RK3582** (Darkglass Anagram: ARM Cortex-A76 + Cortex-A55 128-bit NEON) and desktop/mobile SIMD — **100% 16-byte vector aligned (`C=4` Lite / `C=8` Full), zero `FSQRT`, zero `FDIV`, and zero transcendentals at both $48\text{ kHz}$ and $3\text{ kHz}$**  
-**Hardware Footprint:** **$2.6\times$ FASTER than NAM A2** ($\sim 4,625\text{ MACs/sample}$ vs. A2's $12,146\text{ MACs/sample}$), **$0\text{ extra MACs/sample}$ at $48\text{ kHz}$ when user knobs are static**, **$96\%$ smaller L1 cache footprint**, and **native $44.1\text{--}96\text{ kHz}$ sample-rate adaptability**  
+**Target Embedded Silicon:** Co-designed for **Rockchip RK3582** (Darkglass Anagram: 2× ARM Cortex-A76 isolated DSP cores + 4× Cortex-A55 system/UI cores, 128-bit NEON) and desktop/mobile SIMD — **100% 16-byte vector aligned (`C=4` Lite / `C=8` Full / `C=12` Ultra), zero `FSQRT`, zero `FDIV`, and zero transcendentals at both $48\text{ kHz}$ and $3\text{ kHz}$**  
+**Hardware Footprint:** **$2.6\times$ FASTER than NAM A2** in `Full` ($\sim 4,625\text{ MACs/sample}$ vs. A2's $12,146\text{ MACs/sample}$) and **$1.22\times$ FASTER with $50\%$ more channels** in `Ultra` (`C=12`, $\sim 9,950\text{ MACs/sample}$), **$0\text{ extra MACs/sample}$ at $48\text{ kHz}$ when user knobs are static**, **$94\text{--}96\%$ smaller L1 cache footprint**, and **native $44.1\text{--}96\text{ kHz}$ sample-rate adaptability**  
 **Core Stability Guarantee:** Unconditional BIBO, Lyapunov, $\mathcal{H}_2$-Norm, and Zero-DC stability across all internal states and user knob/switch combinations, backed by **Non-Stop 3-Phase Control-Space Clamping & Single-Checkpoint (`.dnam-ckpt`) Iterative Stem Expansion**  
 **Verification Suite:** Empirically verified across all 8 test suites in [`verify_dnam_architecture.py`](../scripts/verify_dnam_architecture.py)
 
@@ -18,7 +18,7 @@ DNAM preserves the proven insights of **NAM A2** (co-prime dilations, 16-tap out
 | **2** | **Algebraic 3 kHz Unit-Circle Rotor + H₂-Norm Scaling** | `libm` `sinf`/`cosf` calls & unnormalized high-`Q` pole gains | Evaluates 3 kHz complex rotors via a 4-FMA polynomial + algebraic Newton projection `y₁ = 1.5 - 0.5(ĉ² + ŝ²)` (**9.99 × 10⁻⁹ unit-circle accuracy, strict `|u_rot| ≤ 1.000000000000`**) and scales inputs by `√(1 - r_c²)` (**`Δ = 1.11 × 10⁻¹⁵` H₂ energy invariance**) |
 | **3** | **Exact Division-Free Algebraic Polynomial ADAA (`PolyADAA`)** | Hard-kink `LeakyReLU(0.01)` AND stall-prone `FSQRT`/`FDIV` ADAA | Algebraically factors `(u_n - u_{n-1})` out of `(F(u_n) - F(u_{n-1})) / (u_n - u_{n-1})` into a pure polynomial in `m = (u_n + u_{n-1})/2` and `d = (u_n - u_{n-1})/2` (**0 `FDIV`, 0 `FSQRT`, 0 branches, 5.25 × 10⁻¹⁴ exactness**) |
 | **4** | **1× Passive B-Spline ADAA Blend + Linear Path Separation** | Full-signal ADAA (-48.16 dB droop) OR post-ADAA high-pass extrapolation (+6 dB Nyquist boost) | Post-ADAA high-pass extrapolation (`1.5 A[n] - 0.5 A[n-1]`) amplifies Nyquist-folded aliasing by +6 dB/layer. Evaluating linear `α_c x_c[n]` directly (0.00 dB droop) and applying the passive 1× B-spline blend `(7/8) A_c[n] + (1/8) A_c[n-1]` achieves **-62.08 dBc** (**38.87 dB aliasing reduction** vs. NAM A2) with 1 eval/sample |
-| **5** | **128-Bit NEON-Aligned Slimmable Tiers (`C=4` Lite / `C=8` Full)** | Unaligned `C=3` Lite tier in NAM A2 | `C=3` wasted 25% of every 4-lane `float32x4_t` NEON register. Upgrading Lite to **`C=4`** (1 NEON register) and Full to **`C=8`** (2 NEON registers) gives Lite **33% more capacity at zero extra SIMD instructions** |
+| **5** | **128-Bit NEON-Aligned 3-Tier Slimmable Hierarchy (`C=4` Lite / `C=8` Full / `C=12` Ultra)** | Unaligned `C=3` Lite and 2-tier ceiling in NAM A2 | `C=3` wasted 25% of every 4-lane `float32x4_t` NEON register. Aligning to **`C=4` Lite** (1 NEON reg, `33%` wider), **`C=8` Full** (2 NEON regs, `2.6×` faster, 0 stack spills in `v0`–`v31`), and **`C=12` Ultra** (3 NEON regs, `50%` wider than A2 Full while still `1.22×` faster) scales across all DSP budgets |
 | **6** | **Click-Free 4-Tap Cubic Lagrange Delay Readout + HF Compensation** | Recursive Thiran All-Pass on sweeping delay lines | Recursive Thiran filters click when LFOs cross integer sample boundaries. Stateless 4-tap Cubic Lagrange (1 `float32x4_t` dot product) reduces boundary error jerk by **54×** while in-loop shelf compensation eliminates `μ(1-μ)` HF droop |
 | **7** | **Envelope-Guided Multi-Scale Surrogate Delay Gradient** | Myopic 4-sample Cubic Lagrange gradient during training | Time-domain delay gradients get trapped in carrier-cycle local minima (54.52-sample error). Using a coarse-to-fine Gaussian envelope surrogate gradient during `backward()` escapes cycle minima and locks to **0.0035 samples** |
 | **8** | **Givens + Householder Orthogonal Stereo Matrix (`U(ψ, v) = H(v)R(ψ)`)** | Fixed ping-pong permutation OR dense `M × M` matrix | Pairs a learnable 2×2 Givens stereo rotation `R(ψ)` with an `O(M)` Householder reflection `H(v)`—smoothly spanning **Dual-Mono (`ψ=0`), Stereo Reverb (`ψ=π/4`), and Ping-Pong Delay (`ψ=π/2`)** with `< 10⁻¹⁴` orthogonality error |
@@ -127,7 +127,7 @@ flowchart TD
 
     subgraph Core2 ["Core 2: Unified Stereo In-Loop Diffusive Modulated Unitary FDN (M-UFDN)"]
         direction TB
-        Lines["M fp16 Delay Buffers (M=4 Lite / M=8 Full) + 8-Tap Shared-Buffer Early & TZF Reference Reader<br/>• Micro (0.2-8 ms): Through-Zero / Resonant Jet Flanger & Comb Doubling<br/>• Short (8-45 ms): Quadrature Stereo Chorus, Leslie Doppler & Slapback<br/>• Long (45-500+ ms): Analog Tape Echo (Wow/Flutter), Spring Drip & Lush Reverb"]
+        Lines["M fp16 Delay Buffers (M=4 Lite / M=8 Full & Ultra) + 8-Tap Shared-Buffer Early & TZF Reference Reader<br/>• Micro (0.2-8 ms): Through-Zero / Resonant Jet Flanger & Comb Doubling<br/>• Short (8-45 ms): Quadrature Stereo Chorus, Leslie Doppler & Slapback<br/>• Long (45-500+ ms): Analog Tape Echo (Wow/Flutter), Spring Drip & Lush Reverb"]
         Lagrange["Click-Free 4-Tap Cubic Lagrange Reader + 128-Sample Dual-Pointer Switch Crossfader"]
         InLoopAP["In-Loop Fixed-Integer Schroeder All-Pass Diffuser per Line (Crisp Echo / Spring Drip / 2^k Hall)"]
         House["O(M) Givens + Householder Orthogonal Stereo Matrix U(psi, v) + Passband-Normalized 5 Hz DC Blocker"]
@@ -200,7 +200,8 @@ flowchart TD
      "io_config": { "inputs": 2, "outputs": 2, "stereo_mode": "true_stereo_mid_side" },
      "slimmable_tiers": {
        "lite": { "channels": 4, "fdn_lines": 4, "early_taps": 4, "head_svd_rank": 4 },
-       "full": { "channels": 8, "fdn_lines": 8, "early_taps": 8, "head_svd_rank": 4 }
+       "full": { "channels": 8, "fdn_lines": 8, "early_taps": 8, "head_svd_rank": 4 },
+       "ultra": { "channels": 12, "fdn_lines": 8, "early_taps": 8, "head_svd_rank": 4 }
      },
      "controls_schema": [
        {
@@ -245,16 +246,16 @@ All 8 mathematical, optimization, and PyTorch verification suites in [`verify_dn
 
 ### Final Benchmark on Rockchip RK3582 (Darkglass Anagram): NAM A2 vs. DNAM
 
-| Hardware / DSP Metric | NAM A2 Lite (Mono) | **DNAM Lite (Stereo)** | NAM A2 Full (Mono) | **DNAM Full (Stereo)** |
-| :--- | :---: | :---: | :---: | :---: |
-| **Channels (`C`) / FDN Lines (`M`)** | `C = 3` (Unaligned) | **`C = 4` (1 NEON reg), `M = 4`** | `C = 8`, No FDN | **`C = 8` (2 NEON regs), `M = 8`** |
-| **Core 1 Architecture** | 23 Dilated Conv | **8 Conv + 4 Selective RG-LRU** | 23 Dilated Conv | **8 Conv + 4 Selective RG-LRU** |
-| **User Controls (`range` & `switch`)** | None (Static Snapshot) | **Unlimited (0 MACs @ 48 kHz static)** | None (Static Snapshot) | **Unlimited (0 MACs @ 48 kHz static)** |
-| **48 kHz `FSQRT` / `FDIV` Instructions** | 0 | **0 (100% `FMAX`/`FMIN`/`FMLA`)** | 0 | **0 (100% `FMAX`/`FMIN`/`FMLA`)** |
-| **NEON SIMD Lane Utilization** | 75% (3/4 lanes) | **100% (4/4 lanes)** | 100% (8/8 lanes) | **100% (8/8 lanes)** |
-| **Core 1 L1 Cache State RAM** | 76.2 KB | **3.7 KB (-95%)** | 203.1 KB | **7.5 KB (-96%)** |
-| **Core 2 Delay Ring Buffer RAM** | 0 KB | **96 KB (`fp16`)** | 0 KB | **208 KB (`fp16`)** |
-| **Effective Receptive Field** | 132.2 ms (Hard cutoff) | **∞ (Core 1 SSM + Core 2 FDN)** | 132.2 ms (Hard cutoff) | **∞ (Core 1 SSM + Core 2 FDN)** |
-| **Total Compute (MACs / Sample)** | 1,871 MACs | **~1,245 MACs (1.5× faster + 33% wider!)** | 12,146 MACs | **~4,625 MACs (2.6× faster!)** |
-| **Sample-Rate Support** | Fixed 48 kHz | **Native 44.1–96 kHz (ZOH)** | Fixed 48 kHz | **Native 44.1–96 kHz (ZOH)** |
-| **Audio I/O Topology** | Mono (1 → 1) | **True Stereo (1 → 2 or 2 → 2)** | Mono (1 → 1) | **True Stereo (1 → 2 or 2 → 2)** |
+| Hardware / DSP Metric | NAM A2 Lite (Mono) | **DNAM Lite (Stereo)** | NAM A2 Full (Mono) | **DNAM Full (Stereo)** | **DNAM Ultra (Stereo)** |
+| :--- | :---: | :---: | :---: | :---: | :---: |
+| **Channels (`C`) / FDN Lines (`M`)** | `C = 3` (Unaligned) | **`C = 4` (1 NEON reg), `M = 4`** | `C = 8`, No FDN | **`C = 8` (2 NEON regs), `M = 8`** | **`C = 12` (3 NEON regs), `M = 8`** |
+| **Core 1 Architecture** | 23 Dilated Conv | **8 Conv + 4 Selective RG-LRU** | 23 Dilated Conv | **8 Conv + 4 Selective RG-LRU** | **8 Conv + 4 Selective RG-LRU** |
+| **User Controls (`range` & `switch`)** | None (Static Snapshot) | **Unlimited (0 MACs @ 48 kHz static)** | None (Static Snapshot) | **Unlimited (0 MACs @ 48 kHz static)** | **Unlimited (0 MACs @ 48 kHz static)** |
+| **48 kHz `FSQRT` / `FDIV` Instructions** | 0 | **0 (100% `FMAX`/`FMIN`/`FMLA`)** | 0 | **0 (100% `FMAX`/`FMIN`/`FMLA`)** | **0 (100% `FMAX`/`FMIN`/`FMLA`)** |
+| **NEON SIMD Lane Utilization** | 75% (3/4 lanes) | **100% (4/4 lanes)** | 100% (8/8 lanes) | **100% (8/8 lanes)** | **100% (12/12 lanes, `8+4` tiled)** |
+| **Core 1 L1 Cache State RAM** | 76.2 KB | **3.7 KB (-95%)** | 203.1 KB | **7.5 KB (-96%)** | **11.2 KB (-94%)** |
+| **Core 2 Delay Ring Buffer RAM** | 0 KB | **96 KB (`fp16`)** | 0 KB | **208 KB (`fp16`)** | **208 KB (`fp16`)** |
+| **Effective Receptive Field** | 132.2 ms (Hard cutoff) | **∞ (Core 1 SSM + Core 2 FDN)** | 132.2 ms (Hard cutoff) | **∞ (Core 1 SSM + Core 2 FDN)** | **∞ (Core 1 SSM + Core 2 FDN)** |
+| **Total Compute (MACs / Sample)** | 1,871 MACs | **~1,245 MACs (1.5× faster + 33% wider!)** | 12,146 MACs | **~4,625 MACs (2.6× faster!)** | **~9,950 MACs (1.22× faster + 50% wider!)** |
+| **Sample-Rate Support** | Fixed 48 kHz | **Native 44.1–96 kHz (ZOH)** | Fixed 48 kHz | **Native 44.1–96 kHz (ZOH)** | **Native 44.1–96 kHz (ZOH)** |
+| **Audio I/O Topology** | Mono (1 → 1) | **True Stereo (1 → 2 or 2 → 2)** | Mono (1 → 1) | **True Stereo (1 → 2 or 2 → 2)** | **True Stereo (1 → 2 or 2 → 2)** |

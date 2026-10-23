@@ -8,7 +8,7 @@
 ## 1. Monorepo Target Deliverables & Tooling Rules
 
 All 6 packages live under `packages/*`, orchestrated by root manifests (`pyproject.toml`, `Cargo.toml`, `package.json`), with canonical specs in `docs/`:
-- **Rust SIMD Engine (`packages/engine/`):** Pure Rust zero-allocation SIMD core (`dnam-engine`), 16-byte aligned (`C=4`/`C=8`), `FTZ`/`DAZ`, and **zero `FSQRT`, `FDIV`, or `libm` calls** at $48\text{ kHz}$ and $3\text{ kHz}$.
+- **Rust SIMD Engine (`packages/engine/`):** Pure Rust zero-allocation SIMD core (`dnam-engine`), 16-byte aligned (`C=4`/`C=8`/`C=12`), `FTZ`/`DAZ`, and **zero `FSQRT`, `FDIV`, or `libm` calls** at $48\text{ kHz}$ and $3\text{ kHz}$.
 - **Python Engine (`packages/python/`):** `PyO3`/`maturin` wheel wrapping `packages/engine` with zero-copy NumPy inference and Reference DSP bindings.
 - **Node.js Engine (`packages/nodejs/`):** TypeScript SDK + WASM SIMD128 / N-API bindings for `packages/engine` + `DnamAudioWorkletProcessor`.
 - **PyTorch Trainer (`packages/trainer/`):** Manage with **`uv`** (`uv run pytest`, `uv run ruff check`, `uv run ruff format --check`, `uv run pyrefly check`). Target Python 3.14 (`py314`, `preset = "strict"`, no `# type: ignore`). Imports `packages/python` as Reference DSP.

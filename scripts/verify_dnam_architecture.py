@@ -453,7 +453,7 @@ def test_7_h2_log_pole_init_and_end_to_end_pytorch_dnam() -> None:
     # Verify Step-0 Dual-Ridge float64 Wiener-Hopf Warm-Start + Adam(weight_decay=0.0) + Step-N Cholesky Export Polish
     torch.manual_seed(42)
     L = 4096
-    C_total = 12  # 4 Lite + 8 Full (100% 4-lane SIMD aligned!)
+    C_total = 12  # 3-Tier Slimmable Hierarchy: Lite (C=4) ⊂ Full (C=8) ⊂ Ultra (C=12), 100% 4-lane NEON aligned!
     t = torch.arange(L, dtype=torch.float32) / 48000.0
     env = torch.exp(-t / 0.04) + 0.3 * torch.sin(2.0 * math.pi * 5.0 * t).abs()
     x_in = (

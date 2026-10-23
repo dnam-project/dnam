@@ -13,7 +13,7 @@ Dynamic Neural Audio Modeler (DNAM) is distributed under the [`DNAM Source-Avail
 ## 2. Core Engineering & Numerical Rules
 
 1. **Zero `FSQRT` / `FDIV` in Real-Time Paths:** Never introduce floating-point division (`/`), square-root (`sqrt`), or `libm` transcendental calls (`sin`, `cos`, `exp`, `tanh`) into the $48\text{ kHz}$ per-sample loop or the $3\text{ kHz}$ control-bus rotor update. Use the exact algebraic factorizations specified in [`core1_hybrid_ssm_and_polyadaa.md`](docs/core1_hybrid_ssm_and_polyadaa.md).
-2. **128-Bit SIMD Lane Alignment:** Channel counts ($C$) and FDN delay line counts ($M$) must be exact multiples of 4 (`C=4, M=4` for Lite; `C=8, M=8` for Full) so every layer maps cleanly onto 4-lane `float32x4_t` (ARM NEON / WASM SIMD128) and `f32x4` / `f32x8` (AVX2) registers.
+2. **128-Bit SIMD Lane Alignment:** Channel counts ($C$) and FDN delay line counts ($M$) must be exact multiples of 4 (`C=4, M=4` for `Lite`; `C=8, M=8` for `Full`; `C=12, M=8` for `Ultra`) so every layer maps cleanly onto 4-lane `float32x4_t` (ARM NEON / WASM SIMD128) and `f32x4` / `f32x8` (AVX2) registers.
 3. **Unconditional Stability & Registered Clamps:** Every pole radius, FDN loop gain, all-pass coefficient, and user control range must be bounded by a registered clamp in [`clamp_and_audit_registry.md`](docs/clamp_and_audit_registry.md) and verified by the automated test suite in [`verification_and_guardrails.md`](docs/verification_and_guardrails.md).
 4. **Fail-Fast Validation:** Never silently substitute default controls, sample rates, or tensor shapes when loading `.dnam` or `.dnam-ckpt` files; raise explicit diagnostic errors.
 

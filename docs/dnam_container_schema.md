@@ -22,11 +22,12 @@ When a `.dnam` file trained at $f_{s,\text{train}} = 48,000\text{ Hz}$ is loaded
 
 ---
 
-## 2. Slimmable Block-Diagonal Tiers (`Lite` $C=4, M=4$ vs. `Full` $C=8, M=8$)
+## 2. Slimmable 3-Tier Block-Triangular Hierarchy (`Lite` $C=4, M=4$ / `Full` $C=8, M=8$ / `Ultra` $C=12, M=8$)
 
-Every `.dnam` file contains a single unified weight set structured with a **2-tier block-diagonal mask**:
-- **`Lite` Tier ($C = 4\text{ channels}, M = 4\text{ FDN lines}$):** Occupies channels `0..3` (exact 128-bit `float32x4_t` single-register alignment). Convolutions and state-space recurrences on channels `0..3` never read from channels `4..7`.
-- **`Full` Tier ($C = 8\text{ channels}, M = 8\text{ FDN lines}$):** Occupies channels `0..7` (exact two-register `float32x4_t` alignment). Channels `4..7` may read from `0..7`, refining harmonic detail and spatial density without altering the `Lite` sub-network.
+Every `.dnam` file contains a single unified weight set structured with a **nested 3-tier lower-block-triangular mask** across its 128-bit NEON-aligned channel slices:
+- **`Lite` Tier ($C = 4\text{ channels}, M = 4\text{ FDN lines}, \sim 1,245\text{ MACs/sample}$):** Occupies channels `0..3` (exact 128-bit `float32x4_t` single-register alignment, $\sim 14/32$ NEON registers active). Convolutions and state-space recurrences on channels `0..3` never read from channels `4..11`.
+- **`Full` Tier ($C = 8\text{ channels}, M = 8\text{ FDN lines}, \sim 4,625\text{ MACs/sample}$):** Occupies channels `0..7` (exact two-register `float32x4_t` alignment, $\sim 26/32$ NEON registers active with zero stack spills inside `v0`–`v31`). Channels `4..7` read from `0..7` (never `8..11`), refining harmonic detail and spatial density without altering the `Lite` sub-network.
+- **`Ultra` Tier ($C = 12\text{ channels}, M = 8\text{ FDN lines}, \sim 9,950\text{ MACs/sample}$):** Occupies channels `0..11` (exact three-register `float32x4_t` alignment, executed via a 2-pass `8 + 4` register-tiled slice on 32-register ARM64 NEON to avoid stack spilling). Channels `8..11` may read from `0..11`, providing $50\%$ more channels than NAM A2 Full while still running $1.22\times$ faster and leaving both `Lite` and `Full` sub-networks bit-identical.
 
 ---
 
@@ -44,7 +45,8 @@ Every `.dnam` file contains a single unified weight set structured with a **2-ti
   },
   "slimmable_tiers": {
     "lite": { "channels": 4, "fdn_lines": 4, "early_taps": 4, "head_svd_rank": 4 },
-    "full": { "channels": 8, "fdn_lines": 8, "early_taps": 8, "head_svd_rank": 4 }
+    "full": { "channels": 8, "fdn_lines": 8, "early_taps": 8, "head_svd_rank": 4 },
+    "ultra": { "channels": 12, "fdn_lines": 8, "early_taps": 8, "head_svd_rank": 4 }
   },
   "controls_schema": [
     {
@@ -127,6 +129,6 @@ The `.dnam-ckpt` checkpoint stores:
    - `stem_id`: Unique string identifier
    - `controls_meta`: Dictionary of raw control values `{"gain": 5.0, "feedback": 5.0, "boost": "off"}`
    - `extracted_physics`: Step-0 extracted delays $\tau_{0,m}^{(s)}$, pole frequencies $f_{0,c}^{(s)}$, LFO frequencies $f_{\text{lfo},j}^{(s)}$, and decay gains $g_{\text{lin},m}^{(s)}$
-   - `g_audio_f64`: Factorized per-stem audio Gram matrix $\mathbf{G}_{\text{audio}}^{(s)} = \mathbf{\Phi}_s^\top \mathbf{\Phi}_s \in \mathbb{R}^{16C \times 16C}$ (`float64`, $131,072\text{ B}$ for $C=8$)
-   - `c_audio_f64`: Factorized per-stem audio cross-correlation $\mathbf{C}_{\text{audio}}^{(s)} = \mathbf{\Phi}_s^\top \mathbf{Y}_s \in \mathbb{R}^{16C \times 2}$ (`float64`, $2,048\text{ B}$ for $C=8$)
+   - `g_audio_f64`: Factorized per-stem audio Gram matrix $\mathbf{G}_{\text{audio}}^{(s)} = \mathbf{\Phi}_s^\top \mathbf{\Phi}_s \in \mathbb{R}^{16C \times 16C}$ (`float64`, $131,072\text{ B}$ for $C=8$ `Full` or $294,912\text{ B}$ for $C=12$ `Ultra`, where the `Lite` $64\times 64$ and `Full` $128\times 128$ Gram matrices are exact top-left principal submatrices of the $192\times 192$ `Ultra` matrix)
+   - `c_audio_f64`: Factorized per-stem audio cross-correlation $\mathbf{C}_{\text{audio}}^{(s)} = \mathbf{\Phi}_s^\top \mathbf{Y}_s \in \mathbb{R}^{16C \times 2}$ (`float64`, $2,048\text{ B}$ for $C=8$ `Full` or $3,072\text{ B}$ for $C=12$ `Ultra`)
 4. **`audit_report`:** Structured Phase 1–3 clamp diagnostics and actionable stem prescriptions.

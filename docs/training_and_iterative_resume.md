@@ -45,7 +45,7 @@ At the end of training, freeze the nonlinear backbone, recompute the exact per-s
 > Training runs **non-stop** to completion and outputs:
 > 1. The finished, playable `.dnam` model (with any necessary safety clamps active).
 > 2. A **Consolidated Audit & Stem Prescription Report** telling the user which optional stems would lift any active clamps.
-> 3. **One single `.dnam-ckpt` file** containing the backbone weights, per-stem metadata, and the **un-entangled per-stem `float64` audio matrices** $\{\mathbf{G}_{\text{audio}}^{(s)} = \mathbf{\Phi}_s^\top \mathbf{\Phi}_s \in \mathbb{R}^{16C \times 16C},\; \mathbf{C}_{\text{audio}}^{(s)} = \mathbf{\Phi}_s^\top \mathbf{Y}_s \in \mathbb{R}^{16C \times 2}\}$ (**only $130\text{ KB/stem}$, $2.5\times$ smaller than a pre-summed Kronecker Gram matrix**).
+> 3. **One single `.dnam-ckpt` file** containing the backbone weights, per-stem metadata, and the **un-entangled per-stem `float64` audio matrices** $\{\mathbf{G}_{\text{audio}}^{(s)} = \mathbf{\Phi}_s^\top \mathbf{\Phi}_s \in \mathbb{R}^{16C \times 16C},\; \mathbf{C}_{\text{audio}}^{(s)} = \mathbf{\Phi}_s^\top \mathbf{Y}_s \in \mathbb{R}^{16C \times 2}\}$ (**only $130\text{ KB/stem}$ at $C=8$ `Full` or $291\text{ KB/stem}$ at $C=12$ `Ultra`, where the `Lite` $64\times 64$ and `Full` $128\times 128$ blocks are exact leading principal submatrices of the $192\times 192$ `Ultra` Gram matrix**).
 
 ### Why Pre-Summed Kronecker Matrices Fail on Stem Additions (Mathematical Proof)
 If `.dnam-ckpt` stored only the pre-collapsed sum $\mathbf{G}_{\text{old}} = \sum_{s=1}^S \mathbf{G}_{\text{audio}}^{(s)} \otimes (\tilde{\boldsymbol{\psi}}_s \tilde{\boldsymbol{\psi}}_s^\top)$, then adding a new stem $s_{\text{new}}$ that:

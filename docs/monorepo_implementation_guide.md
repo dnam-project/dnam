@@ -35,7 +35,7 @@ dynamic-neural-audio-modeler/
     │   ├── AGENTS.md                # Scoped router (< 2,500 B)
     │   ├── Cargo.toml
     │   └── src/
-    │       ├── lib.rs               # DnamEngine, Tier (Lite C=4 / Full C=8), FtzDazGuard
+    │       ├── lib.rs               # DnamEngine, Tier (Lite C=4 / Full C=8 / Ultra C=12), FtzDazGuard
     │       ├── math.rs              # Branchless PolyADAA, Algebraic Rotor & 4-Tap Cubic Lagrange (CL-01..03, CL-06)
     │       ├── core1.rs             # 12-Layer Hybrid Dilated-Conv + Selective Complex RG-LRU (CL-04, CL-05)
     │       ├── core2.rs             # Stereo Diffusive M-UFDN, Switch XFade & Lyapunov Loop (CL-07..11)
@@ -144,9 +144,11 @@ A single zero-allocation Rust crate (`packages/engine`, `dnam-engine`) compiles 
 3. **WebAssembly SIMD128 (`wasm32-unknown-unknown`)** for browser `AudioWorklet` and Node.js WASM runtimes—eliminating any C++/Python/JS DSP port divergence.
 
 ### 3.2 Hardware Microarchitecture & Real-Time Audio Rules
-1. **16-Byte SIMD Alignment (`#[repr(align(16))]`):**
-   - `Lite` tier uses `C = 4, M = 4` (1 `float32x4_t` register per layer).
-   - `Full` tier uses `C = 8, M = 8` (2 `float32x4_t` registers per layer).
+1. **16-Byte SIMD Alignment (`#[repr(align(16))]`) & Rockchip RK3582 Dual-A76 Core Isolation:**
+   - On the Darkglass Anagram (**Rockchip RK3582**), KosmOS isolates the **2× ARM Cortex-A76 performance cores** ($2.4\text{ GHz}$, dual 128-bit NEON pipes, $64\text{ KB}$ L1D + $512\text{ KB}$ L2 per core) for real-time `JACK2` / `mod-host` audio DSP, while the **4× Cortex-A55 cores** handle Linux system tasks and the **LVGL** touchscreen UI. Because a series signal chain executes sequentially on a single Cortex-A76 core, all active blocks share that core's $64\text{ KB}$ L1D cache across buffers and time-share its 32 architectural NEON registers (`v0`–`v31`) per block call:
+   - **`Lite` tier (`C = 4, M = 4`, $\sim 1,245\text{ MACs/sample}$):** Uses 1 `float32x4_t` NEON register per vector ($\sim 14/32$ registers active, $3.7\text{ KB}$ Core 1 state).
+   - **`Full` tier (`C = 8, M = 8`, $\sim 4,625\text{ MACs/sample}$):** Uses 2 `float32x4_t` NEON registers per vector ($\sim 26/32$ registers active, $7.5\text{ KB}$ Core 1 state), keeping an entire layer's state and coefficients 100% resident in `v0`–`v31` in a single pass with zero stack spills.
+   - **`Ultra` tier (`C = 12, M = 8`, $\sim 9,950\text{ MACs/sample}$):** Uses 3 `float32x4_t` NEON registers per vector ($11.2\text{ KB}$ Core 1 state), executed via a **2-pass `8 + 4` register-tiled loop** (`channels 0..7` followed by `channels 8..11`) on 32-register ARM64 NEON to guarantee zero stack spilling while delivering $50\%$ more channels than NAM A2 Full at $1.22\times$ higher speed.
 2. **Hardware Denormal Immunity (`FtzDazGuard`):**
    Decaying IIR/RG-LRU poles ($r_c \le 0.9995$) and FDN delay tails ($g_{\text{lin},m} \le 0.9990$) enter the IEEE-754 subnormal range ($< 1.18 \times 10^{-38}$) during silence, which can trigger $100\times$ microcode traps if `FTZ`/`DAZ` is disabled. `FtzDazGuard::new()` sets:
    - **ARM64 (`aarch64`):** Bit 24 (`FZ = 1`) of `FPCR` (`mrs x0, fpcr; orr x0, x0, #(1 << 24); msr fpcr, x0`).
