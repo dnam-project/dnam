@@ -4,6 +4,7 @@
 //! All real-time audio ($48\text{ kHz}$) and control-bus ($3\text{ kHz}$) kernels execute with
 //! **zero `FSQRT`, zero `FDIV`, and zero `libm` transcendental calls**.
 
+#[forbid(unsafe_code)]
 pub mod scalar;
 
 #[cfg(target_arch = "aarch64")]
@@ -16,6 +17,7 @@ pub mod arm_sme;
 pub mod x86_simd;
 
 #[cfg(target_arch = "wasm32")]
+#[forbid(unsafe_code)]
 pub mod wasm_simd128;
 
 pub use scalar::{ScalarBackend, ScalarVec4};

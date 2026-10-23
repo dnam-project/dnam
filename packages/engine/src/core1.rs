@@ -733,11 +733,9 @@ fn arena_as_mat4x4_tiles(arena: &[u8]) -> &[[[f32; 4]; 4]] {
         assert!(cfg!(target_endian = "little"));
         assert!(core::mem::size_of::<[[f32; 4]; 4]>() == 64);
     }
-    debug_assert!((arena.as_ptr() as usize).is_multiple_of(4));
-    let num_tiles = arena.len() / 64;
-    // SAFETY: `arena` originates from 64-byte aligned `ArenaStorage` (`CacheLine64`) on a
-    // little-endian target, and each `[[f32; 4]; 4]` tile is 64 bytes (`4 * 4 * 4 B`).
-    unsafe { core::slice::from_raw_parts(arena.as_ptr().cast::<[[f32; 4]; 4]>(), num_tiles) }
+    let aligned_len = arena.len() & !63;
+    <[[[f32; 4]; 4]] as zerocopy::FromBytes>::ref_from_bytes(&arena[..aligned_len])
+        .expect("ArenaStorage byte slice is 4-byte aligned")
 }
 
 // ============================================================================

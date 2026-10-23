@@ -5,7 +5,7 @@ use super::{BackendKind, MathBackend, SimdVec4};
 #[cfg(target_feature = "simd128")]
 use core::arch::wasm32::{
     f32x4_abs, f32x4_add, f32x4_extract_lane, f32x4_mul, f32x4_pmax, f32x4_pmin, f32x4_splat,
-    f32x4_sub, v128, v128_load, v128_store,
+    f32x4_sub, v128,
 };
 
 /// WebAssembly 4-lane `f32` vector (`v128` when `simd128` is enabled, or `[f32; 4]` fallback).
@@ -29,14 +29,12 @@ impl SimdVec4 for WasmVec4 {
 
     #[inline(always)]
     fn load(src: &[f32; 4]) -> Self {
-        // SAFETY: `src` is a valid reference to 4 `f32` values (`16` bytes).
-        unsafe { Self(v128_load(src.as_ptr().cast::<v128>())) }
+        Self(zerocopy::transmute!(*src))
     }
 
     #[inline(always)]
     fn store(self, dst: &mut [f32; 4]) {
-        // SAFETY: `dst` is a valid mutable reference to 4 `f32` values (`16` bytes).
-        unsafe { v128_store(dst.as_mut_ptr().cast::<v128>(), self.0) }
+        *dst = zerocopy::transmute!(self.0);
     }
 
     #[inline(always)]

@@ -24,14 +24,21 @@
 
 extern crate alloc;
 
+#[forbid(unsafe_code)]
 pub mod container;
+#[forbid(unsafe_code)]
 pub mod control;
+#[forbid(unsafe_code)]
 pub mod core1;
+#[forbid(unsafe_code)]
 pub mod core2;
 pub mod ffi;
 pub mod math;
+#[forbid(unsafe_code)]
 pub mod memory;
+#[forbid(unsafe_code)]
 pub mod provenance;
+#[forbid(unsafe_code)]
 pub mod schema;
 
 use crate::container::{ARENA_OFFSET_LITE_END, DnamContainerView, DnamPreamble, ZohRescaledParams};

@@ -5,7 +5,7 @@ members = ["packages/engine"]
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.88"
+rust-version = "1.99"
 license = "LicenseRef-DNAM-1.0.0"
 repository = "https://github.com/dnam-project/dnam"
 
@@ -18,7 +18,9 @@ chacha20poly1305 = { version = "0.10", default-features = false, features = ["al
 hkdf = { version = "0.12", default-features = false }
 sha2 = { version = "0.10", default-features = false }
 zeroize = { version = "1.8", default-features = false, features = ["alloc", "derive"] }
+zerocopy = { version = "0.8", default-features = false, features = ["derive", "simd"] }
 criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
+proptest = "1.6"
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
