@@ -745,6 +745,7 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
             .min(right_in.len())
             .min(left_out.len())
             .min(right_out.len());
+        self.core1.max_adaa_drive_vec = [0.0; 4];
         self.core1.max_adaa_drive = 0.0;
         self.core1.max_pole_radius = 0.0;
         self.core2.max_effective_loop_gain = 0.0;
@@ -761,6 +762,7 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
     pub fn process_block_in_place(&mut self, left_io: &mut [f32], right_io: &mut [f32]) {
         let _ftz = FtzDazGuard::new();
         let n = left_io.len().min(right_io.len());
+        self.core1.max_adaa_drive_vec = [0.0; 4];
         self.core1.max_adaa_drive = 0.0;
         self.core1.max_pole_radius = 0.0;
         self.core2.max_effective_loop_gain = 0.0;
@@ -782,6 +784,7 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
     ) {
         let _ftz = FtzDazGuard::new();
         let n = mono_in.len().min(left_out.len()).min(right_out.len());
+        self.core1.max_adaa_drive_vec = [0.0; 4];
         self.core1.max_adaa_drive = 0.0;
         self.core1.max_pole_radius = 0.0;
         self.core2.max_effective_loop_gain = 0.0;
@@ -800,6 +803,7 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
     pub fn process_mono(&mut self, mono_in: &[f32], mono_out: &mut [f32]) {
         let _ftz = FtzDazGuard::new();
         let n = mono_in.len().min(mono_out.len());
+        self.core1.max_adaa_drive_vec = [0.0; 4];
         self.core1.max_adaa_drive = 0.0;
         self.core1.max_pole_radius = 0.0;
         self.core2.max_effective_loop_gain = 0.0;

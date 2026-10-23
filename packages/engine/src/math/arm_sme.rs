@@ -208,9 +208,64 @@ impl MathBackend for ArmSmeBackend {
     const KIND: BackendKind = BackendKind::ArmSme;
 
     #[inline(always)]
+    fn fma_mat4x4_vec4(acc: NeonVec4, mat: &[[f32; 4]; 4], x: &[f32; 4]) -> NeonVec4 {
+        NeonBackend::fma_mat4x4_vec4(acc, mat, x)
+    }
+
+    #[inline(always)]
+    fn conv6_taps_1group(
+        bias: NeonVec4,
+        w_tiles: &[[[f32; 4]; 4]; 6],
+        h_taps: &[&[[f32; 4]; 3]; 6],
+    ) -> NeonVec4 {
+        // SAFETY: `aarch64` guarantees NEON register availability.
+        unsafe { super::neon::neon_conv6_1group(bias, w_tiles, h_taps) }
+    }
+
+    #[inline(always)]
+    fn conv6_taps_2groups(
+        bias: NeonVec4,
+        w_tiles: &[[[f32; 4]; 4]; 12],
+        h_taps: &[&[[f32; 4]; 3]; 6],
+    ) -> NeonVec4 {
+        // SAFETY: `aarch64` guarantees NEON register availability.
+        unsafe { super::neon::neon_conv6_2groups(bias, w_tiles, h_taps) }
+    }
+
+    #[inline(always)]
+    fn conv6_taps_3groups(
+        bias: NeonVec4,
+        w_tiles: &[[[f32; 4]; 4]; 18],
+        h_taps: &[&[[f32; 4]; 3]; 6],
+    ) -> NeonVec4 {
+        // SAFETY: `aarch64` guarantees NEON register availability.
+        unsafe { super::neon::neon_conv6_3groups(bias, w_tiles, h_taps) }
+    }
+
+    #[inline(always)]
     fn dot_product_16taps_4ch(taps_64: &[f32; 64], weights_64: &[f32; 64]) -> f32 {
         // SAFETY: `aarch64` guarantees NEON register availability.
         unsafe { Self::tile_dot64(taps_64, weights_64) }
+    }
+
+    #[inline(always)]
+    fn dot_product_16taps_4ch_stereo(
+        taps_64: &[f32; 64],
+        weights_l: &[f32; 64],
+        weights_r: &[f32; 64],
+    ) -> [f32; 2] {
+        // SAFETY: `taps_64`, `weights_l`, and `weights_r` are valid `[f32; 64]` arrays.
+        unsafe { super::neon::neon_dot64_stereo(taps_64, weights_l, weights_r) }
+    }
+
+    #[inline(always)]
+    fn f32x4_to_fp16x4(src: &[f32; 4]) -> [u16; 4] {
+        NeonBackend::f32x4_to_fp16x4(src)
+    }
+
+    #[inline(always)]
+    fn fp16x4_to_f32x4(src: &[u16; 4]) -> [f32; 4] {
+        NeonBackend::fp16x4_to_f32x4(src)
     }
 
     #[inline]

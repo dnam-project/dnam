@@ -107,6 +107,8 @@ pub struct Core1Stack<B: MathBackend> {
     pub adaa_weights: [PolyAdaaLayerWeights; CORE1_NUM_CONV_LAYERS],
     /// Unpacked ZOH-rescaled `SelectiveRgLru` weights for all 4 blocks.
     pub rglru_weights: [RgLruLayerWeights; CORE1_NUM_BLOCKS],
+    /// Pre-computed static peak pole radius per tier (`[Lite, Full, Ultra]`).
+    pub static_max_pole_radius: [f32; 3],
 
     /// Collapsed stereo output head weights $\mathbf{W}_{\text{head}}(\mathbf{z})$ (`[2 stereo ch][3 tier groups][16 taps × 4 ch = 64]`).
     pub collapsed_head_w: [[[f32; 64]; 3]; 2],
@@ -138,6 +140,8 @@ pub struct Core1Stack<B: MathBackend> {
 
     /// Latest 4-channel Core 1 tap output (`ch 0..3` and `ch 4..7`) fed into Core 2 `M-UFDN`.
     pub latest_core1_tap: [[f32; 4]; 2],
+    /// SIMD 4-lane accumulator for peak `PolyADAA` drive $|u_c|$ in the current block.
+    pub max_adaa_drive_vec: [f32; 4],
     /// Peak absolute `PolyADAA` drive $|u_c|$ observed in the current block (for 60 fps telemetry).
     pub max_adaa_drive: f32,
     /// Peak instantaneous `SelectiveRgLru` pole radius $r_c[n]$ observed in the current block.
@@ -159,6 +163,7 @@ impl<B: MathBackend> Core1Stack<B> {
             r_ac_host: 0.9993,
             adaa_weights: [PolyAdaaLayerWeights::default(); CORE1_NUM_CONV_LAYERS],
             rglru_weights: [RgLruLayerWeights::default(); CORE1_NUM_BLOCKS],
+            static_max_pole_radius: [0.0; 3],
             collapsed_head_w: [[[0.0; 64]; 3]; 2],
             collapsed_head_b: [0.0; 2],
             conv_hist: [[[[0.0; 4]; 3]; CORE1_CONV_HIST_LEN]; CORE1_NUM_CONV_LAYERS],
@@ -171,6 +176,7 @@ impl<B: MathBackend> Core1Stack<B> {
             head_tap_hist: [[0.0; 64]; 3],
             head_write_pos: 0,
             latest_core1_tap: [[0.0; 4]; 2],
+            max_adaa_drive_vec: [0.0; 4],
             max_adaa_drive: 0.0,
             max_pole_radius: 0.0,
             _backend: PhantomData,
@@ -238,6 +244,8 @@ impl<B: MathBackend> Core1Stack<B> {
             1
         };
 
+        self.static_max_pole_radius = [0.0; 3];
+
         for tier in 0..max_tiers {
             for blk in 0..CORE1_NUM_BLOCKS {
                 let (blk_base, adaa0_off, adaa1_off, rglru_off) = match tier {
@@ -295,6 +303,13 @@ impl<B: MathBackend> Core1Stack<B> {
                     let (c_rot, s_rot) = B::fast_unit_phasor(theta_h);
                     rg.u_rot_cos[tier][lane] = c_rot;
                     rg.u_rot_sin[tier][lane] = s_rot;
+
+                    let r_max = r_low_h + dr_h;
+                    for t_idx in tier..3 {
+                        if r_max > self.static_max_pole_radius[t_idx] {
+                            self.static_max_pole_radius[t_idx] = r_max;
+                        }
+                    }
                 }
             }
         }
@@ -316,6 +331,7 @@ impl<B: MathBackend> Core1Stack<B> {
         self.head_tap_hist = [[0.0; 64]; 3];
         self.head_write_pos = 0;
         self.latest_core1_tap = [[0.0; 4]; 2];
+        self.max_adaa_drive_vec = [0.0; 4];
         self.max_adaa_drive = 0.0;
         self.max_pole_radius = 0.0;
 
@@ -354,7 +370,8 @@ impl<B: MathBackend> Core1Stack<B> {
         }
         self.collapsed_head_b = [b_l, b_r];
 
-        let head_bases = [4224_usize, 17_984_usize, 32_640_usize];
+        let head_tile_bases = [66_usize, 281_usize, 510_usize];
+        let tiles = arena_as_mat4x4_tiles(arena);
         let z_vecs = [
             B::Vec4::splat(z_head[0]),
             B::Vec4::splat(z_head[1]),
@@ -363,25 +380,28 @@ impl<B: MathBackend> Core1Stack<B> {
         ];
 
         for tier in 0..active_tier_groups.min(3) {
-            let base = head_bases[tier];
-            if arena.len() < base + 2560 {
+            let base_tile = head_tile_bases[tier];
+            if tiles.len() < base_tile + 40 {
                 continue;
             }
-            // Mode 0: base + 0..512 (lr=0 is 0..256, lr=1 is 256..512)
+            let head_tiles = &tiles[base_tile..base_tile + 40];
+            // Each mode is 8 tiles (lr=0 is 0..4, lr=1 is 4..8), each tile has 4 x [f32; 4]
             for lr in 0..2 {
-                for vec_idx in 0..16 {
-                    let off0 = base + lr * 256 + vec_idx * 16;
-                    let mut acc = B::Vec4::from_array(read_f32x4_le(arena, off0));
-                    for k in 0..4 {
-                        if z_head[k].abs() > 1e-12 {
-                            let offk = base + (k + 1) * 512 + lr * 256 + vec_idx * 16;
-                            let wk = B::Vec4::from_array(read_f32x4_le(arena, offk));
-                            acc = acc.fma(z_vecs[k], wk);
+                let (out_chunks, _) = self.collapsed_head_w[lr][tier].as_chunks_mut::<4>();
+                for tile_idx in 0..4 {
+                    for row in 0..4 {
+                        let vec_idx = tile_idx * 4 + row;
+                        let mut acc = B::Vec4::load(&head_tiles[lr * 4 + tile_idx][row]);
+                        for k in 0..4 {
+                            if z_head[k].abs() > 1e-12 {
+                                let wk = B::Vec4::load(
+                                    &head_tiles[(k + 1) * 8 + lr * 4 + tile_idx][row],
+                                );
+                                acc = acc.fma(z_vecs[k], wk);
+                            }
                         }
+                        acc.store(&mut out_chunks[vec_idx]);
                     }
-                    let arr = acc.to_array();
-                    let dst = vec_idx * 4;
-                    self.collapsed_head_w[lr][tier][dst..dst + 4].copy_from_slice(&arr);
                 }
             }
         }
@@ -401,172 +421,287 @@ impl<B: MathBackend> Core1Stack<B> {
         active_tier_groups: usize,
         mono_only: bool,
     ) -> [f32; 2] {
-        let groups = active_tier_groups.clamp(1, 3);
-        let x_mid = 0.5 * (x_left + x_right);
-        let x_side = 0.5 * (x_left - x_right);
-        let in_ms = [x_mid, x_side, 0.0, 0.0];
+        match active_tier_groups {
+            1 => self.process_sample_const::<1>(x_left, x_right, arena, mono_only),
+            2 => self.process_sample_const::<2>(x_left, x_right, arena, mono_only),
+            _ => self.process_sample_const::<3>(x_left, x_right, arena, mono_only),
+        }
+    }
 
-        // 1. Stereo Mid/Side -> C-channel projection
-        let mut h_curr = [[0.0_f32; 4]; 3];
-        for tier in 0..groups {
-            let mut acc = B::Vec4::zero();
-            for col in 0..2 {
-                let s = B::Vec4::splat(in_ms[col]);
-                let p = B::Vec4::from_array(self.input_proj[tier][col]);
-                acc = acc.fma(s, p);
-            }
-            h_curr[tier] = acc.to_array();
+    #[inline(always)]
+    fn process_sample_const<const GROUPS: usize>(
+        &mut self,
+        x_left: f32,
+        x_right: f32,
+        arena: &[u8],
+        mono_only: bool,
+    ) -> [f32; 2] {
+        let tiles = arena_as_mat4x4_tiles(arena);
+        let min_tiles = match GROUPS {
+            1 => 168,
+            2 => 349,
+            _ => 566,
+        };
+        if tiles.len() < min_tiles {
+            return [0.0; 2];
         }
 
-        let w_pos = self.conv_write_pos;
-        let two_thirds = B::Vec4::splat(2.0 / 3.0);
-        let neg_one = B::Vec4::splat(-1.0);
-        let pos_one = B::Vec4::splat(1.0);
+        let x_mid = 0.5 * (x_left + x_right);
+        let x_side = 0.5 * (x_left - x_right);
+        let s_mid = B::Vec4::splat(x_mid);
+        let s_side = B::Vec4::splat(x_side);
+
+        // 1. Stereo Mid/Side -> C-channel projection (kept in explicit SIMD registers h0, h1, h2)
+        let mut h0 = B::Vec4::zero()
+            .fma(s_mid, B::Vec4::load(&self.input_proj[0][0]))
+            .fma(s_side, B::Vec4::load(&self.input_proj[0][1]));
+        let mut h1 = if GROUPS >= 2 {
+            B::Vec4::zero()
+                .fma(s_mid, B::Vec4::load(&self.input_proj[1][0]))
+                .fma(s_side, B::Vec4::load(&self.input_proj[1][1]))
+        } else {
+            B::Vec4::zero()
+        };
+        let mut h2 = if GROUPS >= 3 {
+            B::Vec4::zero()
+                .fma(s_mid, B::Vec4::load(&self.input_proj[2][0]))
+                .fma(s_side, B::Vec4::load(&self.input_proj[2][1]))
+        } else {
+            B::Vec4::zero()
+        };
+
+        let w_pos = self.conv_write_pos & CORE1_CONV_HIST_MASK;
+        let r_ac = self.r_ac_host;
+        let mut max_drive_v = B::Vec4::load(&self.max_adaa_drive_vec);
 
         // 2. Walk 4 interleaved Core 1 blocks in execution order
         for blk in 0..CORE1_NUM_BLOCKS {
             let dilation = CORE1_DILATIONS[blk];
+            // Compute the 5 delayed ring-buffer indices ONCE per block (shared by sub=0 and sub=1)
+            let idx1 = w_pos.wrapping_sub(dilation) & CORE1_CONV_HIST_MASK;
+            let idx2 = w_pos.wrapping_sub(2 * dilation) & CORE1_CONV_HIST_MASK;
+            let idx3 = w_pos.wrapping_sub(3 * dilation) & CORE1_CONV_HIST_MASK;
+            let idx4 = w_pos.wrapping_sub(4 * dilation) & CORE1_CONV_HIST_MASK;
+            let idx5 = w_pos.wrapping_sub(5 * dilation) & CORE1_CONV_HIST_MASK;
 
             for sub in 0..2 {
                 let layer_idx = blk * 2 + sub;
-                // Write current activations into causal history ring buffer
-                self.conv_hist[layer_idx][w_pos][..groups].copy_from_slice(&h_curr[..groups]);
-
-                let mut y_layer = [[0.0_f32; 4]; 3];
-                for tier in 0..groups {
-                    let conv_base = match (tier, sub) {
-                        (0, 0) => 128 + blk * 1024,
-                        (0, _) => 128 + blk * 1024 + 448,
-                        (1, 0) => 10_816 + blk * 1792,
-                        (1, _) => 10_816 + blk * 1792 + 832,
-                        (_, 0) => 22_400 + blk * 2560,
-                        (_, _) => 22_400 + blk * 2560 + 1216,
-                    };
-
-                    // Initialize conv accumulator with b_conv_c (0 extra instructions!)
-                    let mut conv_acc =
-                        B::Vec4::from_array(self.adaa_weights[layer_idx].b_conv[tier]);
-                    let in_groups = tier + 1;
-                    let mut weight_ptr = conv_base;
-
-                    for tap in 0..CORE1_CONV_KERNEL {
-                        let hist_idx = w_pos.wrapping_sub(tap * dilation) & CORE1_CONV_HIST_MASK;
-                        for ig in 0..in_groups {
-                            let h_tap = self.conv_hist[layer_idx][hist_idx][ig];
-                            for ic in 0..4 {
-                                let x_val = h_tap[ic];
-                                if x_val.abs() > 0.0 {
-                                    let w_vec =
-                                        B::Vec4::from_array(read_f32x4_le(arena, weight_ptr));
-                                    conv_acc = conv_acc.fma(B::Vec4::splat(x_val), w_vec);
-                                }
-                                weight_ptr += 16;
-                            }
-                        }
-                    }
-
-                    let x_conv = conv_acc.to_array();
-                    // Track max ADAA drive |u_c| for telemetry
-                    let u_curr_arr = conv_acc.mul(two_thirds).clamp(neg_one, pos_one).to_array();
-                    for &u_val in &u_curr_arr {
-                        let abs_u = u_val.abs();
-                        if abs_u > self.max_adaa_drive {
-                            self.max_adaa_drive = abs_u;
-                        }
-                    }
-
-                    let mut y_adaa = [0.0_f32; 4];
-                    B::poly_adaa_layer_4ch(
-                        &x_conv,
-                        &self.adaa_weights[layer_idx].alpha[tier],
-                        &self.adaa_weights[layer_idx].beta[tier],
-                        &self.adaa_weights[layer_idx].delta[tier],
-                        self.r_ac_host,
-                        &mut self.adaa_u_prev[layer_idx][tier],
-                        &mut self.adaa_a_prev[layer_idx][tier],
-                        &mut self.adaa_m_dc[layer_idx][tier],
-                        &mut y_adaa,
-                    );
-                    // Remove static linear bias offset alpha * b_conv so silence equilibrium is exact 0.0
-                    let b_vec = B::Vec4::from_array(self.adaa_weights[layer_idx].b_conv[tier]);
-                    let a_vec = B::Vec4::from_array(self.adaa_weights[layer_idx].alpha[tier]);
-                    let y_zero_dc = B::Vec4::from_array(y_adaa).fms(a_vec, b_vec);
-
-                    // Residual connection: h_next = h_curr + y_zero_dc
-                    let h_prev = B::Vec4::from_array(h_curr[tier]);
-                    y_layer[tier] = h_prev.add(y_zero_dc).to_array();
+                h0.store(&mut self.conv_hist[layer_idx][w_pos][0]);
+                if GROUPS >= 2 {
+                    h1.store(&mut self.conv_hist[layer_idx][w_pos][1]);
                 }
-                h_curr = y_layer;
+                if GROUPS >= 3 {
+                    h2.store(&mut self.conv_hist[layer_idx][w_pos][2]);
+                }
+
+                let h_layer = &self.conv_hist[layer_idx];
+                let h_taps: [&[[f32; 4]; 3]; CORE1_CONV_KERNEL] = [
+                    &h_layer[w_pos],
+                    &h_layer[idx1],
+                    &h_layer[idx2],
+                    &h_layer[idx3],
+                    &h_layer[idx4],
+                    &h_layer[idx5],
+                ];
+                let adaa_w = &self.adaa_weights[layer_idx];
+
+                // Tier 0 (Lite, 4x4)
+                let tile_base0 = 2 + blk * 16 + sub * 7;
+                let w_tiles0: &[[[f32; 4]; 4]; 6] =
+                    (&tiles[tile_base0..tile_base0 + 6]).try_into().unwrap();
+                let conv0 =
+                    B::conv6_taps_1group(B::Vec4::load(&adaa_w.b_conv[0]), w_tiles0, &h_taps);
+                let (y_dc0, u_abs0) = B::poly_adaa_step_vec4(
+                    conv0,
+                    &adaa_w.b_conv[0],
+                    &adaa_w.alpha[0],
+                    &adaa_w.beta[0],
+                    &adaa_w.delta[0],
+                    r_ac,
+                    &mut self.adaa_u_prev[layer_idx][0],
+                    &mut self.adaa_a_prev[layer_idx][0],
+                    &mut self.adaa_m_dc[layer_idx][0],
+                );
+                max_drive_v = max_drive_v.max(u_abs0);
+                h0 = h0.add(y_dc0);
+
+                // Tier 1 (Full Delta, 4x8)
+                if GROUPS >= 2 {
+                    let tile_base1 = 169 + blk * 28 + sub * 13;
+                    let w_tiles1: &[[[f32; 4]; 4]; 12] =
+                        (&tiles[tile_base1..tile_base1 + 12]).try_into().unwrap();
+                    let conv1 =
+                        B::conv6_taps_2groups(B::Vec4::load(&adaa_w.b_conv[1]), w_tiles1, &h_taps);
+                    let (y_dc1, u_abs1) = B::poly_adaa_step_vec4(
+                        conv1,
+                        &adaa_w.b_conv[1],
+                        &adaa_w.alpha[1],
+                        &adaa_w.beta[1],
+                        &adaa_w.delta[1],
+                        r_ac,
+                        &mut self.adaa_u_prev[layer_idx][1],
+                        &mut self.adaa_a_prev[layer_idx][1],
+                        &mut self.adaa_m_dc[layer_idx][1],
+                    );
+                    max_drive_v = max_drive_v.max(u_abs1);
+                    h1 = h1.add(y_dc1);
+                }
+
+                // Tier 2 (Ultra Delta, 4x12)
+                if GROUPS >= 3 {
+                    let tile_base2 = 350 + blk * 40 + sub * 19;
+                    let w_tiles2: &[[[f32; 4]; 4]; 18] =
+                        (&tiles[tile_base2..tile_base2 + 18]).try_into().unwrap();
+                    let conv2 =
+                        B::conv6_taps_3groups(B::Vec4::load(&adaa_w.b_conv[2]), w_tiles2, &h_taps);
+                    let (y_dc2, u_abs2) = B::poly_adaa_step_vec4(
+                        conv2,
+                        &adaa_w.b_conv[2],
+                        &adaa_w.alpha[2],
+                        &adaa_w.beta[2],
+                        &adaa_w.delta[2],
+                        r_ac,
+                        &mut self.adaa_u_prev[layer_idx][2],
+                        &mut self.adaa_a_prev[layer_idx][2],
+                        &mut self.adaa_m_dc[layer_idx][2],
+                    );
+                    max_drive_v = max_drive_v.max(u_abs2);
+                    h2 = h2.add(y_dc2);
+                }
             }
 
             // 3. Radial-Polar SelectiveRgLru layer b
             let rg_w = &self.rglru_weights[blk];
-            for tier in 0..groups {
-                let mut y_rg = [0.0_f32; 4];
-                B::selective_rglru_layer_4ch(
-                    &h_curr[tier],
-                    &rg_w.r_low[tier],
-                    &rg_w.dr_span[tier],
-                    &rg_w.w_sel[tier],
-                    &rg_w.b_gamma_norm[tier],
-                    &rg_w.c_real[tier],
-                    &rg_w.c_imag[tier],
-                    &rg_w.u_rot_cos[tier],
-                    &rg_w.u_rot_sin[tier],
-                    &mut self.rglru_z_re[blk][tier],
-                    &mut self.rglru_z_im[blk][tier],
-                    &mut y_rg,
+            let y_rg0 = B::selective_rglru_step_vec4(
+                h0,
+                &rg_w.r_low[0],
+                &rg_w.dr_span[0],
+                &rg_w.w_sel[0],
+                &rg_w.b_gamma_norm[0],
+                &rg_w.c_real[0],
+                &rg_w.c_imag[0],
+                &rg_w.u_rot_cos[0],
+                &rg_w.u_rot_sin[0],
+                &mut self.rglru_z_re[blk][0],
+                &mut self.rglru_z_im[blk][0],
+            );
+            h0 = h0.add(y_rg0);
+
+            if GROUPS >= 2 {
+                let y_rg1 = B::selective_rglru_step_vec4(
+                    h1,
+                    &rg_w.r_low[1],
+                    &rg_w.dr_span[1],
+                    &rg_w.w_sel[1],
+                    &rg_w.b_gamma_norm[1],
+                    &rg_w.c_real[1],
+                    &rg_w.c_imag[1],
+                    &rg_w.u_rot_cos[1],
+                    &rg_w.u_rot_sin[1],
+                    &mut self.rglru_z_re[blk][1],
+                    &mut self.rglru_z_im[blk][1],
                 );
-                for lane in 0..4 {
-                    let r_max = rg_w.r_low[tier][lane] + rg_w.dr_span[tier][lane];
-                    if r_max > self.max_pole_radius {
-                        self.max_pole_radius = r_max;
-                    }
-                }
-                let h_in = B::Vec4::from_array(h_curr[tier]);
-                h_curr[tier] = h_in.add(B::Vec4::from_array(y_rg)).to_array();
+                h1 = h1.add(y_rg1);
             }
+
+            if GROUPS >= 3 {
+                let y_rg2 = B::selective_rglru_step_vec4(
+                    h2,
+                    &rg_w.r_low[2],
+                    &rg_w.dr_span[2],
+                    &rg_w.w_sel[2],
+                    &rg_w.b_gamma_norm[2],
+                    &rg_w.c_real[2],
+                    &rg_w.c_imag[2],
+                    &rg_w.u_rot_cos[2],
+                    &rg_w.u_rot_sin[2],
+                    &mut self.rglru_z_re[blk][2],
+                    &mut self.rglru_z_im[blk][2],
+                );
+                h2 = h2.add(y_rg2);
+            }
+        }
+
+        max_drive_v.store(&mut self.max_adaa_drive_vec);
+        let md = self.max_adaa_drive_vec;
+        let sample_max_drive = md[0].max(md[1]).max(md[2].max(md[3]));
+        if sample_max_drive > self.max_adaa_drive {
+            self.max_adaa_drive = sample_max_drive;
+        }
+        let tier_r_max = self.static_max_pole_radius[GROUPS - 1];
+        if tier_r_max > self.max_pole_radius {
+            self.max_pole_radius = tier_r_max;
         }
 
         self.conv_write_pos = (w_pos + 1) & CORE1_CONV_HIST_MASK;
 
         // Save latest 4-channel / 8-channel Core 1 tap for Core 2 M-UFDN
-        self.latest_core1_tap[0] = h_curr[0];
-        self.latest_core1_tap[1] = if groups >= 2 { h_curr[1] } else { h_curr[0] };
+        h0.store(&mut self.latest_core1_tap[0]);
+        if GROUPS >= 2 {
+            h1.store(&mut self.latest_core1_tap[1]);
+        } else {
+            self.latest_core1_tap[1] = self.latest_core1_tap[0];
+        }
 
         // 4. Write final Core 1 activations into 16-tap unfolded output head ring buffer
-        let h_pos = self.head_write_pos;
-        let dst_off = h_pos * 4;
-        for tier in 0..groups {
-            self.head_tap_hist[tier][dst_off..dst_off + 4].copy_from_slice(&h_curr[tier]);
+        let h_pos = self.head_write_pos & CORE1_HEAD_TAP_MASK;
+        {
+            let (chunks0, _) = self.head_tap_hist[0].as_chunks_mut::<4>();
+            h0.store(&mut chunks0[h_pos]);
+        }
+        if GROUPS >= 2 {
+            let (chunks1, _) = self.head_tap_hist[1].as_chunks_mut::<4>();
+            h1.store(&mut chunks1[h_pos]);
+        }
+        if GROUPS >= 3 {
+            let (chunks2, _) = self.head_tap_hist[2].as_chunks_mut::<4>();
+            h2.store(&mut chunks2[h_pos]);
         }
         self.head_write_pos = (h_pos + 1) & CORE1_HEAD_TAP_MASK;
 
-        // 5. Evaluate collapsed 16-tap stereo/mono output head via B::dot_product_16taps_4ch
+        // 5. Evaluate collapsed 16-tap stereo/mono output head
         let mut out_l = self.collapsed_head_b[0];
-        let mut out_r = if mono_only {
-            0.0
-        } else {
-            self.collapsed_head_b[1]
-        };
-
-        for tier in 0..groups {
-            out_l += B::dot_product_16taps_4ch(
-                &self.head_tap_hist[tier],
-                &self.collapsed_head_w[0][tier],
-            );
-            if !mono_only {
-                out_r += B::dot_product_16taps_4ch(
-                    &self.head_tap_hist[tier],
-                    &self.collapsed_head_w[1][tier],
-                );
-            }
-        }
-
         if mono_only {
-            out_r = out_l;
+            out_l +=
+                B::dot_product_16taps_4ch(&self.head_tap_hist[0], &self.collapsed_head_w[0][0]);
+            if GROUPS >= 2 {
+                out_l +=
+                    B::dot_product_16taps_4ch(&self.head_tap_hist[1], &self.collapsed_head_w[0][1]);
+            }
+            if GROUPS >= 3 {
+                out_l +=
+                    B::dot_product_16taps_4ch(&self.head_tap_hist[2], &self.collapsed_head_w[0][2]);
+            }
+            [out_l, out_l]
+        } else {
+            let mut out_r = self.collapsed_head_b[1];
+            let [dl0, dr0] = B::dot_product_16taps_4ch_stereo(
+                &self.head_tap_hist[0],
+                &self.collapsed_head_w[0][0],
+                &self.collapsed_head_w[1][0],
+            );
+            out_l += dl0;
+            out_r += dr0;
+            if GROUPS >= 2 {
+                let [dl1, dr1] = B::dot_product_16taps_4ch_stereo(
+                    &self.head_tap_hist[1],
+                    &self.collapsed_head_w[0][1],
+                    &self.collapsed_head_w[1][1],
+                );
+                out_l += dl1;
+                out_r += dr1;
+            }
+            if GROUPS >= 3 {
+                let [dl2, dr2] = B::dot_product_16taps_4ch_stereo(
+                    &self.head_tap_hist[2],
+                    &self.collapsed_head_w[0][2],
+                    &self.collapsed_head_w[1][2],
+                );
+                out_l += dl2;
+                out_r += dr2;
+            }
+            [out_l, out_r]
         }
-        [out_l, out_r]
     }
 }
 
@@ -589,6 +724,20 @@ fn read_f32x4_le(bytes: &[u8], off: usize) -> [f32; 4] {
         read_f32_le(bytes, off + 8),
         read_f32_le(bytes, off + 12),
     ]
+}
+
+/// Zero-copy view of a 64-byte aligned arena (`CacheLine64`) as 64-byte $4 \times 4$ `f32` matrix tiles.
+#[inline(always)]
+fn arena_as_mat4x4_tiles(arena: &[u8]) -> &[[[f32; 4]; 4]] {
+    const {
+        assert!(cfg!(target_endian = "little"));
+        assert!(core::mem::size_of::<[[f32; 4]; 4]>() == 64);
+    }
+    debug_assert!((arena.as_ptr() as usize).is_multiple_of(4));
+    let num_tiles = arena.len() / 64;
+    // SAFETY: `arena` originates from 64-byte aligned `ArenaStorage` (`CacheLine64`) on a
+    // little-endian target, and each `[[f32; 4]; 4]` tile is 64 bytes (`4 * 4 * 4 B`).
+    unsafe { core::slice::from_raw_parts(arena.as_ptr().cast::<[[f32; 4]; 4]>(), num_tiles) }
 }
 
 // ============================================================================

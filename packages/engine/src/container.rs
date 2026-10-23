@@ -271,6 +271,7 @@ impl DnamPreamble {
 // Pure `#![no_std]` Castagnoli `CRC32C` (`0x1EDC6F41`, reflected `0x82F63B78`)
 // ============================================================================
 
+#[cfg(not(target_arch = "aarch64"))]
 const CRC32C_TABLE: [u32; 256] = {
     let mut table = [0u32; 256];
     let mut i = 0;
@@ -291,22 +292,29 @@ const CRC32C_TABLE: [u32; 256] = {
     table
 };
 
-/// Updates an incremental Castagnoli `CRC32C` state with `data`.
+/// Updates an incremental Castagnoli `CRC32C` state with `data` using hardware `CRC32C` on `aarch64`.
 #[inline]
-pub const fn crc32c_update(mut crc: u32, data: &[u8]) -> u32 {
-    crc = !crc;
-    let mut i = 0;
-    while i < data.len() {
-        let idx = ((crc ^ (data[i] as u32)) & 0xFF) as usize;
-        crc = (crc >> 8) ^ CRC32C_TABLE[idx];
-        i += 1;
+pub fn crc32c_update(crc: u32, data: &[u8]) -> u32 {
+    #[cfg(target_arch = "aarch64")]
+    {
+        crate::math::neon::crc32c_arm64_update(crc, data)
     }
-    !crc
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        let mut c = !crc;
+        let mut i = 0;
+        while i < data.len() {
+            let idx = ((c ^ (data[i] as u32)) & 0xFF) as usize;
+            c = (c >> 8) ^ CRC32C_TABLE[idx];
+            i += 1;
+        }
+        !c
+    }
 }
 
 /// Computes the Castagnoli `CRC32C` (`0x1EDC6F41`) checksum of `data`.
 #[inline]
-pub const fn crc32c_compute(data: &[u8]) -> u32 {
+pub fn crc32c_compute(data: &[u8]) -> u32 {
     crc32c_update(0, data)
 }
 
@@ -435,14 +443,15 @@ impl<'a> DnamContainerView<'a> {
     }
 
     /// Verifies `arena_crc32c_lite`, `arena_crc32c_full`, and `arena_crc32c_ultra` over the
-    /// available prefix of `plain_arena`.
+    /// available prefix of `plain_arena` in a single incremental pass.
     pub fn verify_arena_prefix_crcs(
         preamble: &DnamPreamble,
         plain_arena: &[u8],
     ) -> Result<(), DnamError> {
         let lite_end = preamble.arena_offset_lite_end as usize;
+        let mut crc = 0_u32;
         if plain_arena.len() >= lite_end && lite_end > 0 {
-            let crc = crc32c_compute(&plain_arena[..lite_end]);
+            crc = crc32c_update(0, &plain_arena[..lite_end]);
             if crc != preamble.arena_crc32c_lite {
                 return Err(DnamError::Crc32cMismatch {
                     region: "arena_lite",
@@ -456,7 +465,7 @@ impl<'a> DnamContainerView<'a> {
             && plain_arena.len() >= full_end
             && full_end > lite_end
         {
-            let crc = crc32c_compute(&plain_arena[..full_end]);
+            crc = crc32c_update(crc, &plain_arena[lite_end..full_end]);
             if crc != preamble.arena_crc32c_full {
                 return Err(DnamError::Crc32cMismatch {
                     region: "arena_full",
@@ -470,7 +479,7 @@ impl<'a> DnamContainerView<'a> {
             && plain_arena.len() >= ultra_end
             && ultra_end > full_end
         {
-            let crc = crc32c_compute(&plain_arena[..ultra_end]);
+            crc = crc32c_update(crc, &plain_arena[full_end..ultra_end]);
             if crc != preamble.arena_crc32c_ultra {
                 return Err(DnamError::Crc32cMismatch {
                     region: "arena_ultra",
@@ -507,14 +516,14 @@ pub fn build_dnam_container(
     let full_end = (ARENA_OFFSET_FULL_END as usize).min(plaintext_arena_crc_source.len());
     let ultra_end = (ARENA_OFFSET_ULTRA_END as usize).min(plaintext_arena_crc_source.len());
 
-    let crc_lite = crc32c_compute(&plaintext_arena_crc_source[..lite_end]);
+    let crc_lite = crc32c_update(0, &plaintext_arena_crc_source[..lite_end]);
     let crc_full = if full_end >= ARENA_OFFSET_FULL_END as usize {
-        crc32c_compute(&plaintext_arena_crc_source[..full_end])
+        crc32c_update(crc_lite, &plaintext_arena_crc_source[lite_end..full_end])
     } else {
         crc_lite
     };
     let crc_ultra = if ultra_end >= ARENA_OFFSET_ULTRA_END as usize {
-        crc32c_compute(&plaintext_arena_crc_source[..ultra_end])
+        crc32c_update(crc_full, &plaintext_arena_crc_source[full_end..ultra_end])
     } else {
         crc_full
     };

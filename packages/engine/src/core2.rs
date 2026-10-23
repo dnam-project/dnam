@@ -15,7 +15,7 @@
 use core::marker::PhantomData;
 
 use crate::container::ZohRescaledParams;
-use crate::math::{MathBackend, SimdVec4, f32_to_fp16_bits, fp16_bits_to_f32};
+use crate::math::{MathBackend, SimdVec4};
 use crate::memory::{AlignedFp16Block, DelayScratchStorage};
 
 /// Maximum number of FDN delay lines (`4` in `Lite`, `8` in `Full`/`Ultra`).
@@ -368,40 +368,32 @@ impl<'a, B: MathBackend> ModulatedUfdn<'a, B> {
         self.groups[g].tau0_target_samples[lane] = clamped_tau;
     }
 
-    /// Reads 4 `fp16` samples at integer delay `int_delay` for group `g` (`0` or `1`) and converts to `[f32; 4]`.
-    #[inline(always)]
-    fn read_fp16_group(&self, g: usize, lane: usize, read_idx: usize) -> f32 {
-        let blocks = self.delay_scratch.as_slice();
-        if blocks.is_empty() {
-            return 0.0;
-        }
-        // Frame `read_idx` occupies 8 u16 values; 4 frames per 32-u16 AlignedFp16Block
-        let blk_idx = read_idx >> 2;
-        let sub_frame = read_idx & 3;
-        let word_idx = sub_frame * 8 + g * 4 + lane;
-        let bits = blocks[blk_idx & (blocks.len() - 1)].0[word_idx];
-        fp16_bits_to_f32(bits)
-    }
-
-    /// Writes 4 `f32` samples for group `g` into the `fp16` ring buffer at `write_idx`.
+    /// Writes 4 `f32` samples for group `g` into the `fp16` ring buffer at `write_idx` via
+    /// hardware `B::f32x4_to_fp16x4` (`FCVTN` on `aarch64`).
     #[inline(always)]
     fn write_fp16_group(&mut self, g: usize, write_idx: usize, vals: &[f32; 4]) {
         let blocks = self.delay_scratch.as_slice_mut();
         if blocks.is_empty() {
             return;
         }
-        let blk_idx = write_idx >> 2;
+        let blk_idx = (write_idx >> 2) & (blocks.len() - 1);
         let sub_frame = write_idx & 3;
-        let base_word = sub_frame * 8 + g * 4;
-        let blk = &mut blocks[blk_idx & (blocks.len() - 1)].0;
-        for lane in 0..4 {
-            blk[base_word + lane] = f32_to_fp16_bits(vals[lane]);
-        }
+        let base_word = (sub_frame << 3) | ((g & 1) << 2);
+        let half_words = B::f32x4_to_fp16x4(vals);
+        blocks[blk_idx].0[base_word..base_word + 4].copy_from_slice(&half_words);
     }
 
-    /// Evaluates a 4-tap Cubic Lagrange fractional delay read (`CL-06`) across 4 FDN lines in group `g`.
+    /// Evaluates a 4-tap Cubic Lagrange fractional delay read (`CL-06`) across 4 FDN lines in group `g`
+    /// using hardware 4-lane `B::fp16x4_to_f32x4` (`FCVTL` on `aarch64`).
     #[inline(always)]
     fn read_cubic_lagrange_group(&self, g: usize, tau_samples: &[f32; 4]) -> [f32; 4] {
+        let blocks = self.delay_scratch.as_slice();
+        if blocks.is_empty() {
+            return [0.0; 4];
+        }
+        let blk_mask = blocks.len() - 1;
+        let g_bits = (g & 1) << 2;
+
         let max_delay = (self.ring_mask.saturating_sub(4)) as f32;
         let mut d_int = [0_usize; 4];
         let mut mu_arr = [0.0_f32; 4];
@@ -415,25 +407,39 @@ impl<'a, B: MathBackend> ModulatedUfdn<'a, B> {
         let mu_vec = B::Vec4::from_array(mu_arr);
         let (w_m1, w_0, w_p1, w_p2) = B::cubic_lagrange_weights_4ch(mu_vec);
 
-        let mut s_m1 = [0.0_f32; 4];
-        let mut s_0 = [0.0_f32; 4];
-        let mut s_p1 = [0.0_f32; 4];
-        let mut s_p2 = [0.0_f32; 4];
+        let mut bits_m1 = [0_u16; 4];
+        let mut bits_0 = [0_u16; 4];
+        let mut bits_p1 = [0_u16; 4];
+        let mut bits_p2 = [0_u16; 4];
 
         let w_pos = self.write_pos;
         let mask = self.ring_mask;
         for lane in 0..4 {
             let di = d_int[lane];
-            s_m1[lane] = self.read_fp16_group(g, lane, w_pos.wrapping_sub(di - 1) & mask);
-            s_0[lane] = self.read_fp16_group(g, lane, w_pos.wrapping_sub(di) & mask);
-            s_p1[lane] = self.read_fp16_group(g, lane, w_pos.wrapping_sub(di + 1) & mask);
-            s_p2[lane] = self.read_fp16_group(g, lane, w_pos.wrapping_sub(di + 2) & mask);
+            let lane_bits = g_bits | lane;
+
+            let r_m1 = w_pos.wrapping_sub(di - 1) & mask;
+            bits_m1[lane] = blocks[(r_m1 >> 2) & blk_mask].0[((r_m1 & 3) << 3) | lane_bits];
+
+            let r_0 = w_pos.wrapping_sub(di) & mask;
+            bits_0[lane] = blocks[(r_0 >> 2) & blk_mask].0[((r_0 & 3) << 3) | lane_bits];
+
+            let r_p1 = w_pos.wrapping_sub(di + 1) & mask;
+            bits_p1[lane] = blocks[(r_p1 >> 2) & blk_mask].0[((r_p1 & 3) << 3) | lane_bits];
+
+            let r_p2 = w_pos.wrapping_sub(di + 2) & mask;
+            bits_p2[lane] = blocks[(r_p2 >> 2) & blk_mask].0[((r_p2 & 3) << 3) | lane_bits];
         }
 
-        let mut acc = w_m1.mul(B::Vec4::from_array(s_m1));
-        acc = acc.fma(w_0, B::Vec4::from_array(s_0));
-        acc = acc.fma(w_p1, B::Vec4::from_array(s_p1));
-        acc = acc.fma(w_p2, B::Vec4::from_array(s_p2));
+        let s_m1 = B::fp16x4_to_f32x4(&bits_m1);
+        let s_0 = B::fp16x4_to_f32x4(&bits_0);
+        let s_p1 = B::fp16x4_to_f32x4(&bits_p1);
+        let s_p2 = B::fp16x4_to_f32x4(&bits_p2);
+
+        let mut acc = w_m1.mul(B::Vec4::load(&s_m1));
+        acc = acc.fma(w_0, B::Vec4::load(&s_0));
+        acc = acc.fma(w_p1, B::Vec4::load(&s_p1));
+        acc = acc.fma(w_p2, B::Vec4::load(&s_p2));
         acc.to_array()
     }
 
@@ -451,7 +457,7 @@ impl<'a, B: MathBackend> ModulatedUfdn<'a, B> {
         active_fdn_groups: usize,
     ) -> [f32; 4] {
         // Always record dry stereo into TZF reference ring buffer
-        let tzf_w = self.tzf_write_pos;
+        let tzf_w = self.tzf_write_pos & CORE2_TZF_RING_MASK;
         self.tzf_dry_ring[tzf_w] = [dry_left, dry_right];
         let tzf_delay = (self.tau_ref_host as usize).clamp(1, CORE2_TZF_RING_LEN - 1);
         let tzf_r = tzf_w.wrapping_sub(tzf_delay) & CORE2_TZF_RING_MASK;
@@ -463,41 +469,38 @@ impl<'a, B: MathBackend> ModulatedUfdn<'a, B> {
         }
 
         let groups = active_fdn_groups.clamp(1, 2);
-        let slew = self.delay_slew_pole;
-        let one_minus_slew = 1.0 - slew;
-        let ap_w = self.allpass_write_pos;
+        let slew_v = B::Vec4::splat(self.delay_slew_pole);
+        let one_minus_slew_v = B::Vec4::splat(1.0 - self.delay_slew_pole);
+        let four_v = B::Vec4::splat(4.0);
+        let ap_w = self.allpass_write_pos & CORE2_ALLPASS_RING_MASK;
 
         let mut u_ap_out = [[0.0_f32; 4]; 2];
         let mut wet_l = 0.0_f32;
         let mut wet_r = 0.0_f32;
+        let (mod_chunks, _) = delay_mod_samples.as_chunks::<4>();
 
         // 1. Fractional delay read + 128-sample switch crossfade (CL-06, CL-07) + Schroeder all-pass (CL-08)
         for g in 0..groups {
+            let tgt_v = B::Vec4::load(&self.groups[g].tau0_target_samples);
+            let sm_prev_v = B::Vec4::load(&self.tau0_smoothed[g]);
+            let sm_v = sm_prev_v.mul(slew_v).fma(one_minus_slew_v, tgt_v);
+            sm_v.store(&mut self.tau0_smoothed[g]);
             let mut tau_eff = [0.0_f32; 4];
-            for lane in 0..4 {
-                let tgt = self.groups[g].tau0_target_samples[lane];
-                let sm = slew * self.tau0_smoothed[g][lane] + one_minus_slew * tgt;
-                self.tau0_smoothed[g][lane] = sm;
-                tau_eff[lane] = (sm + delay_mod_samples[g * 4 + lane]).max(4.0);
-            }
+            sm_v.add(B::Vec4::load(&mod_chunks[g]))
+                .max(four_v)
+                .store(&mut tau_eff);
 
             let mut d_read = self.read_cubic_lagrange_group(g, &tau_eff);
 
-            // Check if any line has an active 128-sample raised-cosine switch crossfade (CL-07)
-            let mut any_xfade = false;
-            for lane in 0..4 {
-                if self.xfade_remaining[g][lane] > 0 {
-                    any_xfade = true;
-                }
-            }
-            if any_xfade {
+            // Single bitwise OR check for active 128-sample raised-cosine switch crossfade (CL-07)
+            let xr = &self.xfade_remaining[g];
+            if (xr[0] | xr[1] | xr[2] | xr[3]) != 0 {
                 let d_old = self.read_cubic_lagrange_group(g, &self.xfade_old_tau[g]);
                 for lane in 0..4 {
                     let rem = self.xfade_remaining[g][lane];
                     if rem > 0 {
                         let prog = 1.0_f32 - (rem as f32) * self.inv_xfade_samples_host;
                         let p_clamped = prog.clamp(0.0, 1.0);
-                        // Smooth C^1 Hermite/raised-cosine blend w(p) = p^2 (3 - 2p)
                         let w_new = p_clamped * p_clamped * (3.0 - 2.0 * p_clamped);
                         d_read[lane] = (1.0 - w_new) * d_old[lane] + w_new * d_read[lane];
                         self.xfade_remaining[g][lane] = rem - 1;

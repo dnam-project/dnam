@@ -280,6 +280,128 @@ pub trait MathBackend: Copy + Clone + Send + Sync + 'static {
         vy.store(y_out);
     }
 
+    /// Core 1A (`CL-01`, `CL-02`): Register-resident 4-channel `PolyADAA` activation step with
+    /// zero-DC linear bias removal (`- alpha_c * b_conv_c`), returning `(y_zero_dc, |u_curr|)` directly
+    /// in SIMD registers without intermediate stack stores/loads.
+    #[inline(always)]
+    #[allow(clippy::too_many_arguments)]
+    fn poly_adaa_step_vec4(
+        vx: Self::Vec4,
+        b_conv: &[f32; 4],
+        alpha: &[f32; 4],
+        beta: &[f32; 4],
+        delta: &[f32; 4],
+        r_ac: f32,
+        u_prev: &mut [f32; 4],
+        a_prev: &mut [f32; 4],
+        m_dc: &mut [f32; 4],
+    ) -> (Self::Vec4, Self::Vec4) {
+        let vb_conv = Self::Vec4::load(b_conv);
+        let valpha = Self::Vec4::load(alpha);
+        let vbeta = Self::Vec4::load(beta);
+        let vdelta = Self::Vec4::load(delta);
+        let vu_prev = Self::Vec4::load(u_prev);
+        let va_prev = Self::Vec4::load(a_prev);
+        let vm_dc = Self::Vec4::load(m_dc);
+
+        let vu_curr = vx
+            .mul(Self::Vec4::splat(2.0 / 3.0))
+            .clamp(Self::Vec4::splat(-1.0), Self::Vec4::splat(1.0));
+
+        let va_curr = Self::poly_adaa_algebraic_4ch(vu_prev, vu_curr, vbeta, vdelta);
+
+        let vy_nl = va_curr
+            .mul(Self::Vec4::splat(0.875))
+            .fma(Self::Vec4::splat(0.125), va_prev);
+
+        let vr_ac = Self::Vec4::splat(r_ac);
+        let vone_minus_rac = Self::Vec4::splat(1.0 - r_ac);
+        let vm_dc_new = vm_dc.mul(vr_ac).fma(vone_minus_rac, vy_nl);
+
+        let vy = vy_nl.sub(vm_dc_new).fma(valpha, vx).fms(valpha, vb_conv);
+
+        vu_curr.store(u_prev);
+        va_curr.store(a_prev);
+        vm_dc_new.store(m_dc);
+        (vy, vu_curr.abs())
+    }
+
+    /// Core 1A: 4x4 matrix-vector FMA tile `acc + sum_{c=0..3} x[c] * mat[c]`.
+    #[inline(always)]
+    fn fma_mat4x4_vec4(acc: Self::Vec4, mat: &[[f32; 4]; 4], x: &[f32; 4]) -> Self::Vec4 {
+        let mut out = acc;
+        out = out.fma(Self::Vec4::splat(x[0]), Self::Vec4::load(&mat[0]));
+        out = out.fma(Self::Vec4::splat(x[1]), Self::Vec4::load(&mat[1]));
+        out = out.fma(Self::Vec4::splat(x[2]), Self::Vec4::load(&mat[2]));
+        out = out.fma(Self::Vec4::splat(x[3]), Self::Vec4::load(&mat[3]));
+        out
+    }
+
+    /// Core 1A (`Lite`, Tier 0): 6-tap dilated convolution over 1 input group (`6 × 4×4` tiles)
+    /// using dual accumulators (`acc0`, `acc1`) to hide FMA pipeline latency.
+    #[inline(always)]
+    fn conv6_taps_1group(
+        bias: Self::Vec4,
+        w_tiles: &[[[f32; 4]; 4]; 6],
+        h_taps: &[&[[f32; 4]; 3]; 6],
+    ) -> Self::Vec4 {
+        let mut acc0 = bias;
+        let mut acc1 = Self::Vec4::zero();
+        acc0 = Self::fma_mat4x4_vec4(acc0, &w_tiles[0], &h_taps[0][0]);
+        acc1 = Self::fma_mat4x4_vec4(acc1, &w_tiles[1], &h_taps[1][0]);
+        acc0 = Self::fma_mat4x4_vec4(acc0, &w_tiles[2], &h_taps[2][0]);
+        acc1 = Self::fma_mat4x4_vec4(acc1, &w_tiles[3], &h_taps[3][0]);
+        acc0 = Self::fma_mat4x4_vec4(acc0, &w_tiles[4], &h_taps[4][0]);
+        acc1 = Self::fma_mat4x4_vec4(acc1, &w_tiles[5], &h_taps[5][0]);
+        acc0.add(acc1)
+    }
+
+    /// Core 1A (`Full`, Tier 1): 6-tap dilated convolution over 2 input groups (`12 × 4×4` tiles)
+    /// using quad accumulators (`acc0..acc3`) to saturate dual/quad SIMD FMA pipelines.
+    #[inline(always)]
+    fn conv6_taps_2groups(
+        bias: Self::Vec4,
+        w_tiles: &[[[f32; 4]; 4]; 12],
+        h_taps: &[&[[f32; 4]; 3]; 6],
+    ) -> Self::Vec4 {
+        let mut acc0 = bias;
+        let mut acc1 = Self::Vec4::zero();
+        let mut acc2 = Self::Vec4::zero();
+        let mut acc3 = Self::Vec4::zero();
+        for pair in 0..3 {
+            let t_even = pair * 2;
+            let t_odd = pair * 2 + 1;
+            let h_e = h_taps[t_even];
+            let h_o = h_taps[t_odd];
+            acc0 = Self::fma_mat4x4_vec4(acc0, &w_tiles[t_even * 2], &h_e[0]);
+            acc1 = Self::fma_mat4x4_vec4(acc1, &w_tiles[t_even * 2 + 1], &h_e[1]);
+            acc2 = Self::fma_mat4x4_vec4(acc2, &w_tiles[t_odd * 2], &h_o[0]);
+            acc3 = Self::fma_mat4x4_vec4(acc3, &w_tiles[t_odd * 2 + 1], &h_o[1]);
+        }
+        acc0.add(acc1).add(acc2.add(acc3))
+    }
+
+    /// Core 1A (`Ultra`, Tier 2): 6-tap dilated convolution over 3 input groups (`18 × 4×4` tiles)
+    /// using 3-way group accumulators (`acc0..acc2`) to break FMA dependency chains.
+    #[inline(always)]
+    fn conv6_taps_3groups(
+        bias: Self::Vec4,
+        w_tiles: &[[[f32; 4]; 4]; 18],
+        h_taps: &[&[[f32; 4]; 3]; 6],
+    ) -> Self::Vec4 {
+        let mut acc0 = bias;
+        let mut acc1 = Self::Vec4::zero();
+        let mut acc2 = Self::Vec4::zero();
+        for tap in 0..6 {
+            let ht = h_taps[tap];
+            let base = tap * 3;
+            acc0 = Self::fma_mat4x4_vec4(acc0, &w_tiles[base], &ht[0]);
+            acc1 = Self::fma_mat4x4_vec4(acc1, &w_tiles[base + 1], &ht[1]);
+            acc2 = Self::fma_mat4x4_vec4(acc2, &w_tiles[base + 2], &ht[2]);
+        }
+        acc0.add(acc1).add(acc2)
+    }
+
     /// Core 1A: 6-tap dilated causal convolution tile for `Lite` (`4 out × 4 in`).
     /// `weights` is stored in `[tap: 6][in_lane: 4][out_lane: 4]` SIMD column-major order so
     /// each input sample broadcasts across 4 output lanes via a single vector FMA.
@@ -713,70 +835,77 @@ pub trait MathBackend: Copy + Clone + Send + Sync + 'static {
     /// Evaluates the 16-tap 4-channel (`64` `f32`) dot product for the collapsed output head.
     #[inline(always)]
     fn dot_product_16taps_4ch(taps_64: &[f32; 64], weights_64: &[f32; 64]) -> f32 {
+        let (t_chunks, _) = taps_64.as_chunks::<4>();
+        let (w_chunks, _) = weights_64.as_chunks::<4>();
         let mut acc0 = Self::Vec4::zero();
         let mut acc1 = Self::Vec4::zero();
         let mut acc2 = Self::Vec4::zero();
         let mut acc3 = Self::Vec4::zero();
-        let mut i = 0;
-        while i < 64 {
-            let t0 = Self::Vec4::from_array([
-                taps_64[i],
-                taps_64[i + 1],
-                taps_64[i + 2],
-                taps_64[i + 3],
-            ]);
-            let w0 = Self::Vec4::from_array([
-                weights_64[i],
-                weights_64[i + 1],
-                weights_64[i + 2],
-                weights_64[i + 3],
-            ]);
-            acc0 = acc0.fma(t0, w0);
-
-            let t1 = Self::Vec4::from_array([
-                taps_64[i + 4],
-                taps_64[i + 5],
-                taps_64[i + 6],
-                taps_64[i + 7],
-            ]);
-            let w1 = Self::Vec4::from_array([
-                weights_64[i + 4],
-                weights_64[i + 5],
-                weights_64[i + 6],
-                weights_64[i + 7],
-            ]);
-            acc1 = acc1.fma(t1, w1);
-
-            let t2 = Self::Vec4::from_array([
-                taps_64[i + 8],
-                taps_64[i + 9],
-                taps_64[i + 10],
-                taps_64[i + 11],
-            ]);
-            let w2 = Self::Vec4::from_array([
-                weights_64[i + 8],
-                weights_64[i + 9],
-                weights_64[i + 10],
-                weights_64[i + 11],
-            ]);
-            acc2 = acc2.fma(t2, w2);
-
-            let t3 = Self::Vec4::from_array([
-                taps_64[i + 12],
-                taps_64[i + 13],
-                taps_64[i + 14],
-                taps_64[i + 15],
-            ]);
-            let w3 = Self::Vec4::from_array([
-                weights_64[i + 12],
-                weights_64[i + 13],
-                weights_64[i + 14],
-                weights_64[i + 15],
-            ]);
-            acc3 = acc3.fma(t3, w3);
-            i += 16;
+        let mut c = 0;
+        while c < 16 {
+            acc0 = acc0.fma(
+                Self::Vec4::load(&t_chunks[c]),
+                Self::Vec4::load(&w_chunks[c]),
+            );
+            acc1 = acc1.fma(
+                Self::Vec4::load(&t_chunks[c + 1]),
+                Self::Vec4::load(&w_chunks[c + 1]),
+            );
+            acc2 = acc2.fma(
+                Self::Vec4::load(&t_chunks[c + 2]),
+                Self::Vec4::load(&w_chunks[c + 2]),
+            );
+            acc3 = acc3.fma(
+                Self::Vec4::load(&t_chunks[c + 3]),
+                Self::Vec4::load(&w_chunks[c + 3]),
+            );
+            c += 4;
         }
         acc0.add(acc1).add(acc2.add(acc3)).horizontal_sum()
+    }
+
+    /// Evaluates a fused stereo (`L` and `R`) 16-tap 4-channel (`64` `f32`) dot product in a single
+    /// pass over `taps_64`, halving feature-buffer memory loads.
+    #[inline(always)]
+    fn dot_product_16taps_4ch_stereo(
+        taps_64: &[f32; 64],
+        weights_l: &[f32; 64],
+        weights_r: &[f32; 64],
+    ) -> [f32; 2] {
+        let (t_chunks, _) = taps_64.as_chunks::<4>();
+        let (wl_chunks, _) = weights_l.as_chunks::<4>();
+        let (wr_chunks, _) = weights_r.as_chunks::<4>();
+        let mut l0 = Self::Vec4::zero();
+        let mut l1 = Self::Vec4::zero();
+        let mut l2 = Self::Vec4::zero();
+        let mut l3 = Self::Vec4::zero();
+        let mut r0 = Self::Vec4::zero();
+        let mut r1 = Self::Vec4::zero();
+        let mut r2 = Self::Vec4::zero();
+        let mut r3 = Self::Vec4::zero();
+        let mut c = 0;
+        while c < 16 {
+            let vt0 = Self::Vec4::load(&t_chunks[c]);
+            l0 = l0.fma(vt0, Self::Vec4::load(&wl_chunks[c]));
+            r0 = r0.fma(vt0, Self::Vec4::load(&wr_chunks[c]));
+
+            let vt1 = Self::Vec4::load(&t_chunks[c + 1]);
+            l1 = l1.fma(vt1, Self::Vec4::load(&wl_chunks[c + 1]));
+            r1 = r1.fma(vt1, Self::Vec4::load(&wr_chunks[c + 1]));
+
+            let vt2 = Self::Vec4::load(&t_chunks[c + 2]);
+            l2 = l2.fma(vt2, Self::Vec4::load(&wl_chunks[c + 2]));
+            r2 = r2.fma(vt2, Self::Vec4::load(&wr_chunks[c + 2]));
+
+            let vt3 = Self::Vec4::load(&t_chunks[c + 3]);
+            l3 = l3.fma(vt3, Self::Vec4::load(&wl_chunks[c + 3]));
+            r3 = r3.fma(vt3, Self::Vec4::load(&wr_chunks[c + 3]));
+            c += 4;
+        }
+        [
+            l0.add(l1).add(l2.add(l3)).horizontal_sum(),
+            r0.add(r1).add(r2.add(r3)).horizontal_sum(),
+        ]
     }
 
     /// Evaluates the 4-channel Radial-Polar `SelectiveRgLru` layer (`CL-03`..`CL-05`).
@@ -797,6 +926,39 @@ pub trait MathBackend: Copy + Clone + Send + Sync + 'static {
         y_out: &mut [f32; 4],
     ) {
         let vx = Self::Vec4::load(x);
+        let vy = Self::selective_rglru_step_vec4(
+            vx,
+            r_low,
+            dr_span,
+            w_sel,
+            b_gamma_norm,
+            c_real,
+            c_imag,
+            u_rot_cos,
+            u_rot_sin,
+            z_re,
+            z_im,
+        );
+        vy.store(y_out);
+    }
+
+    /// Register-resident 4-channel Radial-Polar `SelectiveRgLru` step (`CL-03`..`CL-05`),
+    /// returning `y_out` directly in a SIMD register.
+    #[inline(always)]
+    #[allow(clippy::too_many_arguments)]
+    fn selective_rglru_step_vec4(
+        vx: Self::Vec4,
+        r_low: &[f32; 4],
+        dr_span: &[f32; 4],
+        w_sel: &[f32; 4],
+        b_gamma_norm: &[f32; 4],
+        c_real: &[f32; 4],
+        c_imag: &[f32; 4],
+        u_rot_cos: &[f32; 4],
+        u_rot_sin: &[f32; 4],
+        z_re: &mut [f32; 4],
+        z_im: &mut [f32; 4],
+    ) -> Self::Vec4 {
         let vr_low = Self::Vec4::load(r_low);
         let vdr = Self::Vec4::load(dr_span);
         let vw_sel = Self::Vec4::load(w_sel);
@@ -830,7 +992,7 @@ pub trait MathBackend: Copy + Clone + Send + Sync + 'static {
 
         vz_re_new.store(z_re);
         vz_im_new.store(z_im);
-        vy.store(y_out);
+        vy
     }
 
     /// Evaluates the 4-tap Cubic Lagrange basis weights $(w_{-1}, w_0, w_{+1}, w_{+2})$ across 4 lanes (`CL-06`).
