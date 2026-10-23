@@ -7,21 +7,21 @@
 
 ## 1. Monorepo Target Deliverables & Tooling Rules
 
-All 6 packages live under `packages/*`, orchestrated by root manifests (`pyproject.toml`, `Cargo.toml`, `package.json`), with canonical specs in `docs/`:
-- **Rust SIMD Engine (`packages/engine/`):** Pure Rust zero-allocation SIMD core (`dnam-engine`), 16-byte aligned (`C=4`/`C=8`/`C=12`), `FTZ`/`DAZ`, and **zero `FSQRT`, `FDIV`, or `libm` calls** at $48\text{ kHz}$ and $3\text{ kHz}$.
+All 6 packages live under `packages/*`, orchestrated by root manifests (`pyproject.toml`, `Cargo.toml`, `package.json`), with specs in `docs/`:
+- **Rust Engine (`packages/engine/`):** Zero-allocation SIMD core (`dnam-engine`), 16B/64B aligned (`C=4`/`C=8`/`C=12`), `FTZ`/`DAZ`, and **zero `FSQRT`, `FDIV`, or `libm` calls** at $48\text{ kHz}$ and $3\text{ kHz}$.
 - **Python Engine (`packages/python/`):** `PyO3`/`maturin` wheel wrapping `packages/engine` with zero-copy NumPy inference and Reference DSP bindings.
 - **Node.js Engine (`packages/nodejs/`):** TypeScript SDK + WASM SIMD128 / N-API bindings for `packages/engine` + `DnamAudioWorkletProcessor`.
-- **PyTorch Trainer (`packages/trainer/`):** Manage with **`uv`** (`uv run pytest`, `uv run ruff check`, `uv run ruff format --check`, `uv run pyrefly check`). Target Python 3.14 (`py314`, `preset = "strict"`, no `# type: ignore`). Imports `packages/python` as Reference DSP.
-- **Audio Plugin (`packages/plugin/`):** Rust VST3/CLAP/Standalone plugin wrapping `packages/engine` with lock-free `.dnam` bindings and ZOH rescaling ($44.1\text{--}96\text{ kHz}$).
-- **Web Docs & Studio (`packages/web/`, `docs/`):** Astro + Starlight + React site mounting `docs/*.md` with interactive DSP visualizers and a live React + WASM Modeler Plugin.
+- **PyTorch Trainer (`packages/trainer/`):** Manage with **`uv`** (`uv run pytest`, `uv run ruff check`, `uv run ruff format --check`, `uv run pyrefly check`). Target Python 3.14 (`py314`, `preset = "strict"`, no `# type: ignore`).
+- **Audio Plugin (`packages/plugin/`):** Rust VST3/CLAP/Standalone plugin wrapping `packages/engine` with lock-free `.dnam` bindings and ZOH ($44.1\text{--}96\text{ kHz}$).
+- **Web Docs & Studio (`packages/web/`, `docs/`):** Astro + Starlight + React site mounting `docs/*.md` with interactive DSP visualizers and WASM Modeler Plugin.
 - **Git & CLA:** Sign off commits via `git commit -s` per [`CLA.md`](CLA.md) and [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 ## 2. Core Cross-Cutting Architectural Invariants
 
 1. **Zero `FSQRT` / `FDIV` in Real-Time Loops:** Use division-free algebraic `PolyADAA` ($m_n, d_n$ factorization) with $1\times$ passive B-spline weights $(0.875, 0.125)$ and the $3\text{ kHz}$ 4-FMA + Newton rotor ($y_1 = 1.5 - 0.5(\hat{c}^2 + \hat{s}^2)$).
-2. **Unconditional BIBO, Lyapunov, $\mathcal{H}_2$ & Zero-DC Stability:** Enforce all bounds in [`clamp_and_audit_registry.md`](docs/clamp_and_audit_registry.md) ($r_c \le 0.9995$, $g_{\text{lin},m} \le 0.9990$, $|a_{\text{diff},m}| \le 0.75$, $\tau_m \ge 4.0$, passband-normalized DC blocker $\alpha_{\text{dc}} = \frac{1+R_{\text{dc}}}{2}$, and unity-slope cubic loop saturator $S'(0) \equiv 1.0000$).
-3. **Non-Stop 3-Phase Control Clamping:** Training never pauses for user input. Automatically clamp unobserved ranges (`[CLAMP-RANGE]`), switches (`[CLAMP-SWITCH]`), and unstable corners (`[CLAMP-STABILITY]`, `[CLAMP-DYNAMIC]`, `[CLAMP-HEAD-GAIN]`).
-4. **Factorized Kronecker `.dnam-ckpt` Resume:** Store per-stem sufficient statistics $\{\mathbf{G}_{\text{audio}}^{(s)}, \mathbf{C}_{\text{audio}}^{(s)}\}$ ($130\text{ KB/stem}$) so new stems, range expansions, and SVD rotations assemble in $<1\text{ ms}$.
+2. **Unconditional BIBO, Lyapunov, $\mathcal{H}_2$ & Zero-DC Stability:** Enforce all bounds in [`clamp_and_audit_registry.md`](docs/clamp_and_audit_registry.md) ($r_c \le 0.9995$, $g_{\text{lin},m} \le 0.9990$, $|a_{\text{diff},m}| \le 0.75$, $\tau_m \ge 4.0$, $\alpha_{\text{dc}} = \frac{1+R_{\text{dc}}}{2}$, $S'(0) \equiv 1.0000$).
+3. **Non-Stop 3-Phase Control Clamping:** Automatically clamp unobserved ranges (`[CLAMP-RANGE]`), switches (`[CLAMP-SWITCH]`), and corners (`[CLAMP-STABILITY]`, `[CLAMP-DYNAMIC]`, `[CLAMP-HEAD-GAIN]`) without pausing training.
+4. **Hybrid Binary Container & `.dnam-ckpt` Resume:** Store 64B-aligned Tier-Delta `SoA` weights (`DNAM`/`DNCK`, $0$ zeros), `Ed25519` signatures, and `uplo='U'` packed stem stats $\{\operatorname{pack}_{\text{U}}(\mathbf{G}_{\text{audio}}^{(s)}), \mathbf{C}_{\text{audio}}^{(s)}\}$ ($66.5\text{ KB/stem}$ `Full`) for $<1\text{ ms}$ assembly.
 
 ## 3. Progressive Disclosure & Documentation Discovery Map
 
@@ -34,7 +34,7 @@ All 6 packages live under `packages/*`, orchestrated by root manifests (`pyproje
 | **Parametric Control Bus** | [`docs/parametric_control_bus.md`](docs/parametric_control_bus.md) |
 | **4-Stage Trainer & `.dnam-ckpt`** | [`docs/training_and_iterative_resume.md`](docs/training_and_iterative_resume.md) |
 | **3-Phase Audit & Clamps (`CL-XX`)** | [`docs/clamp_and_audit_registry.md`](docs/clamp_and_audit_registry.md) |
-| **`.dnam` Schema & ZOH** | [`docs/dnam_container_schema.md`](docs/dnam_container_schema.md) |
+| **`.dnam` Schema, ZOH & Marketplace** | [`docs/dnam_container_schema.md`](docs/dnam_container_schema.md), [`docs/digital_marketplace_and_provenance.md`](docs/digital_marketplace_and_provenance.md) |
 | **Verification & Guardrails** | [`scripts/verify_dnam_architecture.py`](scripts/verify_dnam_architecture.py), [`docs/verification_and_guardrails.md`](docs/verification_and_guardrails.md) |
 
 ## 4. Maintaining `AGENTS.md` & Documentation

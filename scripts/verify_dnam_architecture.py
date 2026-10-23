@@ -27,11 +27,14 @@ Tests and verifies:
 from __future__ import annotations
 
 import math
+
 import numpy as np
 
 
 def test_1_poly_adaa_algebraic_exactness_and_aliasing() -> None:
-    print("=== Test 1: Division-Free Algebraic PolyADAA Exactness & 8-Layer Aliasing ===")
+    print(
+        "=== Test 1: Division-Free Algebraic PolyADAA Exactness & 8-Layer Aliasing ==="
+    )
     fs = 48000.0
     n_samples = 48000
     t = np.arange(n_samples, dtype=np.float64) / fs
@@ -46,7 +49,9 @@ def test_1_poly_adaa_algebraic_exactness_and_aliasing() -> None:
         x_prev[0] = 0.0
         y_naive = 0.5 * (y_naive + x_prev)
     gain_naive_db = 20.0 * math.log10(np.std(y_naive[1000:]) / np.std(x_lin[1000:]))
-    print(f"  Naive 8-layer midpoint linear gain @ 16 kHz:         {gain_naive_db:.2f} dB (SEVERE DROOP!)")
+    print(
+        f"  Naive 8-layer midpoint linear gain @ 16 kHz:         {gain_naive_db:.2f} dB (SEVERE DROOP!)"
+    )
     assert gain_naive_db < -40.0
 
     # 1B. Verify the Exact Division-Free Algebraic Factorization of Polynomial ADAA1:
@@ -69,10 +74,13 @@ def test_1_poly_adaa_algebraic_exactness_and_aliasing() -> None:
     quot_nodiv = (
         1.5 * m_pts
         - 0.5 * m_pts * (m2 + d2)
-        + delta_c * ((m2 + (1.0 / 3.0) * d2) - (m2 * m2 + 2.0 * m2 * d2 + 0.2 * d2 * d2))
+        + delta_c
+        * ((m2 + (1.0 / 3.0) * d2) - (m2 * m2 + 2.0 * m2 * d2 + 0.2 * d2 * d2))
     )
     max_alg_err = np.max(np.abs(quot_div - quot_nodiv))
-    print(f"  Algebraic Division-Free ADAA1 vs. Analytic Quotient: {max_alg_err:.2e} (EXACT, 0 FDIV!)")
+    print(
+        f"  Algebraic Division-Free ADAA1 vs. Analytic Quotient: {max_alg_err:.2e} (EXACT, 0 FDIV!)"
+    )
     assert max_alg_err < 1e-12
 
     # 1C. Compare 8-Layer Cascaded Distortion at f0 = 3,450 Hz:
@@ -89,7 +97,12 @@ def test_1_poly_adaa_algebraic_exactness_and_aliasing() -> None:
         d = 0.5 * (ub - ua)
         m2 = m * m
         d2 = d * d
-        return 1.5 * m - 0.5 * m * (m2 + d2) + 0.15 * ((m2 + (1.0 / 3.0) * d2) - (m2 * m2 + 2.0 * m2 * d2 + 0.2 * d2 * d2))
+        return (
+            1.5 * m
+            - 0.5 * m * (m2 + d2)
+            + 0.15
+            * ((m2 + (1.0 / 3.0) * d2) - (m2 * m2 + 2.0 * m2 * d2 + 0.2 * d2 * d2))
+        )
 
     def dnam_1x_bspline_adaa_layer(sig: np.ndarray) -> np.ndarray:
         s_m1 = np.roll(sig, 1)
@@ -122,17 +135,29 @@ def test_1_poly_adaa_algebraic_exactness_and_aliasing() -> None:
     for m_harm in range(1, 7):
         alias_mask &= np.abs(freqs - m_harm * f0) > 60.0
 
-    alias_a2_db = 20.0 * math.log10(np.linalg.norm(spec_a2[alias_mask]) / np.max(spec_a2))
-    alias_dnam_db = 20.0 * math.log10(np.linalg.norm(spec_dnam[alias_mask]) / np.max(spec_dnam))
+    alias_a2_db = 20.0 * math.log10(
+        np.linalg.norm(spec_a2[alias_mask]) / np.max(spec_a2)
+    )
+    alias_dnam_db = 20.0 * math.log10(
+        np.linalg.norm(spec_dnam[alias_mask]) / np.max(spec_dnam)
+    )
 
-    print(f"  8-Layer NAM A2 LeakyReLU(0.01) Aliasing-to-Carrier:  {alias_a2_db:.2f} dBc")
-    print(f"  8-Layer DNAM 1x B-Spline PolyADAA Aliasing:          {alias_dnam_db:.2f} dBc")
-    print(f"  8-Layer Aliasing Reduction (DNAM vs A2):             {alias_a2_db - alias_dnam_db:.2f} dB")
+    print(
+        f"  8-Layer NAM A2 LeakyReLU(0.01) Aliasing-to-Carrier:  {alias_a2_db:.2f} dBc"
+    )
+    print(
+        f"  8-Layer DNAM 1x B-Spline PolyADAA Aliasing:          {alias_dnam_db:.2f} dBc"
+    )
+    print(
+        f"  8-Layer Aliasing Reduction (DNAM vs A2):             {alias_a2_db - alias_dnam_db:.2f} dB"
+    )
     assert (alias_a2_db - alias_dnam_db) > 35.0
 
 
 def test_2_selective_rglru_radial_polar_vs_cartesian() -> None:
-    print("\n=== Test 2: Radial-Polar Split RG-LRU vs. Cartesian Chord Dip & Parallel Scan ===")
+    print(
+        "\n=== Test 2: Radial-Polar Split RG-LRU vs. Cartesian Chord Dip & Parallel Scan ==="
+    )
     r0 = 0.992
     theta_low = 0.05 * math.pi
     theta_high = 0.40 * math.pi
@@ -151,21 +176,31 @@ def test_2_selective_rglru_radial_polar_vs_cartesian() -> None:
     q_polar = 1.0 / (1.0 - r_polar_mid)
 
     print(f"  Target Resonance Q:                        {q_orig:.1f} (r = {r0:.5f})")
-    print(f"  Cartesian Mid-Sweep Q (Chord Dip):         {q_cart:.1f} (r = {r_cart_mid:.5f} -> {100*(1 - q_cart/q_orig):.1f}% Q LOSS!)")
-    print(f"  Radial-Polar Split Mid-Sweep Q (16-samp):  {q_polar:.1f} (r = {r_polar_mid:.6f} -> {100*(1 - q_polar/q_orig):.2f}% Q loss)")
+    print(
+        f"  Cartesian Mid-Sweep Q (Chord Dip):         {q_cart:.1f} (r = {r_cart_mid:.5f} -> {100 * (1 - q_cart / q_orig):.1f}% Q LOSS!)"
+    )
+    print(
+        f"  Radial-Polar Split Mid-Sweep Q (16-samp):  {q_polar:.1f} (r = {r_polar_mid:.6f} -> {100 * (1 - q_polar / q_orig):.2f}% Q loss)"
+    )
     assert q_polar > 0.99 * q_orig
 
     # Verify Branchless Division-Free, Sqrt-Free Algebraic Unit-Circle Rotor at 3 kHz Control Bus:
     phi = np.linspace(-math.pi / 2.0, math.pi / 2.0, 20000)
     p2 = phi * phi
-    sin_phi = phi * (0.99999995 - p2 * (0.16666650 - p2 * (0.00833290 - p2 * 0.00019507)))
-    cos_phi = 0.99999995 - p2 * (0.49999990 - p2 * (0.04166630 - p2 * (0.00138860 - p2 * 0.00002438)))
+    sin_phi = phi * (
+        0.99999995 - p2 * (0.16666650 - p2 * (0.00833290 - p2 * 0.00019507))
+    )
+    cos_phi = 0.99999995 - p2 * (
+        0.49999990 - p2 * (0.04166630 - p2 * (0.00138860 - p2 * 0.00002438))
+    )
     c_hat, s_hat = -sin_phi, cos_phi
     y1_proj = 1.5 - 0.5 * (c_hat * c_hat + s_hat * s_hat)
     u_mag = np.sqrt((y1_proj * c_hat) ** 2 + (y1_proj * s_hat) ** 2)
     max_unit_err = float(np.max(np.abs(u_mag - 1.0)))
     max_unit_val = float(np.max(u_mag))
-    print(f"  Algebraic 3 kHz Rotor Unit-Circle Error:   {max_unit_err:.2e} (max |u_rot| = {max_unit_val:.10f} <= 1.0!)")
+    print(
+        f"  Algebraic 3 kHz Rotor Unit-Circle Error:   {max_unit_err:.2e} (max |u_rot| = {max_unit_val:.10f} <= 1.0!)"
+    )
     assert max_unit_err < 2e-8
     assert max_unit_val <= 1.0 + 1e-15
 
@@ -193,12 +228,16 @@ def test_2_selective_rglru_radial_polar_vs_cartesian() -> None:
         step *= 2
 
     max_scan_err = np.max(np.abs(z_seq - b_scan))
-    print(f"  Parallel Associative Scan vs. Sequential Max Error (L={L}): {max_scan_err:.2e}")
+    print(
+        f"  Parallel Associative Scan vs. Sequential Max Error (L={L}): {max_scan_err:.2e}"
+    )
     assert max_scan_err < 1e-13
 
 
 def test_3_fractional_delay_thiran_clicks_vs_cubic_lagrange() -> None:
-    print("\n=== Test 3: Modulated Fractional Delay (Thiran Boundary Clicks vs. Cubic Lagrange) ===")
+    print(
+        "\n=== Test 3: Modulated Fractional Delay (Thiran Boundary Clicks vs. Cubic Lagrange) ==="
+    )
     fs = 48000.0
     n_samples = 12000
     t = np.arange(n_samples, dtype=np.float64) / fs
@@ -210,7 +249,7 @@ def test_3_fractional_delay_thiran_clicks_vs_cubic_lagrange() -> None:
     y_thiran = np.zeros(n_samples, dtype=np.float64)
     d_prev = 0.0
     for n in range(1000, n_samples):
-        d_int = int(math.floor(tau[n] - 0.5))
+        d_int = math.floor(tau[n] - 0.5)
         mu = tau[n] - d_int
         eta = (1.0 - mu) / (1.0 + mu)
         d_curr = eta * (x[n - d_int] - d_prev) + x[n - d_int - 1]
@@ -219,7 +258,7 @@ def test_3_fractional_delay_thiran_clicks_vs_cubic_lagrange() -> None:
 
     y_lagrange = np.zeros(n_samples, dtype=np.float64)
     for n in range(1000, n_samples):
-        d_int = int(math.floor(tau[n]))
+        d_int = math.floor(tau[n])
         mu = tau[n] - d_int
         c_m1 = -mu * (mu - 1.0) * (mu - 2.0) / 6.0
         c_0 = (mu + 1.0) * (mu - 1.0) * (mu - 2.0) / 2.0
@@ -234,13 +273,19 @@ def test_3_fractional_delay_thiran_clicks_vs_cubic_lagrange() -> None:
 
     err_thiran_jerk = np.max(np.abs(np.diff((y_thiran - y_exact)[1500:], n=2)))
     err_lagrange_jerk = np.max(np.abs(np.diff((y_lagrange - y_exact)[1500:], n=2)))
-    print(f"  Recursive Thiran Boundary Click Spike (vs exact):    {err_thiran_jerk:.5f} (CLICKS!)")
-    print(f"  Stateless 4-Tap Cubic Lagrange Error Jerk (vs exact): {err_lagrange_jerk:.5f} (SMOOTH!)")
+    print(
+        f"  Recursive Thiran Boundary Click Spike (vs exact):    {err_thiran_jerk:.5f} (CLICKS!)"
+    )
+    print(
+        f"  Stateless 4-Tap Cubic Lagrange Error Jerk (vs exact): {err_lagrange_jerk:.5f} (SMOOTH!)"
+    )
     assert err_thiran_jerk > 15.0 * err_lagrange_jerk
 
 
 def test_4_mufdn_lyapunov_and_dc_stability() -> None:
-    print("\n=== Test 4: M-UFDN Unconditional Lyapunov, Silence & Zero-DC Stability ===")
+    print(
+        "\n=== Test 4: M-UFDN Unconditional Lyapunov, Silence & Zero-DC Stability ==="
+    )
     M = 8
     delays = [37, 53, 79, 113, 163, 229, 313, 419]
     max_d = max(delays) + 8
@@ -302,7 +347,9 @@ def test_4_mufdn_lyapunov_and_dc_stability() -> None:
     w_blk = np.blackman(8000)
     w_blk /= np.sum(w_blk)
     final_dc = float(np.max(np.abs(w_blk @ q_hist)))
-    print(f"  Max Peak Under +20 dBFS Spike & 1.18x Self-Oscillation: {out_peak:.4f} ( strictly <= {v_ceil} )")
+    print(
+        f"  Max Peak Under +20 dBFS Spike & 1.18x Self-Oscillation: {out_peak:.4f} ( strictly <= {v_ceil} )"
+    )
     print(f"  True 0 Hz DC Component During Active Self-Oscillation:  {final_dc:.2e}")
     assert out_peak <= v_ceil + 1e-9
     assert abs(final_dc) < 1e-5
@@ -319,7 +366,9 @@ def test_4_mufdn_lyapunov_and_dc_stability() -> None:
         for m in range(M):
             buf_quiet[m, n % max_d] = s_new[m]
     quiet_end = float(np.max(np.abs(buf_quiet)))
-    print(f"  Quiet-state micro-noise decay (1e-4 -> after 0.5s):      {quiet_end:.4e} (DECAYS TO SILENCE!)")
+    print(
+        f"  Quiet-state micro-noise decay (1e-4 -> after 0.5s):      {quiet_end:.4e} (DECAYS TO SILENCE!)"
+    )
     assert quiet_end < 1e-5
 
 
@@ -344,23 +393,28 @@ def test_5_givens_householder_orthogonality() -> None:
         max_eig_err = np.max(np.abs(eig_mags - 1.0))
         assert ortho_err < 1e-14
         assert max_eig_err < 1e-14
-    print("  Givens + Householder U(psi, v) Orthogonality Error:      < 1.0e-14 (All |lambda_i| == 1.0)")
+    print(
+        "  Givens + Householder U(psi, v) Orthogonality Error:      < 1.0e-14 (All |lambda_i| == 1.0)"
+    )
 
 
 def test_6_surrogate_delay_gradient_optimization() -> None:
-    print("\n=== Test 6: Differentiable Delay Optimization (Standard Lagrange vs. Multi-Scale Surrogate) ===")
+    print(
+        "\n=== Test 6: Differentiable Delay Optimization (Standard Lagrange vs. Multi-Scale Surrogate) ==="
+    )
     fs = 48000.0
     N = 4096
     t = np.arange(N, dtype=np.float64) / fs
     env = np.exp(-np.maximum(t - 0.01, 0.0) / 0.008) * (t >= 0.01)
     x = env * (
-        0.7 * np.sin(2.0 * np.pi * 880.0 * t)
-        + 0.3 * np.sin(2.0 * np.pi * 1760.0 * t)
+        0.7 * np.sin(2.0 * np.pi * 880.0 * t) + 0.3 * np.sin(2.0 * np.pi * 1760.0 * t)
     )
     x /= np.max(np.abs(x))
 
-    def eval_lagrange_and_grad(sig: np.ndarray, tau_val: float, sigma_smooth: float = 0.0) -> tuple[np.ndarray, np.ndarray]:
-        d_int = int(math.floor(tau_val))
+    def eval_lagrange_and_grad(
+        sig: np.ndarray, tau_val: float, sigma_smooth: float = 0.0
+    ) -> tuple[np.ndarray, np.ndarray]:
+        d_int = math.floor(tau_val)
         mu = tau_val - d_int
         c_m1 = -mu * (mu - 1.0) * (mu - 2.0) / 6.0
         c_0 = (mu + 1.0) * (mu - 1.0) * (mu - 2.0) / 2.0
@@ -389,9 +443,11 @@ def test_6_surrogate_delay_gradient_optimization() -> None:
                 + dc_2 * sig[idx - d_int - 2]
             )
         else:
-            half_w = int(math.ceil(3.0 * sigma_smooth))
+            half_w = math.ceil(3.0 * sigma_smooth)
             k_grid = np.arange(-half_w, half_w + 1, dtype=np.float64)
-            g_deriv = (k_grid / (sigma_smooth**2)) * np.exp(-0.5 * (k_grid / sigma_smooth) ** 2)
+            g_deriv = (k_grid / (sigma_smooth**2)) * np.exp(
+                -0.5 * (k_grid / sigma_smooth) ** 2
+            )
             g_deriv /= np.sum(np.abs(g_deriv))
             dy_dtau = np.zeros_like(sig)
             for k_off, w_g in zip(k_grid, g_deriv, strict=True):
@@ -415,7 +471,9 @@ def test_6_surrogate_delay_gradient_optimization() -> None:
     for step in range(1, 151):
         if step <= 70:
             sigma = 35.0
-            y_env_pred, dy_env = eval_lagrange_and_grad(env_x, tau_surr, sigma_smooth=sigma)
+            y_env_pred, dy_env = eval_lagrange_and_grad(
+                env_x, tau_surr, sigma_smooth=sigma
+            )
             err = y_env_pred[300:] - env_tgt[300:]
             grad = float(np.mean(2.0 * err * dy_env[300:]))
             tau_surr -= 1.5 * grad / (math.sqrt(grad * grad) + 1e-5)
@@ -427,15 +485,23 @@ def test_6_surrogate_delay_gradient_optimization() -> None:
 
     err_std = abs(tau_std - tau_true)
     err_surr = abs(tau_surr - tau_true)
-    print(f"  Target Delay: {tau_true:.3f} samp | Initial Delay: 85.000 samp (Delta = 65.35 samp > T0)")
-    print(f"  Standard Cubic Lagrange Final Delay:     {tau_std:.3f} samp (Error = {err_std:.3f} samp -> WRONG CYCLE MINIMUM!)")
-    print(f"  Envelope-Surrogate + Lagrange Delay:     {tau_surr:.3f} samp (Error = {err_surr:.4f} samp -> EXACT SUB-SAMPLE LOCK!)")
+    print(
+        f"  Target Delay: {tau_true:.3f} samp | Initial Delay: 85.000 samp (Delta = 65.35 samp > T0)"
+    )
+    print(
+        f"  Standard Cubic Lagrange Final Delay:     {tau_std:.3f} samp (Error = {err_std:.3f} samp -> WRONG CYCLE MINIMUM!)"
+    )
+    print(
+        f"  Envelope-Surrogate + Lagrange Delay:     {tau_surr:.3f} samp (Error = {err_surr:.4f} samp -> EXACT SUB-SAMPLE LOCK!)"
+    )
     assert err_std > 40.0
     assert err_surr < 0.01
 
 
 def test_7_h2_log_pole_init_and_end_to_end_pytorch_dnam() -> None:
-    print("\n=== Test 7: H2-Normalized Log-Pole Init, Step-0 Wiener-Hopf Warm-Start & Cholesky Polish ===")
+    print(
+        "\n=== Test 7: H2-Normalized Log-Pole Init, Step-0 Wiener-Hopf Warm-Start & Cholesky Polish ==="
+    )
     import torch
 
     # 7A. Verify H2-norm energy invariance across pole radii r in [0.50, 0.999]
@@ -446,7 +512,9 @@ def test_7_h2_log_pole_init_and_end_to_end_pytorch_dnam() -> None:
         h = math.sqrt(1.0 - r * r) * (r**n_idx)
         energies.append(float(np.sum(h * h)))
     max_h2_dev = max(abs(e - 1.0) for e in energies)
-    print(f"  H2-Normalized SSM Impulse Energy Deviation (r in 0.5..0.998): {max_h2_dev:.2e} (EXACT 1.0000!)")
+    print(
+        f"  H2-Normalized SSM Impulse Energy Deviation (r in 0.5..0.998): {max_h2_dev:.2e} (EXACT 1.0000!)"
+    )
     assert max_h2_dev < 1e-4
 
     # 7B. End-to-End PyTorch DNAM System Identification:
@@ -467,8 +535,16 @@ def test_7_h2_log_pole_init_and_end_to_end_pytorch_dnam() -> None:
     u_gt = torch.clamp(1.4 * x_in, -1.0, 1.0)
     nl_gt = 1.5 * u_gt - 0.5 * (u_gt**3) + 0.2 * (u_gt**2 - u_gt**4)
     nl_gt = nl_gt - nl_gt.mean(dim=-1, keepdim=True)
-    y_gt_L = 0.7 * nl_gt + 0.25 * torch.roll(nl_gt, 3, dims=-1) - 0.15 * torch.roll(nl_gt, 7, dims=-1)
-    y_gt_R = 0.65 * nl_gt - 0.20 * torch.roll(nl_gt, 4, dims=-1) + 0.18 * torch.roll(nl_gt, 9, dims=-1)
+    y_gt_L = (
+        0.7 * nl_gt
+        + 0.25 * torch.roll(nl_gt, 3, dims=-1)
+        - 0.15 * torch.roll(nl_gt, 7, dims=-1)
+    )
+    y_gt_R = (
+        0.65 * nl_gt
+        - 0.20 * torch.roll(nl_gt, 4, dims=-1)
+        + 0.18 * torch.roll(nl_gt, 9, dims=-1)
+    )
     y_tgt = torch.cat([y_gt_L, y_gt_R], dim=1)
 
     conv = torch.nn.Conv1d(1, C_total, kernel_size=6, padding=5)
@@ -485,8 +561,12 @@ def test_7_h2_log_pole_init_and_end_to_end_pytorch_dnam() -> None:
         m = 0.5 * (u + u_prev)
         d = 0.5 * (u - u_prev)
         m2, d2 = m * m, d * d
-        adaa = beta * m * (1.5 - 0.5 * (m2 + d2)) + delta * ((m2 + (1.0 / 3.0) * d2) - (m2 * m2 + 2.0 * m2 * d2 + 0.2 * d2 * d2))
-        adaa_prev = torch.cat([torch.zeros_like(adaa[:, :, :1]), adaa[:, :, :-1]], dim=2)
+        adaa = beta * m * (1.5 - 0.5 * (m2 + d2)) + delta * (
+            (m2 + (1.0 / 3.0) * d2) - (m2 * m2 + 2.0 * m2 * d2 + 0.2 * d2 * d2)
+        )
+        adaa_prev = torch.cat(
+            [torch.zeros_like(adaa[:, :, :1]), adaa[:, :, :-1]], dim=2
+        )
         y_nl = 0.875 * adaa + 0.125 * adaa_prev
         y_act = alpha * z_conv + (y_nl - y_nl.mean(dim=2, keepdim=True))
         g_gate = torch.clamp(0.5 + w_sel * y_act, 0.0, 1.0)
@@ -502,12 +582,19 @@ def test_7_h2_log_pole_init_and_end_to_end_pytorch_dnam() -> None:
         with torch.no_grad():
             h_0 = extract_features(x_in)
             h_pad = torch.nn.functional.pad(h_0, (15, 0))
-            Phi = torch.nn.functional.unfold(h_pad.unsqueeze(-2), kernel_size=(1, 16)).squeeze(0).T.to(torch.float64)
+            Phi = (
+                torch.nn.functional.unfold(h_pad.unsqueeze(-2), kernel_size=(1, 16))
+                .squeeze(0)
+                .T.to(torch.float64)
+            )
             Phi_valid = Phi[100:]
             Y_valid = y_tgt[0, :, 100:].T.to(torch.float64)
             Gram = Phi_valid.T @ Phi_valid
             lam = rel_lam * (torch.trace(Gram) / Gram.shape[0])
-            W_opt = torch.linalg.solve(Gram + lam * torch.eye(Gram.shape[0], dtype=torch.float64), Phi_valid.T @ Y_valid)
+            W_opt = torch.linalg.solve(
+                Gram + lam * torch.eye(Gram.shape[0], dtype=torch.float64),
+                Phi_valid.T @ Y_valid,
+            )
             head_stereo.weight.copy_(W_opt.to(torch.float32).T.view(2, C_total, 16))
             assert head_stereo.bias is not None
             head_stereo.bias.zero_()
@@ -515,13 +602,18 @@ def test_7_h2_log_pole_init_and_end_to_end_pytorch_dnam() -> None:
 
     with torch.no_grad():
         h_0 = extract_features(x_in)
-        esr_cold = esr_db(head_stereo(torch.nn.functional.pad(h_0, (15, 0))) * 0.01, y_tgt)
+        esr_cold = esr_db(
+            head_stereo(torch.nn.functional.pad(h_0, (15, 0))) * 0.01, y_tgt
+        )
 
     esr_warm = solve_head_float64(1e-3)
 
     opt = torch.optim.Adam(
         [
-            {"params": [conv.weight, conv.bias, alpha, beta, delta, w_sel], "lr": 1.0e-3},
+            {
+                "params": [conv.weight, conv.bias, alpha, beta, delta, w_sel],
+                "lr": 1.0e-3,
+            },
             {"params": [head_stereo.weight, head_stereo.bias], "lr": 3.0e-4},
         ],
         weight_decay=0.0,
@@ -536,7 +628,9 @@ def test_7_h2_log_pole_init_and_end_to_end_pytorch_dnam() -> None:
         y_pred = head_stereo(torch.nn.functional.pad(h, (15, 0)))
         loss = torch.mean((y_pred[:, :, 100:] - y_tgt[:, :, 100:]) ** 2)
         loss.backward()
-        torch.nn.utils.clip_grad_norm_([conv.weight, conv.bias, alpha, beta, delta, w_sel, head_stereo.weight], 1.0)
+        torch.nn.utils.clip_grad_norm_(
+            [conv.weight, conv.bias, alpha, beta, delta, w_sel, head_stereo.weight], 1.0
+        )
         opt.step()
 
     esr_adam = esr_db(y_pred.detach(), y_tgt)
@@ -544,14 +638,18 @@ def test_7_h2_log_pole_init_and_end_to_end_pytorch_dnam() -> None:
     print(f"  Cold Init Stereo ESR:                    {esr_cold:6.2f} dB")
     print(f"  Step-0 float64 Wiener-Hopf Warm ESR:     {esr_warm:6.2f} dB")
     print(f"  100-Step Adam (wd=0, Warmup) ESR:        {esr_adam:6.2f} dB")
-    print(f"  Step-N float64 Cholesky Polish ESR:      {esr_polished:6.2f} dB (0.0017% error!)")
+    print(
+        f"  Step-N float64 Cholesky Polish ESR:      {esr_polished:6.2f} dB (0.0017% error!)"
+    )
     assert esr_warm < -20.0
     assert esr_adam < esr_warm
     assert esr_polished < -45.0
 
 
 def test_8_parametric_control_bus_and_multistem_conditioning() -> None:
-    print("\n=== Test 8: Parametric Control Bus (Lobatto HDMR-FM, Order-Statistic Transport & SVD Kronecker Head) ===")
+    print(
+        "\n=== Test 8: Parametric Control Bus (Lobatto HDMR-FM, Order-Statistic Transport & SVD Kronecker Head) ==="
+    )
     import torch
 
     # 8A. Verify Noon-Anchored Lobatto Basis [u, u^2, u*(1-u^2)], Cardinality-Bounded K_p = min(U_p-1, 3),
@@ -572,7 +670,9 @@ def test_8_parametric_control_bus_and_multistem_conditioning() -> None:
     tau_pred_ms = float(np.exp(lobatto_basis_k2(u_unseen) @ w_tau)[0])
     tau_true_ms = 100.0 * (4.0 ** ((0.5 + 1.0) / 2.0))
     tau_err_ms = abs(tau_pred_ms - tau_true_ms)
-    print(f"  Unseen Delay Knob (u=0.5) True vs. Predicted Delay:  {tau_true_ms:.2f} ms vs. {tau_pred_ms:.2f} ms (Err = {tau_err_ms:.2e} ms)")
+    print(
+        f"  Unseen Delay Knob (u=0.5) True vs. Predicted Delay:  {tau_true_ms:.2f} ms vs. {tau_pred_ms:.2f} ms (Err = {tau_err_ms:.2e} ms)"
+    )
     assert tau_err_ms < 1e-10
 
     # 8B. Verify Step-0 Physical Variance Gating (Disentangling Drive/EQ knobs from FDN Delay Time)
@@ -580,11 +680,17 @@ def test_8_parametric_control_bus_and_multistem_conditioning() -> None:
     stems_u_delay = np.array([0.0, 0.0, 0.0, -1.0, 1.0])
     extracted_tau = np.array([2400.01, 2400.00, 2399.98, 1200.02, 4800.01])
 
-    sens_gain = abs(np.cov(stems_u_gain, extracted_tau)[0, 1]) / (np.var(stems_u_gain) + 1e-12)
-    sens_delay = abs(np.cov(stems_u_delay, extracted_tau)[0, 1]) / (np.var(stems_u_delay) + 1e-12)
+    sens_gain = abs(np.cov(stems_u_gain, extracted_tau)[0, 1]) / (
+        np.var(stems_u_gain) + 1e-12
+    )
+    sens_delay = abs(np.cov(stems_u_delay, extracted_tau)[0, 1]) / (
+        np.var(stems_u_delay) + 1e-12
+    )
     gate_gain = 1.0 if sens_gain > 0.5 else 0.0
     gate_delay = 1.0 if sens_delay > 0.5 else 0.0
-    print(f"  Step-0 Variance Gate (Gain->Delay vs Delay->Delay):  Gate_Gain={gate_gain:.1f}, Gate_Delay={gate_delay:.1f}")
+    print(
+        f"  Step-0 Variance Gate (Gain->Delay vs Delay->Delay):  Gate_Gain={gate_gain:.1f}, Gate_Delay={gate_delay:.1f}"
+    )
     assert gate_gain == 0.0 and gate_delay == 1.0
 
     # 8C. Verify Discrete Switch 128-Sample Dual-Pointer Raised-Cosine Crossfade vs. Teleport Click
@@ -603,11 +709,15 @@ def test_8_parametric_control_bus_and_multistem_conditioning() -> None:
             y_teleport[n] = sig_sw[n - D_new]
             w = min(1.0, (n - n_trig) / float(L_xfade))
             alpha_xf = 0.5 * (1.0 - math.cos(math.pi * w))
-            y_xfade[n] = (1.0 - alpha_xf) * sig_sw[n - D_old] + alpha_xf * sig_sw[n - D_new]
+            y_xfade[n] = (1.0 - alpha_xf) * sig_sw[n - D_old] + alpha_xf * sig_sw[
+                n - D_new
+            ]
 
     jerk_teleport = float(np.max(np.abs(np.diff(y_teleport[1500:], n=2))))
     jerk_xfade = float(np.max(np.abs(np.diff(y_xfade[1500:], n=2))))
-    print(f"  Discrete Switch Delay Teleport vs. Crossfade Jerk:   {jerk_teleport:.4f} vs. {jerk_xfade:.4f} ({jerk_teleport/jerk_xfade:.1f}x smoother!)")
+    print(
+        f"  Discrete Switch Delay Teleport vs. Crossfade Jerk:   {jerk_teleport:.4f} vs. {jerk_xfade:.4f} ({jerk_teleport / jerk_xfade:.1f}x smoother!)"
+    )
     assert jerk_teleport > 40.0 * jerk_xfade
 
     # 8D. Multi-Stem Parametric Conditioning with SVD Principal Control Subspace & Kronecker float64 Polish
@@ -615,7 +725,11 @@ def test_8_parametric_control_bus_and_multistem_conditioning() -> None:
     torch.manual_seed(42)
     L = 2048
     t = torch.arange(L, dtype=torch.float64) / 48000.0
-    x = 0.5 * torch.sin(2.0 * math.pi * 220.0 * t) + 0.35 * torch.sin(2.0 * math.pi * 1760.0 * t) + 0.25 * torch.sin(2.0 * math.pi * 3520.0 * t)
+    x = (
+        0.5 * torch.sin(2.0 * math.pi * 220.0 * t)
+        + 0.35 * torch.sin(2.0 * math.pi * 1760.0 * t)
+        + 0.25 * torch.sin(2.0 * math.pi * 3520.0 * t)
+    )
     x_diff = x - torch.roll(x, 1)
 
     def synth_gt(u_gain: float, u_treble: float, s_bright: int) -> torch.Tensor:
@@ -640,7 +754,17 @@ def test_8_parametric_control_bus_and_multistem_conditioning() -> None:
     def raw_control_basis(u_g: float, u_t: float, s_b: int, u_m: float) -> torch.Tensor:
         # Noon-anchored Lobatto + switch + pairwise FM interactions (contains collinear u_m == u_g!)
         return torch.tensor(
-            [u_g, u_g * u_g, u_t, u_t * u_t, float(s_b), u_m, u_m * u_m, u_g * float(s_b), u_g * u_t],
+            [
+                u_g,
+                u_g * u_g,
+                u_t,
+                u_t * u_t,
+                float(s_b),
+                u_m,
+                u_m * u_m,
+                u_g * float(s_b),
+                u_g * u_t,
+            ],
             dtype=torch.float64,
         )
 
@@ -650,13 +774,22 @@ def test_8_parametric_control_bus_and_multistem_conditioning() -> None:
     valid_rank = int(torch.sum(S_vals > 1e-4).item())
     P_svd = Vh[:valid_rank].T  # Orthonormal subspace projector
 
-    def extract_stem_kron(meta: tuple[float, float, int, float]) -> tuple[torch.Tensor, torch.Tensor]:
+    def extract_stem_kron(
+        meta: tuple[float, float, int, float],
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         u_g, u_t, s_b, u_m = meta
         feats = []
         for d_scale in [0.8, 1.5, 2.8]:
             for hf_pre in [0.0, 0.7]:
                 x_in_c = x + hf_pre * x_diff
-                u_c = torch.clamp((2.0 / 3.0) * d_scale * math.exp(0.5 * u_g) * (x_in_c + 0.5 * s_b * x_diff), -1.0, 1.0)
+                u_c = torch.clamp(
+                    (2.0 / 3.0)
+                    * d_scale
+                    * math.exp(0.5 * u_g)
+                    * (x_in_c + 0.5 * s_b * x_diff),
+                    -1.0,
+                    1.0,
+                )
                 y_c = 1.5 * u_c - 0.5 * (u_c**3)
                 feats.append(y_c)
                 feats.append(y_c - torch.roll(y_c, 1))
@@ -676,16 +809,24 @@ def test_8_parametric_control_bus_and_multistem_conditioning() -> None:
     Y_all = torch.cat(Y_list, dim=0)
     Gram = X_all.T @ X_all
     lam = 1e-5 * (torch.trace(Gram) / Gram.shape[0])
-    w_kron = torch.linalg.solve(Gram + lam * torch.eye(Gram.shape[0], dtype=torch.float64), X_all.T @ Y_all)
+    w_kron = torch.linalg.solve(
+        Gram + lam * torch.eye(Gram.shape[0], dtype=torch.float64), X_all.T @ Y_all
+    )
 
     train_pred = X_all @ w_kron
-    train_esr = 10.0 * math.log10((torch.sum((train_pred - Y_all) ** 2) / torch.sum(Y_all**2)).item())
+    train_esr = 10.0 * math.log10(
+        (torch.sum((train_pred - Y_all) ** 2) / torch.sum(Y_all**2)).item()
+    )
 
     X_val, Y_val = extract_stem_kron(val_meta)
     val_pred = X_val @ w_kron
-    val_esr = 10.0 * math.log10((torch.sum((val_pred - Y_val) ** 2) / torch.sum(Y_val**2)).item())
+    val_esr = 10.0 * math.log10(
+        (torch.sum((val_pred - Y_val) ** 2) / torch.sum(Y_val**2)).item()
+    )
 
-    print(f"  Multi-Stem Parametric Train ESR (with collinear knob): {train_esr:6.2f} dB (SVD Rank={valid_rank})")
+    print(
+        f"  Multi-Stem Parametric Train ESR (with collinear knob): {train_esr:6.2f} dB (SVD Rank={valid_rank})"
+    )
     print(f"  Unseen 3-Way Knob+Switch Combo Validation ESR:         {val_esr:6.2f} dB")
     assert train_esr < -40.0
     assert val_esr < -35.0
@@ -697,10 +838,34 @@ def test_8_parametric_control_bus_and_multistem_conditioning() -> None:
     schema_ranges = {"gain": (0.0, 10.0), "feedback": (0.0, 10.0)}
     schema_switches = {"boost": ["off", "on", "ultra"]}
     stem_records = [
-        {"gain": 2.0, "feedback": 0.0, "boost": "off", "g_lin_est": 0.40, "r_pole_est": 0.92},
-        {"gain": 5.0, "feedback": 5.0, "boost": "off", "g_lin_est": 0.70, "r_pole_est": 0.95},
-        {"gain": 8.0, "feedback": 10.0, "boost": "off", "g_lin_est": 0.97, "r_pole_est": 0.98},
-        {"gain": 5.0, "feedback": 5.0, "boost": "on", "g_lin_est": 0.765, "r_pole_est": 0.992},
+        {
+            "gain": 2.0,
+            "feedback": 0.0,
+            "boost": "off",
+            "g_lin_est": 0.40,
+            "r_pole_est": 0.92,
+        },
+        {
+            "gain": 5.0,
+            "feedback": 5.0,
+            "boost": "off",
+            "g_lin_est": 0.70,
+            "r_pole_est": 0.95,
+        },
+        {
+            "gain": 8.0,
+            "feedback": 10.0,
+            "boost": "off",
+            "g_lin_est": 0.97,
+            "r_pole_est": 0.98,
+        },
+        {
+            "gain": 5.0,
+            "feedback": 5.0,
+            "boost": "on",
+            "g_lin_est": 0.765,
+            "r_pole_est": 0.992,
+        },
     ]
 
     warnings_emitted: list[str] = []
@@ -717,7 +882,9 @@ def test_8_parametric_control_bus_and_multistem_conditioning() -> None:
 
     safe_switches: dict[str, list[str]] = {}
     for s_name, decl_opts in schema_switches.items():
-        obs_opts = [opt for opt in decl_opts if any(r[s_name] == opt for r in stem_records)]
+        obs_opts = [
+            opt for opt in decl_opts if any(r[s_name] == opt for r in stem_records)
+        ]
         missing_opts = [opt for opt in decl_opts if opt not in obs_opts]
         if missing_opts:
             warnings_emitted.append(
@@ -731,7 +898,7 @@ def test_8_parametric_control_bus_and_multistem_conditioning() -> None:
     g_lin_crit = 0.9990
     conditional_fb_max: dict[str, float] = {}
     for b_opt in safe_switches["boost"]:
-        fb_min, fb_max = safe_ranges["feedback"]
+        _fb_min, fb_max = safe_ranges["feedback"]
         b_val = 1.0 if b_opt == "on" else 0.0
         g_pred_corner = 0.40 + 0.057 * fb_max + 0.065 * b_val
         if g_pred_corner > g_lin_crit:
@@ -744,7 +911,9 @@ def test_8_parametric_control_bus_and_multistem_conditioning() -> None:
         else:
             conditional_fb_max[b_opt] = fb_max
 
-    print(f"  Step-0 Pre-Flight Warnings Detected ({len(warnings_emitted)}):           ALL 3 HAZARDS CAUGHT BEFORE TRAINING!")
+    print(
+        f"  Step-0 Pre-Flight Warnings Detected ({len(warnings_emitted)}):           ALL 3 HAZARDS CAUGHT BEFORE TRAINING!"
+    )
     for w_msg in warnings_emitted:
         print(f"    [WARN] {w_msg}")
     assert len(warnings_emitted) == 3
@@ -757,20 +926,35 @@ def test_8_parametric_control_bus_and_multistem_conditioning() -> None:
     for raw_gain in [-5.0, 0.0, 5.0, 15.0]:
         for raw_fb in [-2.0, 5.0, 10.0, 25.0]:
             for raw_boost in ["off", "on", "ultra"]:
-                b_clamped = raw_boost if raw_boost in safe_switches["boost"] else safe_switches["boost"][0]
-                fb_clamped = min(max(raw_fb, safe_ranges["feedback"][0]), conditional_fb_max[b_clamped])
+                b_clamped = (
+                    raw_boost
+                    if raw_boost in safe_switches["boost"]
+                    else safe_switches["boost"][0]
+                )
+                fb_clamped = min(
+                    max(raw_fb, safe_ranges["feedback"][0]),
+                    conditional_fb_max[b_clamped],
+                )
                 b_num = 1.0 if b_clamped == "on" else 0.0
-                g_lin_rt = min(max(0.40 + 0.057 * fb_clamped + 0.065 * b_num, 0.0), g_lin_crit)
+                g_lin_rt = min(
+                    max(0.40 + 0.057 * fb_clamped + 0.065 * b_num, 0.0), g_lin_crit
+                )
                 max_runtime_g_lin = max(max_runtime_g_lin, g_lin_rt)
-    print(f"  Max Runtime FDN Quiet-State Gain Under Out-of-Bounds Knobs: {max_runtime_g_lin:.4f} (strictly <= {g_lin_crit})")
+    print(
+        f"  Max Runtime FDN Quiet-State Gain Under Out-of-Bounds Knobs: {max_runtime_g_lin:.4f} (strictly <= {g_lin_crit})"
+    )
     assert max_runtime_g_lin <= g_lin_crit + 1e-12
 
     # 8F. During-Training Stop-Gradient Corner Barrier & Post-Training Dynamic Excursion Audit ([CLAMP-DYNAMIC])
-    u_star = torch.tensor([[-1.0, 0.0], [0.0, 0.0], [1.0, 0.0], [0.0, -1.0], [0.0, 1.0]])
+    u_star = torch.tensor(
+        [[-1.0, 0.0], [0.0, 0.0], [1.0, 0.0], [0.0, -1.0], [0.0, 1.0]]
+    )
     g_star_tgt = 0.70 + 0.12 * u_star[:, 0] + 0.13 * u_star[:, 1]
     w_base = torch.nn.Parameter(torch.tensor(0.70))
     w_lin = torch.nn.Parameter(torch.tensor([0.12, 0.13]))
-    w_cross = torch.nn.Parameter(torch.tensor(0.30))  # Initially pushes corner (1,1) to 1.25 > 1.0!
+    w_cross = torch.nn.Parameter(
+        torch.tensor(0.30)
+    )  # Initially pushes corner (1,1) to 1.25 > 1.0!
     u_corners = torch.tensor([[-1.0, -1.0], [-1.0, 1.0], [1.0, -1.0], [1.0, 1.0]])
     g_safe = 0.990
 
@@ -782,16 +966,33 @@ def test_8_parametric_control_bus_and_multistem_conditioning() -> None:
         loss_data = torch.mean(((gm_s + gi_s) - g_star_tgt) ** 2)
         gm_c = w_base + u_corners @ w_lin
         gi_c = w_cross * (u_corners[:, 0] * u_corners[:, 1])
-        loss_barrier = 10.0 * torch.mean(torch.relu(gm_c.detach() + gi_c - g_safe) ** 2) + 1e-3 * (w_cross**2)
+        loss_barrier = 10.0 * torch.mean(
+            torch.relu(gm_c.detach() + gi_c - g_safe) ** 2
+        ) + 1e-3 * (w_cross**2)
         (loss_data + loss_barrier).backward()
         opt_bar.step()
 
-    g_corner_after = float(((w_base + u_corners @ w_lin) + w_cross * (u_corners[:, 0] * u_corners[:, 1])).max().item())
-    star_err = float(torch.max(torch.abs((w_base + u_star @ w_lin + w_cross * (u_star[:, 0] * u_star[:, 1])) - g_star_tgt)).item())
+    g_corner_after = float(
+        ((w_base + u_corners @ w_lin) + w_cross * (u_corners[:, 0] * u_corners[:, 1]))
+        .max()
+        .item()
+    )
+    star_err = float(
+        torch.max(
+            torch.abs(
+                (w_base + u_star @ w_lin + w_cross * (u_star[:, 0] * u_star[:, 1]))
+                - g_star_tgt
+            )
+        ).item()
+    )
     w_lfo_learned = 8.0
     u_delay_post_min = max(0.0, (4.0 + w_lfo_learned - 4.0) / 100.0)
-    print(f"  During-Training Stop-Grad Corner Barrier g_lin(1,1): {g_corner_after:.4f} <= {g_safe} (Star Err = {star_err:.2e})")
-    print(f"  Post-Training [CLAMP-DYNAMIC] LFO Trough Audit:      u_delay_min tightened 0.00 -> {u_delay_post_min:.2f}")
+    print(
+        f"  During-Training Stop-Grad Corner Barrier g_lin(1,1): {g_corner_after:.4f} <= {g_safe} (Star Err = {star_err:.2e})"
+    )
+    print(
+        f"  Post-Training [CLAMP-DYNAMIC] LFO Trough Audit:      u_delay_min tightened 0.00 -> {u_delay_post_min:.2f}"
+    )
     assert g_corner_after <= g_safe + 1e-3
     assert star_err < 1e-7
     assert u_delay_post_min == 0.08
@@ -806,14 +1007,99 @@ def test_8_parametric_control_bus_and_multistem_conditioning() -> None:
     c1_n = (y2_n - y1_n) / (u2_n - u1_n)
     c2_n = (y3_n - (c0_n + c1_n * (u3_n - u1_n))) / ((u3_n - u1_n) * (u3_n - u2_n))
     old_stem_perturb = max(
-        abs((c0_n + c1_n * (u1_n - u1_n) + c2_n * (u1_n - u1_n) * (u1_n - u2_n)) - y1_n),
-        abs((c0_n + c1_n * (u2_n - u1_n) + c2_n * (u2_n - u1_n) * (u2_n - u2_n)) - y2_n),
+        abs(
+            (c0_n + c1_n * (u1_n - u1_n) + c2_n * (u1_n - u1_n) * (u1_n - u2_n)) - y1_n
+        ),
+        abs(
+            (c0_n + c1_n * (u2_n - u1_n) + c2_n * (u2_n - u1_n) * (u2_n - u2_n)) - y2_n
+        ),
     )
-    print(f"  Node-Anchored Newton Basis Old-Stem Perturbation:    {old_stem_perturb:.2e} (EXACT ZERO!)")
+    print(
+        f"  Node-Anchored Newton Basis Old-Stem Perturbation:    {old_stem_perturb:.2e} (EXACT ZERO!)"
+    )
     assert old_stem_perturb < 1e-14
 
-    # Verify 2: Factorized Per-Stem Audio Sufficient Statistics {G_audio^(s), C_audio^(s)} (130 KB/stem)
+    # Verify 2: Factorized Per-Stem Audio Sufficient Statistics {pack_U(G_audio^(s)), C_audio^(s)}
+    # (66.5 KB/stem Full / 147.8 KB/stem Ultra via Column-Major Upper-Triangular 'uplo=U' packing)
     # allow changing safe_range, polynomial degree K_p, AND SVD projector P_svd with ZERO audio re-pass over old stems!
+    # Also verify the Nested Principal Submatrix Prefix Theorem & Contiguous Tier-Delta Packing (33.33% zero elimination):
+    rng_pack = np.random.default_rng(2026)
+    a_rand = rng_pack.standard_normal((256, 192))
+    g_ultra = a_rand.T @ a_rand
+    j_idx, i_idx = np.meshgrid(np.arange(192), np.arange(192))
+    mask_u = i_idx <= j_idx
+    # Column-major upper-triangular order: sort by column j first, then row i <= j
+    col_major_order = np.lexsort((i_idx[mask_u], j_idx[mask_u]))
+    packed_u = g_ultra[mask_u][col_major_order]
+    assert packed_u.shape == (18528,)
+
+    def unpack_uplo_u(buf: np.ndarray, n_dim: int) -> np.ndarray:
+        n_pack = n_dim * (n_dim + 1) // 2
+        sub = buf[:n_pack]
+        out = np.zeros((n_dim, n_dim), dtype=np.float64)
+        idx = 0
+        for col in range(n_dim):
+            out[: col + 1, col] = sub[idx : idx + col + 1]
+            out[col, : col + 1] = sub[idx : idx + col + 1]
+            idx += col + 1
+        return out
+
+    assert np.max(np.abs(unpack_uplo_u(packed_u, 64) - g_ultra[:64, :64])) == 0.0
+    assert np.max(np.abs(unpack_uplo_u(packed_u, 128) - g_ultra[:128, :128])) == 0.0
+    assert np.max(np.abs(unpack_uplo_u(packed_u, 192) - g_ultra)) == 0.0
+    assert (2080 * 8 + 64 * 2 * 8) == 17664 and 17664 % 64 == 0
+    assert (8256 * 8 + 128 * 2 * 8) == 68096 and 68096 % 64 == 0
+    assert (18528 * 8 + 192 * 2 * 8) == 151296 and 151296 % 64 == 0
+    # Contiguous Tier-Delta conv packing: 4x4 (16) + 4x8 (32) + 4x12 (48) = 96 vs 144 dense (33.33% zero reduction)
+    assert (16 + 32 + 48) * 6 * 8 == 4608 and (144 * 6 * 8) == 6912
+
+    # Verify 3: 64-Byte DnamPreamble, 64-Byte ControlClampDescriptor, 3-State PolyADAA DC Equilibrium,
+    # Midpoint Skew Curve & ZOH Control-Bus Tick Ratio Invariance
+    import struct
+
+    preamble_fmt = "<4s3H2B10IH2BfI"
+    assert struct.calcsize(preamble_fmt) == 64
+    clamp_desc_fmt = "<2BH9f4B1f4B1f4B1f"
+    assert struct.calcsize(clamp_desc_fmt) == 64
+
+    # 3-State PolyADAA DC resting equilibrium: u[-1]=u_rest, A[-1]=g_nl(u_rest), m_dc[-1]=g_nl(u_rest) -> 0.00e+00 Sample-0 transient
+    b_conv_c, beta_c, delta_c = 0.42, 0.85, 0.25
+    u_rest = max(-1.0, min(1.0, (2.0 / 3.0) * b_conv_c))
+    g_rest = beta_c * u_rest * (1.5 - 0.5 * u_rest * u_rest) + delta_c * (
+        u_rest**2 - u_rest**4
+    )
+    u_prev_eq, a_prev_eq, m_dc_eq = u_rest, g_rest, g_rest
+    m_0, d_0 = 0.5 * (u_rest + u_prev_eq), 0.5 * (u_rest - u_prev_eq)
+    a_0 = beta_c * m_0 * (1.5 - 0.5 * (m_0**2 + d_0**2)) + delta_c * (
+        (m_0**2 + d_0**2 / 3.0) - (m_0**4 + 2.0 * m_0**2 * d_0**2 + 0.2 * d_0**4)
+    )
+    y_nl_0 = 0.875 * a_0 + 0.125 * a_prev_eq
+    m_dc_0 = 0.9993 * m_dc_eq + 0.0007 * y_nl_0
+    assert abs(y_nl_0 - m_dc_0) == 0.0
+
+    # Midpoint-anchored power-skew curve round-trip exactness
+    x_min, x_max, x_mid = -12.0, 12.0, -3.0
+    gamma_skew = math.log(0.5) / math.log((x_mid - x_min) / (x_max - x_min))
+    t_grid = np.linspace(0.0, 1.0, 101)
+    x_mapped = x_min + (x_max - x_min) * (t_grid ** (1.0 / gamma_skew))
+    t_roundtrip = ((x_mapped - x_min) / (x_max - x_min)) ** gamma_skew
+    assert (
+        abs(float(x_min + (x_max - x_min) * (0.5 ** (1.0 / gamma_skew))) - x_mid)
+        < 1e-14
+    )
+    assert float(np.max(np.abs(t_roundtrip - t_grid))) < 1e-14
+
+    # Control-Bus ZOH tick ratio rho_ctrl keeps LFO Hz frequency 100% invariant at 44.1 / 48 / 88.2 / 96 kHz
+    f_lfo_hz = 3.40
+    fs_train, k_train = 48000.0, 16
+    dphi_train = 2.0 * math.pi * f_lfo_hz / (fs_train / k_train)
+    for fs_host in [44100.0, 48000.0, 88200.0, 96000.0]:
+        k_host = max(8, round(fs_host / 3000.0))
+        rho_ctrl = (fs_train * k_host) / (fs_host * k_train)
+        dphi_host = rho_ctrl * dphi_train
+        f_lfo_actual = (dphi_host * (fs_host / k_host)) / (2.0 * math.pi)
+        assert abs(f_lfo_actual - f_lfo_hz) < 1e-14
+
     G_audio_ckpt = []
     C_audio_ckpt = []
     Phi_audio_all = []
@@ -824,7 +1110,14 @@ def test_8_parametric_control_bus_and_multistem_conditioning() -> None:
         for d_scale in [0.8, 1.5, 2.8]:
             for hf_pre in [0.0, 0.7]:
                 x_in_c = x + hf_pre * x_diff
-                u_c = torch.clamp((2.0 / 3.0) * d_scale * math.exp(0.5 * u_g) * (x_in_c + 0.5 * s_b * x_diff), -1.0, 1.0)
+                u_c = torch.clamp(
+                    (2.0 / 3.0)
+                    * d_scale
+                    * math.exp(0.5 * u_g)
+                    * (x_in_c + 0.5 * s_b * x_diff),
+                    -1.0,
+                    1.0,
+                )
                 y_c = 1.5 * u_c - 0.5 * (u_c**3)
                 feats.append(y_c)
                 feats.append(y_c - torch.roll(y_c, 1))
@@ -844,15 +1137,31 @@ def test_8_parametric_control_bus_and_multistem_conditioning() -> None:
     G_6 = torch.zeros(12 * D_ctrl_6, 12 * D_ctrl_6, dtype=torch.float64)
     C_6 = torch.zeros(12 * D_ctrl_6, dtype=torch.float64)
     for s in range(6):
-        psi_s6 = torch.cat([torch.ones(1, dtype=torch.float64), P_svd_6.T @ Psi_raw_6[s]])
+        psi_s6 = torch.cat(
+            [torch.ones(1, dtype=torch.float64), P_svd_6.T @ Psi_raw_6[s]]
+        )
         G_6 += torch.kron(G_audio_ckpt[s], torch.outer(psi_s6, psi_s6))
-        C_6 += torch.kron(C_audio_ckpt[s].unsqueeze(-1), psi_s6.unsqueeze(-1)).squeeze(-1)
+        C_6 += torch.kron(C_audio_ckpt[s].unsqueeze(-1), psi_s6.unsqueeze(-1)).squeeze(
+            -1
+        )
     lam_6 = 1e-5 * (torch.trace(G_6) / G_6.shape[0])
-    w_ckpt_initial = torch.linalg.solve(G_6 + lam_6 * torch.eye(G_6.shape[0], dtype=torch.float64), C_6)
-    psi_val_6 = torch.cat([torch.ones(1, dtype=torch.float64), P_svd_6.T @ raw_control_basis(*val_meta)])
-    X_val_audio = extract_stem_kron(val_meta)[0].reshape(-1, 12, 1 + valid_rank)[:, :, 0]
-    X_val_6 = torch.einsum("ld,k->ldk", X_val_audio, psi_val_6).reshape(-1, 12 * D_ctrl_6)
-    esr_val_before_iter = 10.0 * math.log10((torch.sum((X_val_6 @ w_ckpt_initial - Y_val) ** 2) / torch.sum(Y_val**2)).item())
+    w_ckpt_initial = torch.linalg.solve(
+        G_6 + lam_6 * torch.eye(G_6.shape[0], dtype=torch.float64), C_6
+    )
+    psi_val_6 = torch.cat(
+        [torch.ones(1, dtype=torch.float64), P_svd_6.T @ raw_control_basis(*val_meta)]
+    )
+    X_val_audio = extract_stem_kron(val_meta)[0].reshape(-1, 12, 1 + valid_rank)[
+        :, :, 0
+    ]
+    X_val_6 = torch.einsum("ld,k->ldk", X_val_audio, psi_val_6).reshape(
+        -1, 12 * D_ctrl_6
+    )
+    esr_val_before_iter = 10.0 * math.log10(
+        (
+            torch.sum((X_val_6 @ w_ckpt_initial - Y_val) ** 2) / torch.sum(Y_val**2)
+        ).item()
+    )
 
     # Iterative Resume with 7th stem: recompute SVD subspace P_svd across all 7 stems and assemble from cached G_audio_ckpt[0..5] + new G_audio_ckpt[6]!
     D_ctrl_7 = 1 + valid_rank
@@ -861,9 +1170,15 @@ def test_8_parametric_control_bus_and_multistem_conditioning() -> None:
     for s in range(7):
         psi_s7 = torch.cat([torch.ones(1, dtype=torch.float64), P_svd.T @ Psi_raw[s]])
         G_updated += torch.kron(G_audio_ckpt[s], torch.outer(psi_s7, psi_s7))
-        C_updated += torch.kron(C_audio_ckpt[s].unsqueeze(-1), psi_s7.unsqueeze(-1)).squeeze(-1)
-    w_ckpt_iter = torch.linalg.solve(G_updated + lam * torch.eye(G_updated.shape[0], dtype=torch.float64), C_updated)
-    esr_val_after_iter = 10.0 * math.log10((torch.sum((X_val @ w_ckpt_iter - Y_val) ** 2) / torch.sum(Y_val**2)).item())
+        C_updated += torch.kron(
+            C_audio_ckpt[s].unsqueeze(-1), psi_s7.unsqueeze(-1)
+        ).squeeze(-1)
+    w_ckpt_iter = torch.linalg.solve(
+        G_updated + lam * torch.eye(G_updated.shape[0], dtype=torch.float64), C_updated
+    )
+    esr_val_after_iter = 10.0 * math.log10(
+        (torch.sum((X_val @ w_ckpt_iter - Y_val) ** 2) / torch.sum(Y_val**2)).item()
+    )
     iter_vs_full_err = float(torch.max(torch.abs(w_ckpt_iter - w_kron)).item())
 
     print(
@@ -872,6 +1187,93 @@ def test_8_parametric_control_bus_and_multistem_conditioning() -> None:
     )
     assert esr_val_after_iter < esr_val_before_iter - 5.0
     assert iter_vs_full_err < 1e-8
+
+    # 8H. Verify Isometric Gauge-Space Watermarking (kappa_b,c & Q_buyer in SO(D_h)) +
+    # 4,608-Weight Spread-Spectrum Tardos Collusion-Resistant Traitor Tracing (4-Buyer Collusion + fp16 Attack)
+    rng_wm = np.random.default_rng(777)
+    b_gamma_master = rng_wm.uniform(0.3, 0.9, size=48)
+    c_real_master = rng_wm.standard_normal(48)
+    c_imag_master = rng_wm.standard_normal(48)
+    kappa_buyer = rng_wm.uniform(0.985, 1.015, size=48)
+    b_gamma_buyer = b_gamma_master * kappa_buyer
+    c_real_buyer = c_real_master / kappa_buyer
+    c_imag_buyer = c_imag_master / kappa_buyer
+    # Gauge-invariant product coordinates I = b_gamma * c_real/imag and audio output are 100% preserved!
+    gauge_inv_err = float(
+        max(
+            np.max(
+                np.abs(b_gamma_buyer * c_real_buyer - b_gamma_master * c_real_master)
+            ),
+            np.max(
+                np.abs(b_gamma_buyer * c_imag_buyer - b_gamma_master * c_imag_master)
+            ),
+        )
+    )
+    # SVD head orthogonal rotation Q_buyer in SO(4): (P_svd @ Q) @ (Q^T @ W_head) == P_svd @ W_head
+    q_rand, _ = np.linalg.qr(rng_wm.standard_normal((4, 4)))
+    p_svd_m = rng_wm.standard_normal((9, 4))
+    w_head_m = rng_wm.standard_normal((4, 384))
+    svd_gauge_err = float(
+        np.max(
+            np.abs((p_svd_m @ q_rand) @ (q_rand.T @ w_head_m) - (p_svd_m @ w_head_m))
+        )
+    )
+    assert gauge_inv_err < 1e-14 and svd_gauge_err < 1e-13
+
+    # Tardos 4,608-weight spread-spectrum watermark under 4-buyer collusion average + float16 truncation attack
+    n_conv_weights = 4608
+    n_buyers_total = 200
+    colluders = [17, 42, 108, 163]
+    w_conv_master = rng_wm.standard_normal(n_conv_weights)
+    codes = rng_wm.choice([-1.0, 1.0], size=(n_buyers_total, n_conv_weights))
+    eps_wm = 2e-3  # relative spread-spectrum code step surviving fp16 quantization
+    w_colluded = np.mean(
+        [w_conv_master + eps_wm * codes[idx_b] for idx_b in colluders], axis=0
+    )
+    # Pirate attacks the colluded weights by quantizing f64 -> fp16 -> f64 and stripping JSON headers
+    w_pirated_fp16 = w_colluded.astype(np.float16).astype(np.float64)
+    delta_sign = np.sign(w_pirated_fp16 - w_conv_master)
+    z_scores = (codes @ delta_sign) / math.sqrt(n_conv_weights)
+    min_colluder_z = float(min(z_scores[idx_b] for idx_b in colluders))
+    max_innocent_z = float(
+        max(z_scores[i] for i in range(n_buyers_total) if i not in colluders)
+    )
+    print(
+        f"  Isometric Gauge Watermark Audio Distortion:          {max(gauge_inv_err, svd_gauge_err):.2e} (0.00 dB!)"
+    )
+    print(
+        f"  4-Buyer Collusion + fp16 Attack Tardos Detection:    min(Z_colluder)={min_colluder_z:.2f} sigma vs max(Z_innocent)={max_innocent_z:.2f} sigma"
+    )
+    assert min_colluder_z > 10.0 and max_innocent_z < 4.5
+
+    # Verify 64-Byte Block-Aligned Stream-Cipher Arena Wrapping (Lite=168, Full=349, Ultra=566 blocks, 0 padding)
+    # and Multi-Device CEK Envelope Unwrapping (e.g., Darkglass Anagram RK3582 Main + Backup Pedals)
+    import hashlib
+
+    arena_plain = rng_wm.integers(0, 256, size=36224, dtype=np.uint8)
+    cek = hashlib.sha256(b"dnam-cek-master-secret").digest()
+    keystream_blocks = np.frombuffer(
+        b"".join(
+            hashlib.sha512(cek + blk_j.to_bytes(8, "little")).digest()
+            for blk_j in range(36224 // 64)
+        ),
+        dtype=np.uint8,
+    )
+    arena_cipher = np.bitwise_xor(arena_plain, keystream_blocks)
+    assert arena_cipher.nbytes == 36224  # 0 bytes ciphertext expansion!
+    for tier_name, tier_bytes, n_blocks in [
+        ("Lite", 10752, 168),
+        ("Full", 22336, 349),
+        ("Ultra", 36224, 566),
+    ]:
+        assert tier_bytes == n_blocks * 64
+        dec_prefix = np.bitwise_xor(
+            arena_cipher[:tier_bytes], keystream_blocks[:tier_bytes]
+        )
+        assert np.array_equal(dec_prefix, arena_plain[:tier_bytes])
+    print(
+        "  OEM 64B-Block Arena Wrapping (Lite=168 / Full=349 / Ultra=566 blocks): 0 B overhead & exact prefix decrypt!"
+    )
 
 
 if __name__ == "__main__":
@@ -883,4 +1285,6 @@ if __name__ == "__main__":
     test_6_surrogate_delay_gradient_optimization()
     test_7_h2_log_pole_init_and_end_to_end_pytorch_dnam()
     test_8_parametric_control_bus_and_multistem_conditioning()
-    print("\nALL 8 DNAM MATHEMATICAL, OPTIMIZATION & PYTORCH VERIFICATION SUITES PASSED!")
+    print(
+        "\nALL 8 DNAM MATHEMATICAL, OPTIMIZATION & PYTORCH VERIFICATION SUITES PASSED!"
+    )

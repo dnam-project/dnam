@@ -29,9 +29,9 @@ DNAM preserves the proven insights of **NAM A2** (co-prime dilations, 16-tap out
 | **13** | **Blind Phase-Locked Teacher Extractor → 4-Harmonic Fourier LFO** | Naive fixed-frequency sine LFO during training | Tracks analog RC oscillator thermal drift during training (discarded at export) and learns **triangle, sawtooth, asymmetric Uni-Vibe lamp, or rotary LFO shapes** via a 4-harmonic Chebyshev shaper |
 | **14** | **Node-Anchored Newton/Lobatto HDMR-FM Control Bus (`Range` & `Switch`)** | 48 kHz FiLM concatenation & dense MLP corner hallucination | Evaluates user knobs/switches at 3 kHz (**0 MACs/sample at 48 kHz when static**) via a Node-Anchored Newton/Lobatto basis `ψ_{p,k}(u_p)` (`K_p = min(U_p-1, 3)`) + `O(P·R)` Factorization Machine, achieving **-38.46 dB ESR** on unseen 3-way combinations |
 | **15** | **Step-0 Order-Statistic Transport + Variance Gating + Dual-Pointer Switch Crossfade** | Double-echo channel crossfading, parasitic knob coupling & switch teleport clicks | Matches sorted delays/poles across stems at Step 0 (**3.41 × 10⁻¹³ ms unseen delay error**), gates off invariant subsystems (`Gate=0.0`), and uses a 128-sample raised-cosine dual-pointer crossfade on discrete delay switches (**50.7× smoother, zero Doppler warp**) |
-| **16** | **Non-Stop 3-Phase Control Audit & Factorized-Kronecker `.dnam-ckpt` Resume** | Blocking prompts, stale pre-summed Gram matrices & full retraining on stem additions | Runs **100% unattended** and saves a **single `.dnam-ckpt`** with **per-stem factorized audio sufficient statistics** `{G_audio^(s), C_audio^(s)}` (130 KB/stem) so range expansions, degree upgrades & SVD rotations assemble in `< 1 ms` (**1.05 × 10⁻⁹ parity**) |
+| **16** | **Non-Stop 3-Phase Control Audit & Factorized-Kronecker `.dnam-ckpt` Resume** | Blocking prompts, stale pre-summed Gram matrices, `pickle` security risks & full retraining | Runs **100% unattended** and saves a **deduplicated `DNCK` binary `.dnam-ckpt`** with **tier-ordered `uplo='U'` packed per-stem audio sufficient statistics** `{pack_U(G_audio^(s)), C_audio^(s)}` (**66.5 KB/stem Full / 147.8 KB/stem Ultra**) so range expansions, degree upgrades & SVD rotations assemble in `< 1 ms` (**1.05 × 10⁻⁹ parity**) |
 | **17** | **Dual-Ridge `float64` SVD-Kronecker Wiener-Hopf Warm-Start & Export Polish** | Cold random init, `float32` normal-equation overflow & collinear user metadata | Projects user controls onto their orthonormal SVD subspace and solves the 16-tap stereo head in `float64` at Step 0 (**-25.39 dB ESR**), trains with `Adam(weight_decay=0.0)` + warmup, and applies a Step-N Cholesky Export Polish (**-47.63 dB ESR**) |
-| **18** | **Continuous-Time ZOH Parameterization & Hardware `FTZ`/`DAZ`** | Fixed 48 kHz weights & IIR denormal CPU spikes | Stores poles/delays in physical continuous time for native **44.1–96 kHz** loading, and enforces `FPCR.FZ = 1` (`FTZ`/`DAZ`) so decaying IIR/FDN tails never trigger subnormal CPU stalls |
+| **18** | **Zero-Copy Hybrid Binary Container (`DNAM`/`DNCK`), Tier-Delta `SoA` Packing, Continuous-Time ZOH & `FTZ`/`DAZ`** | 3.5× bloated ASCII JSON `.nam` weights, 33.3% structural zeros, fixed 48 kHz & IIR denormal stalls | Replaces ASCII JSON float arrays with a **64-byte SIMD-aligned Hybrid Binary Container** (`CRC32C`), strips **33.3% structural zeros** via **Contiguous Tier-Delta `SoA` Arenas** (`Lite` + `Full` Δ + `Ultra` Δ), rescales natively across **44.1–96 kHz**, and enforces `FPCR.FZ = 1` (`FTZ`/`DAZ`) |
 
 ---
 
@@ -176,10 +176,10 @@ flowchart TD
 
 ### 4.3 Single-Checkpoint (`.dnam-ckpt`) Two-Tier Iterative Stem Expansion ($4\times\text{--}10\times$ Faster)
 > [!TIP]
-> **Why `.dnam-ckpt` Stores Factorized Per-Stem Audio Matrices $\{\mathbf{G}_{\text{audio}}^{(s)}, \mathbf{C}_{\text{audio}}^{(s)}\}$ Instead of a Pre-Summed Kronecker Matrix:** If `.dnam-ckpt` stored only the pre-collapsed sum $\mathbf{G}_{\text{old}} = \sum_s \tilde{\mathbf{\Phi}}_s^\top \tilde{\mathbf{\Phi}}_s$ ($3.28\text{ MB}$), then adding a new stem that changes the polynomial degree $K_p$, unlocks a new switch option, or rotates the SVD control subspace $\mathbf{P}_{\text{svd}}$ would invalidate $\mathbf{G}_{\text{old}}$ because the old control coordinates $\boldsymbol{\psi}_s$ were already baked in. Instead, `.dnam-ckpt` stores the **un-entangled per-stem audio sufficient statistics** $\mathbf{G}_{\text{audio}}^{(s)} = \mathbf{\Phi}_s^\top \mathbf{\Phi}_s \in \mathbb{R}^{16C \times 16C}$ and $\mathbf{C}_{\text{audio}}^{(s)} = \mathbf{\Phi}_s^\top \mathbf{Y}_s \in \mathbb{R}^{16C \times 2}$ (only **$130\text{ KB/stem}$, $2.5\times$ smaller**!).
+> **Why `.dnam-ckpt` Stores Tier-Ordered Upper-Triangular (`uplo='U'`) Per-Stem Audio Matrices $\{\operatorname{pack}_{\text{U}}(\mathbf{G}_{\text{audio}}^{(s)}), \mathbf{C}_{\text{audio}}^{(s)}\}$ Instead of a Pre-Summed Kronecker Matrix:** If `.dnam-ckpt` stored only the pre-collapsed sum $\mathbf{G}_{\text{old}} = \sum_s \tilde{\mathbf{\Phi}}_s^\top \tilde{\mathbf{\Phi}}_s$ ($3.28\text{ MB}$), then adding a new stem that changes the polynomial degree $K_p$, unlocks a new switch option, or rotates the SVD control subspace $\mathbf{P}_{\text{svd}}$ would invalidate $\mathbf{G}_{\text{old}}$ because the old control coordinates $\boldsymbol{\psi}_s$ were already baked in. Instead, `.dnam-ckpt` stores the **un-entangled, tier-ordered Column-Major Upper-Triangular (`uplo='U'`) per-stem audio sufficient statistics** $\operatorname{pack}_{\text{U}}(\mathbf{G}_{\text{audio}}^{(s)})$ ($\frac{N(N+1)}{2}$ `float64` values) and $\mathbf{C}_{\text{audio}}^{(s)} \in \mathbb{R}^{N \times 2}$ (**only $17.25\text{ KB/stem}$ `Lite`, $66.50\text{ KB/stem}$ `Full`, or $147.75\text{ KB/stem}$ `Ultra`—cutting symmetric matrix storage in half while keeping `Lite` and `Full` as exact contiguous prefixes of `Ultra`!**).
 
 1. **Tier 1 — Instant Factorized-Kronecker Control & Head Update ($< 5\text{ s}$, Zero Re-Pass Over Old Stems):**
-   When the user adds new stems to lift a `[CLAMP-RANGE]`, `[CLAMP-SWITCH]`, or `[CLAMP-STABILITY]` warning, the trainer unlocks the orthogonal Node-Anchored Newton/Switch/FM column, forward-passes **only the new stem(s)** to append $\mathbf{G}_{\text{audio}}^{(s_{\text{new}})}, \mathbf{C}_{\text{audio}}^{(s_{\text{new}})}$, recomputes the updated SVD projector $\mathbf{P}_{\text{svd,new}}$ across all stem metadata in microseconds, and reconstructs the exact global Kronecker system in $< 1\text{ ms}$ via the Kronecker identity:
+   When the user adds new stems to lift a `[CLAMP-RANGE]`, `[CLAMP-SWITCH]`, or `[CLAMP-STABILITY]` warning, the trainer unlocks the orthogonal Node-Anchored Newton/Switch/FM column, forward-passes **only the new stem(s)** to append $\operatorname{pack}_{\text{U}}(\mathbf{G}_{\text{audio}}^{(s_{\text{new}})}), \mathbf{C}_{\text{audio}}^{(s_{\text{new}})}$, recomputes the updated SVD projector $\mathbf{P}_{\text{svd,new}}$ across all stem metadata in microseconds, and reconstructs the exact global Kronecker system in $< 1\text{ ms}$ via the Kronecker identity:
    $$\mathbf{G}_{\text{updated}} = \sum_{s=1}^{S_{\text{total}}} \mathbf{G}_{\text{audio}}^{(s)} \otimes \big(\boldsymbol{\psi}_s^{\text{new}} \boldsymbol{\psi}_s^{\text{new}\top}\big), \qquad \mathbf{C}_{\text{updated}} = \sum_{s=1}^{S_{\text{total}}} \mathbf{C}_{\text{audio}}^{(s)} \otimes \boldsymbol{\psi}_s^{\text{new}}$$
    (**Verified in `Test 8G`:** improves unseen corner ESR from **$-26.68\text{ dB} \to -38.46\text{ dB}$** with **$1.05 \times 10^{-9}$ weight parity** vs. full retraining from scratch and **$4.44 \times 10^{-16}$ old-stem perturbation**.)
 2. **Tier 2 — Warm-Started Backbone Fine-Tuning ($\sim 15\text{--}20\%$ Epochs, When New Circuit Physics Is Added):**
@@ -187,21 +187,27 @@ flowchart TD
 
 ---
 
-## 5. Deployment: `.dnam` Container, Continuous-Time ZOH Rescaling & Hardware `FTZ`/`DAZ`
+## 5. Deployment: Zero-Copy Hybrid Binary `.dnam` Container, Tier-Delta `SoA` Packing, ZOH Rescaling & `FTZ`/`DAZ`
 
-1. **Continuous-Time ZOH Sample-Rate Adaptability ($44.1\text{--}96\text{ kHz}$) & Denormal Immunity (`FTZ`/`DAZ`):**
-   Stores pole decay rates $\gamma_c$, frequencies $f_{0,c}$, LFO frequencies $f_{\text{lfo},j}$, and FDN delays $\tau_{0,m}$ (in ms) in continuous time for native rescaling to any host sample rate $f_s$, and enforces `FPCR.FZ = 1` (`FTZ`/`DAZ`) at audio callback entry.
-2. **Single-File Slimmable & Parametric `.dnam` Schema:**
+1. **Zero-Copy `< 50 ns` `#[no_std]` Hybrid Binary Container (`DNAM` / `DNCK`), Execution-Order `SoA` & Contiguous Tier-Delta Packing:**
+   - **Self-Sufficient 64-Byte Binary Preamble + 4 KB Page-Aligned UTF-8 JSON Header + 64-Byte Aligned Binary Tensor Arena (`header_crc32c` + Per-Tier `arena_crc32c_*`):** Eliminates NAM A2's $3.5\times$ ASCII JSON float bloat and Python `pickle` vulnerabilities. The 64-byte preamble (`#[repr(C, align(64))]`) packs `num_controls` (`u8`), `ring_buffer_pow2_log2` (`u8`), `arena_crc32c_lite`, `arena_crc32c_full`, `arena_crc32c_ultra`, `num_ckpt_stems` (`u16`), `control_decimation` (`u8`), `head_svd_rank` (`u8`), and `tail_time_ms` (`f32`) directly so real-time `#[no_std]` DSP engines skip the JSON header entirely, verify hardware Castagnoli `CRC32C`, and cast `tensor_arena_offset` (`4,096 B` OS page boundary with `0x20` space slack for `< 0.1 ms` in-place preset/metadata edits) directly to `#[repr(C, align(64))]` structs in **$< 50\text{ ns}$ with zero heap allocations**.
+   - **Execution-Order `Core1BlockSlice` Interleaving, Pre-Baked $48\text{ kHz}$ Discrete Anchors, Pop-Free 3-State DC Equilibrium & Automatic Subsystem Pruning:** Interleaves `[Conv0 + PolyADAA0 | Conv1 + PolyADAA1 | RgLru]` per block ($1,024\text{ B/blk}$ `Lite`, $1,792\text{ B/blk}$ `Full` $\Delta$, $2,560\text{ B/blk}$ `Ultra` $\Delta$) for 100% linear L1D cache-line prefetching (`ptr += 64`), pre-bakes $f_{s,\text{train}}$ discrete anchors and Core 2 reciprocals (`inv_sigma_knee`, `two_over_3v_ceil`, `tier_gain_trim_lin`), packs `scale_norm` / `offset_norm` and 3 binary switch-coupled conditional clamp rules into each 64-byte `ControlClampDescriptor` (`0 FDIV`, `0` string parsing at $3\text{ kHz}$), initializes the 3-state `PolyADAA` DC resting equilibrium $(u_{\text{rest},c}, g_{\text{nl},c}(u_{\text{rest},c}), g_{\text{nl},c}(u_{\text{rest},c}))$ from `b_conv_c` (`0.000000` Sample-0 DC offset), and **automatically** sets `CORE2_ACTIVE`, `LFO_ENV_ACTIVE`, `ring_buffer_pow2_log2` ($208\text{ KB} \to 0\text{--}16\text{ KB}$ on amp/chorus models), and `tail_time_ms` from Stage-3 pruning—leaving `output_mode: "stereo" | "mono"` as the **only** user-configurable mode flag.
+   - **Minimal Essential `metadata`, Split-Payload `Ed25519` Signatures, Isometric Gauge Watermarking, Optional OEM Hardware Authorization (`authorized_devices` & `ChaCha20` 64-Byte Block Wrapping), Intrinsic `ui_hints`, Built-In `presets` & Open `user_metadata` (See [`digital_marketplace_and_provenance.md`](digital_marketplace_and_provenance.md)):** Keeps core `metadata` strictly to the essentials (`name`, `author`, `description`, `license`, `created_at`, `input_reference_dbfs`, platform-agnostic IEEE-754 PCM SHA-256 `provenance` digests, and preset-safe `Ed25519` `signatures` (`creator_signature` + `marketplace_receipt`, `authorized_devices`, and optional RK3582 `OTP`/`OP-TEE` `X25519` + `ChaCha20` 64-byte block arena wrapping) backed by **Isometric Gauge-Space & Spread-Spectrum Tardos Traitor-Tracing Watermarks** in `Arena 0..2`), includes intrinsic per-control `ui_hints` (`section`, `order`, `widget`, `size`, `polarity`, `midpoint` skew curve, `detents`, `scale_labels` / `option_labels`, `color_hex`) and a top-level `presets` array, and provides an open `user_metadata: dict[str, JsonValue]` dictionary for external platforms (e.g., Tone3000) or host/rig bindings.
+   - **Contiguous Tier-Delta `SoA` Arenas (`Arena 0: Lite` + `Arena 1: Full Delta` + `Arena 2: Ultra Delta`):** Strips **$33.33\%$ structural zeros** from Core 1 convolutions and allows prefix-verifiable loading (`10.5 KB` `Lite`, `21.8 KB` `Full`, `35.4 KB` `Ultra`). In `.dnam-ckpt` (`DNCK`), `Arena 0..2` are bit-identical to `.dnam` (eliminating duplicate `backbone_state_dict` storage), followed by `Arena 3` containing the 64-byte aligned `uplo='U'` packed stem matrices.
+2. **Continuous-Time ZOH Sample-Rate Adaptability ($44.1\text{--}96\text{ kHz}$) & Denormal Immunity (`FTZ`/`DAZ`):**
+   Rescales pole radii/angles, $\mathcal{H}_2$ normalizers, fractional/all-pass delays, and Control-Bus LFO/envelope rates ($\rho_{\text{ctrl}}$) in closed form to any host sample rate $f_s$, and enforces `FPCR.FZ = 1` (`FTZ`/`DAZ`) at audio callback entry.
+3. **Canonical `.dnam` JSON Header Schema (at Offset `0x40`, See [`dnam_container_schema.md`](dnam_container_schema.md)):**
    ```json
    {
      "version": "1.0.0",
+     "container_kind": "dnam",
      "architecture": "DNAM_TriPhysics",
      "sample_rate_train_hz": 48000,
-     "io_config": { "inputs": 2, "outputs": 2, "stereo_mode": "true_stereo_mid_side" },
+     "io_config": { "inputs": 2, "output_mode": "stereo", "latency_samples": 0, "tail_time_ms": 1850.0 },
      "slimmable_tiers": {
-       "lite": { "channels": 4, "fdn_lines": 4, "early_taps": 4, "head_svd_rank": 4 },
-       "full": { "channels": 8, "fdn_lines": 8, "early_taps": 8, "head_svd_rank": 4 },
-       "ultra": { "channels": 12, "fdn_lines": 8, "early_taps": 8, "head_svd_rank": 4 }
+       "lite": { "channels": 4, "fdn_lines": 4, "early_taps": 4, "head_svd_rank": 4, "arena_end_byte_offset": 10752, "prefix_crc32c": 2849103412 },
+       "full": { "channels": 8, "fdn_lines": 8, "early_taps": 8, "head_svd_rank": 4, "arena_end_byte_offset": 22336, "prefix_crc32c": 1938475621 },
+       "ultra": { "channels": 12, "fdn_lines": 8, "early_taps": 8, "head_svd_rank": 4, "arena_end_byte_offset": 36224, "prefix_crc32c": 4019283746 }
      },
      "controls_schema": [
        {
@@ -216,14 +222,14 @@ flowchart TD
          "clamp_warning": "CLAMP-STABILITY: Clamped <= 9.37 when boost='on' (g_lin <= 0.9990)"
        },
        {
-         "id": "boost", "name": "Boost", "type": "switch",
+         "id": "boost", "name": "Boost Mode", "type": "switch",
          "declared_options": ["off", "on", "ultra"], "active_options": ["off", "on"], "default": "off",
          "clamp_warning": "CLAMP-SWITCH: Disabled unobserved option ['ultra']"
        }
      ],
      "control_bus": { "decimation": 16, "envelopes": 3, "lfo_oscillators": 2, "fm_interaction_rank": 4 },
-     "core1_hybrid_ssm": { "blocks": 4, "conv_kernel": 6, "dilations": [1, 3, 7, 19], "adaa_mode": "1x_bspline_algebraic" },
-     "core2_mufdn": { "delay_storage": "fp16", "interp": "cubic_lagrange_4tap", "switch_xfade_samples": 128 }
+     "core1_hybrid_ssm": { "blocks": 4, "conv_kernel": 6, "dilations": [1, 3, 7, 19], "adaa_mode": "1x_bspline_algebraic", "weight_layout": "tier_delta_exec_order_soa_align64" },
+     "core2_mufdn": { "active": true, "delay_storage": "fp16", "ring_buffer_pow2_log2": 15, "interp": "cubic_lagrange_4tap", "switch_xfade_samples": 128 }
    }
    ```
 

@@ -41,11 +41,11 @@ At the end of training, freeze the nonlinear backbone, recompute the exact per-s
 ## 2. Single-Checkpoint (`.dnam-ckpt`) Two-Tier Iterative Stem Expansion
 
 > [!IMPORTANT]
-> **Why Only ONE `.dnam-ckpt` File Is Needed & Why It Stores Factorized Per-Stem Audio Matrices $\{\mathbf{G}_{\text{audio}}^{(s)}, \mathbf{C}_{\text{audio}}^{(s)}\}$:**
+> **Why Only ONE `.dnam-ckpt` File Is Needed & Why It Stores Tier-Ordered Upper-Triangular Per-Stem Audio Matrices $\{\operatorname{pack}_{\text{U}}(\mathbf{G}_{\text{audio}}^{(s)}), \mathbf{C}_{\text{audio}}^{(s)}\}$:**
 > Training runs **non-stop** to completion and outputs:
-> 1. The finished, playable `.dnam` model (with any necessary safety clamps active).
+> 1. The finished, playable `.dnam` Hybrid Binary Container (with any necessary safety clamps active).
 > 2. A **Consolidated Audit & Stem Prescription Report** telling the user which optional stems would lift any active clamps.
-> 3. **One single `.dnam-ckpt` file** containing the backbone weights, per-stem metadata, and the **un-entangled per-stem `float64` audio matrices** $\{\mathbf{G}_{\text{audio}}^{(s)} = \mathbf{\Phi}_s^\top \mathbf{\Phi}_s \in \mathbb{R}^{16C \times 16C},\; \mathbf{C}_{\text{audio}}^{(s)} = \mathbf{\Phi}_s^\top \mathbf{Y}_s \in \mathbb{R}^{16C \times 2}\}$ (**only $130\text{ KB/stem}$ at $C=8$ `Full` or $291\text{ KB/stem}$ at $C=12$ `Ultra`, where the `Lite` $64\times 64$ and `Full` $128\times 128$ blocks are exact leading principal submatrices of the $192\times 192$ `Ultra` Gram matrix**).
+> 3. **One single deduplicated, `pickle`-free `.dnam-ckpt` file** (`magic = b"DNCK"`) whose `Arena 0..2` are bit-identical to the `.dnam` weights, followed by `Arena 3` containing the **tier-ordered Column-Major Upper-Triangular (`uplo='U'`) `float64` audio sufficient statistics** $\{\operatorname{pack}_{\text{U}}(\mathbf{G}_{\text{audio}}^{(s)}),\; \mathbf{C}_{\text{audio}}^{(s)}\}$ (**only $17.25\text{ KB/stem}$ at $C=4$ `Lite`, $66.50\text{ KB/stem}$ at $C=8$ `Full`, or $147.75\text{ KB/stem}$ at $C=12$ `Ultra`—cutting symmetric Gram storage in half while keeping `Lite` ($2,080\text{ f64}$) and `Full` ($8,256\text{ f64}$) as exact contiguous prefixes of the $18,528\text{-element}$ `Ultra` packed upper triangle; see [`dnam_container_schema.md` §6.2](dnam_container_schema.md#62-tier-ordered-column-major-upper-triangular-packing-uplou-for-mathbfg_textaudios)**).
 
 ### Why Pre-Summed Kronecker Matrices Fail on Stem Additions (Mathematical Proof)
 If `.dnam-ckpt` stored only the pre-collapsed sum $\mathbf{G}_{\text{old}} = \sum_{s=1}^S \mathbf{G}_{\text{audio}}^{(s)} \otimes (\tilde{\boldsymbol{\psi}}_s \tilde{\boldsymbol{\psi}}_s^\top)$, then adding a new stem $s_{\text{new}}$ that:
@@ -59,7 +59,8 @@ $$\mathbf{G}_{\text{updated}} = \sum_{s=1}^{S + S_{\text{new}}} \mathbf{G}_{\tex
 
 ### Two-Tier Resume Execution (`dnam-train --resume model.dnam-ckpt --add-stems ...`)
 1. **Tier 1 — Instant Factorized-Kronecker Control & Head Update ($< 5\text{ seconds}$, $100\times$ Faster):**
-   - Forward-passes **only the newly added stem(s)** through the frozen backbone to compute $\mathbf{G}_{\text{audio}}^{(s_{\text{new}})}, \mathbf{C}_{\text{audio}}^{(s_{\text{new}})}$.
+   - **Platform-Agnostic PCM SHA-256 Provenance Deduplication & Merge:** Compares each incoming stem's `(input_pcm_sha256, target_pcm_sha256, controls_meta)` against `stems_registry` in `.dnam-ckpt` (see [`dnam_container_schema.md` §3](dnam_container_schema.md#3-essential-metadata-provenance-presets-ui_hints--open-user_metadata)). Identical stems are skipped in $0\text{ ms}$; re-recorded stems at an existing control coordinate overwrite only that stem's $66.5\text{ KB}$ record in `Arena 3`; and `presets`, `ui_hints`, and `user_metadata` dictionaries are preserved and merged automatically.
+   - Forward-passes **only the newly added/modified stem(s)** through the frozen backbone to compute $\operatorname{pack}_{\text{U}}(\mathbf{G}_{\text{audio}}^{(s_{\text{new}})}), \mathbf{C}_{\text{audio}}^{(s_{\text{new}})}$.
    - Updates the Node-Anchored Newton/Lobatto basis (`0.00` perturbation on old stems) and SVD projector $\mathbf{P}_{\text{svd,new}}$, assembles $\mathbf{G}_{\text{updated}}, \mathbf{C}_{\text{updated}}$ in $< 1\text{ ms}$, and solves the Cholesky polish ($\lambda_{\text{polish}} = 10^{-6}\bar{\tau}$).
    - **Verified in `Test 8G`:** Improves unseen 3-way validation ESR from **$-26.68\text{ dB} \to -38.46\text{ dB}$** with **$1.05 \times 10^{-9}$ weight parity** against full retraining from scratch!
 2. **Tier 2 — Warm-Started Backbone Fine-Tuning ($\sim 15\text{--}20\%$ Epochs, $4\times\text{--}6\times$ Faster):**

@@ -26,6 +26,7 @@ dynamic-neural-audio-modeler/
 │   ├── training_and_iterative_resume.md
 │   ├── clamp_and_audit_registry.md
 │   ├── dnam_container_schema.md
+│   ├── digital_marketplace_and_provenance.md
 │   ├── monorepo_implementation_guide.md
 │   └── verification_and_guardrails.md
 ├── scripts/

@@ -68,8 +68,9 @@ Start with [`AGENTS.md`](AGENTS.md) and [`docs/index.md`](docs/index.md):
 8. **[4-Stage Training Pipeline & Single-Checkpoint (`.dnam-ckpt`) Iterative Stem Expansion](docs/training_and_iterative_resume.md)**
 9. **[Non-Stop 3-Phase Control-Space Audit & Clamp Registry (`CL-01`..`CL-18`)](docs/clamp_and_audit_registry.md)**
 10. **[`.dnam` Container Schema & Continuous-Time ZOH Sample-Rate Rescaling](docs/dnam_container_schema.md)**
-11. **[Monorepo Implementation Blueprint (Web Docs, Python, Native DSP, Plugin & Node.js WASM)](docs/monorepo_implementation_guide.md)**
-12. **[Empirical Verification Suite (8 Test Suites) & Automated Guardrails](docs/verification_and_guardrails.md)**
+11. **[Digital Marketplace Architecture, Split-Payload `Ed25519` Signatures & Traitor-Tracing Watermarks](docs/digital_marketplace_and_provenance.md)**
+12. **[Monorepo Implementation Blueprint (Web Docs, Python, Native DSP, Plugin & Node.js WASM)](docs/monorepo_implementation_guide.md)**
+13. **[Empirical Verification Suite (8 Test Suites) & Automated Guardrails](docs/verification_and_guardrails.md)**
 
 ---
 

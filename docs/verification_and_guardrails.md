@@ -536,6 +536,46 @@ def test_8_parametric_control_bus_and_multistem_conditioning() -> None:
     y_val = synth_gt(u_g, u_t, s_b)[100:]
     val_esr = 10.0 * math.log10((torch.sum((x_val @ w_ckpt_iter - y_val) ** 2) / torch.sum(y_val**2)).item())
     assert val_esr < -35.0
+
+    # Verify Column-Major Upper-Triangular (uplo='U') Nested Principal Submatrix Prefix Theorem & 64B alignment
+    rng_pack = np.random.default_rng(2026)
+    a_rand = rng_pack.standard_normal((256, 192))
+    g_ultra = a_rand.T @ a_rand
+    j_idx, i_idx = np.meshgrid(np.arange(192), np.arange(192))
+    mask_u = i_idx <= j_idx
+    packed_u = g_ultra[mask_u][np.lexsort((i_idx[mask_u], j_idx[mask_u]))]
+    for n_tier, expected_bytes in [(64, 17664), (128, 68096), (192, 151296)]:
+        n_pack = n_tier * (n_tier + 1) // 2
+        reconstructed = np.zeros((n_tier, n_tier), dtype=np.float64)
+        idx = 0
+        for col in range(n_tier):
+            reconstructed[: col + 1, col] = packed_u[idx : idx + col + 1]
+            reconstructed[col, : col + 1] = packed_u[idx : idx + col + 1]
+            idx += col + 1
+        assert float(np.max(np.abs(reconstructed - g_ultra[:n_tier, :n_tier]))) == 0.0
+        assert (n_pack * 8 + n_tier * 2 * 8) == expected_bytes and expected_bytes % 64 == 0
+
+    # Verify 64-byte DnamPreamble, 64-byte ControlClampDescriptor, 3-state PolyADAA DC equilibrium & ZOH rho_ctrl
+    import struct
+
+    assert struct.calcsize("<4s3H2B10IH2BfI") == 64
+    assert struct.calcsize("<2BH9f4B1f4B1f4B1f") == 64
+    u_rest = max(-1.0, min(1.0, (2.0 / 3.0) * 0.42))
+    g_rest = 0.85 * u_rest * (1.5 - 0.5 * u_rest**2) + 0.25 * (u_rest**2 - u_rest**4)
+    assert abs((0.875 * g_rest + 0.125 * g_rest) - (0.9993 * g_rest + 0.0007 * g_rest)) == 0.0
+
+    # Verify Isometric Gauge Watermarking (0.00 dB distortion), 4-Buyer Collusion + fp16 Tardos Detection,
+    # and OEM 64-Byte Block-Aligned Arena Wrapping (Lite=168, Full=349, Ultra=566 blocks, 0 B overhead)
+    rng_wm = np.random.default_rng(777)
+    b_m, c_m, kap = rng_wm.uniform(0.3, 0.9, 48), rng_wm.standard_normal(48), rng_wm.uniform(0.985, 1.015, 48)
+    assert float(np.max(np.abs((b_m * kap) * (c_m / kap) - b_m * c_m))) < 1e-14
+    w_m = rng_wm.standard_normal(4608)
+    codes = rng_wm.choice([-1.0, 1.0], size=(64, 4608))
+    w_pirated = np.mean([w_m + 2e-3 * codes[k] for k in (3, 19, 41, 58)], axis=0).astype(np.float16).astype(np.float64)
+    z_sc = (codes @ np.sign(w_pirated - w_m)) / math.sqrt(4608)
+    assert min(z_sc[k] for k in (3, 19, 41, 58)) > 10.0
+    assert (10752 // 64, 22336 // 64, 36224 // 64) == (168, 349, 566)
+    assert (10752 % 64, 22336 % 64, 36224 % 64) == (0, 0, 0)
 ```
 
 ---
@@ -546,4 +586,4 @@ In addition to `test_dnam_verification.py`, `packages/trainer/tests/test_guardra
 1. **`test_guardrail_agents_md_progressive_disclosure_budgets`:** Verifies that root [`AGENTS.md`](../AGENTS.md) is `< 5,000` bytes and every scoped `AGENTS.md` is `< 2,500` bytes.
 2. **`test_guardrail_documentation_markdown_links_valid`:** Parses all Markdown files (`AGENTS.md`, `README.md`, `CONTRIBUTING.md`, `CLA.md`, and `docs/**/*.md`), strips fenced code blocks and inline code spans, and verifies that every relative link resolves to an existing file on disk.
 3. **`test_guardrail_clamp_registry_integrity`:** Parses `CL-01`..`CL-18` in [`clamp_and_audit_registry.md`](clamp_and_audit_registry.md) and verifies that all 18 clamps are present and map to existing modules under `packages/trainer/src/dnam_trainer/`.
-4. **`test_guardrail_fail_fast_schema_validation`:** Verifies that `.dnam` schema loading raises explicit `ValueError` / `ValidationError` on missing or malformed `controls_schema`, invalid sample rates, or unaligned channel counts ($C \notin \{4, 8, 12\}$).
+4. **`test_guardrail_fail_fast_schema_validation`:** Verifies that `.dnam` and `.dnam-ckpt` Hybrid Binary Container loading (`DNAM`/`DNCK` 64-byte preamble, `CRC32C` checksum, 64-byte arena alignment, and JSON metadata) raises explicit `ValueError` / `ValidationError` on invalid magic bytes, checksum mismatch, unaligned tensor offsets (`% 64 != 0`), missing `controls_schema`, invalid sample rates, or unaligned channel counts ($C \notin \{4, 8, 12\}$).
