@@ -32,15 +32,33 @@ dynamic-neural-audio-modeler/
 ├── scripts/
 │   └── verify_dnam_architecture.py  # Executable 8-suite empirical verification reference
 └── packages/                        # 2. All 6 Monorepo Packages (3-Layer Architecture)
-    ├── engine/                      # Layer 1: Pure Rust Zero-Allocation SIMD Engine Core (dnam-engine)
+    ├── engine/                      # Layer 1: Pure Rust #![no_std] + alloc, Zero-Audio-Alloc SIMD Engine Core (dnam-engine)
     │   ├── AGENTS.md                # Scoped router (< 2,500 B)
     │   ├── Cargo.toml
-    │   └── src/
-    │       ├── lib.rs               # DnamEngine, Tier (Lite C=4 / Full C=8 / Ultra C=12), FtzDazGuard
-    │       ├── math.rs              # Branchless PolyADAA, Algebraic Rotor & 4-Tap Cubic Lagrange (CL-01..03, CL-06)
-    │       ├── core1.rs             # 12-Layer Hybrid Dilated-Conv + Selective Complex RG-LRU (CL-04, CL-05)
-    │       ├── core2.rs             # Stereo Diffusive M-UFDN, Switch XFade & Lyapunov Loop (CL-07..11)
-    │       └── control.rs           # 3 kHz Decimated ControlBus & Safe-Domain Clamping (CL-12..14)
+    │   ├── src/
+    │   │   ├── lib.rs               # DnamEngine<B>, DynamicDnamEngine, Tier (Lite/Full/Ultra), FtzDazGuard
+    │   │   ├── memory.rs            # CacheLine64, 64B AlignedBuffer (page pre-faulting), ArenaStorage & Scratch
+    │   │   ├── schema.rs            # #![no_std] serde + serde_json .dnam/.dnam-ckpt header, validator & skew
+    │   │   ├── provenance.rs        # CryptoProvider (Zeroizing CEK), RustCryptoProvider, ChaCha20 & watermarks
+    │   │   ├── container.rs         # DnamPreamble, Arena 0..3 (uplo='U'), 4 KB in-place editor & ZOH rescaler
+    │   │   ├── math.rs              # SimdVec4 & MathBackend traits, branchless PolyADAA, Rotor & Lagrange (CL-01..03, CL-06)
+    │   │   ├── math/
+    │   │   │   ├── scalar.rs        # Portable 16B-aligned ScalarBackend & reference oracle
+    │   │   │   ├── neon.rs          # ARM64 NEON (float32x4_t, vfmaq_f32, hardware __crc32cd)
+    │   │   │   ├── arm_sme.rs       # ARMv9.2-A Scalable Matrix Extension (ARM SME / SME2) + NEON Hybrid
+    │   │   │   ├── x86_simd.rs      # x86-64 SSE4.2 / AVX2 + FMA
+    │   │   │   └── wasm_simd128.rs  # WebAssembly SIMD128 (v128)
+    │   │   ├── core1.rs             # 12-Layer Hybrid Dilated-Conv + Selective Complex RG-LRU (CL-04, CL-05)
+    │   │   ├── core2.rs             # Stereo Diffusive M-UFDN, Switch XFade & Lyapunov Loop (CL-07..11)
+    │   │   ├── control.rs           # 3 kHz Decimated ControlBus, Anti-Zipper Smoother & Clamping (CL-12..14)
+    │   │   └── ffi.rs               # Zero-allocation extern "C" ABI for WASM & C/C++ embedded audio hosts
+    │   ├── tests/
+    │   │   ├── empirical_verification.rs  # Black-box empirical verification suites (Tests 1-5 & 8)
+    │   │   ├── backend_parity.rs    # Differential parity across Scalar, NEON, ARM SME, x86 & WASM
+    │   │   └── realtime_safety.rs   # Counting GlobalAllocator (0-alloc proof) + asm FSQRT/FDIV audit
+    │   └── benches/
+    │       ├── engine_bench.rs      # DNAM audio budget & backend speedup telemetry table
+    │       └── criterion_bench.rs   # Criterion statistical micro- and macro-benchmarks
     ├── python/                      # Layer 2A: Packaged Python Library for Rust Engine (PyO3 / maturin wheel)
     │   ├── AGENTS.md                # Scoped router (< 2,500 B)
     │   ├── pyproject.toml           # maturin build backend (lightweight, depends only on numpy)

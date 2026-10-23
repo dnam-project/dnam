@@ -24,3 +24,9 @@ packages/nodejs/dist/
 *.nam
 *.nam-ckpt
 *.wav
+
+# IDEs & OS
+.idea/
+.vscode/
+.DS_Store
+*.swp

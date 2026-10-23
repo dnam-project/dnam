@@ -171,16 +171,20 @@ While core `.dnam` `metadata` remains minimal (`name`, `author`, `description`, 
 
 While standard community and personal `.dnam` models (`"encryption_mode": "none"`, `ENCRYPTED_ARENA = 0`) remain 100% open across all desktop plugins and hardware units, OEM hardware manufacturers (such as **Darkglass Electronics** on the **Rockchip RK3582-based Anagram**) and commercial pack creators can optionally bind `.dnam` models to a user's registered hardware pedalboards (`1..N` devices, e.g., main touring board + backup rig)—with **zero internet dependency on stage** and **$0\text{ flops}$ of real-time $48\text{ kHz}$ DSP overhead**.
 
-### 7.1 Silicon Root-of-Trust on Rockchip RK3582 (`OTP` eFuse + ARM TrustZone `OP-TEE`)
+### 7.1 Silicon Root-of-Trust Across Embedded Pedalboards (`RK3582 OP-TEE`) & Desktop/Mobile DAW Hardware Enclaves (`Apple Secure Enclave` & `TPM 2.0`)
 
-The Darkglass Anagram's **Rockchip RK3582** SoC provides hardware-enforced cryptographic isolation between the non-secure Linux UI/audio domain and the Secure World (`ARM TrustZone` running `OP-TEE`):
-1. **Factory Provisioning (`OTP` eFuse & Device Keypair):**
+`packages/engine` abstracts hardware key agreement and signature verification behind `CryptoProvider::unwrap_device_cek(&self, receipt: &MarketplaceReceipt, device: &AuthorizedDevice) -> Result<Zeroizing<[u8; 32]>, DnamError>` (paired with the built-in `#![no_std]` `RustCryptoProvider` for `ENCRYPTED_ARENA = 0` and software-keyed `ENCRYPTED_ARENA = 1` models), unifying both embedded hardware pedalboards and desktop/mobile DAW plugins:
+1. **Embedded Pedalboards — Rockchip RK3582 (`OTP` eFuse + ARM TrustZone `OP-TEE` on Darkglass Anagram):**
    - Each RK3582 die contains a factory-burned **One-Time Programmable (`OTP`) Unique Chip ID** and Hardware Unique Key (`HUK`) accessible only to `OP-TEE` in Secure World (`EL3`/`S-EL1`), plus a **CryptoEngine v2** hardware accelerator.
    - At factory test, `OP-TEE` deterministically derives a non-exportable device keypair $(\text{sk}_{\text{device}}, \text{pk}_{\text{device}})$ (`X25519` for key agreement + `Ed25519` for device attestation) inside TrustZone, and Darkglass signs a compact **Device Identity Certificate**:
      $$\text{Cert}_{\text{device}} = \operatorname{Ed25519\_Sign}\!\Big(\text{sk}_{\text{Darkglass\_OEM}},\; \text{device\_id\_hash} \;\|\; \text{model\_code} \;\|\; \text{pk}_{\text{device}}\Big)$$
      where $\text{device\_id\_hash} = \operatorname{SHA256}(\text{ \texttt{"dnam-device-v1:"} } \| \text{OTP\_Serial})[:16]$ (`128-bit` privacy-preserving hex identifier).
-2. **Account Pairing & Offline QR Code Activation:**
-   - When a musician connects their Anagram to **Darkglass Suite** (USB-C / Wi-Fi / Bluetooth) or scans a **Device Registration QR Code** displayed on the Anagram's touchscreen with their phone, the marketplace registers `(device_id_hash, pk_device)` to the user's account (`N <= 5` active pedals per user).
+2. **Desktop & Mobile DAW Plugins (`VST3` / `CLAP` / `AU`) — Apple Secure Enclave (`SEP`) & Windows/Linux `TPM 2.0`:**
+   - On **macOS / iOS**, the DAW plugin seals its 32-byte `X25519` device key inside the **Apple Secure Enclave Processor (`SEP`)** via `Security.framework` (`kSecAttrTokenIDSecureEnclave` `ECIES` P-256 key wrapping / Data Protection Keychain).
+   - On **Windows** and **Linux**, the plugin seals its `X25519` device key to the machine's **TPM 2.0** Storage Root Key via Windows CNG (`NCrypt` Platform Crypto Provider) or Linux `/dev/tpmrm0` (`tss2`).
+   - At model load, `CryptoProvider::unwrap_device_cek` unseals the key inside the enclave, unwraps `wrapped_cek` into a `Zeroizing<[u8; 32]>` buffer, and immediately wipes transient stack bytes after `ChaCha20` arena decryption.
+3. **Account Pairing & Offline QR Code Activation:**
+   - When a musician connects their Anagram to **Darkglass Suite** (USB-C / Wi-Fi / Bluetooth) or scans a **Device Registration QR Code** displayed on the Anagram's touchscreen with their phone, the marketplace registers `(device_id_hash, pk_device)` to the user's account (`N <= 5` active pedals/workstations per user).
    - For air-gapped studio pedals that never connect to USB or Wi-Fi, scanning a signed **License Grant QR Code** from the user's phone screen via a companion mobile app—or copying the updated `.dnam` file onto a USB flash drive—authorizes the pedal **100% offline**.
 
 ### 7.2 Two OEM Hardware Authorization Modes (`authorized_devices` Allowlist vs. `X25519` + `ChaCha20` Arena Wrapping)

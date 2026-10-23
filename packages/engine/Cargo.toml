@@ -1,0 +1,51 @@
+[package]
+name = "dnam-engine"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Pure Rust #![no_std] + alloc, zero-audio-alloc real-time SIMD audio engine for Dynamic Neural Audio Modeler (DNAM)"
+
+[lib]
+name = "dnam_engine"
+crate-type = ["rlib", "cdylib", "staticlib"]
+
+[features]
+default = ["crypto"]
+crypto = [
+    "dep:ed25519-dalek",
+    "dep:x25519-dalek",
+    "dep:chacha20poly1305",
+    "dep:hkdf",
+    "dep:sha2",
+]
+
+[dependencies]
+serde = { workspace = true, default-features = false, features = ["alloc", "derive"] }
+serde_json = { workspace = true, default-features = false, features = ["alloc"] }
+zeroize = { workspace = true, default-features = false, features = ["alloc", "derive"] }
+ed25519-dalek = { workspace = true, optional = true }
+x25519-dalek = { workspace = true, optional = true }
+chacha20poly1305 = { workspace = true, optional = true }
+hkdf = { workspace = true, optional = true }
+sha2 = { workspace = true, optional = true }
+
+[dev-dependencies]
+criterion = { workspace = true }
+ed25519-dalek = { workspace = true }
+x25519-dalek = { workspace = true }
+chacha20poly1305 = { workspace = true }
+hkdf = { workspace = true }
+sha2 = { workspace = true }
+
+[[bench]]
+name = "engine_bench"
+harness = false
+
+[[bench]]
+name = "criterion_bench"
+harness = false
+
+[lints]
+workspace = true
