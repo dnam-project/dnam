@@ -19,9 +19,9 @@ All implementations of **Dynamic Neural Audio Modeler (DNAM Architecture 3)** mu
 
 ---
 
-## 2. Reference Python Verification Suite (`tests/test_architecture_3_verification.py`)
+## 2. Reference Python Verification Suite (`packages/trainer/tests/test_architecture_3_verification.py`)
 
-Port the following verified reference suite directly into `tests/test_architecture_3_verification.py`:
+Port the following verified reference suite directly into `packages/trainer/tests/test_architecture_3_verification.py`:
 
 ```python
 """Empirical & Mathematical Verification Suite for DNAM Architecture 3 (A3)."""
@@ -540,10 +540,10 @@ def test_8_parametric_control_bus_and_multistem_conditioning() -> None:
 
 ---
 
-## 3. Automated Guardrail Test Suite (`tests/test_guardrails.py`)
+## 3. Automated Guardrail Test Suite (`packages/trainer/tests/test_guardrails.py`)
 
-In addition to `test_architecture_3_verification.py`, `tests/test_guardrails.py` must enforce:
+In addition to `test_architecture_3_verification.py`, `packages/trainer/tests/test_guardrails.py` must enforce:
 1. **`test_guardrail_agents_md_progressive_disclosure_budgets`:** Verifies that root [`AGENTS.md`](../AGENTS.md) is `< 5,000` bytes and every scoped `AGENTS.md` is `< 2,500` bytes.
 2. **`test_guardrail_documentation_markdown_links_valid`:** Parses all Markdown files (`AGENTS.md`, `README.md`, `CONTRIBUTING.md`, `CLA.md`, and `docs/**/*.md`), strips fenced code blocks and inline code spans, and verifies that every relative link resolves to an existing file on disk.
-3. **`test_guardrail_clamp_registry_integrity`:** Parses `CL-01`..`CL-18` in [`clamp_and_audit_registry.md`](clamp_and_audit_registry.md) and verifies that all 18 clamps are present and map to existing modules under `src/dnam/`.
+3. **`test_guardrail_clamp_registry_integrity`:** Parses `CL-01`..`CL-18` in [`clamp_and_audit_registry.md`](clamp_and_audit_registry.md) and verifies that all 18 clamps are present and map to existing modules under `packages/trainer/src/dnam_trainer/`.
 4. **`test_guardrail_fail_fast_schema_validation`:** Verifies that `.dnam` v3 schema loading raises explicit `ValueError` / `ValidationError` on missing or malformed `controls_schema`, invalid sample rates, or unaligned channel counts ($C \notin \{4, 8\}$).

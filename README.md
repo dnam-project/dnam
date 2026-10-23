@@ -10,11 +10,13 @@ It unifies **nonlinear amplifier/preamp drive**, **selective state-space filters
 
 | Component | Target Path | Description |
 | :--- | :--- | :--- |
-| **Project & Web Documentation** | [`docs/`](docs/index.md) | Single-Source-of-Truth (SSOT) mathematical, DSP, training, clamp registry (`CL-01..CL-18`), and `.dnam` v3 container specifications + web documentation site configuration. |
-| **Python Trainer & Reference DSP** | `src/dnam/`, `tests/` | PyTorch 4-stage deterministic trainer, `.dnam-ckpt` factorized Kronecker iterative stem expansion, Non-Stop 3-Phase Control-Space Clamping Audit, `.dnam` v3 Pydantic schema, reference DSP, and 8-suite verification tests. |
-| **Native SIMD DSP Engine** | `crates/dnam-dsp/` (or `native/dsp/`) | Zero-allocation, 16-byte SIMD-aligned (`C=4` Lite / `C=8` Full), `FTZ`/`DAZ`-enabled native DSP core with zero `FSQRT` or `FDIV` instructions at $48\text{ kHz}$ and $3\text{ kHz}$. |
-| **Real-Time Audio Plugin** | `crates/dnam-plugin/` (or `plugin/`) | VST3/CLAP/AU audio plugin wrapping the native DSP engine with lock-free atomic parameter binding for dynamic `.dnam` v3 `controls_schema` (`range` & `switch`) and ZOH sample-rate rescaling ($44.1\text{--}96\text{ kHz}$). |
-| **Node.js WASM / Native Package** | `packages/nodejs/` | TypeScript SDK, WebAssembly SIMD128 / N-API bindings, and WebAudio `AudioWorkletProcessor` for browser and Node.js inference and `.dnam` v3 model inspection. |
+| **Canonical Specifications** | [`docs/`](docs/index.md) | Pure Single-Source-of-Truth (SSOT) mathematical, DSP, training, clamp registry (`CL-01..CL-18`), and `.dnam` v3 container specifications. |
+| **Rust SIMD Engine Core** | `packages/engine/` | Zero-allocation, 16-byte SIMD-aligned (`C=4` Lite / `C=8` Full), `FTZ`/`DAZ`-enabled pure Rust engine (`dnam-engine`) with zero `FSQRT` or `FDIV` instructions at $48\text{ kHz}$ and $3\text{ kHz}$. |
+| **Packaged Python Engine Library** | `packages/python/` | Standalone `PyO3` / `maturin` Python wheel wrapping `packages/engine` for zero-copy NumPy audio inference, `.dnam` v3 validation, 3-Phase control clamping, and canonical Reference DSP primitives. |
+| **Packaged Node.js / WebAudio Library** | `packages/nodejs/` | Standalone TypeScript / npm package wrapping `packages/engine` via WebAssembly SIMD128 & N-API bindings + WebAudio `DnamAudioWorkletProcessor`. |
+| **PyTorch Differentiable Trainer** | `packages/trainer/` | PyTorch 4-stage deterministic trainer, `.dnam-ckpt` factorized Kronecker iterative stem expansion, Non-Stop 3-Phase Control-Space Clamping Audit, and 8-suite verification tests (imports `packages/python` as Reference DSP). |
+| **Real-Time Audio Plugin** | `packages/plugin/` | VST3/CLAP/Standalone audio plugin wrapping `packages/engine` with lock-free atomic parameter binding for dynamic `.dnam` v3 `controls_schema` (`range` & `switch`) and ZOH sample-rate rescaling ($44.1\text{--}96\text{ kHz}$). |
+| **Web Docs & React WASM Studio** | `packages/web/` | Astro + Starlight documentation website mounting `docs/*.md` as a comprehensive Specification section with interactive React/Canvas DSP visualizers + live React WASM (`AudioWorklet` SIMD128) Modeler Plugin. |
 
 ---
 

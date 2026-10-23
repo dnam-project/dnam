@@ -2,12 +2,14 @@
 
 Welcome to the canonical Single-Source-of-Truth (SSOT) documentation for **Dynamic Neural Audio Modeler — Architecture 3 ("Tri-Physics" Architecture)**.
 
-This repository is structured as a multi-language monorepo containing:
-1. **Project & Web-Based Documentation (`docs/`):** Complete mathematical, DSP, training, control-clamping, and container schema documentation, plus a web-based documentation site.
-2. **Python Trainer & Reference DSP (`src/dnam/`, `tests/`):** PyTorch 4-stage deterministic trainer, `.dnam-ckpt` factorized Kronecker iterative stem expansion, Non-Stop 3-Phase Control-Space Clamping Audit, `.dnam` v3 Pydantic schema, reference DSP, and the 8-suite empirical verification suite.
-3. **Rust or C++ Native SIMD DSP Engine (`crates/dnam-dsp/` or `native/dsp/`):** Zero-allocation, 16-byte SIMD-aligned (`C=4` Lite / `C=8` Full), `FTZ`/`DAZ`-enabled native DSP core targeting ARM64 NEON (**Rockchip RK3582 / Darkglass Anagram**) and desktop x86_64 AVX2/SSE4.2 with zero `FSQRT` or `FDIV` instructions at $48\text{ kHz}$ and $3\text{ kHz}$.
-4. **Rust or C++ Real-Time Audio Plugin (`crates/dnam-plugin/` or `plugin/`):** Real-time VST3/CLAP/AU plugin wrapping the native DSP engine, dynamically binding `.dnam` v3 `controls_schema` (`range` knobs and `switch` selectors with safe clamped bounds) and ZOH sample-rate rescaling ($44.1\text{--}96\text{ kHz}$).
-5. **Node.js WASM / Native Package (`packages/nodejs/`):** TypeScript SDK, WebAssembly SIMD128 / N-API native bindings, and WebAudio `AudioWorkletProcessor`.
+This repository is structured as a symmetric multi-language monorepo with two top-level directories (`docs/` and `packages/`):
+1. **Canonical Specification Documentation (`docs/`):** Pure Single-Source-of-Truth (SSOT) mathematical, DSP, training, control-clamping, and container schema Markdown specifications.
+2. **Rust SIMD Engine Core (`packages/engine/`):** Zero-allocation, 16-byte SIMD-aligned (`C=4` Lite / `C=8` Full), `FTZ`/`DAZ`-enabled pure Rust core (`dnam-engine`) targeting ARM64 NEON (**Rockchip RK3582 / Darkglass Anagram**), desktop x86_64 AVX2/SSE4.2, and WebAssembly SIMD128 with zero `FSQRT` or `FDIV` instructions at $48\text{ kHz}$ and $3\text{ kHz}$.
+3. **Packaged Python Engine Library (`packages/python/`):** Standalone `PyO3` / `maturin` Python wheel wrapping `packages/engine` with zero-copy NumPy audio inference, `.dnam` v3 validation, 3-Phase control clamping, and Reference DSP bindings.
+4. **Packaged Node.js / WebAudio Engine Library (`packages/nodejs/`):** Standalone TypeScript / npm package (`@dnam/nodejs`) wrapping `packages/engine` via WebAssembly SIMD128 & N-API bindings + WebAudio `DnamAudioWorkletProcessor`.
+5. **PyTorch Differentiable Trainer (`packages/trainer/`):** PyTorch 4-stage deterministic trainer, `.dnam-ckpt` factorized Kronecker iterative stem expansion, Non-Stop 3-Phase Control-Space Clamping Audit, `.dnam` v3 Pydantic schema, and the 8-suite empirical verification suite (imports `packages/python` as Reference DSP).
+6. **Rust Real-Time Audio Plugin (`packages/plugin/`):** Real-time VST3/CLAP/Standalone plugin wrapping `packages/engine`, dynamically binding `.dnam` v3 `controls_schema` (`range` knobs and `switch` selectors with safe clamped bounds) and ZOH sample-rate rescaling ($44.1\text{--}96\text{ kHz}$).
+7. **Interactive Web Documentation & React WASM Studio (`packages/web/`):** Astro + Starlight + React Islands web application that mounts `docs/*.md` as a comprehensive **Specification Reference** section enriched with interactive React/Canvas DSP visualizers alongside a live in-browser **React WASM Modeler Plugin** (`/playground`, powered by `packages/nodejs`).
 
 ---
 
@@ -33,18 +35,18 @@ This repository is structured as a multi-language monorepo containing:
 
 When developing this monorepo from the specifications in `docs/`, execute in the following 6 phases:
 
-1. **Phase 1 — Python Reference DSP, Trainer, Schema & 8-Suite Verification (`pyproject.toml`, `src/dnam/`, `tests/`):**
-   - Scaffold `pyproject.toml` with `uv` targeting Python 3.14 (`py314`), `ruff`, `pyrefly` (`preset = "strict"`), and `pytest`.
-   - Implement `dnam.dsp`, `dnam.control`, `dnam.trainer`, and `dnam.schema` along with scoped `AGENTS.md` files (`< 2,500` B each).
-   - Port the 8 verification suites and guardrail tests from [`verification_and_guardrails.md`](verification_and_guardrails.md) into `tests/` and verify `uv run pytest`, `uv run ruff check`, and `uv run pyrefly check`.
-2. **Phase 2 — Native SIMD DSP Engine (`crates/dnam-dsp/`):**
-   - Implement the allocation-free, 16-byte SIMD-aligned (`C=4` Lite / `C=8` Full) native DSP engine with `FTZ`/`DAZ` hardware guards, `PolyADAA`, `SelectiveRgLru`, `ModulatedUfdn`, `ControlBus`, and `.dnam` v3 ZOH loader per [`monorepo_implementation_guide.md`](monorepo_implementation_guide.md).
-   - Verify with native unit tests confirming parity with the Python reference DSP and zero `FSQRT`/`FDIV` instructions in hot loops.
-3. **Phase 3 — Real-Time Audio Plugin (`crates/dnam-plugin/`):**
-   - Wrap `dnam-dsp` in a real-time VST3/CLAP/Standalone plugin processor with lock-free atomic parameter slots mapped to `.dnam` v3 `controls_schema` (`range` & `switch`) and runtime safe-domain clamping.
-4. **Phase 4 — Node.js WASM / Native & WebAudio Package (`packages/nodejs/`):**
-   - Expose `dnam-dsp` to Node.js and WebAudio (`AudioWorkletProcessor`) via WebAssembly SIMD128 / N-API bindings and a strict TypeScript SDK.
-5. **Phase 5 — Web-Based Documentation Site (`docs/`):**
-   - Configure VitePress (`docs/.vitepress/config.mts`) and interactive HTML/Canvas visualizers so `docs/*.md` builds into a searchable, interactive web documentation site.
+1. **Phase 1 — Pure Rust SIMD Engine Core (`Cargo.toml`, `packages/engine/`):**
+   - Implement the allocation-free, 16-byte SIMD-aligned (`C=4` Lite / `C=8` Full) pure Rust engine (`dnam-engine`) with `FTZ`/`DAZ` hardware guards, `PolyADAA`, `SelectiveRgLru`, `ModulatedUfdn`, `ControlBus`, and `.dnam` v3 ZOH loader per [`monorepo_implementation_guide.md`](monorepo_implementation_guide.md).
+2. **Phase 2 — Packaged Python & Node.js Engine Libraries (`packages/python/`, `packages/nodejs/`):**
+   - Build `packages/python` (`PyO3` + `maturin` wheel) exposing zero-copy NumPy inference and Reference DSP primitives from `packages/engine`.
+   - Build `packages/nodejs` (`@dnam/nodejs` via WebAssembly SIMD128 / N-API) exposing `.dnam` v3 validation, 3-Phase clamping, and `DnamAudioWorkletProcessor`.
+3. **Phase 3 — PyTorch Differentiable Trainer & 8-Suite Verification (`pyproject.toml`, `packages/trainer/`):**
+   - Implement `dnam_trainer` (`control`, `trainer`, `schema`, and differentiable PyTorch `autograd` graph) under `packages/trainer/`, importing `packages/python` as the canonical Reference DSP.
+   - Port the 8 verification suites and guardrail tests from [`verification_and_guardrails.md`](verification_and_guardrails.md) into `packages/trainer/tests/` and verify `uv run pytest`, `uv run ruff check`, and `uv run pyrefly check`.
+4. **Phase 4 — Real-Time Audio Plugin (`packages/plugin/`):**
+   - Wrap `packages/engine` in a real-time VST3/CLAP/Standalone plugin processor with lock-free atomic parameter slots mapped to `.dnam` v3 `controls_schema` (`range` & `switch`) and runtime safe-domain clamping.
+5. **Phase 5 — Web Platform, Specification Visualizers & React WASM Studio (`packages/web/`):**
+   - Configure Astro + Starlight + `@astrojs/react` (`packages/web/astro.config.mjs`) to mount `docs/*.md` directly as the **Specification Reference** section with KaTeX math and Mermaid diagrams.
+   - Build interactive React/Canvas visualizers (`PolyAdaaVisualizer`, `RgLruPoleVisualizer`, `ModulatedUfdnVisualizer`, `ControlBusVisualizer`, `KroneckerResumeVisualizer`, `ClampAuditVisualizer`, `ZohRescalerVisualizer`) embedded across the specification pages, plus the live React + WebAssembly (`AudioWorklet` SIMD128) Modeler Plugin (`DnamPluginRack` powered by `packages/nodejs`).
 6. **Phase 6 — End-to-End Cross-Language Parity & Guardrail Certification:**
-   - Run all test suites across Python (`uv run pytest`), Rust/C++ (`cargo test --workspace`), Node.js (`node --test`), and web docs build (`npm run docs:build`).
+   - Run all test suites across Rust (`cargo test --workspace`), Python (`uv run pytest`), Node.js (`npm --workspace=packages/nodejs test`), and web platform build (`npm --workspace=packages/web run build`).
