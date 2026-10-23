@@ -8,14 +8,14 @@ All implementations of **Dynamic Neural Audio Modeler (DNAM Architecture 3)** mu
 
 | Verification Test Suite | Baseline / Naive Behavior | Verified DNAM A3 Requirement | Target Threshold |
 | :--- | :---: | :---: | :---: |
-| **1. Division-Free Algebraic `PolyADAA` Exactness** | Requires `FDIV` + branch at $\Delta u \to 0$ | **$5.25 \times 10^{-14}$ error** with $0$ `FDIV`, $0$ `FSQRT`, $0$ branches | `max_alg_err < 1e-12` |
-| **2. 8-Layer Cascaded Aliasing ($f_0 = 3.45\text{ kHz}$)** | $-23.20\text{ dBc}$ (NAM A2 `LeakyReLU`) | **$-62.08\text{ dBc}$ ($38.87\text{ dB}$ reduction)** via $1\times$ B-Spline `PolyADAA` | `(alias_a2_db - alias_a3_db) > 35.0` |
-| **3. Selective RG-LRU Mid-Sweep $Q$ & Algebraic Rotor** | $Q$ drops $125.0 \to 6.5$ ($94.8\%$ loss) | **$Q = 124.7$ ($99.80\%$)**, rotor err **$9.99 \times 10^{-9}$** ($\le 1.0$), scan **$9.42 \times 10^{-16}$** | `q_polar > 0.99 * q_orig`, `max_unit_val <= 1.0` |
-| **4. Modulated Delay Boundary Click Jerk ($5\text{ kHz}$)** | $0.04694$ (Recursive Thiran clicks) | **$0.00087$ ($54\times$ smoother)** via 4-Tap Cubic Lagrange | `err_thiran_jerk > 15.0 * err_lagrange_jerk` |
-| **5. `M-UFDN` $+20\text{ dBFS}$ Spike + $1.18\times$ Loop Gain + DC** | Unbounded explosion / DC rail lockup | Peak **$0.9850 \le V_{\text{ceil}}$**, DC **$1.03 \times 10^{-6}$**, quiet tail decays | `out_peak <= v_ceil`, `abs(final_dc) < 1e-5` |
-| **6. Givens + Householder Stereo Matrix $\mathbf{U}(\psi, \mathbf{v})$** | Fixed ping-pong or non-unitary | **$< 1.0 \times 10^{-14}$ orthogonality error** across all $\psi \in [0, \pi/2]$ | `ortho_err < 1e-14`, `max_eig_err < 1e-14` |
-| **7. Surrogate Delay + Dual-Ridge `float64` Polish** | Lagrange stuck ($54.52$-samp error) / Cold $+0.01\text{ dB}$ | **$0.0035$-samp delay lock**, Step-0 **$-25.39\text{ dB}$** $\to$ Polish **$-47.63\text{ dB}$ ESR** | `err_surr < 0.01`, `esr_polished < -45.0` |
-| **8. Parametric Control Bus, 3-Phase Audit & `.dnam-ckpt` Resume** | Double-echo crossfade / Corner explosion / Full retrain | **$3.41 \times 10^{-13}\text{ ms}$ delay interp**, **$50.7\times$ smoother switch**, **$-38.46\text{ dB}$ unseen combo ESR**, **`1.05e-9` `.dnam-ckpt` parity** | `val_esr < -35.0`, `iter_vs_full_err < 1e-8` |
+| **1. Division-Free Algebraic `PolyADAA` Exactness** | Requires `FDIV` + branch at `Δu → 0` | **5.25 × 10⁻¹⁴ error** with 0 `FDIV`, 0 `FSQRT`, 0 branches | `max_alg_err < 1e-12` |
+| **2. 8-Layer Cascaded Aliasing (`f₀ = 3.45 kHz`)** | -23.20 dBc (NAM A2 `LeakyReLU`) | **-62.08 dBc (38.87 dB reduction)** via 1× B-Spline `PolyADAA` | `(alias_a2_db - alias_a3_db) > 35.0` |
+| **3. Selective RG-LRU Mid-Sweep `Q` & Algebraic Rotor** | `Q` drops 125.0 → 6.5 (94.8% loss) | **`Q = 124.7` (99.80%)**, rotor err **9.99 × 10⁻⁹** (`≤ 1.0`), scan **9.42 × 10⁻¹⁶** | `q_polar > 0.99 * q_orig`, `max_unit_val <= 1.0` |
+| **4. Modulated Delay Boundary Click Jerk (5 kHz)** | 0.04694 (Recursive Thiran clicks) | **0.00087 (54× smoother)** via 4-Tap Cubic Lagrange | `err_thiran_jerk > 15.0 * err_lagrange_jerk` |
+| **5. `M-UFDN` +20 dBFS Spike + 1.18× Loop Gain + DC** | Unbounded explosion / DC rail lockup | Peak **`0.9850 ≤ V_ceil`**, DC **1.03 × 10⁻⁶**, quiet tail decays | `out_peak <= v_ceil`, `abs(final_dc) < 1e-5` |
+| **6. Givens + Householder Stereo Matrix `U(ψ, v)`** | Fixed ping-pong or non-unitary | **< 1.0 × 10⁻¹⁴ orthogonality error** across all `ψ ∈ [0, π/2]` | `ortho_err < 1e-14`, `max_eig_err < 1e-14` |
+| **7. Surrogate Delay + Dual-Ridge `float64` Polish** | Lagrange stuck (54.52-samp error) / Cold +0.01 dB | **0.0035-samp delay lock**, Step-0 **-25.39 dB** → Polish **-47.63 dB ESR** | `err_surr < 0.01`, `esr_polished < -45.0` |
+| **8. Parametric Control Bus, 3-Phase Audit & `.dnam-ckpt` Resume** | Double-echo crossfade / Corner explosion / Full retrain | **3.41 × 10⁻¹³ ms delay interp**, **50.7× smoother switch**, **-38.46 dB unseen combo ESR**, **`1.05e-9` `.dnam-ckpt` parity** | `val_esr < -35.0`, `iter_vs_full_err < 1e-8` |
 
 ---
 
