@@ -1,7 +1,8 @@
-//! Deterministic DNAM Real-Time Telemetry Benchmark Suite (`benches/engine_bench.rs`).
+//! Non-Criterion Real-Time Worst-Case Execution Time (WCET), Tail-Latency Jitter (`P50`/`P99`/`P99.9`/`Max`),
+//! and `x Real-Time @ 48 kHz` / `% Single-Core CPU` Benchmark (`benches/realtime_wcet.rs`).
 //!
-//! Reports `ns/sample`, `x Real-Time @ 48 kHz`, `CPU % @ 48 kHz`, and `< 50 ns` zero-JSON
-//! hardware load latency across `Lite`, `Full`, and `Ultra` tiers.
+//! Run with:
+//!   `cargo bench -p dnam-engine --bench realtime_wcet`
 
 use std::collections::BTreeMap;
 use std::hint::black_box;
@@ -13,9 +14,10 @@ use dnam_engine::container::{
 };
 use dnam_engine::math::{DefaultMathBackend, MathBackend, ScalarBackend};
 use dnam_engine::memory::{AlignedBuffer, CacheLine64};
+use dnam_engine::provenance::DefaultCryptoProvider;
 use dnam_engine::schema::{
-    ControlBusConfig, Core1Config, Core2Config, DatasetProvenance, DnamJsonHeader, IoConfig,
-    ModelMetadata, SlimmableTiersConfig, TierProfile,
+    ControlBusConfig, ControlKind, ControlSchemaDef, ControlUiHints, Core1Config, Core2Config,
+    DatasetProvenance, DnamJsonHeader, IoConfig, ModelMetadata, SlimmableTiersConfig, TierProfile,
 };
 use dnam_engine::{DnamEngine, Tier};
 
@@ -26,7 +28,7 @@ fn make_bench_container(core2_active: bool) -> AlignedBuffer<CacheLine64> {
         architecture: "DNAM_TriPhysics".to_string(),
         sample_rate_train_hz: 48_000,
         metadata: ModelMetadata {
-            name: "Benchmark Model".to_string(),
+            name: "WCET Benchmark Model".to_string(),
             author: None,
             description: None,
             license: None,
@@ -72,7 +74,44 @@ fn make_bench_container(core2_active: bool) -> AlignedBuffer<CacheLine64> {
                 prefix_crc32c: 0,
             },
         },
-        controls_schema: Vec::new(),
+        controls_schema: vec![
+            ControlSchemaDef {
+                id: "gain".to_string(),
+                name: "Gain".to_string(),
+                kind: ControlKind::Range,
+                unit: Some("%".to_string()),
+                lobatto_degree: Some(2),
+                anchor_nodes_norm: Some(vec![0.0, -1.0, 1.0]),
+                declared_range: Some([0.0, 1.0]),
+                safe_clamped_range: Some([0.0, 1.0]),
+                default: serde_json::json!(0.5),
+                conditional_min: BTreeMap::new(),
+                conditional_max: BTreeMap::new(),
+                declared_options: None,
+                active_options: None,
+                clamp_warning: None,
+                ui_hints: ControlUiHints::default(),
+                user_metadata: BTreeMap::new(),
+            },
+            ControlSchemaDef {
+                id: "mode".to_string(),
+                name: "Mode".to_string(),
+                kind: ControlKind::Switch,
+                unit: None,
+                lobatto_degree: None,
+                anchor_nodes_norm: None,
+                declared_range: None,
+                safe_clamped_range: None,
+                default: serde_json::json!("a"),
+                conditional_min: BTreeMap::new(),
+                conditional_max: BTreeMap::new(),
+                declared_options: Some(vec!["a".to_string(), "b".to_string(), "c".to_string()]),
+                active_options: Some(vec!["a".to_string(), "b".to_string(), "c".to_string()]),
+                clamp_warning: None,
+                ui_hints: ControlUiHints::default(),
+                user_metadata: BTreeMap::new(),
+            },
+        ],
         presets: Vec::new(),
         control_bus: ControlBusConfig::default(),
         core1_hybrid_ssm: Core1Config::default(),
@@ -105,7 +144,6 @@ fn bench_tier<B: MathBackend>(container: &[u8], tier: Tier, label: &str) {
     let mut out_l = [0.0_f32; 128];
     let mut out_r = [0.0_f32; 128];
 
-    // Warmup
     for _ in 0..32 {
         engine.process_block(
             black_box(&in_l),
@@ -141,13 +179,56 @@ fn bench_tier<B: MathBackend>(container: &[u8], tier: Tier, label: &str) {
     );
 }
 
+fn bench_wcet_tail_latency<B: MathBackend>(container: &[u8], tier: Tier, label: &str) {
+    let mut engine = DnamEngine::<B>::from_bytes(container, tier, 48_000).unwrap();
+    let in_l = [0.18_f32; 128];
+    let in_r = [-0.18_f32; 128];
+    let mut out_l = [0.0_f32; 128];
+    let mut out_r = [0.0_f32; 128];
+
+    let num_blocks = 2_000_usize;
+    let mut latencies_us = Vec::with_capacity(num_blocks);
+
+    for _ in 0..64 {
+        engine.process_block(&in_l, &in_r, &mut out_l, &mut out_r);
+    }
+
+    for b_idx in 0..num_blocks {
+        let knob_gain = ((b_idx as f32) * 0.013).sin().mul_add(0.5, 0.5);
+        let switch_pos = ((b_idx / 125) % 3) as f32;
+        engine.set_control_value(0, black_box(knob_gain));
+        engine.set_control_value(1, black_box(switch_pos));
+
+        let t0 = Instant::now();
+        engine.process_block(
+            black_box(&in_l),
+            black_box(&in_r),
+            black_box(&mut out_l),
+            black_box(&mut out_r),
+        );
+        latencies_us.push(t0.elapsed().as_nanos() as f64 / 1_000.0);
+    }
+
+    latencies_us.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let p50 = latencies_us[num_blocks / 2];
+    let p99 = latencies_us[(num_blocks * 99) / 100];
+    let p999 = latencies_us[(num_blocks * 999) / 1_000];
+    let max_us = latencies_us[num_blocks - 1];
+    let deadline_us = (128.0 / 48_000.0) * 1_000_000.0; // 2,666.67 us
+    let max_budget_pct = (max_us / deadline_us) * 100.0;
+
+    println!(
+        "| {:<24} | {:>8.2} us | {:>8.2} us | {:>8.2} us | {:>8.2} us | {:>8.2}% |",
+        label, p50, p99, p999, max_us, max_budget_pct
+    );
+}
+
 fn main() {
     let container_full = make_bench_container(true);
     let container_core1 = make_bench_container(false);
 
-    // Benchmark #![no_std] serde + alloc JSON container load + CRC32C verification
     let iters = 1_000;
-    let crypto = dnam_engine::provenance::DefaultCryptoProvider::default();
+    let crypto = DefaultCryptoProvider::default();
     let t_load = Instant::now();
     for _ in 0..iters {
         let v =
@@ -202,16 +283,57 @@ fn main() {
         Tier::Ultra,
         "Ultra (C=12, Core 1 + Core 2)",
     );
+
     #[cfg(target_arch = "aarch64")]
-    bench_tier::<dnam_engine::math::ArmSmeBackend>(
-        container_full.as_bytes(),
-        Tier::Full,
-        "Full (C=8, ARM SME + Core 2)",
-    );
+    {
+        use dnam_engine::math::ArmSmeBackend;
+        bench_tier::<ArmSmeBackend>(
+            container_full.as_bytes(),
+            Tier::Full,
+            "Full (C=8, ARM SME + Core 2)",
+        );
+    }
+
     bench_tier::<ScalarBackend>(
         container_full.as_bytes(),
         Tier::Full,
         "Full (C=8, Scalar Baseline)",
+    );
+    println!(
+        "==========================================================================================\n"
+    );
+
+    println!(
+        "=========================================================================================="
+    );
+    println!(
+        " Real-Time WCET & Tail-Latency Jitter Audit (2,000 x 128-Sample Blocks = 2,666.67 us Budget)"
+    );
+    println!(" Active Continuous Knob Modulation + Core 2 Switch Crossfading");
+    println!(
+        "=========================================================================================="
+    );
+    println!(
+        "| {:<24} | {:>11} | {:>11} | {:>11} | {:>11} | {:>9} |",
+        "Tier Profile (SIMD)", "P50 Block", "P99 Block", "P99.9 Block", "Max Block", "Max/Budget"
+    );
+    println!(
+        "|--------------------------|-------------|-------------|-------------|-------------|-----------|"
+    );
+    bench_wcet_tail_latency::<DefaultMathBackend>(
+        container_full.as_bytes(),
+        Tier::Lite,
+        "Lite (C=4, Modulated)",
+    );
+    bench_wcet_tail_latency::<DefaultMathBackend>(
+        container_full.as_bytes(),
+        Tier::Full,
+        "Full (C=8, Modulated)",
+    );
+    bench_wcet_tail_latency::<DefaultMathBackend>(
+        container_full.as_bytes(),
+        Tier::Ultra,
+        "Ultra (C=12, Modulated)",
     );
     println!(
         "=========================================================================================="

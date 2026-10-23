@@ -10,6 +10,7 @@ description = "Pure Rust #![no_std] + alloc, zero-audio-alloc real-time SIMD aud
 [lib]
 name = "dnam_engine"
 crate-type = ["rlib", "cdylib", "staticlib"]
+bench = false
 
 [features]
 default = ["crypto"]
@@ -42,11 +43,11 @@ hkdf = { workspace = true }
 sha2 = { workspace = true }
 
 [[bench]]
-name = "engine_bench"
+name = "engine_benchmarks"
 harness = false
 
 [[bench]]
-name = "criterion_bench"
+name = "realtime_wcet"
 harness = false
 
 [lints]

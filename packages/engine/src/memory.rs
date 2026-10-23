@@ -339,3 +339,68 @@ impl<'a> DelayScratchStorage<'a> {
         self.as_u16_slice_mut().fill(0);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_cache_line_64_and_aligned_buffers() {
+        let mut cl = CacheLine64::default();
+        assert_eq!((&raw const cl as usize) % 64, 0);
+        cl.as_f32_slice_mut()[0] = 3.25;
+        assert_eq!(cl.as_f32_slice()[0], 3.25);
+
+        let fp16_blk = AlignedFp16Block::default();
+        assert_eq!(fp16_blk.0.len(), 32);
+
+        let mut buf = AlignedBuffer::<CacheLine64>::new_zeroed(4);
+        assert_eq!(buf.len_blocks(), 4);
+        assert!(!buf.is_empty());
+        assert_eq!((buf.as_bytes().as_ptr() as usize) % 64, 0);
+        buf[0].as_f32_slice_mut()[1] = -1.5;
+        assert_eq!(buf[0].as_f32_slice()[1], -1.5);
+    }
+
+    #[test]
+    fn test_arena_storage_borrowed_owned_and_reload() {
+        let aligned = AlignedBuffer::<CacheLine64>::new_zeroed(2);
+        let borrowed = ArenaStorage::from_slice_or_copy(aligned.as_bytes());
+        assert!(borrowed.is_borrowed());
+        assert_eq!(borrowed.as_f32_slice().len(), 32);
+
+        let mut unaligned_vec = alloc::vec![0u8; 129];
+        unaligned_vec[1] = 0x3F;
+        let owned = ArenaStorage::from_slice_or_copy(&unaligned_vec[1..129]);
+        assert!(!owned.is_borrowed());
+        assert_eq!(owned.as_bytes().len(), 128);
+
+        let mut cap = ArenaStorage::with_max_blocks(4);
+        assert_eq!(cap.as_bytes().len(), 0);
+        assert!(!cap.reload_in_place(&[0u8; 63]));
+        assert!(cap.reload_in_place(aligned.as_bytes()));
+        assert_eq!(cap.as_bytes().len(), 128);
+        assert!(!cap.reload_in_place(&[0u8; 64 * 5]));
+    }
+
+    #[test]
+    fn test_delay_scratch_storage() {
+        let empty = DelayScratchStorage::empty();
+        assert_eq!(empty.byte_len(), 0);
+        assert_eq!(empty.capacity_u16(), 0);
+
+        let mut owned = DelayScratchStorage::new_owned(2);
+        assert_eq!(owned.byte_len(), 128);
+        assert_eq!(owned.capacity_u16(), 64);
+        owned.as_u16_slice_mut()[0] = 0x3C00;
+        assert_eq!(owned.as_u16_slice()[0], 0x3C00);
+        owned.clear();
+        assert_eq!(owned.as_u16_slice()[0], 0);
+
+        let mut raw_blocks = [AlignedFp16Block::default(); 2];
+        let mut borrowed = DelayScratchStorage::from_borrowed_scratch(&mut raw_blocks);
+        assert_eq!(borrowed.as_slice().len(), 2);
+        borrowed.as_slice_mut()[0].0[0] = 42;
+        assert_eq!(borrowed.as_u16_slice()[0], 42);
+    }
+}
