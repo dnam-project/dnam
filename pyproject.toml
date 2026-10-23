@@ -1,0 +1,70 @@
+[project]
+name = "dnam-workspace"
+version = "0.1.0"
+description = "Dynamic Neural Audio Modeler (DNAM / Tri-Physics) Workspace"
+requires-python = ">=3.14"
+license = { text = "LicenseRef-DNAM-1.0.0" }
+dependencies = []
+
+[dependency-groups]
+dev = [
+    "dnam-engine",
+    "maturin>=1.8.0",
+    "numpy>=2.1.0",
+    "pydantic>=2.10.0",
+    "pytest>=8.3.0",
+    "pytest-benchmark>=5.1.0",
+    "pytest-cov>=6.0.0",
+    "hypothesis[numpy,crosshair]>=6.120.0",
+    "hypothesis-jsonschema>=0.23.0",
+    "ruff>=0.9.0",
+    "pyrefly>=0.15.0",
+]
+
+[tool.uv.workspace]
+members = ["packages/python"]
+
+[tool.uv.sources]
+dnam-engine = { workspace = true }
+
+[tool.ruff]
+target-version = "py314"
+line-length = 100
+src = ["packages/python/src", "packages/python/tests"]
+
+[tool.ruff.lint]
+select = [
+    "E",
+    "F",
+    "W",
+    "I",
+    "UP",
+    "B",
+    "SIM",
+    "C4",
+    "PT",
+    "NPY",
+    "RUF",
+]
+
+[tool.pyrefly]
+python-version = "3.14"
+project-includes = ["packages/python/src", "packages/python/tests"]
+search-path = ["packages/python/src", "packages/python/tests"]
+
+[tool.pytest.ini_options]
+testpaths = ["packages/python/tests"]
+addopts = "-ra --strict-markers --benchmark-disable"
+
+[tool.coverage.run]
+source = ["dnam_engine"]
+branch = true
+
+[tool.coverage.report]
+fail_under = 95
+show_missing = true
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+]

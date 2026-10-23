@@ -13,7 +13,8 @@ crate-type = ["rlib", "cdylib", "staticlib"]
 bench = false
 
 [features]
-default = ["crypto"]
+default = ["std", "crypto"]
+std = []
 crypto = [
     "dep:ed25519-dalek",
     "dep:x25519-dalek",

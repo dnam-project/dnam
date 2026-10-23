@@ -44,46 +44,49 @@ impl<'a> DynamicDnamEngine<'a> {
         tier: Tier,
         sample_rate_hz: u32,
     ) -> Result<DynamicDnamEngine<'static>, DnamError> {
-        #[cfg(target_arch = "aarch64")]
-        {
-            if crate::math::arm_sme::ArmSmeBackend::is_supported() {
-                return Ok(DynamicDnamEngine::ArmSme(DnamEngine::from_bytes_owned(
+        Self::from_bytes_owned_with_backend(
+            bytes,
+            tier,
+            sample_rate_hz,
+            crate::math::detect_best_backend(),
+        )
+    }
+
+    /// Creates an owned `'static` [`DynamicDnamEngine`] with an explicit [`BackendKind`].
+    pub fn from_bytes_owned_with_backend(
+        bytes: &[u8],
+        tier: Tier,
+        sample_rate_hz: u32,
+        backend: BackendKind,
+    ) -> Result<DynamicDnamEngine<'static>, DnamError> {
+        match backend {
+            #[cfg(target_arch = "aarch64")]
+            BackendKind::ArmSme => Ok(DynamicDnamEngine::ArmSme(DnamEngine::from_bytes_owned(
+                bytes,
+                tier,
+                sample_rate_hz,
+            )?)),
+            #[cfg(target_arch = "aarch64")]
+            BackendKind::Neon | BackendKind::ArmNeon => Ok(DynamicDnamEngine::Neon(
+                DnamEngine::from_bytes_owned(bytes, tier, sample_rate_hz)?,
+            )),
+            #[cfg(target_arch = "x86_64")]
+            BackendKind::X86Simd | BackendKind::X86Avx2Fma | BackendKind::X86Sse42 => {
+                Ok(DynamicDnamEngine::X86Simd(DnamEngine::from_bytes_owned(
                     bytes,
                     tier,
                     sample_rate_hz,
-                )?));
+                )?))
             }
-            Ok(DynamicDnamEngine::Neon(DnamEngine::from_bytes_owned(
-                bytes,
-                tier,
-                sample_rate_hz,
-            )?))
-        }
-        #[cfg(target_arch = "x86_64")]
-        {
-            return Ok(DynamicDnamEngine::X86Simd(DnamEngine::from_bytes_owned(
-                bytes,
-                tier,
-                sample_rate_hz,
-            )?));
-        }
-        #[cfg(target_arch = "wasm32")]
-        {
-            return Ok(DynamicDnamEngine::WasmSimd128(
+            #[cfg(target_arch = "wasm32")]
+            BackendKind::WasmSimd128 => Ok(DynamicDnamEngine::WasmSimd128(
                 DnamEngine::from_bytes_owned(bytes, tier, sample_rate_hz)?,
-            ));
-        }
-        #[cfg(not(any(
-            target_arch = "aarch64",
-            target_arch = "x86_64",
-            target_arch = "wasm32"
-        )))]
-        {
-            Ok(DynamicDnamEngine::Scalar(DnamEngine::from_bytes_owned(
+            )),
+            _ => Ok(DynamicDnamEngine::Scalar(DnamEngine::from_bytes_owned(
                 bytes,
                 tier,
                 sample_rate_hz,
-            )?))
+            )?)),
         }
     }
 
@@ -244,6 +247,27 @@ impl<'a> DynamicDnamEngine<'a> {
         }
     }
 
+    /// Processes a mono audio block into true stereo (`Mono -> Stereo`).
+    #[inline]
+    pub fn process_mono_to_stereo(
+        &mut self,
+        mono_in: &[f32],
+        left_out: &mut [f32],
+        right_out: &mut [f32],
+    ) {
+        match self {
+            Self::Scalar(e) => e.process_mono_to_stereo(mono_in, left_out, right_out),
+            #[cfg(target_arch = "aarch64")]
+            Self::Neon(e) => e.process_mono_to_stereo(mono_in, left_out, right_out),
+            #[cfg(target_arch = "aarch64")]
+            Self::ArmSme(e) => e.process_mono_to_stereo(mono_in, left_out, right_out),
+            #[cfg(target_arch = "x86_64")]
+            Self::X86Simd(e) => e.process_mono_to_stereo(mono_in, left_out, right_out),
+            #[cfg(target_arch = "wasm32")]
+            Self::WasmSimd128(e) => e.process_mono_to_stereo(mono_in, left_out, right_out),
+        }
+    }
+
     /// Processes a mono audio block (`Mono -> Mono`).
     #[inline]
     pub fn process_mono(&mut self, mono_in: &[f32], mono_out: &mut [f32]) {
@@ -257,6 +281,28 @@ impl<'a> DynamicDnamEngine<'a> {
             Self::X86Simd(e) => e.process_mono(mono_in, mono_out),
             #[cfg(target_arch = "wasm32")]
             Self::WasmSimd128(e) => e.process_mono(mono_in, mono_out),
+        }
+    }
+
+    /// Hot-swaps a new `.dnam` model in-place into an owned engine without requiring `bytes`
+    /// to outlive `'a`.
+    #[inline]
+    pub fn reload_model_in_place_owned(
+        &mut self,
+        bytes: &[u8],
+        tier: Tier,
+        sample_rate_hz: u32,
+    ) -> Result<(), DnamError> {
+        match self {
+            Self::Scalar(e) => e.reload_model_in_place_owned(bytes, tier, sample_rate_hz),
+            #[cfg(target_arch = "aarch64")]
+            Self::Neon(e) => e.reload_model_in_place_owned(bytes, tier, sample_rate_hz),
+            #[cfg(target_arch = "aarch64")]
+            Self::ArmSme(e) => e.reload_model_in_place_owned(bytes, tier, sample_rate_hz),
+            #[cfg(target_arch = "x86_64")]
+            Self::X86Simd(e) => e.reload_model_in_place_owned(bytes, tier, sample_rate_hz),
+            #[cfg(target_arch = "wasm32")]
+            Self::WasmSimd128(e) => e.reload_model_in_place_owned(bytes, tier, sample_rate_hz),
         }
     }
 
@@ -312,9 +358,21 @@ mod tests {
             let mut l_out = [0.0f32; 32];
             let mut r_out = [0.0f32; 32];
             dyn_eng.process_block(&l_in, &r_in, &mut l_out, &mut r_out);
+            dyn_eng.process_mono_to_stereo(&l_in, &mut l_out, &mut r_out);
             dyn_eng.process_mono(&l_in, &mut l_out);
+            dyn_eng
+                .reload_model_in_place_owned(&container, Tier::Lite, 48_000)
+                .unwrap();
             let snap = dyn_eng.telemetry_snapshot();
             assert_eq!(snap.active_tier, Tier::Lite as u8);
+
+            let _owned_kind = DynamicDnamEngine::from_bytes_owned_with_backend(
+                &container,
+                Tier::Lite,
+                48_000,
+                kind,
+            )
+            .unwrap();
         }
 
         let _owned = DynamicDnamEngine::from_bytes_owned(&container, Tier::Lite, 48_000).unwrap();

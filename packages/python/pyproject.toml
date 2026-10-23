@@ -1,0 +1,22 @@
+[build-system]
+requires = ["maturin>=1.8,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "dnam-engine"
+version = "0.1.0"
+description = "Idiomatic Python 3.14 interface & zero-copy NumPy SIMD engine for Dynamic Neural Audio Modeler (DNAM / Tri-Physics)"
+readme = "README.md"
+requires-python = ">=3.14"
+license = { text = "LicenseRef-DNAM-1.0.0" }
+dependencies = [
+    "numpy>=2.1.0",
+    "pydantic>=2.10.0",
+]
+
+[tool.maturin]
+python-source = "src"
+module-name = "dnam_engine._native"
+bindings = "pyo3"
+editable-profile = "release"
+strip = true

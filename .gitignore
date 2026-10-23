@@ -1,9 +1,14 @@
-# Python / uv
+# Python / uv / maturin
 __pycache__/
 *.py[cod]
+*.so
+*.pyd
+*.dylib
 .venv/
 .pytest_cache/
 .ruff_cache/
+.hypothesis/
+.benchmarks/
 .coverage
 dist/
 build/

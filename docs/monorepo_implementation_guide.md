@@ -61,22 +61,63 @@ dynamic-neural-audio-modeler/
     │       └── criterion_bench.rs   # Criterion statistical micro- and macro-benchmarks
     ├── python/                      # Layer 2A: Packaged Python Library for Rust Engine (PyO3 / maturin wheel)
     │   ├── AGENTS.md                # Scoped router (< 2,500 B)
-    │   ├── pyproject.toml           # maturin build backend (lightweight, depends only on numpy)
-    │   ├── Cargo.toml               # PyO3 zero-copy NumPy bindings to packages/engine
-    │   ├── src/
-    │   │   ├── lib.rs               # PyO3 module exposing DnamEngine & Reference DSP primitives
+    │   ├── README.md                # Package overview & quickstart
+    │   ├── pyproject.toml           # maturin build backend (python-source = "src", depends on numpy & pydantic)
+    │   ├── Cargo.toml               # PyO3 (abi3-py314) zero-copy NumPy FFI bindings -> rust/lib.rs
+    │   ├── rust/                    # Modular Zero-Copy PyO3 FFI Layer (dnam_engine._native)
+    │   │   ├── lib.rs               # #[pymodule] _native entrypoint & typed exception mapping
+    │   │   ├── engine.rs            # NativeDnamEngine zero-copy NumPy block processor, backend dispatch & GIL release
+    │   │   ├── container.rs         # Container validation, builder, in-place editor, clamping, ZOH & uplo='U' FFI
+    │   │   ├── dsp.rs               # Reference DSP FFI kernels (Core 1, Core 2 & Control Bus)
+    │   │   └── provenance.rs        # JCS SHA-256, Ed25519 messages, ChaCha20 arena, Tardos/Gauge watermark & 160-D hash FFI
+    │   ├── src/                     # Idiomatic Python 3.14 Interface (dnam_engine)
     │   │   └── dnam_engine/
-    │   │       └── __init__.py      # Typed Python API & Reference DSP wrapper
-    │   └── tests/
-    │       └── test_engine_bindings.py
+    │   │       ├── __init__.py      # Curated top-level exports & __all__
+    │   │       ├── _native.pyi      # PEP 561 strict type stubs for dnam_engine._native
+    │   │       ├── py.typed         # PEP 561 marker
+    │   │       ├── exceptions.py    # Typed exception hierarchy (DnamError, DnamContainerError, DnamControlError, DnamValidationError)
+    │   │       ├── container.py     # First-class DnamContainer (.dnam/.dnam-ckpt object model), GramMatrix & crc32c
+    │   │       ├── control.py       # ControlRack, ControlSpace, callable LobattoBasis, Rank4Fm & LFO/softclip kernels
+    │   │       ├── dsp.py           # Callable stateful PolyAdaa, SelectiveRgLru, ModulatedUfdn & algebraic kernels
+    │   │       ├── provenance.py    # JCS digest, Ed25519 signing helpers, ChaCha20 arena, watermarking & 160-D structural hash
+    │   │       ├── engine.py        # Callable DnamEngine (pedalboard-compatible), hot-reload, @property accessors & context manager
+    │   │       └── schema/          # Strongly typed Pydantic v2 schemas, settings, DSP params & telemetry models
+    │   │           ├── __init__.py
+    │   │           ├── base.py      # StrictModel, OpenMetadataModel & core enums (Tier, BackendKind, ControlKind)
+    │   │           ├── controls.py  # ControlUiHints, ControlSchemaDef, PresetDef, ClampedControlsResult, LobattoParams
+    │   │           ├── header.py    # DnamJsonHeader, ModelMetadata, IoConfig, SlimmableTiersConfig, Core1/Core2/ControlBusConfig
+    │   │           ├── signatures.py # CreatorSignature, MarketplaceReceipt, AuthorizedDevice, DatasetProvenance, WatermarkParams
+    │   │           └── runtime.py   # DnamEngineSettings, DnamTelemetrySnapshot, ZohRescaledParams, PolyAdaa/RgLru/MufdnParams
+    │   └── tests/                   # Modular Unit, Property-Based (Hypothesis) & Symbolic (CrossHair) Test Suite
+    │       ├── conftest.py          # Shared fixtures & Hypothesis profiles (dev, ci, debug, smt)
+    │       ├── strategies.py        # Reusable Hypothesis, hypothesis.extra.numpy & hypothesis-jsonschema strategies
+    │       ├── test_schema.py       # Pydantic v2 models, JSON-Schema fuzzing & CrossHair symbolic tests
+    │       ├── test_container.py    # DnamContainer object model, 4 KB in-place edit, ZOH & GramMatrix property tests
+    │       ├── test_control.py      # ControlSpace, ControlRack, LobattoBasis, Rank4Fm & 3-Phase clamping property tests
+    │       ├── test_dsp.py          # PolyAdaa, SelectiveRgLru & ModulatedUfdn unit & Hypothesis property tests
+    │       ├── test_provenance.py   # JCS SHA-256, ChaCha20, Dual-Mechanism buyer watermarking & 160-D hash property tests
+    │       └── test_engine.py       # Callable DnamEngine, SIMD vs. Scalar parity, hot-reload, ControlRack & property tests
     ├── nodejs/                      # Layer 2B: Packaged Node.js & WebAudio Library for Rust Engine (@dnam/nodejs)
     │   ├── AGENTS.md                # Scoped router (< 2,500 B)
+    │   ├── README.md                # Package overview & quickstart
+    │   ├── Cargo.toml               # Native N-API cdylib linking packages/engine (cargo-zigbuild ready)
+    │   ├── build.rs                 # Target-aware dynamic N-API symbol resolution flags
     │   ├── package.json
     │   ├── tsconfig.json
+    │   ├── scripts/
+    │   │   └── build_wasm.mjs       # Builds Native N-API (.node via cargo/zigbuild) + WASM SIMD128 (.wasm)
     │   ├── src/
-    │   │   └── index.ts             # WASM SIMD128 / N-API SDK, Control Clamper & DnamAudioWorkletProcessor
+    │   │   ├── lib.rs               # Thin zero-copy Rust N-API v8 bindings
+    │   │   ├── index.ts             # Public TypeScript SDK barrel exports
+    │   │   ├── types.ts             # Domain interfaces & telemetry types
+    │   │   ├── model.ts             # validateDnamModel, clampControlValues & computeZohRescaledParams
+    │   │   ├── processor.ts         # Idiomatic DnamProcessor interface (auto: native N-API | WASM SIMD128)
+    │   │   ├── worklet.ts           # Ready-to-register WebAudio DnamAudioWorkletProcessor
+    │   │   └── backends/
+    │   │       ├── native.ts        # Low-level Node-API driver
+    │   │       └── wasm.ts          # Low-level synchronous WebAssembly SIMD128 driver
     │   └── test/
-    │       └── dnam.test.mjs        # Node.js test runner suite
+    │       └── dnam.test.mjs        # Node.js test runner + fast-check property tests & >=95% coverage
     ├── trainer/                     # Layer 3A: PyTorch 4-Stage Differentiable Trainer & .dnam-ckpt Solver
     │   ├── AGENTS.md                # Scoped router (< 2,500 B)
     │   ├── pyproject.toml           # Imports packages/python (dnam-engine) as Reference DSP
@@ -180,18 +221,32 @@ A single zero-allocation Rust crate (`packages/engine`, `dnam-engine`) compiles 
 
 ## 4. Deliverable 3: Packaged Python & Node.js Engine Libraries (`packages/python/`, `packages/nodejs/`)
 
-### 4.1 Packaged Python Engine Library (`packages/python/`)
-- **Build & Packaging:** Built via **`PyO3` + `maturin`** (`packages/python/pyproject.toml` and `packages/python/Cargo.toml`) into a standalone, lightweight Python wheel (`dnam-engine`) that depends only on `numpy` (no PyTorch dependency required for inference users).
-- **Zero-Copy NumPy & Reference DSP API:**
-  1. `DnamEngine`: Zero-copy NumPy stereo block processor (`process_block(left_in, right_in)`), `.dnam` loader, Continuous-Time ZOH sample-rate adapter, and 3-Phase control clamper.
-  2. Reference DSP Primitives (`poly_adaa`, `selective_rglru`, `modulated_ufdn`, `control_bus`): Direct Python bindings to the exact Rust `packages/engine` kernels, imported by `packages/trainer` as the canonical Reference DSP and certification oracle.
+Both Layer 2 packages wrap a **thin, zero-copy Rust FFI binding core** inside an **idiomatic, strictly-typed target-language interface**, support cross-compilation via **`zig` (`maturin --zig` / `cargo-zigbuild`)**, and enforce a full target-language code-quality suite (formatter, linter, strict type checker, unit + property-based tests, and $\ge 95\%$ test coverage in the target language without duplicating Rust-side unit/coverage tests on the FFI glue crates).
 
-### 4.2 Packaged Node.js & WebAudio Engine Library (`packages/nodejs/`)
-- **Package Exports (`packages/nodejs/src/index.ts`, `@dnam/nodejs`):**
-  1. `validateDnamModel(json: unknown): DnamModel`: Validates `.dnam` containers and returns typed control metadata and active clamp warnings.
-  2. `clampControlValues(model: DnamModel, rawControls: Record<string, number | string>)`: Applies `[CLAMP-RANGE]`, `[CLAMP-SWITCH]`, and `[CLAMP-STABILITY]` (`conditional_max`) rules identically to the Rust and Python bindings and returns normalized declared-range coordinates $u_p \in [-1, +1]$.
-  3. `DnamProcessor`: Synchronous stereo block processor backed by `packages/engine` (WASM SIMD128 / N-API) for Node.js CLI/server audio rendering and WebAudio `AudioWorkletProcessor` integration.
-  4. `DnamAudioWorkletProcessor`: Ready-to-register WebAudio `AudioWorkletProcessor` class using pre-allocated `Float32Array` ring buffers (`128`-sample render quantum = 8 Control-Bus ticks per quantum at $48\text{ kHz}$).
+### 4.1 Packaged Python Engine Library (`packages/python/` — Phase 2A)
+- **Build, Packaging & Cross-Compilation:** Built via **`PyO3` (`abi3-py314`) + `maturin`** (`packages/python/pyproject.toml` with `python-source = "src"` and `packages/python/Cargo.toml` with `path = "rust/lib.rs"`) into a standalone, lightweight Python wheel (`dnam-engine`) that depends only on `numpy` and `pydantic` at runtime (no PyTorch dependency required for inference users) and cross-compiles via `uv run maturin build --release --zig --target <triple>`.
+- **Two-Layer Architecture (Modular PyO3 Core in `rust/` + Idiomatic Python 3.14 Interface in `src/dnam_engine/`):**
+  1. **Modular Zero-Copy FFI Core (`rust/{lib,engine,container,dsp,provenance}.rs` $\to$ `dnam_engine._native` + `_native.pyi`):** Marshals contiguous `float32`/`float64` NumPy slices (`PyReadonlyArray1`, `PyReadwriteArray1`) with zero copies and releases the Python GIL (`py.allow_threads`) during SIMD block execution.
+  2. **Idiomatic Python 3.14 Interface (`src/dnam_engine/`):**
+     - `exceptions.py`: Typed exception hierarchy (`DnamError`, `DnamValidationError`, `DnamContainerError`, `DnamControlError`, `DnamSampleRateError`).
+     - `schema/` (`base.py`, `controls.py`, `header.py`, `signatures.py`, `runtime.py`): Strongly typed `IntEnum`/`StrEnum` (`Tier`, `BackendKind`, `ControlKind`, `VerificationStatus`) and **Pydantic v2 (`BaseModel`, `ConfigDict(frozen=True, extra="forbid")`)** schemas, settings, and DSP parameter models (`DnamEngineSettings`, `DnamJsonHeader`, `ControlSchemaDef`, `ControlUiHints`, `PresetDef`, `DnamTelemetrySnapshot`, `ZohRescaledParams`, `ClampedControlValue`, `ClampedControlsResult`, `DnamPreambleInfo`, `PolyAdaaParams`, `SelectiveRgLruParams`, `MufdnParams`, `LobattoParams`, `WatermarkParams`), serving as the canonical Python schema SSOT shared with `packages/trainer`.
+     - `container.py` (`DnamContainer`, `GramMatrix`, `crc32c`): First-class immutable/copy-on-write `.dnam`/`.dnam-ckpt` container model (`DnamContainer.from_file`, `from_bytes`, `reference`, `build`, `.header`, `.preamble`, `.controls`, `.presets`, `.arena`, `.with_header`, `.clamp_controls`, `.zoh_params`, `.immutable_header_sha256`, `.structural_hash`, `.with_watermark`, `.save`, `__bytes__`) and `Arena 3` `uplo='U'` Kronecker matrix packer (`GramMatrix.pack`, `GramMatrix.unpack`).
+     - `control.py` (`ControlRack`, `ControlSpace`, `LobattoBasis`, `Rank4Fm`, and Control Bus helpers): Live `MutableMapping[str, float | str]` proxy (`engine.controls["gain"] = 7.5`, `engine.controls.snap(gain=7.5)`, `engine.controls.apply_preset("warm_slapback")`, `engine.controls.clamped`), standalone `ControlSpace` 3-Phase clamper, callable `LobattoBasis(LobattoParams)` (with `.from_schema(ctrl)`) and `Rank4Fm(v_factors)` classes, and `chebyshev_lfo(cos_phi)` / `trust_region_softclip(z, *, mh)`.
+     - `dsp.py`: Callable stateful Reference DSP processor classes (`PolyAdaa(PolyAdaaParams)`, `SelectiveRgLru(SelectiveRgLruParams)`, `ModulatedUfdn(MufdnParams)` supporting `__call__(x, *, reset=False, out=None)`, `.step(x_n)`, `.reset()`, `.state`, `.params`) plus stateless algebraic helpers (`PolyAdaa.algebraic`, `unit_rotor`, `lagrange_weights`, `givens_householder_mix`) imported by `packages/trainer` as the certification oracle.
+     - `provenance.py`: RFC 8785 JCS `immutable_header_sha256`, `Ed25519` creator/marketplace signing messages, RFC 8439 `ChaCha20` 64-byte cache-line arena encryption, Dual-Mechanism Buyer Watermarking (`Test 8H`: 48-ch RG-LRU gauge + 4,608-weight Tardos code), and 160-D structural hash extraction and cosine similarity.
+     - `engine.py` (`DnamEngine`): Callable stereo/mono processor with `pedalboard`-compatible duck-typing (`y = engine(x, sample_rate=None, *, buffer_size=None, reset=False, mono_downmix=False, out=None)` and `engine.process(...)`, defaulting mono `(N,)` / `(1, N)` input to true-stereo `(2, N)` output via `process_mono_to_stereo`, plus `process_planar`), explicit `backend="auto" | BackendKind` selection, zero-allocation hot-reloading (`engine.reload(...)`), Pythonic `@property` accessors (`engine.tier`, `engine.sample_rate`, `engine.backend`, `engine.telemetry`, `engine.container`, `engine.controls`), and context-manager support.
+- **Modular Test & Code-Quality Suite (`tests/{conftest,strategies,test_schema,test_container,test_control,test_dsp,test_provenance,test_engine}.py`):** Enforces `uv run ruff format --check`, `uv run ruff check`, `uv run pyrefly check` (`preset = "strict"`, zero `# type: ignore`), `uv run pytest` with `hypothesis[numpy,crosshair]` & `hypothesis-jsonschema` property-based/symbolic tests, and `pytest-cov` (`--cov=dnam_engine --cov-fail-under=95`).
+
+### 4.2 Packaged Node.js & WebAudio Engine Library (`packages/nodejs/` — Phase 2B)
+- **Dual Native N-API + WebAssembly SIMD128 Architecture & Cross-Compilation:**
+  1. **Native N-API Addon (`src/lib.rs`, `build.rs` $\to$ `dist/dnam_nodejs.<platform>-<arch>.node`):** Zero-C-dependency Rust `cdylib` using Node-API v8 to operate **zero-copy** on V8 `Float32Array`/`Uint8Array` buffers with native hardware SIMD (`ARM SME`, `ARM64 NEON`, `x86 AVX2+FMA`), hardware `FTZ`/`DAZ`, and `__crc32cd`. Cross-compiles cleanly via `cargo zigbuild --package dnam-nodejs --target <triple> --release`.
+  2. **WebAssembly SIMD128 Module (`dist/dnam_engine.wasm`):** Compiled from `packages/engine` (`wasm32-unknown-unknown` with `-C target-feature=+simd128`) and bundled for synchronous instantiation inside browser `AudioWorkletGlobalScope` and portable JS runtimes.
+- **Idiomatic TypeScript / WebAudio Interface (`src/{types,model,processor,worklet,index}.ts`):**
+  1. `validateDnamModel(input: Uint8Array | ArrayBuffer | unknown): DnamModel`: Validates binary `.dnam`/`.dnam-ckpt` containers or JSON headers and attaches `ui_hints` power-skew mappers (`normalizedToPhysical`, `physicalToNormalized`).
+  2. `clampControlValues(model: DnamModel, rawControls: Record<string, number | string>): ClampedControlsResult`: Applies `[CLAMP-RANGE]`, `[CLAMP-SWITCH]`, and `[CLAMP-STABILITY]` (`conditional_max`/`conditional_min`) rules identically to Rust and Python.
+  3. `DnamProcessor`: Idiomatic stereo/mono block processor (`[Symbol.dispose]()` + `FinalizationRegistry`, control updates by ID or index, preset loading) supporting `backend: "auto" | "native" | "wasm"`.
+  4. `DnamAudioWorkletProcessor`: Ready-to-register WebAudio `AudioWorkletProcessor` class (`128`-sample render quantum = 8 Control-Bus ticks at $48\text{ kHz}$).
+- **Node.js / TypeScript Code-Quality Suite:** Enforces `@biomejs/biome` (`format:check`, `lint`), `tsc --noEmit` (`strict: true`), `node --test` + `fast-check` property-based tests (including differential parity between `"native"` N-API and `"wasm"` SIMD128), and $\ge 95\%$ test coverage.
 
 ---
 

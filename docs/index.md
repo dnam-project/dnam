@@ -34,20 +34,21 @@ This repository is structured as a symmetric multi-language monorepo with two to
 
 ## 2. Recommended Agent Execution Sequence
 
-When developing this monorepo from the specifications in `docs/`, execute in the following 6 phases:
+When developing this monorepo from the specifications in `docs/`, execute in the following phases:
 
 1. **Phase 1 — Pure Rust SIMD Engine Core (`Cargo.toml`, `packages/engine/`):**
    - Implement the allocation-free, 16-byte SIMD-aligned (`C=4` Lite / `C=8` Full / `C=12` Ultra) pure Rust engine (`dnam-engine`) with `FTZ`/`DAZ` hardware guards, `PolyADAA`, `SelectiveRgLru`, `ModulatedUfdn`, `ControlBus`, and `.dnam` ZOH loader per [`monorepo_implementation_guide.md`](monorepo_implementation_guide.md).
-2. **Phase 2 — Packaged Python & Node.js Engine Libraries (`packages/python/`, `packages/nodejs/`):**
-   - Build `packages/python` (`PyO3` + `maturin` wheel) exposing zero-copy NumPy inference and Reference DSP primitives from `packages/engine`.
-   - Build `packages/nodejs` (`@dnam/nodejs` via WebAssembly SIMD128 / N-API) exposing `.dnam` validation, 3-Phase clamping, and `DnamAudioWorkletProcessor`.
-3. **Phase 3 — PyTorch Differentiable Trainer & 8-Suite Verification (`pyproject.toml`, `packages/trainer/`):**
+2. **Phase 2A — Packaged Python Engine Library (`pyproject.toml`, `packages/python/`):**
+   - Build `packages/python` (`PyO3` `abi3-py314` + `maturin --zig` wheel) with a thin zero-copy NumPy FFI core (`dnam_engine._native`), an idiomatic strictly-typed Python interface (`types.py`, `engine.py`, `container.py`, `dsp.py`), and the full Python code-quality suite (`ruff`, `pyrefly`, `pytest`, `hypothesis` property-based tests, and `pytest-cov` $\ge 95\%$ coverage).
+3. **Phase 2B — Packaged Node.js & WebAudio Engine Library (`package.json`, `packages/nodejs/`):**
+   - Build `packages/nodejs` (`@dnam/nodejs` with dual Native N-API via `cargo-zigbuild` + WebAssembly SIMD128 drivers) wrapped in an idiomatic TypeScript/WebAudio interface exposing `.dnam` validation, 3-Phase clamping, `DnamProcessor`, and `DnamAudioWorkletProcessor`, verified with `@biomejs/biome`, `tsc --noEmit`, `node --test`, `fast-check` property-based tests, and $\ge 95\%$ test coverage.
+4. **Phase 3 — PyTorch Differentiable Trainer & 8-Suite Verification (`pyproject.toml`, `packages/trainer/`):**
    - Implement `dnam_trainer` (`control`, `trainer`, `schema`, and differentiable PyTorch `autograd` graph) under `packages/trainer/`, importing `packages/python` as the canonical Reference DSP.
    - Port the 8 verification suites and guardrail tests from [`verification_and_guardrails.md`](verification_and_guardrails.md) into `packages/trainer/tests/` and verify `uv run pytest`, `uv run ruff check`, and `uv run pyrefly check`.
-4. **Phase 4 — Real-Time Audio Plugin (`packages/plugin/`):**
+5. **Phase 4 — Real-Time Audio Plugin (`packages/plugin/`):**
    - Wrap `packages/engine` in a real-time VST3/CLAP/Standalone plugin processor with lock-free atomic parameter slots mapped to `.dnam` `controls_schema` (`range` & `switch`) and runtime safe-domain clamping.
-5. **Phase 5 — Web Platform, Specification Visualizers & React WASM Studio (`packages/web/`):**
+6. **Phase 5 — Web Platform, Specification Visualizers & React WASM Studio (`packages/web/`):**
    - Configure Astro + Starlight + `@astrojs/react` (`packages/web/astro.config.mjs`) to mount `docs/*.md` directly as the **Specification Reference** section with KaTeX math and Mermaid diagrams.
    - Build interactive React/Canvas visualizers (`PolyAdaaVisualizer`, `RgLruPoleVisualizer`, `ModulatedUfdnVisualizer`, `ControlBusVisualizer`, `KroneckerResumeVisualizer`, `ClampAuditVisualizer`, `ZohRescalerVisualizer`) embedded across the specification pages, plus the live React + WebAssembly (`AudioWorklet` SIMD128) Modeler Plugin (`DnamPluginRack` powered by `packages/nodejs`).
-6. **Phase 6 — End-to-End Cross-Language Parity & Guardrail Certification:**
-   - Run all test suites across Rust (`cargo test --workspace`), Python (`uv run pytest`), Node.js (`npm --workspace=packages/nodejs test`), and web platform build (`npm --workspace=packages/web run build`).
+7. **Phase 6 — End-to-End Cross-Language Parity & Guardrail Certification:**
+   - Run all test suites across Rust (`cargo test --workspace`), Python (`uv run pytest`), Node.js (`pnpm --filter @dnam/nodejs test`), and web platform build (`pnpm --filter @dnam/web run build`).

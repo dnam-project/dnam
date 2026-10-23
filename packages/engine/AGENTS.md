@@ -1,8 +1,8 @@
-# `packages/engine` — Rust `#![no_std]` + `alloc` SIMD Engine Guide
+# `packages/engine` — Rust `#![no_std]` + `alloc` SIMD Engine Routing Guide
 
-**`dnam-engine`** ([`README.md`](README.md)) is the `#![no_std]` + `alloc`, zero-audio-alloc, 16B/64B SIMD DSP and container core for **DNAM ("Tri-Physics")**.
+**`dnam-engine`** is the `#![no_std]` + `alloc`, zero-audio-allocation, 16B/64B SIMD DSP and container core for **DNAM ("Tri-Physics")**.
 
-## 1. Progressive Disclosure & Submodule Discovery Map
+## 1. Submodule Discovery Map
 
 | Subsystem / Module | Scoped `AGENTS.md` | Canonical Spec (SSOT) |
 | :--- | :--- | :--- |
@@ -15,7 +15,13 @@
 | **Marketplace & Provenance** (`src/provenance.rs`, `src/provenance/*`) | [`src/provenance/AGENTS.md`](src/provenance/AGENTS.md) | [`digital_marketplace_and_provenance.md`](../../docs/digital_marketplace_and_provenance.md) |
 | **JSON Schema & Controls** (`src/schema.rs`, `src/schema/*`) | [`src/schema/AGENTS.md`](src/schema/AGENTS.md) | [`dnam_container_schema.md`](../../docs/dnam_container_schema.md) |
 
-## 2. Package Rules & Quality Gates
+## 2. Required Reading
 
-- **Layout:** Co-locate unit and `proptest` tests (`#[cfg(test)] mod tests`) inside submodules; keep `tests/` strictly for integration tests, `benches/` for benchmarks, and `examples/` for API usage examples.
-- **Safety & Invariants:** Maintain `#[forbid(unsafe_code)]` on all non-SIMD/non-FFI modules, `0` heap allocations on audio threads, and `0` `FSQRT`/`FDIV`/`libm` calls at $48\text{ kHz}$ and $3\text{ kHz}$.
+1. [`CONTRIBUTING.md`](CONTRIBUTING.md) — Crate layout, `#[forbid(unsafe_code)]` isolation, zero-allocation rules, and pre-commit checklist.
+2. [`README.md`](README.md) — Public Rust API, I/O topologies, and embedded scratch usage.
+
+## 3. Verification
+
+```bash
+cargo clippy --package dnam-engine --all-targets -- -D warnings && cargo test --package dnam-engine
+```

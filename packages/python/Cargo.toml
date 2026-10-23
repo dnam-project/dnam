@@ -1,0 +1,24 @@
+[package]
+name = "dnam-python"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Zero-copy PyO3 + NumPy FFI bindings for the DNAM (Tri-Physics) Rust SIMD Engine"
+publish = false
+
+[lib]
+name = "_native"
+path = "rust/lib.rs"
+crate-type = ["cdylib"]
+
+[dependencies]
+dnam-engine = { path = "../engine", default-features = true }
+pyo3.workspace = true
+numpy.workspace = true
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[lints]
+workspace = true

@@ -348,22 +348,43 @@ impl<B: MathBackend> Core1Stack<B> {
         active_tier_groups: usize,
         mono_only: bool,
     ) -> [f32; 2] {
-        match active_tier_groups {
-            1 => self.process_sample_const::<1>(x_left, x_right, arena, mono_only),
-            2 => self.process_sample_const::<2>(x_left, x_right, arena, mono_only),
-            _ => self.process_sample_const::<3>(x_left, x_right, arena, mono_only),
+        let tiles = arena_as_mat4x4_tiles(arena);
+        let out = match active_tier_groups {
+            1 => self.process_sample_tiles::<1>(x_left, x_right, tiles, mono_only),
+            2 => self.process_sample_tiles::<2>(x_left, x_right, tiles, mono_only),
+            _ => self.process_sample_tiles::<3>(x_left, x_right, tiles, mono_only),
+        };
+        self.finalize_block_telemetry(active_tier_groups);
+        out
+    }
+
+    #[inline(always)]
+    pub(crate) fn arena_tiles(arena: &[u8]) -> &[[[f32; 4]; 4]] {
+        arena_as_mat4x4_tiles(arena)
+    }
+
+    #[inline(always)]
+    pub(crate) fn finalize_block_telemetry(&mut self, active_tier_groups: usize) {
+        let md = self.max_adaa_drive_vec;
+        let sample_max_drive = md[0].max(md[1]).max(md[2].max(md[3]));
+        if sample_max_drive > self.max_adaa_drive {
+            self.max_adaa_drive = sample_max_drive;
+        }
+        let idx = active_tier_groups.clamp(1, 3) - 1;
+        let tier_r_max = self.static_max_pole_radius[idx];
+        if tier_r_max > self.max_pole_radius {
+            self.max_pole_radius = tier_r_max;
         }
     }
 
     #[inline(always)]
-    fn process_sample_const<const GROUPS: usize>(
+    pub(crate) fn process_sample_tiles<const GROUPS: usize>(
         &mut self,
         x_left: f32,
         x_right: f32,
-        arena: &[u8],
+        tiles: &[[[f32; 4]; 4]],
         mono_only: bool,
     ) -> [f32; 2] {
-        let tiles = arena_as_mat4x4_tiles(arena);
         let min_tiles = match GROUPS {
             1 => 168,
             2 => 349,
@@ -550,16 +571,6 @@ impl<B: MathBackend> Core1Stack<B> {
         }
 
         max_drive_v.store(&mut self.max_adaa_drive_vec);
-        let md = self.max_adaa_drive_vec;
-        let sample_max_drive = md[0].max(md[1]).max(md[2].max(md[3]));
-        if sample_max_drive > self.max_adaa_drive {
-            self.max_adaa_drive = sample_max_drive;
-        }
-        let tier_r_max = self.static_max_pole_radius[GROUPS - 1];
-        if tier_r_max > self.max_pole_radius {
-            self.max_pole_radius = tier_r_max;
-        }
-
         self.conv_write_pos = (w_pos + 1) & CORE1_CONV_HIST_MASK;
 
         // Save latest 4-channel / 8-channel Core 1 tap for Core 2 M-UFDN
@@ -696,8 +707,10 @@ mod tests {
         stack.load_from_arena(arena_storage.as_bytes(), &zoh);
 
         let y0 = stack.process_sample(0.0, 0.0, arena_storage.as_bytes(), 3, false);
+        let y_full = stack.process_sample(0.0, 0.0, arena_storage.as_bytes(), 2, false);
         let y1 = stack.process_sample(0.0, 0.0, arena_storage.as_bytes(), 3, true);
         assert!(y0[0].abs() < 1e-7 && y0[1].abs() < 1e-7);
+        assert!(y_full[0].abs() < 1e-7 && y_full[1].abs() < 1e-7);
         assert!(y1[0].abs() < 1e-7 && y1[1].abs() < 1e-7);
     }
 }

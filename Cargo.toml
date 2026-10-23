@@ -1,6 +1,7 @@
 [workspace]
 resolver = "3"
-members = ["packages/engine"]
+members = ["packages/engine", "packages/python"]
+default-members = ["packages/engine"]
 
 [workspace.package]
 version = "0.1.0"
@@ -21,6 +22,8 @@ zeroize = { version = "1.8", default-features = false, features = ["alloc", "der
 zerocopy = { version = "0.8", default-features = false, features = ["derive", "simd"] }
 criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
 proptest = "1.6"
+pyo3 = { version = "0.30", features = ["extension-module", "abi3-py314"] }
+numpy = "0.30"
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"

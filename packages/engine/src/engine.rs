@@ -191,6 +191,52 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
         Ok(())
     }
 
+    /// Hot-swaps a new `.dnam` model in-place into an owned engine without requiring `bytes`
+    /// to outlive `'a` (updating `ArenaStorage::Owned` in-place with zero allocations when capacity suffices).
+    pub fn reload_model_in_place_owned(
+        &mut self,
+        bytes: &[u8],
+        tier: Tier,
+        sample_rate_hz: u32,
+    ) -> Result<(), DnamError> {
+        let preamble = DnamPreamble::from_bytes(bytes)?;
+        if preamble.is_encrypted_arena() {
+            return Err(DnamError::EncryptedArenaRequiresDeviceKey);
+        }
+        let arena_off = preamble.tensor_arena_offset as usize;
+        let arena_len = preamble.tensor_arena_byte_len as usize;
+        if bytes.len() < arena_off + arena_len {
+            return Err(DnamError::BufferTooSmall {
+                expected: arena_off + arena_len,
+                actual: bytes.len(),
+            });
+        }
+        let computed_hdr_crc = crate::container::compute_header_crc32c(bytes, arena_off);
+        if computed_hdr_crc != preamble.header_crc32c {
+            return Err(DnamError::Crc32cMismatch {
+                region: "header",
+                expected: preamble.header_crc32c,
+                computed: computed_hdr_crc,
+            });
+        }
+        let raw_arena = &bytes[arena_off..arena_off + arena_len];
+        DnamContainerView::verify_arena_prefix_crcs(&preamble, raw_arena)?;
+
+        let copy_len = raw_arena.len().min(36_224);
+        if !self.arena_storage.reload_in_place(&raw_arena[..copy_len]) {
+            self.arena_storage = ArenaStorage::from_slice_owned(&raw_arena[..copy_len]);
+        }
+
+        self.preamble = preamble;
+        self.header = None;
+        self.verification_status = VerificationStatus::Unsigned;
+        self.max_available_tier = Self::detect_max_tier(&preamble, copy_len);
+        self.tier = tier.min(self.max_available_tier);
+
+        self.reconfigure_for_sample_rate(sample_rate_hz)?;
+        Ok(())
+    }
+
     fn from_view(
         view: DnamContainerView<'a>,
         tier: Tier,
@@ -462,51 +508,51 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
         }
     }
 
-    /// Internal single-sample execution step shared across all 4 I/O topologies.
+    /// Internal single-sample execution step parameterized by compile-time tier group counts.
     #[inline(always)]
-    fn step_frame(&mut self, in_l: f32, in_r: f32, force_mono_head: bool) -> [f32; 2] {
-        let arena = self.arena_storage.as_bytes();
-        let k_ctrl = self.zoh.control_decimation_host;
-        let core1_groups = self.tier.core1_groups();
-        let fdn_groups = self.tier.fdn_groups();
-        let mono_only = force_mono_head || !self.preamble.is_stereo_out();
-
+    #[allow(clippy::too_many_arguments)]
+    fn step_frame_const<const GROUPS: usize, const FDN_GROUPS: usize>(
+        core1: &mut Core1Stack<B>,
+        core2: &mut ModulatedUfdn<'a, B>,
+        control_bus: &mut ControlBus<B>,
+        ctrl_sub_counter: &mut usize,
+        ctrl_energy_accum: &mut f32,
+        in_l: f32,
+        in_r: f32,
+        arena: &[u8],
+        tiles: &[[[f32; 4]; 4]],
+        k_ctrl: usize,
+        lfo_env_active: bool,
+        mono_only: bool,
+        dry_g: f32,
+        wet_g: f32,
+    ) -> [f32; 2] {
         // Accumulate block energy for 3 kHz envelope follower
-        self.ctrl_energy_accum += 0.5 * (in_l.abs() + in_r.abs());
-        self.ctrl_sub_counter += 1;
-        if self.ctrl_sub_counter >= k_ctrl {
-            let avg_energy = self.ctrl_energy_accum * (1.0 / 16.0);
-            self.ctrl_sub_counter = 0;
-            self.ctrl_energy_accum = 0.0;
-            if self
-                .control_bus
-                .tick_3khz(avg_energy, self.preamble.is_lfo_env_active(), arena)
-            {
-                self.core1
-                    .collapse_stereo_head_3khz(arena, &self.control_bus.z_head, core1_groups);
+        *ctrl_energy_accum += 0.5 * (in_l.abs() + in_r.abs());
+        *ctrl_sub_counter += 1;
+        if *ctrl_sub_counter >= k_ctrl {
+            let avg_energy = *ctrl_energy_accum * (1.0 / 16.0);
+            *ctrl_sub_counter = 0;
+            *ctrl_energy_accum = 0.0;
+            if control_bus.tick_3khz(avg_energy, lfo_env_active, arena) {
+                core1.collapse_stereo_head_3khz(arena, &control_bus.z_head, GROUPS);
             }
         }
 
-        let core1_out = self
-            .core1
-            .process_sample(in_l, in_r, arena, core1_groups, mono_only);
+        let core1_out = core1.process_sample_tiles::<GROUPS>(in_l, in_r, tiles, mono_only);
 
-        let (wet_l, wet_r, dry_l, dry_r) = if self.core2.active {
-            let c2 = self.core2.process_sample(
+        let (wet_l, wet_r, dry_l, dry_r) = if core2.active {
+            let c2 = core2.process_sample(
                 in_l,
                 in_r,
-                &self.core1.latest_core1_tap,
-                &self.control_bus.core2_delay_mod_samples,
-                fdn_groups,
+                &core1.latest_core1_tap,
+                &control_bus.core2_delay_mod_samples,
+                FDN_GROUPS,
             );
             (core1_out[0] + c2[0], core1_out[1] + c2[1], c2[2], c2[3])
         } else {
             (core1_out[0], core1_out[1], in_l, in_r)
         };
-
-        let trim = self.core1.tier_gain_trim_lin[self.tier as usize];
-        let dry_g = self.core1.mix_dry_gain;
-        let wet_g = self.core1.mix_wet_gain * trim;
 
         let out_l = dry_g * dry_l + wet_g * wet_l;
         let out_r = if mono_only {
@@ -515,6 +561,14 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
             dry_g * dry_r + wet_g * wet_r
         };
         [out_l, out_r]
+    }
+
+    #[inline(always)]
+    fn reset_block_telemetry(&mut self) {
+        self.core1.max_adaa_drive_vec = [0.0; 4];
+        self.core1.max_adaa_drive = 0.0;
+        self.core1.max_pole_radius = 0.0;
+        self.core2.max_effective_loop_gain = 0.0;
     }
 
     /// **Topology 1 (`Stereo -> Stereo` Separate Buffers):**
@@ -533,15 +587,86 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
             .min(right_in.len())
             .min(left_out.len())
             .min(right_out.len());
-        self.core1.max_adaa_drive_vec = [0.0; 4];
-        self.core1.max_adaa_drive = 0.0;
-        self.core1.max_pole_radius = 0.0;
-        self.core2.max_effective_loop_gain = 0.0;
+        self.reset_block_telemetry();
+        let arena = self.arena_storage.as_bytes();
+        let tiles = Core1Stack::<B>::arena_tiles(arena);
+        let k_ctrl = self.zoh.control_decimation_host;
+        let lfo_env_active = self.preamble.is_lfo_env_active();
+        let mono_only = !self.preamble.is_stereo_out();
+        let dry_g = self.core1.mix_dry_gain;
+        let wet_g = self.core1.mix_wet_gain * self.core1.tier_gain_trim_lin[self.tier as usize];
 
-        for i in 0..n {
-            let [l, r] = self.step_frame(left_in[i], right_in[i], false);
-            left_out[i] = l;
-            right_out[i] = r;
+        match self.tier {
+            Tier::Lite => {
+                for i in 0..n {
+                    let [l, r] = Self::step_frame_const::<1, 1>(
+                        &mut self.core1,
+                        &mut self.core2,
+                        &mut self.control_bus,
+                        &mut self.ctrl_sub_counter,
+                        &mut self.ctrl_energy_accum,
+                        left_in[i],
+                        right_in[i],
+                        arena,
+                        tiles,
+                        k_ctrl,
+                        lfo_env_active,
+                        mono_only,
+                        dry_g,
+                        wet_g,
+                    );
+                    left_out[i] = l;
+                    right_out[i] = r;
+                }
+            }
+            Tier::Full => {
+                for i in 0..n {
+                    let [l, r] = Self::step_frame_const::<2, 2>(
+                        &mut self.core1,
+                        &mut self.core2,
+                        &mut self.control_bus,
+                        &mut self.ctrl_sub_counter,
+                        &mut self.ctrl_energy_accum,
+                        left_in[i],
+                        right_in[i],
+                        arena,
+                        tiles,
+                        k_ctrl,
+                        lfo_env_active,
+                        mono_only,
+                        dry_g,
+                        wet_g,
+                    );
+                    left_out[i] = l;
+                    right_out[i] = r;
+                }
+            }
+            Tier::Ultra => {
+                for i in 0..n {
+                    let [l, r] = Self::step_frame_const::<3, 2>(
+                        &mut self.core1,
+                        &mut self.core2,
+                        &mut self.control_bus,
+                        &mut self.ctrl_sub_counter,
+                        &mut self.ctrl_energy_accum,
+                        left_in[i],
+                        right_in[i],
+                        arena,
+                        tiles,
+                        k_ctrl,
+                        lfo_env_active,
+                        mono_only,
+                        dry_g,
+                        wet_g,
+                    );
+                    left_out[i] = l;
+                    right_out[i] = r;
+                }
+            }
+        }
+        if n > 0 {
+            self.core1
+                .finalize_block_telemetry(self.tier.core1_groups());
         }
     }
 
@@ -550,15 +675,86 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
     pub fn process_block_in_place(&mut self, left_io: &mut [f32], right_io: &mut [f32]) {
         let _ftz = FtzDazGuard::new();
         let n = left_io.len().min(right_io.len());
-        self.core1.max_adaa_drive_vec = [0.0; 4];
-        self.core1.max_adaa_drive = 0.0;
-        self.core1.max_pole_radius = 0.0;
-        self.core2.max_effective_loop_gain = 0.0;
+        self.reset_block_telemetry();
+        let arena = self.arena_storage.as_bytes();
+        let tiles = Core1Stack::<B>::arena_tiles(arena);
+        let k_ctrl = self.zoh.control_decimation_host;
+        let lfo_env_active = self.preamble.is_lfo_env_active();
+        let mono_only = !self.preamble.is_stereo_out();
+        let dry_g = self.core1.mix_dry_gain;
+        let wet_g = self.core1.mix_wet_gain * self.core1.tier_gain_trim_lin[self.tier as usize];
 
-        for i in 0..n {
-            let [l, r] = self.step_frame(left_io[i], right_io[i], false);
-            left_io[i] = l;
-            right_io[i] = r;
+        match self.tier {
+            Tier::Lite => {
+                for i in 0..n {
+                    let [l, r] = Self::step_frame_const::<1, 1>(
+                        &mut self.core1,
+                        &mut self.core2,
+                        &mut self.control_bus,
+                        &mut self.ctrl_sub_counter,
+                        &mut self.ctrl_energy_accum,
+                        left_io[i],
+                        right_io[i],
+                        arena,
+                        tiles,
+                        k_ctrl,
+                        lfo_env_active,
+                        mono_only,
+                        dry_g,
+                        wet_g,
+                    );
+                    left_io[i] = l;
+                    right_io[i] = r;
+                }
+            }
+            Tier::Full => {
+                for i in 0..n {
+                    let [l, r] = Self::step_frame_const::<2, 2>(
+                        &mut self.core1,
+                        &mut self.core2,
+                        &mut self.control_bus,
+                        &mut self.ctrl_sub_counter,
+                        &mut self.ctrl_energy_accum,
+                        left_io[i],
+                        right_io[i],
+                        arena,
+                        tiles,
+                        k_ctrl,
+                        lfo_env_active,
+                        mono_only,
+                        dry_g,
+                        wet_g,
+                    );
+                    left_io[i] = l;
+                    right_io[i] = r;
+                }
+            }
+            Tier::Ultra => {
+                for i in 0..n {
+                    let [l, r] = Self::step_frame_const::<3, 2>(
+                        &mut self.core1,
+                        &mut self.core2,
+                        &mut self.control_bus,
+                        &mut self.ctrl_sub_counter,
+                        &mut self.ctrl_energy_accum,
+                        left_io[i],
+                        right_io[i],
+                        arena,
+                        tiles,
+                        k_ctrl,
+                        lfo_env_active,
+                        mono_only,
+                        dry_g,
+                        wet_g,
+                    );
+                    left_io[i] = l;
+                    right_io[i] = r;
+                }
+            }
+        }
+        if n > 0 {
+            self.core1
+                .finalize_block_telemetry(self.tier.core1_groups());
         }
     }
 
@@ -572,16 +768,89 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
     ) {
         let _ftz = FtzDazGuard::new();
         let n = mono_in.len().min(left_out.len()).min(right_out.len());
-        self.core1.max_adaa_drive_vec = [0.0; 4];
-        self.core1.max_adaa_drive = 0.0;
-        self.core1.max_pole_radius = 0.0;
-        self.core2.max_effective_loop_gain = 0.0;
+        self.reset_block_telemetry();
+        let arena = self.arena_storage.as_bytes();
+        let tiles = Core1Stack::<B>::arena_tiles(arena);
+        let k_ctrl = self.zoh.control_decimation_host;
+        let lfo_env_active = self.preamble.is_lfo_env_active();
+        let mono_only = !self.preamble.is_stereo_out();
+        let dry_g = self.core1.mix_dry_gain;
+        let wet_g = self.core1.mix_wet_gain * self.core1.tier_gain_trim_lin[self.tier as usize];
 
-        for i in 0..n {
-            let x = mono_in[i];
-            let [l, r] = self.step_frame(x, x, false);
-            left_out[i] = l;
-            right_out[i] = r;
+        match self.tier {
+            Tier::Lite => {
+                for i in 0..n {
+                    let x = mono_in[i];
+                    let [l, r] = Self::step_frame_const::<1, 1>(
+                        &mut self.core1,
+                        &mut self.core2,
+                        &mut self.control_bus,
+                        &mut self.ctrl_sub_counter,
+                        &mut self.ctrl_energy_accum,
+                        x,
+                        x,
+                        arena,
+                        tiles,
+                        k_ctrl,
+                        lfo_env_active,
+                        mono_only,
+                        dry_g,
+                        wet_g,
+                    );
+                    left_out[i] = l;
+                    right_out[i] = r;
+                }
+            }
+            Tier::Full => {
+                for i in 0..n {
+                    let x = mono_in[i];
+                    let [l, r] = Self::step_frame_const::<2, 2>(
+                        &mut self.core1,
+                        &mut self.core2,
+                        &mut self.control_bus,
+                        &mut self.ctrl_sub_counter,
+                        &mut self.ctrl_energy_accum,
+                        x,
+                        x,
+                        arena,
+                        tiles,
+                        k_ctrl,
+                        lfo_env_active,
+                        mono_only,
+                        dry_g,
+                        wet_g,
+                    );
+                    left_out[i] = l;
+                    right_out[i] = r;
+                }
+            }
+            Tier::Ultra => {
+                for i in 0..n {
+                    let x = mono_in[i];
+                    let [l, r] = Self::step_frame_const::<3, 2>(
+                        &mut self.core1,
+                        &mut self.core2,
+                        &mut self.control_bus,
+                        &mut self.ctrl_sub_counter,
+                        &mut self.ctrl_energy_accum,
+                        x,
+                        x,
+                        arena,
+                        tiles,
+                        k_ctrl,
+                        lfo_env_active,
+                        mono_only,
+                        dry_g,
+                        wet_g,
+                    );
+                    left_out[i] = l;
+                    right_out[i] = r;
+                }
+            }
+        }
+        if n > 0 {
+            self.core1
+                .finalize_block_telemetry(self.tier.core1_groups());
         }
     }
 
@@ -591,15 +860,85 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
     pub fn process_mono(&mut self, mono_in: &[f32], mono_out: &mut [f32]) {
         let _ftz = FtzDazGuard::new();
         let n = mono_in.len().min(mono_out.len());
-        self.core1.max_adaa_drive_vec = [0.0; 4];
-        self.core1.max_adaa_drive = 0.0;
-        self.core1.max_pole_radius = 0.0;
-        self.core2.max_effective_loop_gain = 0.0;
+        self.reset_block_telemetry();
+        let arena = self.arena_storage.as_bytes();
+        let tiles = Core1Stack::<B>::arena_tiles(arena);
+        let k_ctrl = self.zoh.control_decimation_host;
+        let lfo_env_active = self.preamble.is_lfo_env_active();
+        let dry_g = self.core1.mix_dry_gain;
+        let wet_g = self.core1.mix_wet_gain * self.core1.tier_gain_trim_lin[self.tier as usize];
 
-        for i in 0..n {
-            let x = mono_in[i];
-            let [l, _] = self.step_frame(x, x, true);
-            mono_out[i] = l;
+        match self.tier {
+            Tier::Lite => {
+                for i in 0..n {
+                    let x = mono_in[i];
+                    let [l, _] = Self::step_frame_const::<1, 1>(
+                        &mut self.core1,
+                        &mut self.core2,
+                        &mut self.control_bus,
+                        &mut self.ctrl_sub_counter,
+                        &mut self.ctrl_energy_accum,
+                        x,
+                        x,
+                        arena,
+                        tiles,
+                        k_ctrl,
+                        lfo_env_active,
+                        true,
+                        dry_g,
+                        wet_g,
+                    );
+                    mono_out[i] = l;
+                }
+            }
+            Tier::Full => {
+                for i in 0..n {
+                    let x = mono_in[i];
+                    let [l, _] = Self::step_frame_const::<2, 2>(
+                        &mut self.core1,
+                        &mut self.core2,
+                        &mut self.control_bus,
+                        &mut self.ctrl_sub_counter,
+                        &mut self.ctrl_energy_accum,
+                        x,
+                        x,
+                        arena,
+                        tiles,
+                        k_ctrl,
+                        lfo_env_active,
+                        true,
+                        dry_g,
+                        wet_g,
+                    );
+                    mono_out[i] = l;
+                }
+            }
+            Tier::Ultra => {
+                for i in 0..n {
+                    let x = mono_in[i];
+                    let [l, _] = Self::step_frame_const::<3, 2>(
+                        &mut self.core1,
+                        &mut self.core2,
+                        &mut self.control_bus,
+                        &mut self.ctrl_sub_counter,
+                        &mut self.ctrl_energy_accum,
+                        x,
+                        x,
+                        arena,
+                        tiles,
+                        k_ctrl,
+                        lfo_env_active,
+                        true,
+                        dry_g,
+                        wet_g,
+                    );
+                    mono_out[i] = l;
+                }
+            }
+        }
+        if n > 0 {
+            self.core1
+                .finalize_block_telemetry(self.tier.core1_groups());
         }
     }
 }
