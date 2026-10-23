@@ -2,7 +2,7 @@
 
 Thank you for your interest in contributing to **Dynamic Neural Audio Modeler ("DNAM")** (the "Project"), created and maintained by **Peter Nguyen** ("Maintainer", <peter@phn.dev>).
 
-This Contributor License Agreement ("Agreement") defines the intellectual property terms for contributions of code, DSP algorithms, schemas, documentation, or other material made to the Project. It protects both you as a contributor and the Project maintainer, ensuring that your contributions can be safely distributed under the Project's [`DNAM Source-Available & Branding License 1.0.0`](LICENSE) and, where applicable, under custom commercial or OEM licensing terms.
+This Contributor License Agreement ("Agreement") defines the intellectual property terms for contributions of code, DSP algorithms, schemas, documentation, or other material made to the Project. It protects both you as a contributor and the Project maintainer, ensuring that your contributions can be safely distributed under the Project's [`DNAM Source-Available & Branding License 1.0.0`](LICENSE) and, where applicable, under custom commercial, marketplace, or OEM licensing terms.
 
 Please read this Agreement carefully. By submitting a pull request, patch, or contribution to the Project, you accept and agree to these terms.
 
@@ -34,7 +34,7 @@ You hereby grant to the Maintainer a perpetual, worldwide, non-exclusive, no-cha
 
 You expressly acknowledge and agree that:
 1. The Project is publicly distributed under the **[`DNAM Source-Available & Branding License 1.0.0`](LICENSE)** (or successor versions or alternative licenses selected by the Maintainer).
-2. The Maintainer operates a **dual-licensing model** and retains the exclusive right to license, sublicense, sell, or commercialize the Project (including Your Contributions as integrated into the Project) to third parties under separate commercial, proprietary, or OEM license agreements.
+2. The Maintainer operates a **dual-licensing model** and retains the exclusive right to license, sublicense, sell, or commercialize the Project (including Your Contributions as integrated into the Project) to third parties under separate commercial, proprietary, marketplace, or OEM license agreements.
 3. You will not be entitled to any compensation, royalties, or revenue-sharing resulting from the Maintainer's commercial licensing or distribution of the Project.
 
 ---

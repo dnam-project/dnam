@@ -13,25 +13,30 @@ The licensor grants you a copyright license for the software to do everything
 you might do with the software that would otherwise infringe the licensor's
 copyright in it for any permitted purpose. However, you may only distribute or
 link the software according to [Distribution & Hardware/Plugin Linking
-License](#distribution--hardwareplugin-linking-license) and [Mandatory DNAM
+License](#distribution--hardwareplugin-linking-license), [Mandatory DNAM
 Branding & Format Integrity](#mandatory-dnam-branding--format-integrity), and
-make changes or new works based on the software according to [Changes and New
-Works License](#changes-and-new-works-license).
+[Permitted Purposes & Anti-Resale
+Perimeter](#permitted-purposes--anti-resale-perimeter), and make changes or new
+works based on the software according to [Changes and New Works
+License](#changes-and-new-works-license).
 
 ## Distribution & Hardware/Plugin Linking License
 
-The licensor grants you an additional copyright license to distribute copies of
-the software (with changes and new works permitted by [Changes and New Works
-License](#changes-and-new-works-license)) and to statically or dynamically link
-`dnam-engine` (and its language bindings in `packages/python` and
-`packages/js`) into commercial and noncommercial hardware devices, embedded
-DSP firmware, and closed-source or open-source audio plugins (including VST3,
-CLAP, AU, AAX, and Standalone formats) and host applications.
+The licensor grants you an additional copyright license for any permitted
+purpose to distribute copies of the software (with changes and new works
+permitted by [Changes and New Works License](#changes-and-new-works-license))
+and to statically or dynamically link `dnam-engine` (and its language bindings
+in `packages/python` and `packages/js`) into commercial and noncommercial
+hardware devices, embedded DSP firmware, and closed-source or open-source audio
+plugins (including VST3, CLAP, AU, AAX, and Standalone formats) and host
+applications.
 
 Linking `dnam-engine` into your own hardware firmware or closed-source audio
 plugin does not require you to disclose the source code of your own independent
-firmware, plugin, or host application, provided that you strictly comply with
-[Mandatory DNAM Branding & Format Integrity](#mandatory-dnam-branding--format-integrity).
+firmware, plugin, or host application, provided that you comply with [Mandatory
+DNAM Branding & Format Integrity](#mandatory-dnam-branding--format-integrity)
+and [Permitted Purposes & Anti-Resale
+Perimeter](#permitted-purposes--anti-resale-perimeter).
 
 ## Mandatory DNAM Branding & Format Integrity
 
@@ -39,23 +44,32 @@ Your license to distribute, embed, or link any part of the software in any
 hardware device, firmware, audio plugin, or software application is strictly
 conditioned on all of the following:
 
-1. **Mandatory User-Facing DNAM Branding (No White-Labeling):** Any hardware
-   device, embedded firmware, closed-source or open-source audio plugin, or
-   software application that links, embeds, or executes `dnam-engine` (or its
-   bindings) or loads `.dnam` models must visibly identify and credit the
-   modeling technology as **"DNAM"** ("Dynamic Neural Audio Modeler") or
-   **"Powered by DNAM"** wherever the modeling engine, effect block/module, or
-   model loader is presented to end users (including plugin GUI faceplates or
-   headers, hardware screen block/module selectors, model/preset browsers,
-   "About" views, and product documentation/specifications). You may not
-   white-label, rebrand, obscure, or market `dnam-engine` or the DNAM modeling
-   architecture under a substitute proprietary technology name.
-2. **`.dnam` Container & Schema Integrity:** Any product or tool that loads,
-   saves, generates, or exchanges DNAM models must preserve the unmodified
-   `.dnam` and `.dnam-ckpt` file extensions and internal schema identifiers
-   (`"architecture": "DNAM_TriPhysics"`), and may not rename, disguise, or
-   re-wrap `.dnam` files into a proprietary file extension or container format
-   to obscure their origin.
+1. **User-Facing DNAM Branding (No White-Labeling):** Any hardware device,
+   embedded firmware, closed-source or open-source audio plugin, or software
+   application that links, embeds, or runs `dnam-engine` (or its bindings) or
+   loads `.dnam` models must visibly credit **"DNAM"** ("Dynamic Neural Audio
+   Modeler") or **"Powered by DNAM"** wherever the modeling engine, effect
+   block, or model loader is shown to users (including plugin faceplates or
+   headers, hardware block selectors, model or preset browsers, "About" screens,
+   and product documentation). You must not white-label, rebrand, obscure, or
+   market `dnam-engine` or the DNAM modeling architecture under another name.
+2. **Container, Signature & Watermark Integrity (No Circumvention):** Any
+   product, plugin, script, or tool that uses, links, or is based on the
+   software—or that loads, saves, creates, or exchanges DNAM models—must keep
+   the unmodified `.dnam` and `.dnam-ckpt` file extensions, magic headers
+   (`DNAM` and `DNCK`), and schema identifiers
+   (`"architecture": "DNAM_TriPhysics"`). You must not:
+   - modify the software or re-wrap `.dnam` or `.dnam-ckpt` files to output or
+     load a renamed, disguised, or incompatible file extension or container
+     format;
+   - strip, alter, forge, or bypass creator attribution or provenance
+     (`metadata.author`, `metadata.license`, `metadata.provenance`),
+     cryptographic signatures (`creator_signature`, `marketplace_receipt`), or
+     device-authorization checks (`ENCRYPTED_ARENA`, `authorized_devices`);
+   - issue or sign `marketplace_receipt` certificates without a written
+     marketplace license from the licensor; or
+   - remove, wash, or tamper with buyer watermarks in the binary weight arenas
+     (`Arena 0..2`).
 3. **Required Notices:** You must ensure that anyone who gets a copy of any
    part of the software from you (in source or binary form, including within
    product documentation or "About" notices of hardware devices and plugins)
@@ -67,40 +81,91 @@ conditioned on all of the following:
 
 ## Conditional Trademark License
 
-Solely to enable your compliance with [Mandatory DNAM Branding & Format
-Integrity](#mandatory-dnam-branding--format-integrity), the licensor grants you
-a royalty-free, worldwide, non-exclusive, non-transferable, revocable license to
-display the **"DNAM"**, **"Dynamic Neural Audio Modeler"**, and **"Powered by
-DNAM"** names and marks strictly to truthfully identify integrated `dnam-engine`
-functionality and `.dnam` model compatibility in compliant hardware and
-software products. You may not register or claim ownership of any trademark,
-service mark, or domain name confusingly similar to **"DNAM"**, nor use the
-marks in a manner that disparages the project or implies official endorsement
-or sponsorship of your company by the licensor.
+To let you comply with [Mandatory DNAM Branding & Format
+Integrity](#mandatory-dnam-branding--format-integrity) and identify `.dnam`
+compatibility when publishing or selling **your own models**, the licensor
+grants you a royalty-free, worldwide, non-exclusive, non-transferable, revocable
+license to display the **"DNAM"**, **"Dynamic Neural Audio Modeler"**, and
+**"Powered by DNAM"** names and marks. Neither you nor **your company** may use
+the marks to operate an unlicensed **model marketplace**, register or claim any
+trademark, service mark, or domain name confusingly similar to **"DNAM"**,
+disparage the project, or imply that the licensor endorses you or **your
+company**.
 
 ## Permitted Purposes & Anti-Resale Perimeter
 
-Any commercial or noncommercial purpose is a permitted purpose, **except** for:
+Any commercial or noncommercial purpose is a permitted purpose, **except** that
+neither you nor **your company** may do any of the following:
 
-1. **No Standalone Rebranded Resale or Hosted Cloning:** Selling, licensing for
-   a fee, or offering to third parties as a hosted or managed cloud service a
-   rebranded, white-labeled, or repackaged version of the project's standalone
-   reference plugin (`packages/plugin`), differentiable trainer
-   (`packages/trainer`), or web studio (`packages/web`) where the primary value
-   of the product or service is substantially the software itself without
-   substantial independent hardware or software functionality; or
-2. **No Unbranded / White-Labeled Distribution:** Providing any hardware device,
-   firmware, plugin, or software product that links, embeds, or uses
-   `dnam-engine` or `.dnam` models while removing, obscuring, or replacing the
-   mandatory **DNAM** branding required under [Mandatory DNAM Branding & Format
+1. **Standalone Resale or Hosted Cloud Services:** Sell, license for a fee, or
+   offer to others as a hosted, managed, or multi-tenant cloud service (whether
+   paid, credit-based, ad-supported, or free):
+   - a rebranded, white-labeled, or repackaged version of the standalone
+     reference plugin (`packages/plugin`), trainer (`packages/trainer`), or web
+     studio (`packages/web`) whose primary value is substantially the software
+     itself;
+   - any automated or self-serve cloud training, capture-processing, or
+     model-generation service or API powered by the software; or
+   - any multi-creator or subscription cloud/browser audio-rendering or
+     model-streaming service;
+2. **Unlicensed Model Marketplaces:** Operate or power any **model marketplace**
+   (whether commercial, ad-supported, subscription-based, or free), use any part
+   of the software (including `dnam-engine`, its Python, JavaScript, or
+   WebAssembly bindings, its container schemas, or its provenance, watermarking,
+   ingestion-scanning, and `marketplace_receipt` tools) to run or support a
+   **model marketplace**, or integrate any hardware device, plugin, or
+   application using the software with an unlicensed **model marketplace**,
+   without a separate written marketplace license from the licensor;
+3. **Model Conversion, Distillation, or Unauthorized Redistribution:** Use the
+   software (or provide any tool or service using the software) for format
+   conversion, black-box distillation, or synthetic probe re-capture of someone
+   else's `.dnam` or `.dnam-ckpt` models into another format, or extract or
+   redistribute someone else's models in violation of the license terms in their
+   `metadata.license` or `marketplace_receipt`, without that creator's
+   permission; or
+4. **White-Labeling or Circumvention:** Provide any hardware, firmware, plugin,
+   or software that violates [Mandatory DNAM Branding & Format
    Integrity](#mandatory-dnam-branding--format-integrity).
+
+### Individual Creator Model Publishing, Direct Sales & Audio Output
+
+These terms do not restrict you from training, publishing, or selling **your own
+models** individually, or from using the software in music and audio production:
+
+- **Local, Personal Cloud & Studio Client Training:** You may run
+  `packages/trainer` and `dnam-engine` on your own computers or on single-tenant
+  cloud GPUs that you rent for your own use (such as personal Google Colab,
+  RunPod, AWS, or Lambda Labs sessions) to train **your own models**. Studio
+  engineers and producers may also capture and train custom `.dnam` models for
+  individual clients as part of hands-on studio production or sound-design work.
+- **Model Ownership & Direct Sales:** You keep full ownership of **your own
+  models** (and may sign them with `creator_signature`) and may publish them for
+  free or sell them directly to users—including on your own website, your own
+  code repositories (such as GitHub), your own first-party storefront on
+  general-purpose e-commerce and creator platforms (such as Shopify, Gumroad,
+  Bandcamp, Lemon Squeezy, Payhip, Ko-fi, or Patreon), or bundled with your own
+  compliant hardware devices or audio plugins—without paying any fee or royalty
+  to the licensor. You may also embed `@dnam-project/engine` (WebAssembly
+  `AudioWorklet`) on your own website so visitors can audition **your own
+  models**.
+- **Unrestricted Audio Output:** You keep full ownership of all audio
+  recordings, performances, stems, and mixes you produce using the software or
+  `.dnam` models, with no royalties or restrictions.
 
 ## Changes and New Works License
 
 The licensor grants you an additional copyright license to make changes and new
-works based on the software for any permitted purpose, provided that any
-distributed changes or new works comply with [Mandatory DNAM Branding & Format
-Integrity](#mandatory-dnam-branding--format-integrity).
+works based on the software for any permitted purpose. Any distributed changes
+or new works based on the software itself (other than your own independent
+hardware firmware, audio plugin, or host application that links `dnam-engine`
+under [Distribution & Hardware/Plugin Linking
+License](#distribution--hardwareplugin-linking-license)) must be distributed
+under these same terms and comply with [Mandatory DNAM Branding & Format
+Integrity](#mandatory-dnam-branding--format-integrity) and [Permitted Purposes &
+Anti-Resale Perimeter](#permitted-purposes--anti-resale-perimeter). You must not
+combine or distribute any part of the software with other software under terms
+that would require any part of the software to be licensed without the
+conditions and restrictions of these terms.
 
 ## Patent License
 
@@ -118,23 +183,29 @@ not limit them.
 
 These terms do not allow you to sublicense or transfer any of your licenses to
 anyone else, or prevent the licensor from granting licenses (including bespoke
-commercial white-label or OEM licenses) to anyone else. These terms do not
-imply any other licenses.
+commercial white-label, marketplace, cloud-training, or OEM licenses) to anyone
+else. These terms do not imply any other licenses.
 
 ## Patent Defense
 
 If you make any written claim that the software infringes or contributes to
-infringement of any patent, your patent license for the software granted under
-these terms ends immediately. If your company makes such a claim, your patent
-license ends immediately for work on behalf of your company.
+infringement of any patent, all your licenses for the software granted under
+these terms end immediately. If **your company** makes such a claim, all your
+licenses end immediately for work on behalf of **your company**.
 
 ## Violations
 
-The first time you are notified in writing that you have violated any of these
-terms, or done anything with the software not covered by your licenses, your
-licenses can nonetheless continue if you come into full compliance with these
-terms, and take practical steps to correct past violations, within 32 days of
-receiving notice. Otherwise, all your licenses end immediately.
+The first time you are notified in writing that you or **your company** have
+violated any of these terms, or done anything with the software not covered by
+your licenses, your licenses can nonetheless continue if you come into full
+compliance with these terms, and take practical steps to correct past
+violations, within 32 days of receiving notice. However, if you or **your
+company** intentionally violate [Permitted Purposes & Anti-Resale
+Perimeter](#permitted-purposes--anti-resale-perimeter) or intentionally
+circumvent container, signature, device-authorization, or watermark rules under
+[Mandatory DNAM Branding & Format
+Integrity](#mandatory-dnam-branding--format-integrity), or if you do not come
+into full compliance within 32 days, all your licenses end immediately.
 
 ## No Liability
 
@@ -146,7 +217,9 @@ legal claim.***
 ## Definitions
 
 The **licensor** is the individual or entity offering these terms, and the
-**software** is the software the licensor makes available under these terms.
+**software** is the software (including code, binaries, schemas, container
+specifications, and documentation) the licensor makes available under these
+terms.
 
 **You** refers to the individual or entity agreeing to these terms.
 
@@ -156,6 +229,19 @@ are under the control of, or are under common control with that organization.
 **Control** means ownership of substantially all the assets of an entity, or
 the power to direct its management and policies by vote, contract, or
 otherwise. Control can be direct or indirect.
+
+**Your own models** are `.dnam` or `.dnam-ckpt` models that you (or your
+company, including genuine studio collaborations) originally captured and
+trained for your own first-party catalog, rather than models sourced,
+aggregated, consigned, or sublicensed from multiple independent third-party
+creators.
+
+**Model marketplace** means any marketplace, multi-vendor storefront, model
+exchange, tone-sharing repository, aggregator, publisher or consignment catalog,
+or in-app, in-plugin, or companion-app cloud library that hosts, distributes,
+brokers, streams, auditions, or sells `.dnam` or `.dnam-ckpt` models (or indexes
+or curates them as a model directory or storefront) from multiple third-party
+creators.
 
 **Your licenses** are all the licenses granted to you for the software under
 these terms.

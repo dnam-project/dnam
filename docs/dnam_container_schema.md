@@ -126,7 +126,7 @@ During the $48\text{ kHz}$ audio loop, Core 1 walks a **single monotonic pointer
 
 ## 3. Essential Metadata, Provenance, Presets, `ui_hints` & Open `user_metadata`
 
-DNAM keeps the core `metadata` schema strictly to the **minimal essentials**, includes first-class **`presets`** and intrinsic **`ui_hints`** for parametric controls, and leaves storefront/platform taxonomies or host/rig bindings (e.g., Tone3000 categories, MIDI CC / OSC mappings, or hardware encoder slots) to the host or an open `user_metadata: dict[str, JsonValue]` dictionary:
+DNAM keeps the core `metadata` schema strictly to the **minimal essentials**, includes first-class **`presets`** and intrinsic **`ui_hints`** for parametric controls, and leaves storefront/platform taxonomies or host/rig bindings (e.g., licensed marketplace categories, MIDI CC / OSC mappings, or hardware encoder slots) to the host or an open `user_metadata: dict[str, JsonValue]` dictionary:
 
 1. **Minimal Standardized `metadata`:**
    - **Identity:** `name` (`str`), `author` (`str | null`), `description` (`str | null`), `license` (`str | null`), and `created_at` (`str`, ISO-8601 UTC timestamp).

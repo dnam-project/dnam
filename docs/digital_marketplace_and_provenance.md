@@ -49,7 +49,7 @@ To ensure that user preset creation and third-party storefront tagging never bre
 | `control_bus`, `core1_hybrid_ssm`, `core2_mufdn`, `tensor_directory` | **Yes (Signed)** | Locks DSP hyperparameters and binary arena offsets |
 | `slimmable_tiers.*.{channels, fdn_lines, early_taps, head_svd_rank, loudness_lufs, output_trim_db, validation_esr_db, arena_end_byte_offset}` | **Yes (Signed)** | Locks per-tier calibration and byte boundaries (`prefix_crc32c` excluded as it updates on watermarking) |
 | **`presets`** | **No (Mutable)** | Allows buyers to add/edit custom DAW presets in-place (`0x40..0x1000`) |
-| **`user_metadata`** (top-level & nested) | **No (Mutable)** | Allows platforms (e.g., Tone3000) and hosts to attach custom tags in-place |
+| **`user_metadata`** (top-level & nested) | **No (Mutable)** | Allows licensed marketplaces (e.g., `dnam.store`) and hosts to attach custom tags in-place |
 | **`metadata.signatures`** | **No (Envelope)** | Holds the signature certificates themselves |
 
 The digest `immutable_header_sha256` is the SHA-256 hash of the RFC 8785 JSON Canonicalization Scheme (JCS) UTF-8 bytes of the signed subset above.
