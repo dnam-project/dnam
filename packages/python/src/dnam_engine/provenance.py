@@ -171,3 +171,15 @@ def structural_cosine_similarity(a: ArrayLike, b: ArrayLike) -> float:
     if a_arr.ndim != 1 or b_arr.ndim != 1:
         raise DnamValidationError("Structural hash vectors must be 1D arrays of length 160")
     return float(call_native(_native.native_structural_cosine_similarity, a_arr, b_arr))
+
+
+def ed25519_pubkey_hex(seed_32: bytes) -> str:
+    """Derives the 64-character lowercase hex `Ed25519` public key from a 32-byte secret seed."""
+    return call_native(_native.native_ed25519_pubkey_hex, seed_32)
+
+
+def ed25519_sign_hex(seed_32: bytes, message: bytes) -> str:
+    """
+    Signs `message` using a 32-byte `Ed25519` secret seed, returning the 128-char hex signature.
+    """
+    return call_native(_native.native_ed25519_sign_hex, seed_32, message)

@@ -153,6 +153,22 @@ impl RustCryptoProvider {
         self
     }
 
+    /// Derives the 32-byte `Ed25519` public key from a 32-byte secret key seed.
+    #[inline]
+    pub fn ed25519_pubkey_from_seed(seed_32: &[u8; 32]) -> [u8; 32] {
+        use ed25519_dalek::SigningKey;
+        let sk = SigningKey::from_bytes(seed_32);
+        sk.verifying_key().to_bytes()
+    }
+
+    /// Signs `message` using a 32-byte `Ed25519` secret key seed, returning the 64-byte signature.
+    #[inline]
+    pub fn ed25519_sign(seed_32: &[u8; 32], message: &[u8]) -> [u8; 64] {
+        use ed25519_dalek::{Signer, SigningKey};
+        let sk = SigningKey::from_bytes(seed_32);
+        sk.sign(message).to_bytes()
+    }
+
     /// Wraps a 32-byte Content Encryption Key (`CEK`) for a target device's `X25519` public key
     /// using RFC 9180 HPKE (`X25519-HKDF-SHA256` + `ChaCha20-Poly1305`), returning the 48-byte
     /// `wrapped_cek` (`32 B` ciphertext + `16 B` Poly1305 tag).
@@ -341,6 +357,20 @@ mod tests {
             assert!(dbg.contains("RustCryptoProvider"));
             assert_eq!(prov.local_device_id_hash(), Some("dev1"));
             assert_eq!(prov.marketplace_pubkey(), Some(&[9u8; 32]));
+
+            // Verify Ed25519 key derivation, signing, and verification roundtrip
+            let seed = [0x5Au8; 32];
+            let pubkey = RustCryptoProvider::ed25519_pubkey_from_seed(&seed);
+            let message = b"dnam-creator-signature-test-payload";
+            let sig = RustCryptoProvider::ed25519_sign(&seed, message);
+            assert!(prov.ed25519_verify(&pubkey, message, &sig).is_ok());
+
+            let mut tampered_sig = sig;
+            tampered_sig[0] ^= 0xFF;
+            assert!(
+                prov.ed25519_verify(&pubkey, message, &tampered_sig)
+                    .is_err()
+            );
         }
     }
 }

@@ -74,3 +74,36 @@ def st_symmetric_gram_matrix(dim: int = 16) -> st.SearchStrategy[NDArray[np.floa
             allow_infinity=False,
         ),
     ).map(lambda m: 0.5 * (m + m.T))
+
+
+st_r_ac = st.floats(min_value=0.990, max_value=0.9999, allow_nan=False, allow_infinity=False)
+st_r_dc = st.floats(min_value=0.985, max_value=0.9999, allow_nan=False, allow_infinity=False)
+st_control_u = st.floats(min_value=-1.0, max_value=1.0, allow_nan=False, allow_infinity=False)
+
+
+def st_audio_batch_1d(
+    batch_size: int = 2,
+    channels: int = 4,
+    seq_len: int = 64,
+) -> st.SearchStrategy[NDArray[np.float32]]:
+    """Generates bounded `(B, C, T)` `float32` audio batches without NaNs or infinities."""
+    return hnp.arrays(
+        dtype=np.float32,
+        shape=(batch_size, channels, seq_len),
+        elements=st.floats(
+            min_value=-1.5,
+            max_value=1.5,
+            allow_nan=False,
+            allow_infinity=False,
+            width=32,
+        ),
+    )
+
+
+def st_fdn_delays(num_lines: int = 8) -> st.SearchStrategy[list[float]]:
+    """Generates bounded FDN base delay lengths in `[32.0, 256.0]` samples."""
+    return st.lists(
+        st.floats(min_value=32.0, max_value=256.0, allow_nan=False, allow_infinity=False),
+        min_size=num_lines,
+        max_size=num_lines,
+    )

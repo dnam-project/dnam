@@ -31,8 +31,6 @@ dynamic-neural-audio-modeler/
 │   ├── digital_marketplace_and_provenance.md
 │   ├── monorepo_implementation_guide.md
 │   └── verification_and_guardrails.md
-├── scripts/
-│   └── verify_dnam_architecture.py  # Executable 8-suite empirical verification reference
 └── packages/                        # 2. All 6 Monorepo Packages (3-Layer Architecture)
     ├── engine/                      # Layer 1: Pure Rust #![no_std] + alloc, Zero-Audio-Alloc SIMD Engine Core (dnam-engine)
     │   ├── AGENTS.md                # Scoped router (< 2,500 B)
@@ -132,12 +130,28 @@ dynamic-neural-audio-modeler/
     │   │   ├── drivers/             # Unified DnamDriver contract (wasm.ts & native.ts)
     │   │   └── worklet/             # Lock-free SharedArrayBuffer Seqlock/Ring, DnamAudioWorkletProcessor & DnamWorkletNode
     │   └── test/                    # Modular Vitest + fast-check Unit, Property, Parity & Benchmark Suite (>= 95% cov)
-    ├── trainer/                     # Layer 3A: PyTorch 4-Stage Differentiable Trainer & .dnam-ckpt Solver
+    ├── trainer/                     # Layer 3A: PyTorch 4-Stage Differentiable Trainer, Project & Capture CLI (`dnam_trainer`)
     │   ├── AGENTS.md                # Scoped router (< 2,500 B)
+    │   ├── CONTRIBUTING.md          # Package contributing & float64/hardware guide
+    │   ├── README.md                # CLI & Python API documentation
     │   ├── pyproject.toml           # Imports packages/python (dnam-engine) as Reference DSP
     │   ├── src/
     │   │   └── dnam_trainer/
     │   │       ├── __init__.py
+    │   │       ├── schema.py        # Strict Pydantic v2 workspace, capture, training & wire-protocol schemas
+    │   │       ├── events.py        # UI-agnostic Capture/Training Event & Observer protocols
+    │   │       ├── project/         # Multi-model project workspace (`dnam.toml`, `models/<id>/model.toml`), planner & runner
+    │   │       │   ├── AGENTS.md    # Scoped router (< 2,500 B)
+    │   │       │   ├── __init__.py
+    │   │       │   ├── workspace.py
+    │   │       │   ├── planner.py
+    │   │       │   └── runner.py
+    │   │       ├── capture/         # Pluggable hardware/software capture (`anagram`, `usb`, `software`), excitation & alignment
+    │   │       │   ├── AGENTS.md    # Scoped router (< 2,500 B)
+    │   │       │   ├── __init__.py
+    │   │       │   ├── excitation.py
+    │   │       │   ├── alignment.py
+    │   │       │   └── backends.py
     │   │       ├── dsp/             # Differentiable PyTorch autograd & Reference DSP bridge (CL-01..11)
     │   │       │   ├── AGENTS.md    # Scoped router (< 2,500 B)
     │   │       │   ├── __init__.py
@@ -149,19 +163,37 @@ dynamic-neural-audio-modeler/
     │   │       │   ├── __init__.py
     │   │       │   ├── basis.py
     │   │       │   └── audit.py
-    │   │       ├── trainer/         # Surrogate Delay Gradient & Kronecker .dnam-ckpt Solver (CL-18)
+    │   │       ├── training/        # Hardware runtime, Surrogate Delay, Kronecker .dnam-ckpt Solver & TrainingBackend (CL-18)
     │   │       │   ├── AGENTS.md    # Scoped router (< 2,500 B)
     │   │       │   ├── __init__.py
+    │   │       │   ├── hardware.py
     │   │       │   ├── surrogate_delay.py
-    │   │       │   └── kronecker_head.py
-    │   │       └── schema/          # Pydantic v2 .dnam / .dnam-ckpt schemas & ZOH rescaling
-    │   │           ├── AGENTS.md    # Scoped router (< 2,500 B)
+    │   │       │   ├── kronecker_head.py
+    │   │       │   ├── arena.py
+    │   │       │   ├── telemetry.py
+    │   │       │   ├── pipeline.py
+    │   │       │   └── backends.py
+    │   │       └── cli/             # Modular `cyclopts` + `rich` CLI (`dnam` / `dnam-train`)
     │   │           ├── __init__.py
-    │   │           └── models.py
-    │   └── tests/
+    │   │           ├── workspace.py
+    │   │           ├── capture.py
+    │   │           ├── train.py
+    │   │           └── console.py
+    │   └── tests/                   # 1:1 mirrored unit, property-based, guardrail & verification test suite
     │       ├── AGENTS.md            # Scoped router (< 2,500 B)
-    │       ├── test_dnam_verification.py  # All 8 empirical verification suites
-    │       └── test_guardrails.py   # AGENTS.md byte budgets, link checker & CL-01..18 verifier
+    │       ├── conftest.py
+    │       ├── strategies.py
+    │       ├── test_guardrails.py   # AGENTS.md byte budgets, link checker & CL-01..18 verifier
+    │       ├── test_schema_and_events.py
+    │       ├── project/
+    │       ├── capture/
+    │       ├── dsp/
+    │       ├── control/
+    │       ├── training/
+    │       ├── cli/
+    │       ├── integration/
+    │       │   └── test_dnam_verification.py  # All 8 empirical verification suites
+    │       └── test_benchmarks.py
     ├── plugin/                      # Layer 3B: Rust Real-Time Audio Plugin (VST3 / CLAP / Standalone)
     │   ├── AGENTS.md                # Scoped router (< 2,500 B)
     │   ├── Cargo.toml

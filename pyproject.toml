@@ -9,9 +9,14 @@ dependencies = []
 [dependency-groups]
 dev = [
     "dnam-engine",
+    "dnam-trainer",
     "maturin>=1.8.0",
     "numpy>=2.1.0",
     "pydantic>=2.10.0",
+    "cyclopts>=5.0.0",
+    "torch>=2.6.0",
+    "polars>=1.20.0",
+    "altair>=5.5.0",
     "pytest>=8.3.0",
     "pytest-benchmark>=5.1.0",
     "pytest-cov>=6.0.0",
@@ -21,16 +26,58 @@ dev = [
     "pyrefly>=0.15.0",
 ]
 
+[tool.uv]
+environments = [
+    "sys_platform == 'darwin' and platform_machine == 'arm64'",
+    "sys_platform == 'win32' and platform_machine == 'AMD64'",
+    "sys_platform == 'linux' and platform_machine == 'x86_64'",
+]
+
+[[tool.uv.index]]
+name = "amd-rocm"
+url = "https://stable.repo.amd.com/rocm/whl-next/"
+explicit = true
+
 [tool.uv.workspace]
-members = ["packages/python"]
+members = ["packages/python", "packages/trainer"]
 
 [tool.uv.sources]
 dnam-engine = { workspace = true }
+dnam-trainer = { workspace = true }
+torch = [
+    { index = "amd-rocm", marker = "extra == 'rocm' and (sys_platform == 'linux')" },
+]
+amd-torch-device-gfx12-0 = [
+    { index = "amd-rocm", marker = "sys_platform == 'linux'" },
+]
+amd-torch-device-gfx1201 = [
+    { index = "amd-rocm", marker = "sys_platform == 'linux'" },
+]
+rocm = [
+    { index = "amd-rocm", marker = "sys_platform == 'linux'" },
+]
+rocm-sdk-core = [
+    { index = "amd-rocm", marker = "sys_platform == 'linux'" },
+]
+rocm-sdk-libraries = [
+    { index = "amd-rocm", marker = "sys_platform == 'linux'" },
+]
+rocm-sdk-device-gfx1201 = [
+    { index = "amd-rocm", marker = "sys_platform == 'linux'" },
+]
+triton = [
+    { index = "amd-rocm", marker = "sys_platform == 'linux'" },
+]
 
 [tool.ruff]
 target-version = "py314"
 line-length = 100
-src = ["packages/python/src", "packages/python/tests"]
+src = [
+    "packages/python/src",
+    "packages/python/tests",
+    "packages/trainer/src",
+    "packages/trainer/tests",
+]
 
 [tool.ruff.lint]
 select = [
@@ -49,15 +96,26 @@ select = [
 
 [tool.pyrefly]
 python-version = "3.14"
-project-includes = ["packages/python/src", "packages/python/tests"]
-search-path = ["packages/python/src", "packages/python/tests"]
+project-includes = [
+    "packages/python/src",
+    "packages/python/tests",
+    "packages/trainer/src",
+    "packages/trainer/tests",
+]
+search-path = [
+    "packages/python/src",
+    "packages/python/tests",
+    "packages/trainer/src",
+    "packages/trainer/tests",
+]
 
 [tool.pytest.ini_options]
-testpaths = ["packages/python/tests"]
-addopts = "-ra --strict-markers --benchmark-disable"
+testpaths = ["packages/python/tests", "packages/trainer/tests"]
+pythonpath = ["packages/python/tests", "packages/trainer/tests"]
+addopts = "-ra --strict-markers --benchmark-disable --import-mode=importlib"
 
 [tool.coverage.run]
-source = ["dnam_engine"]
+source = ["dnam_engine", "dnam_trainer"]
 branch = true
 
 [tool.coverage.report]

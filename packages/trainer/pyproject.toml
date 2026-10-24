@@ -1,0 +1,44 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "dnam-trainer"
+version = "0.1.0"
+description = "PyTorch 4-Stage Differentiable Trainer, Multi-Model Project Manager & Capture Pipeline for Dynamic Neural Audio Modeler (DNAM / Tri-Physics)"
+readme = "README.md"
+requires-python = ">=3.14"
+license = { text = "LicenseRef-DNAM-1.0.0" }
+dependencies = [
+    "dnam-engine",
+    "numpy>=2.1.0",
+    "pydantic>=2.10.0",
+    "cyclopts>=5.0.0",
+    "torch>=2.6.0",
+    "polars>=1.20.0",
+    "altair>=5.5.0",
+]
+
+[project.optional-dependencies]
+audio = [
+    "sounddevice>=0.5.0",
+]
+rocm = [
+    "rocm; sys_platform == 'linux'",
+    "rocm-sdk-core; sys_platform == 'linux'",
+    "rocm-sdk-libraries; sys_platform == 'linux'",
+    "rocm-sdk-device-gfx1201; sys_platform == 'linux'",
+    "amd-torch-device-gfx12-0; sys_platform == 'linux'",
+    "amd-torch-device-gfx1201; sys_platform == 'linux'",
+    "triton; sys_platform == 'linux'",
+]
+tpu = [
+    "torch-tpu; sys_platform == 'linux'",
+]
+
+[project.scripts]
+dnam = "dnam_trainer.cli:main"
+dnam-train = "dnam_trainer.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/dnam_trainer"]

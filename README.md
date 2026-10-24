@@ -60,7 +60,7 @@ Start with [`AGENTS.md`](AGENTS.md) and [`docs/index.md`](docs/index.md):
 
 1. **[Master Index & Agent Implementation Roadmap](docs/index.md)**
 2. **[Complete DNAM Architecture Design Specification (`architecture_design.md`)](docs/architecture_design.md)**
-3. **[Executable 8-Suite Empirical Verification Script (`verify_dnam_architecture.py`)](scripts/verify_dnam_architecture.py)**
+3. **[Empirical Verification Integration Suite (`test_dnam_verification.py`)](packages/trainer/tests/integration/test_dnam_verification.py)**
 4. **[DNAM Architecture Overview & 18 Verified Breakthroughs](docs/architecture_overview.md)**
 5. **[Core 1: Hybrid Dilated-Conv (`1x B-Spline PolyADAA`) & Selective Complex RG-LRU](docs/core1_hybrid_ssm_and_polyadaa.md)**
 6. **[Core 2: Unified Stereo In-Loop Diffusive Modulated Unitary FDN (`M-UFDN`)](docs/core2_modulated_ufdn.md)**

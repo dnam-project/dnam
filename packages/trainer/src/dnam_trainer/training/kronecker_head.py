@@ -1,0 +1,431 @@
+"""`CL-18` Dual-Ridge `float64` Kronecker Cholesky Head Solver, Orthonormal SVD Control Projector,
+and `.dnam-ckpt` `Arena 3` `uplo='U'` Sufficient-Statistics Accumulator (`Test 7B`, `Test 8G`).
+
+Implements the mathematical specifications from:
+- [`docs/clamp_and_audit_registry.md`](../../../../../docs/clamp_and_audit_registry.md) (`CL-18`)
+- [`docs/training_and_iterative_resume.md`](../../../../../docs/training_and_iterative_resume.md)
+§1.2, §1.4, §2
+- [`docs/dnam_container_schema.md`](../../../../../docs/dnam_container_schema.md) §6.2
+"""
+
+from __future__ import annotations
+
+from collections.abc import Sequence
+from dataclasses import dataclass
+from typing import Any, Literal
+
+import numpy as np
+from numpy.typing import NDArray
+
+from dnam_engine.container import GramMatrix, crc32c
+from dnam_engine.schema import ExtractedPhysics, StemProvenance, StemRegistryEntry, TensorSliceEntry
+
+ARENA012_BYTE_LEN: int = 36_224
+ARENA3_G_AUDIO_FLOATS: int = 18_528  # 192 * 193 // 2
+ARENA3_G_AUDIO_BYTES: int = 148_224  # 18,528 * 8 B
+ARENA3_C_AUDIO_FLOATS: int = 384  # 192 * 2
+ARENA3_C_AUDIO_BYTES: int = 3_072  # 384 * 8 B
+ARENA3_STEM_BYTE_LEN: int = 151_296  # 148,224 + 3,072 B (2,364 cache lines of 64 B)
+
+CL18_SVD_MIN_SIGMA: float = 1e-4
+CL18_MAX_HEAD_SVD_RANK: int = 4
+CL18_RIDGE_INIT_SCALE: float = 1e-3
+CL18_RIDGE_POLISH_SCALE: float = 1e-6
+
+
+@dataclass(frozen=True, slots=True)
+class StemSufficientStatistics:
+    """Un-entangled per-stem `float64` audio sufficient statistics stored in `.dnam-ckpt` `Arena
+    3`."""
+
+    stem_id: str
+    controls_meta: dict[str, float | str]
+    input_pcm_sha256: str
+    target_pcm_sha256: str
+    num_frames: int
+    g_audio_uplo_u_f64: NDArray[np.float64]  # shape (18528,)
+    c_audio_tier_f64: NDArray[np.float64]  # shape (192, 2)
+    extracted_physics: ExtractedPhysics | None = None
+
+    def to_arena3_bytes(self) -> bytes:
+        """Serializes `(g_audio_uplo_u_f64, c_audio_tier_f64)` into a `151,296 B` little-endian
+        slice."""
+        g_bytes = np.ascontiguousarray(self.g_audio_uplo_u_f64, dtype="<f8").tobytes()
+        c_bytes = np.ascontiguousarray(self.c_audio_tier_f64, dtype="<f8").tobytes()
+        if len(g_bytes) != ARENA3_G_AUDIO_BYTES or len(c_bytes) != ARENA3_C_AUDIO_BYTES:
+            raise ValueError(
+                f"Invalid Arena 3 stem byte lengths: g={len(g_bytes)}, c={len(c_bytes)}"
+            )
+        return g_bytes + c_bytes
+
+    def to_registry_entry(self, stem_index: int) -> tuple[StemRegistryEntry, bytes]:
+        """
+        Builds the [`StemRegistryEntry`] and `151,296 B` payload for `stem_index` in `Arena 3`.
+        """
+        payload = self.to_arena3_bytes()
+        stem_crc = crc32c(payload)
+        base_offset = ARENA012_BYTE_LEN + stem_index * ARENA3_STEM_BYTE_LEN
+        g_slice = TensorSliceEntry(
+            arena=3,
+            dtype="f64",
+            packing="uplo_upper_col_major_tier_ordered",
+            feature_dim=192,
+            packed_len=ARENA3_G_AUDIO_FLOATS,
+            shape=None,
+            byte_offset=base_offset,
+            byte_length=ARENA3_G_AUDIO_BYTES,
+        )
+        c_slice = TensorSliceEntry(
+            arena=3,
+            dtype="f64",
+            packing="row_major_tier_ordered",
+            feature_dim=192,
+            packed_len=None,
+            shape=[192, 2],
+            byte_offset=base_offset + ARENA3_G_AUDIO_BYTES,
+            byte_length=ARENA3_C_AUDIO_BYTES,
+        )
+        entry = StemRegistryEntry(
+            stem_id=self.stem_id,
+            controls_meta=dict(self.controls_meta),
+            provenance=StemProvenance(
+                input_pcm_sha256=self.input_pcm_sha256,
+                target_pcm_sha256=self.target_pcm_sha256,
+                num_frames=self.num_frames,
+            ),
+            stem_arena3_crc32c=stem_crc,
+            user_metadata={},
+            extracted_physics=self.extracted_physics,
+            g_audio_uplo_u_f64=g_slice,
+            c_audio_tier_f64=c_slice,
+        )
+        return entry, payload
+
+    @classmethod
+    def from_checkpoint_entry(
+        cls,
+        entry: StemRegistryEntry,
+        arena_bytes: bytes | memoryview,
+    ) -> StemSufficientStatistics:
+        """Deserializes and CRC32C-verifies a stem's `Arena 3` statistics from a `.dnam-ckpt`
+        buffer."""
+        raw = memoryview(arena_bytes)
+        g_off = entry.g_audio_uplo_u_f64.byte_offset
+        g_len = entry.g_audio_uplo_u_f64.byte_length
+        c_off = entry.c_audio_tier_f64.byte_offset
+        c_len = entry.c_audio_tier_f64.byte_length
+
+        stem_slice = bytes(raw[g_off : c_off + c_len])
+        computed_crc = crc32c(stem_slice)
+        if computed_crc != entry.stem_arena3_crc32c:
+            raise ValueError(
+                f"Arena 3 CRC32C mismatch for stem '{entry.stem_id}': "
+                f"expected {entry.stem_arena3_crc32c:#010x}, got {computed_crc:#010x}"
+            )
+
+        g_arr = np.frombuffer(raw[g_off : g_off + g_len], dtype="<f8").copy()
+        c_arr = np.frombuffer(raw[c_off : c_off + c_len], dtype="<f8").reshape((192, 2)).copy()
+        controls_clean: dict[str, float | str] = {
+            k: (float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else str(v))
+            for k, v in entry.controls_meta.items()
+        }
+        return cls(
+            stem_id=entry.stem_id,
+            controls_meta=controls_clean,
+            input_pcm_sha256=entry.provenance.input_pcm_sha256,
+            target_pcm_sha256=entry.provenance.target_pcm_sha256,
+            num_frames=entry.provenance.num_frames,
+            g_audio_uplo_u_f64=g_arr,
+            c_audio_tier_f64=c_arr,
+            extracted_physics=entry.extracted_physics,
+        )
+
+
+def compute_svd_control_projector(
+    psi_stems: NDArray[np.float64],
+    *,
+    svd_tol: float = CL18_SVD_MIN_SIGMA,
+    max_rank: int = CL18_MAX_HEAD_SVD_RANK,
+    trust_region_radius: float = 2.5,
+) -> tuple[NDArray[np.float64], NDArray[np.float32], int, NDArray[np.float64]]:
+    """Computes the `CL-18` Orthonormal SVD Principal Control Subspace Projector
+    $\\mathbf{P}_{\\text{svd}}$.
+
+    Args:
+        psi_stems: `(num_stems, D_basis)` matrix of raw control basis vectors
+        $\\boldsymbol{\\psi}_{\\text{raw}}(\\mathbf{u}_s, \\mathbf{s}_s)$
+            (excluding or stripping the constant intercept column 0 if present).
+        svd_tol: Minimum singular value threshold $\\sigma_k > 10^{-4}$ (`CL-18`).
+        max_rank: Maximum head modulation rank $D_h \\le 4$.
+        trust_region_radius: Smooth $\\tanh$ trust-region bound $R_{\\text{trust}} = 2.5$ (`CL-17`).
+
+    Returns:
+        `(p_svd_dbasis_x_4, p_svd_16x4_f32, active_rank, z_head_stems)` where:
+        - `p_svd_dbasis_x_4` has shape `(D_basis, 4)` in `float64`,
+        - `p_svd_16x4_f32` has shape `(16, 4)` in `float32` for `Arena 0` offset `8960..9216`,
+        - `active_rank` is $\\max(1, |\\{k : \\sigma_k > 10^{-4}\\}|) \\le 4$,
+        - `z_head_stems` has shape `(num_stems, 4)` in `float64`.
+    """
+    arr = np.asarray(psi_stems, dtype=np.float64)
+    if arr.ndim != 2:
+        raise ValueError(f"psi_stems must be 2D, got shape {arr.shape}")
+    num_stems, d_basis = arr.shape
+
+    p_svd = np.zeros((d_basis, 4), dtype=np.float64)
+    p_svd_16x4 = np.zeros((16, 4), dtype=np.float32)
+
+    if d_basis == 0 or num_stems == 0:
+        return p_svd, p_svd_16x4, 1, np.zeros((num_stems, 4), dtype=np.float64)
+
+    _, sigmas, vt = np.linalg.svd(arr, full_matrices=False)
+    valid_indices = [k for k in range(min(len(sigmas), max_rank, 4)) if float(sigmas[k]) > svd_tol]
+    for col_idx, k in enumerate(valid_indices):
+        v_col = vt[k, :]
+        # Canonical sign convention: largest-magnitude entry is positive for deterministic
+        # reproducibility
+        max_idx = int(np.argmax(np.abs(v_col)))
+        if v_col[max_idx] < 0.0:
+            v_col = -v_col
+        p_svd[:, col_idx] = v_col
+
+    active_rank = max(1, len(valid_indices))
+    rows_16 = min(d_basis, 16)
+    p_svd_16x4[:rows_16, :] = p_svd[:rows_16, :].astype(np.float32)
+
+    raw_z = arr @ p_svd  # (num_stems, 4)
+    # Apply CL-17 smooth tanh trust-region bound R_trust * tanh(z / R_trust)
+    z_head = trust_region_radius * np.tanh(raw_z / trust_region_radius)
+    return p_svd, p_svd_16x4, active_rank, z_head
+
+
+def compute_stem_sufficient_statistics(
+    features_t_x_192: NDArray[np.floating[Any]],
+    target_t_x_2: NDArray[np.floating[Any]],
+    *,
+    stem_id: str,
+    controls_meta: dict[str, float | str],
+    input_pcm_sha256: str,
+    target_pcm_sha256: str,
+    extracted_physics: ExtractedPhysics | None = None,
+    window_size: int = 32_768,
+) -> StemSufficientStatistics:
+    """Computes a stem's tier-ordered `float64` audio Gram matrix
+    $\\mathbf{G}_{\\text{audio}}^{(s)} \\in \\mathbb{R}^{192 \\times 192}$
+    and cross-correlation $\\mathbf{C}_{\\text{audio}}^{(s)} \\in \\mathbb{R}^{192 \\times 2}$ via
+    window-streamed host accumulation, then packs $\\mathbf{G}_{\\text{audio}}^{(s)}$ into
+    `LAPACK uplo='U'` format (`18,528` `f64`).
+    """
+    phi = np.asarray(features_t_x_192)
+    y = np.asarray(target_t_x_2)
+    if phi.ndim != 2 or phi.shape[1] != 192:
+        raise ValueError(f"features_t_x_192 must have shape (T, 192), got {phi.shape}")
+    if y.ndim == 1:
+        y = np.column_stack([y, y])
+    if y.ndim != 2 or y.shape[0] != phi.shape[0] or y.shape[1] not in (1, 2):
+        raise ValueError(f"target_t_x_2 must have shape ({phi.shape[0]}, 2), got {y.shape}")
+    if y.shape[1] == 1:
+        y = np.repeat(y, 2, axis=1)
+
+    num_frames = int(phi.shape[0])
+    g_dense = np.zeros((192, 192), dtype=np.float64)
+    c_dense = np.zeros((192, 2), dtype=np.float64)
+
+    step = max(1, window_size)
+    for start in range(0, num_frames, step):
+        end = min(start + step, num_frames)
+        phi_win = np.ascontiguousarray(phi[start:end], dtype=np.float64)
+        y_win = np.ascontiguousarray(y[start:end], dtype=np.float64)
+        g_dense += phi_win.T @ phi_win
+        c_dense += phi_win.T @ y_win
+
+    # Symmetrize numerical rounding before packing upper triangle
+    g_dense = 0.5 * (g_dense + g_dense.T)
+    g_packed = GramMatrix.pack(g_dense)
+
+    return StemSufficientStatistics(
+        stem_id=stem_id,
+        controls_meta=dict(controls_meta),
+        input_pcm_sha256=input_pcm_sha256,
+        target_pcm_sha256=target_pcm_sha256,
+        num_frames=num_frames,
+        g_audio_uplo_u_f64=g_packed,
+        c_audio_tier_f64=c_dense,
+        extracted_physics=extracted_physics,
+    )
+
+
+def solve_kronecker_head_float64(
+    stem_stats: Sequence[StemSufficientStatistics],
+    z_head_stems: NDArray[np.float64],
+    *,
+    mode: Literal["init", "polish"] = "polish",
+    tier_dim: Literal[64, 128, 192] = 192,
+) -> tuple[NDArray[np.float64], float]:
+    """Solves the `CL-18` `float64` Kronecker normal equations for a single slimmable tier (`64`,
+    `128`, or `192`).
+
+    Uses the **Nested Principal Submatrix Prefix Theorem**:
+    `GramMatrix.unpack(s.g_audio_uplo_u_f64, dim=tier_dim)` extracts the exact leading
+    principal submatrix for `Lite` ($N=64$), `Full` ($N=128$), or `Ultra` ($N=192$).
+
+    Args:
+        stem_stats: Sequence of per-stem `StemSufficientStatistics`.
+        z_head_stems: `(num_stems, 4)` projected control coordinates
+            $\\mathbf{z}_{\\text{head}}(\\mathbf{u}_s, \\mathbf{s}_s)$.
+        mode: `'init'` ($\\lambda_{\\text{init}} = 10^{-3}\\bar{\\tau}$) or `'polish'`
+            ($\\lambda_{\\text{polish}} = 10^{-6}\\bar{\\tau}$).
+        tier_dim: `64` (`Lite`), `128` (`Full`), or `192` (`Ultra`).
+
+    Returns:
+        `(w_head_5_2_tier, ridge_lambda)` where `w_head_5_2_tier` has shape `(5, 2, tier_dim)`.
+    """
+    num_stems = len(stem_stats)
+    if num_stems == 0:
+        raise ValueError("solve_kronecker_head_float64 requires at least 1 stem")
+    z_arr = np.asarray(z_head_stems, dtype=np.float64)
+    if z_arr.shape != (num_stems, 4):
+        raise ValueError(f"z_head_stems must have shape ({num_stems}, 4), got {z_arr.shape}")
+
+    num_modes = 5  # [1, z_1, z_2, z_3, z_4]
+    total_dim = num_modes * tier_dim
+    g_kron = np.zeros((total_dim, total_dim), dtype=np.float64)
+    c_kron = np.zeros((total_dim, 2), dtype=np.float64)
+
+    for s_idx, stat in enumerate(stem_stats):
+        g_sub = GramMatrix.unpack(stat.g_audio_uplo_u_f64, dim=tier_dim)
+        c_sub = stat.c_audio_tier_f64[:tier_dim, :]  # (tier_dim, 2)
+        psi_tilde = np.empty(num_modes, dtype=np.float64)
+        psi_tilde[0] = 1.0
+        psi_tilde[1:] = z_arr[s_idx]
+        psi_outer = np.outer(psi_tilde, psi_tilde)  # (5, 5)
+
+        # Block Kronecker accumulation: mode_i * tier_dim .. (mode_i + 1) * tier_dim
+        g_kron += np.kron(psi_outer, g_sub)
+        c_kron += np.kron(psi_tilde[:, None], c_sub)
+
+    trace_avg = float(np.trace(g_kron)) / float(max(total_dim, 1))
+    scale = CL18_RIDGE_INIT_SCALE if mode == "init" else CL18_RIDGE_POLISH_SCALE
+    ridge_lambda = scale * max(trace_avg, 1e-12)
+
+    g_reg = g_kron + ridge_lambda * np.eye(total_dim, dtype=np.float64)
+    try:
+        w_flat = np.linalg.solve(g_reg, c_kron)  # (5 * tier_dim, 2)
+    except np.linalg.LinAlgError:
+        w_flat, _, _, _ = np.linalg.lstsq(g_reg, c_kron, rcond=None)
+
+    # Reshape (5, tier_dim, 2) -> transpose to (5, 2, tier_dim)
+    w_modes = w_flat.reshape((num_modes, tier_dim, 2)).transpose(0, 2, 1).copy()
+    return w_modes, ridge_lambda
+
+
+@dataclass(frozen=True, slots=True)
+class MultiTierKroneckerHeadSolution:
+    """Simultaneous `Lite` ($N=64$), `Full` ($N=128$), and `Ultra` ($N=192$) Kronecker head
+    solution."""
+
+    w_lite_5x2x64: NDArray[np.float64]
+    w_full_5x2x128: NDArray[np.float64]
+    w_ultra_5x2x192: NDArray[np.float64]
+    ridge_lite: float
+    ridge_full: float
+    ridge_ultra: float
+
+    @property
+    def arena0_head_5x2x64_f32(self) -> NDArray[np.float32]:
+        """
+        `Arena 0 (Lite)` head slice `(5, 2, 64)` (`5 * 128 floats = 2,560 B` at offset `4224`).
+        """
+        return self.w_lite_5x2x64.astype(np.float32)
+
+    @property
+    def arena1_head_delta_5x2x64_f32(self) -> NDArray[np.float32]:
+        """`Arena 1 (Full Delta)` head slice `(5, 2, 64)` for features `64..128` (`2,560 B` at
+        offset `17984`)."""
+        return self.w_full_5x2x128[:, :, 64:128].astype(np.float32)
+
+    @property
+    def arena2_head_delta_5x2x64_f32(self) -> NDArray[np.float32]:
+        """`Arena 2 (Ultra Delta)` head slice `(5, 2, 64)` for features `128..192` (`2,560 B` at
+        offset `32640`)."""
+        return self.w_ultra_5x2x192[:, :, 128:192].astype(np.float32)
+
+
+def solve_all_tiers_kronecker_head_float64(
+    stem_stats: Sequence[StemSufficientStatistics],
+    z_head_stems: NDArray[np.float64],
+    *,
+    mode: Literal["init", "polish"] = "polish",
+) -> MultiTierKroneckerHeadSolution:
+    """
+    Solves all 3 slimmable tiers (`Lite` $N=64$, `Full` $N=128$, `Ultra` $N=192$) in `float64`.
+    """
+    w_lite, r_lite = solve_kronecker_head_float64(stem_stats, z_head_stems, mode=mode, tier_dim=64)
+    w_full, r_full = solve_kronecker_head_float64(stem_stats, z_head_stems, mode=mode, tier_dim=128)
+    w_ultra, r_ultra = solve_kronecker_head_float64(
+        stem_stats, z_head_stems, mode=mode, tier_dim=192
+    )
+    return MultiTierKroneckerHeadSolution(
+        w_lite_5x2x64=w_lite,
+        w_full_5x2x128=w_full,
+        w_ultra_5x2x192=w_ultra,
+        ridge_lite=r_lite,
+        ridge_full=r_full,
+        ridge_ultra=r_ultra,
+    )
+
+
+def evaluate_kronecker_head_features(
+    features_t_x_192: NDArray[np.floating[Any]],
+    z_head_4: NDArray[np.floating[Any]],
+    w_head_5x2x_tier: NDArray[np.floating[Any]],
+) -> NDArray[np.float64]:
+    """Evaluates the stereo Kronecker head $\\hat{\\mathbf{Y}} = \\sum_{m=0}^4 \\tilde{\\psi}_m
+    \\mathbf{\\Phi}_{:, :N_{\\text{tier}}} \\mathbf{W}_{\\text{head},m}^\\top$."""
+    tier_dim = int(w_head_5x2x_tier.shape[2])
+    phi = np.asarray(features_t_x_192[:, :tier_dim], dtype=np.float64)
+    z = np.asarray(z_head_4, dtype=np.float64).ravel()
+    psi_tilde = np.array([1.0, z[0], z[1], z[2], z[3]], dtype=np.float64)
+    w_eff = np.tensordot(psi_tilde, np.asarray(w_head_5x2x_tier, dtype=np.float64), axes=(0, 0))
+    # w_eff has shape (2, tier_dim) -> phi @ w_eff.T has shape (T, 2)
+    return phi @ w_eff.T
+
+
+def merge_stem_statistics_for_resume(
+    existing_stats: Sequence[StemSufficientStatistics],
+    incoming_candidates: Sequence[tuple[str, dict[str, float | str], str, str]],
+) -> tuple[list[StemSufficientStatistics | None], list[int]]:
+    """Deduplicates incoming stems against `.dnam-ckpt` `existing_stats` by `(input_pcm_sha256,
+    target_pcm_sha256, controls_meta)`.
+
+    Args:
+        existing_stats: Cached `StemSufficientStatistics` loaded from `.dnam-ckpt` `Arena 3`.
+        incoming_candidates: Sequence of `(stem_id, controls_meta, input_pcm_sha256,
+        target_pcm_sha256)`.
+
+    Returns:
+        `(resolved_slots, indices_requiring_forward_pass)` where:
+        - `resolved_slots[i]` is the reused `StemSufficientStatistics` if unchanged (`0 ms` fast
+        path),
+          or `None` if `incoming_candidates[i]` is new or modified and must be forward-passed.
+        - `indices_requiring_forward_pass` lists the indices `i` where `resolved_slots[i] is None`.
+    """
+    exact_lookup: dict[
+        tuple[str, str, tuple[tuple[str, float | str], ...]], StemSufficientStatistics
+    ] = {}
+    for stat in existing_stats:
+        key_ctrl = tuple(sorted(stat.controls_meta.items(), key=lambda kv: kv[0]))
+        exact_lookup[(stat.input_pcm_sha256, stat.target_pcm_sha256, key_ctrl)] = stat
+
+    resolved_slots: list[StemSufficientStatistics | None] = []
+    needs_eval: list[int] = []
+
+    for idx, (_stem_id, ctrl_meta, in_sha, tgt_sha) in enumerate(incoming_candidates):
+        key_ctrl = tuple(sorted(ctrl_meta.items(), key=lambda kv: kv[0]))
+        cached = exact_lookup.get((in_sha, tgt_sha, key_ctrl))
+        if cached is not None:
+            resolved_slots.append(cached)
+        else:
+            resolved_slots.append(None)
+            needs_eval.append(idx)
+
+    return resolved_slots, needs_eval

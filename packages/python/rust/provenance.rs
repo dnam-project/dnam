@@ -2,7 +2,7 @@
 //! arena encryption, Dual-Mechanism Buyer Watermarking (`Test 8H`), and 160-D structural hash FFI.
 
 use dnam_engine::provenance::{
-    RGLRU_TOTAL_CHANNELS, STRUCTURAL_HASH_DIM, TARDOS_CONV_WEIGHTS,
+    RGLRU_TOTAL_CHANNELS, RustCryptoProvider, STRUCTURAL_HASH_DIM, TARDOS_CONV_WEIGHTS,
     apply_isometric_gauge_watermark, apply_tardos_watermark_4608, build_creator_signing_message,
     build_marketplace_receipt_signing_message, chacha20_xor_arena_blocks,
     compute_immutable_header_sha256, decode_hex_array, encode_hex, extract_structural_hash_160d,
@@ -228,6 +228,32 @@ pub fn native_structural_cosine_similarity<'py>(
     Ok(structural_cosine_similarity(&a_arr, &b_arr))
 }
 
+/// Derives the 64-character lowercase hex `Ed25519` public key from a 32-byte secret key seed.
+#[pyfunction]
+pub fn native_ed25519_pubkey_hex(seed_32: &[u8]) -> PyResult<String> {
+    let seed: &[u8; 32] = seed_32.try_into().map_err(|_| {
+        PyValueError::new_err(format!(
+            "[DNAM-VALIDATION] Ed25519 seed_32 must be 32 bytes, got {}",
+            seed_32.len()
+        ))
+    })?;
+    let pk = RustCryptoProvider::ed25519_pubkey_from_seed(seed);
+    Ok(encode_hex(&pk))
+}
+
+/// Signs `message` using a 32-byte `Ed25519` secret key seed, returning the 128-character hex signature.
+#[pyfunction]
+pub fn native_ed25519_sign_hex(seed_32: &[u8], message: &[u8]) -> PyResult<String> {
+    let seed: &[u8; 32] = seed_32.try_into().map_err(|_| {
+        PyValueError::new_err(format!(
+            "[DNAM-VALIDATION] Ed25519 seed_32 must be 32 bytes, got {}",
+            seed_32.len()
+        ))
+    })?;
+    let sig = RustCryptoProvider::ed25519_sign(seed, message);
+    Ok(encode_hex(&sig))
+}
+
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(native_immutable_header_sha256, m)?)?;
     m.add_function(wrap_pyfunction!(native_sha256_hex, m)?)?;
@@ -243,5 +269,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(native_score_tardos_watermark, m)?)?;
     m.add_function(wrap_pyfunction!(native_extract_structural_hash, m)?)?;
     m.add_function(wrap_pyfunction!(native_structural_cosine_similarity, m)?)?;
+    m.add_function(wrap_pyfunction!(native_ed25519_pubkey_hex, m)?)?;
+    m.add_function(wrap_pyfunction!(native_ed25519_sign_hex, m)?)?;
     Ok(())
 }

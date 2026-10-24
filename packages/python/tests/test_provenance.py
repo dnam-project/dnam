@@ -119,3 +119,22 @@ def test_dual_mechanism_buyer_watermarking_and_structural_hash(
 
     with pytest.raises(DnamValidationError):
         provenance.structural_cosine_similarity(np.zeros((2, 80)), f_master)
+
+
+def test_ed25519_pubkey_and_sign_hex(
+    ref_container_core2: DnamContainer,
+) -> None:
+    seed = b"\x33" * 32
+    pubkey_hex = provenance.ed25519_pubkey_hex(seed)
+    assert len(pubkey_hex) == 64
+
+    hdr_sha = ref_container_core2.immutable_header_sha256()
+    arena_sha = provenance.sha256_hex(bytes(ref_container_core2.arena))
+    msg = provenance.build_creator_signing_message(hdr_sha, arena_sha)
+    sig_hex = provenance.ed25519_sign_hex(seed, msg)
+    assert len(sig_hex) == 128
+
+    with pytest.raises(DnamValidationError):
+        provenance.ed25519_pubkey_hex(b"short")
+    with pytest.raises(DnamValidationError):
+        provenance.ed25519_sign_hex(b"short", msg)

@@ -4,7 +4,7 @@
 **Target Embedded Silicon:** Co-designed for **Rockchip RK3582** (Darkglass Anagram: 2× ARM Cortex-A76 isolated DSP cores + 4× Cortex-A55 system/UI cores, 128-bit NEON) and desktop/mobile SIMD — **100% 16-byte vector aligned (`C=4` Lite / `C=8` Full / `C=12` Ultra), zero `FSQRT`, zero `FDIV`, and zero transcendentals at both $48\text{ kHz}$ and $3\text{ kHz}$**  
 **Hardware Footprint:** **$2.6\times$ FASTER than NAM A2** in `Full` ($\sim 4,625\text{ MACs/sample}$ vs. A2's $12,146\text{ MACs/sample}$) and **$1.22\times$ FASTER with $50\%$ more channels** in `Ultra` (`C=12`, $\sim 9,950\text{ MACs/sample}$), **$0\text{ extra MACs/sample}$ at $48\text{ kHz}$ when user knobs are static**, **$94\text{--}96\%$ smaller L1 cache footprint**, and **native $44.1\text{--}96\text{ kHz}$ sample-rate adaptability**  
 **Core Stability Guarantee:** Unconditional BIBO, Lyapunov, $\mathcal{H}_2$-Norm, and Zero-DC stability across all internal states and user knob/switch combinations, backed by **Non-Stop 3-Phase Control-Space Clamping & Single-Checkpoint (`.dnam-ckpt`) Iterative Stem Expansion**  
-**Verification Suite:** Empirically verified across all 8 test suites in [`verify_dnam_architecture.py`](../scripts/verify_dnam_architecture.py)
+**Verification Suite:** Empirically verified across all 8 test suites in [`test_dnam_verification.py`](../packages/trainer/tests/integration/test_dnam_verification.py)
 
 ---
 
@@ -237,7 +237,7 @@ flowchart TD
 
 ## 6. Empirical Verification Summary & Hardware Benchmark
 
-All 8 mathematical, optimization, and PyTorch verification suites in [`verify_dnam_architecture.py`](../scripts/verify_dnam_architecture.py) pass with zero errors:
+All 8 mathematical, optimization, and PyTorch verification suites in [`test_dnam_verification.py`](../packages/trainer/tests/integration/test_dnam_verification.py) pass with zero errors:
 
 | Verification Test Suite | Baseline / Naive Behavior | Verified DNAM Behavior | Status |
 | :--- | :---: | :---: | :---: |

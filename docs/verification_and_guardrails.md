@@ -119,7 +119,9 @@ def test_1_poly_adaa_algebraic_exactness_and_aliasing() -> None:
         alias_mask &= np.abs(freqs - m_harm * f0) > 60.0
 
     alias_a2_db = 20.0 * math.log10(float(np.linalg.norm(spec_a2[alias_mask]) / np.max(spec_a2)))
-    alias_dnam_db = 20.0 * math.log10(float(np.linalg.norm(spec_dnam[alias_mask]) / np.max(spec_dnam)))
+    alias_dnam_db = 20.0 * math.log10(
+        float(np.linalg.norm(spec_dnam[alias_mask]) / np.max(spec_dnam))
+    )
     assert (alias_a2_db - alias_dnam_db) > 35.0
 
 
@@ -143,7 +145,9 @@ def test_2_selective_rglru_radial_polar_vs_cartesian() -> None:
     phi = np.linspace(-math.pi / 2.0, math.pi / 2.0, 20000)
     p2 = phi * phi
     sin_phi = phi * (0.99999995 - p2 * (0.16666650 - p2 * (0.00833290 - p2 * 0.00019507)))
-    cos_phi = 0.99999995 - p2 * (0.49999990 - p2 * (0.04166630 - p2 * (0.00138860 - p2 * 0.00002438)))
+    cos_phi = 0.99999995 - p2 * (
+        0.49999990 - p2 * (0.04166630 - p2 * (0.00138860 - p2 * 0.00002438))
+    )
     c_hat, s_hat = -sin_phi, cos_phi
     y1_proj = 1.5 - 0.5 * (c_hat * c_hat + s_hat * s_hat)
     u_mag = np.sqrt((y1_proj * c_hat) ** 2 + (y1_proj * s_hat) ** 2)
@@ -362,8 +366,12 @@ def test_7_h2_log_pole_init_and_end_to_end_pytorch_dnam() -> None:
     u_gt = torch.clamp(1.4 * x_in, -1.0, 1.0)
     nl_gt = 1.5 * u_gt - 0.5 * (u_gt**3) + 0.2 * (u_gt**2 - u_gt**4)
     nl_gt = nl_gt - nl_gt.mean(dim=-1, keepdim=True)
-    y_gt_l = 0.7 * nl_gt + 0.25 * torch.roll(nl_gt, 3, dims=-1) - 0.15 * torch.roll(nl_gt, 7, dims=-1)
-    y_gt_r = 0.65 * nl_gt - 0.20 * torch.roll(nl_gt, 4, dims=-1) + 0.18 * torch.roll(nl_gt, 9, dims=-1)
+    y_gt_l = (
+        0.7 * nl_gt + 0.25 * torch.roll(nl_gt, 3, dims=-1) - 0.15 * torch.roll(nl_gt, 7, dims=-1)
+    )
+    y_gt_r = (
+        0.65 * nl_gt - 0.20 * torch.roll(nl_gt, 4, dims=-1) + 0.18 * torch.roll(nl_gt, 9, dims=-1)
+    )
     y_tgt = torch.cat([y_gt_l, y_gt_r], dim=1)
 
     conv = torch.nn.Conv1d(1, c_total, kernel_size=6, padding=5)
@@ -475,7 +483,17 @@ def test_8_parametric_control_bus_and_multistem_conditioning() -> None:
 
     def raw_control_basis(u_g: float, u_t: float, s_b: int, u_m: float) -> torch.Tensor:
         return torch.tensor(
-            [u_g, u_g * u_g, u_t, u_t * u_t, float(s_b), u_m, u_m * u_m, u_g * float(s_b), u_g * u_t],
+            [
+                u_g,
+                u_g * u_g,
+                u_t,
+                u_t * u_t,
+                float(s_b),
+                u_m,
+                u_m * u_m,
+                u_g * float(s_b),
+                u_g * u_t,
+            ],
             dtype=torch.float64,
         )
 
@@ -531,10 +549,14 @@ def test_8_parametric_control_bus_and_multistem_conditioning() -> None:
             val_feats.append(y_c)
             val_feats.append(y_c - torch.roll(y_c, 1))
     phi_val = torch.stack(val_feats, dim=-1)[100:]
-    psi_val = torch.cat([torch.ones(1, dtype=torch.float64), p_svd.T @ raw_control_basis(u_g, u_t, s_b, u_m)])
+    psi_val = torch.cat(
+        [torch.ones(1, dtype=torch.float64), p_svd.T @ raw_control_basis(u_g, u_t, s_b, u_m)]
+    )
     x_val = torch.einsum("ld,k->ldk", phi_val, psi_val).reshape(-1, 12 * d_ctrl_7)
     y_val = synth_gt(u_g, u_t, s_b)[100:]
-    val_esr = 10.0 * math.log10((torch.sum((x_val @ w_ckpt_iter - y_val) ** 2) / torch.sum(y_val**2)).item())
+    val_esr = 10.0 * math.log10(
+        (torch.sum((x_val @ w_ckpt_iter - y_val) ** 2) / torch.sum(y_val**2)).item()
+    )
     assert val_esr < -35.0
 
     # Verify Column-Major Upper-Triangular (uplo='U') Nested Principal Submatrix Prefix Theorem & 64B alignment
@@ -567,11 +589,19 @@ def test_8_parametric_control_bus_and_multistem_conditioning() -> None:
     # Verify Isometric Gauge Watermarking (0.00 dB distortion), 4-Buyer Collusion + fp16 Tardos Detection,
     # and OEM 64-Byte Block-Aligned Arena Wrapping (Lite=168, Full=349, Ultra=566 blocks, 0 B overhead)
     rng_wm = np.random.default_rng(777)
-    b_m, c_m, kap = rng_wm.uniform(0.3, 0.9, 48), rng_wm.standard_normal(48), rng_wm.uniform(0.985, 1.015, 48)
+    b_m, c_m, kap = (
+        rng_wm.uniform(0.3, 0.9, 48),
+        rng_wm.standard_normal(48),
+        rng_wm.uniform(0.985, 1.015, 48),
+    )
     assert float(np.max(np.abs((b_m * kap) * (c_m / kap) - b_m * c_m))) < 1e-14
     w_m = rng_wm.standard_normal(4608)
     codes = rng_wm.choice([-1.0, 1.0], size=(64, 4608))
-    w_pirated = np.mean([w_m + 2e-3 * codes[k] for k in (3, 19, 41, 58)], axis=0).astype(np.float16).astype(np.float64)
+    w_pirated = (
+        np.mean([w_m + 2e-3 * codes[k] for k in (3, 19, 41, 58)], axis=0)
+        .astype(np.float16)
+        .astype(np.float64)
+    )
     z_sc = (codes @ np.sign(w_pirated - w_m)) / math.sqrt(4608)
     assert min(z_sc[k] for k in (3, 19, 41, 58)) > 10.0
     assert (10752 // 64, 22336 // 64, 36224 // 64) == (168, 349, 566)

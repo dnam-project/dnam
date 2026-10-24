@@ -241,7 +241,16 @@ class DnamContainer:
     def with_watermark(self, params: WatermarkParams) -> DnamContainer:
         """Returns a new `DnamContainer` with Dual-Mechanism Buyer Watermarking (`Test 8H`)."""
         watermarked_arena = provenance.apply_dual_watermark(self._arena_bytes, params)
-        return DnamContainer.build(self._header, watermarked_arena)
+        hdr = self._header
+        if (
+            watermarked_arena != self._arena_bytes
+            and hdr.metadata.signatures is not None
+            and hdr.metadata.signatures.marketplace_receipt is None
+        ):
+            hdr = hdr.model_copy(
+                update={"metadata": hdr.metadata.model_copy(update={"signatures": None})}
+            )
+        return DnamContainer.build(hdr, watermarked_arena)
 
 
 class GramMatrix:

@@ -270,12 +270,12 @@ mod tests {
 
         #[cfg(feature = "crypto")]
         {
+            use crate::provenance::RustCryptoProvider;
             use crate::provenance::sha256::encode_hex;
             use crate::schema::{
                 CreatorSignature, ModelSignatures, StemProvenance, StemRegistryEntry,
                 TensorSliceEntry,
             };
-            use ed25519_dalek::{Signer, SigningKey};
 
             let dummy_slice = TensorSliceEntry {
                 arena: 3,
@@ -300,10 +300,10 @@ mod tests {
             let imm_sha = compute_immutable_header_sha256(&h1).unwrap();
             let arena = [0x42u8; 64];
             let arena_sha = sha256_digest(&arena);
-            let sk = SigningKey::from_bytes(&[11u8; 32]);
-            let pk = sk.verifying_key().to_bytes();
+            let seed = [11u8; 32];
+            let pk = RustCryptoProvider::ed25519_pubkey_from_seed(&seed);
             let msg = build_creator_signing_message(&imm_sha, &arena_sha);
-            let sig = sk.sign(&msg).to_bytes();
+            let sig = RustCryptoProvider::ed25519_sign(&seed, &msg);
 
             h1.metadata.signatures = Some(ModelSignatures {
                 immutable_header_sha256: encode_hex(&imm_sha),
