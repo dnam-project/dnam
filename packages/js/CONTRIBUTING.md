@@ -1,6 +1,6 @@
 # Contributing to `@dnam-project/engine` (`packages/js/`)
 
-This guide covers engineering, dual-target Rust compilation (Node.js N-API v8 + WebAssembly SIMD128), strict Biome linting, TypeScript 5.8 typing, WebAudio `AudioWorklet` runtime boundary rules, testing, coverage, and performance benchmarking standards for **`@dnam-project/engine`** ([`README.md`](README.md)).
+This guide covers engineering, dual-target Rust compilation (Node.js 24/26 LTS N-API v8 + WebAssembly SIMD128), strict Biome linting, TypeScript 5.8 typing, WebAudio `AudioWorklet` runtime boundary rules, testing, coverage, and performance benchmarking standards for **`@dnam-project/engine`** ([`README.md`](README.md)).
 
 All contributions must also comply with the root [`CONTRIBUTING.md`](../../CONTRIBUTING.md) and [`CLA.md`](../../CLA.md) (`git commit -s`).
 

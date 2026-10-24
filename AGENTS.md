@@ -9,7 +9,7 @@
 
 - **Rust:** `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo test`.
 - **Python (`uv`, `py314`):** `uv run ruff check`, `uv run ruff format --check`, and `uv run pyrefly check` (`preset = "strict"` in [`pyproject.toml`](pyproject.toml); never use `# type: ignore`).
-- **JS/TS (`pnpm`):** `pnpm format:check`, `pnpm lint` (`@biomejs/biome`), and `pnpm typecheck` (`tsc --noEmit`).
+- **JS/TS (`pnpm`, `node 24/26`):** `pnpm format:check`, `pnpm lint` (`@biomejs/biome`), and `pnpm typecheck` (`tsc --noEmit`).
 - **Testing & Benchmarks:** Maintain $\ge 95\%$ coverage (`cargo llvm-cov`, `uv run pytest --cov`, `pnpm coverage`) and verify zero regressions (`cargo bench`, `uv run pytest --benchmark-enable`, `pnpm bench`).
 - **Git & CLA:** Sign off all commits via `git commit -s` per [`CLA.md`](CLA.md) and [`CONTRIBUTING.md`](CONTRIBUTING.md).
 

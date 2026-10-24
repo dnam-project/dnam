@@ -41,7 +41,7 @@ DNAM is organized as a multi-language workspace under `packages/*`. Before modif
 
 ## 3. Workspace Setup & Verification Commands
 
-DNAM uses **`cargo`** (Rust 2024 edition, `1.85+`) for native crates, **`uv`** (Python `3.14`) for Python packages, and **`pnpm`** for JS/TS packages:
+DNAM uses **`cargo`** (Rust 2024 edition, `1.85+`) for native crates, **`uv`** (Python `3.14`) for Python packages, and **`pnpm`** (Node.js `24` / `26` LTS) for JS/TS packages:
 
 ```bash
 # Sync Python workspace dependencies and build the release editable PyO3 extension

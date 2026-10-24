@@ -5,7 +5,7 @@
   "type": "module",
   "license": "Apache-2.0",
   "engines": {
-    "node": ">=22.0.0"
+    "node": ">=24.0.0"
   },
   "files": [
     "dist",
@@ -61,7 +61,7 @@
   "devDependencies": {
     "@biomejs/biome": "^2.6.2",
     "@fast-check/vitest": "^0.5.0",
-    "@types/node": "^24.0.0",
+    "@types/node": "^26.0.0",
     "@vitest/coverage-v8": "^5.0.5",
     "fast-check": "^4.10.2",
     "typescript": "^5.8.3",
