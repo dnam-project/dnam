@@ -199,15 +199,33 @@ dynamic-neural-audio-modeler/
     │   ├── Cargo.toml
     │   └── src/
     │       └── lib.rs               # Lock-free atomic parameter binding & host ZOH adaptation
-    └── web/                         # Layer 3C: Astro + Starlight Docs Site & Interactive React WASM Studio
+    └── web/                         # Layer 3C: Astro + Starlight Docs, React WASM Studio & Edge Marketplace
         ├── AGENTS.md                # Scoped router (< 2,500 B)
         ├── package.json
-        ├── astro.config.mjs         # Starlight + @astrojs/react + KaTeX + Mermaid + Vite WASM
+        ├── wrangler.jsonc           # Cloudflare Workers, R2 (Public CDN + Private Master), Queues & KV bindings
+        ├── astro.config.mjs         # @astrojs/cloudflare + Starlight + @astrojs/react + Tailwind v4 + KaTeX + Mermaid
         └── src/
             ├── content.config.ts    # Mounts ../../docs/*.md directly into Specification section
+            ├── middleware.ts        # Better Auth + KV session verify & per-route COOP/COEP SharedArrayBuffer headers
+            ├── actions/
+            │   └── index.ts         # Zod-validated Astro Actions (ratings, comments, profile edits, device auth)
+            ├── db/
+            │   ├── index.ts         # @tidbcloud/serverless + drizzle-orm/tidb-serverless client
+            │   └── schema.ts        # TiDB Cloud Starter MySQL 8.0 + TiFlash VECTOR(160) Drizzle schema
+            ├── stores/
+            │   └── audio.ts         # nanostores cross-island persistent audition player state
             ├── pages/
-            │   └── playground.astro # Full-screen Interactive React WASM Modeler Studio
+            │   ├── playground.astro # Full-screen Interactive React WASM Modeler Studio
+            │   ├── explore.astro    # SSR faceted catalog search, category pills & inline audio/WASM preview
+            │   ├── models/
+            │   │   └── [slug].astro # SSR model detail, live DnamPluginRack, ratings & server:defer comments
+            │   ├── u/
+            │   │   └── [handle].astro # SSR creator profile, verified badge & published model catalog
+            │   └── api/
+            │       └── marketplace/ # 3-Stage Ingestion scanner & < 0.2 ms buyer-watermarked R2 download endpoints
             └── components/
+                ├── ui/              # shadcn/ui (Radix UI) + Tailwind CSS v4 + Lucide primitives
+                ├── marketplace/     # Faceted search explorer, model cards, comment threads & persistent player bar
                 ├── plugin/          # Live React + WebAssembly (AudioWorklet SIMD128) Modeler Plugin
                 │   ├── DnamPluginRack.tsx       # Dynamic range knobs, switch toggles & clamp badges
                 │   ├── AudioWorkletEngine.ts    # Real-time WebAudio graph (DI loops / live input -> WASM)
@@ -224,7 +242,7 @@ dynamic-neural-audio-modeler/
 
 ---
 
-## 2. Deliverable 1: Web Platform, Specification Section & Interactive React WASM Plugin (`packages/web/`, `docs/`)
+## 2. Deliverable 1: Web Platform, Specification Section, Interactive React WASM Plugin & Edge Marketplace (`packages/web/`, `docs/`)
 
 - **Zero-Clutter SSOT Specification Mounting:** All canonical Markdown specifications live in `docs/*.md` with zero framework clutter. `packages/web/src/content.config.ts` uses Astro 5's Content Layer (`glob({ pattern: "**/*.md", base: "../../docs" })`) to mount `docs/*.md` directly as the **Specification Reference** section of the Starlight documentation website with full KaTeX (`remark-math` + `rehype-katex`) and Mermaid diagram support.
 - **Interactive Specification Visualizers (`packages/web/src/components/visualizers/`):** Each specification section pairs its mathematical derivations with interactive React + HTML5 Canvas visualizers (`client:visible` islands):
@@ -238,6 +256,9 @@ dynamic-neural-audio-modeler/
 - **Interactive React WASM Modeler Plugin (`packages/web/src/components/plugin/DnamPluginRack.tsx`):**
   - Mounted via `<DnamPluginRack client:only="react" />` and powered by the WASM SIMD128 build of `packages/engine` and `packages/js` (`@dnam-project/engine`).
   - Dynamically renders rotary knobs (`range`) and discrete selectors (`switch`) from any loaded `.dnam` model's `controls_schema`, enforcing `safe_clamped_range`, `active_options`, and `conditional_max` bounds with real-time `clamp_warning` badges, built-in DI guitar/synth test stems, live WebAudio microphone/instrument input, and $60\text{ fps}$ DSP telemetry.
+- **Digital Marketplace, UI Design System & `TiDB Cloud Starter` + Cloudflare R2 Backend ([`digital_marketplace_and_provenance.md` §8](digital_marketplace_and_provenance.md#8-layer-6-cloud-edge-infrastructure-tidb-cloud-starter-schema--r2-storage-topology)):**
+  - **UI & Persistent Auditioning:** Styled with **Tailwind CSS v4** (`@tailwindcss/vite` + `@astrojs/starlight-tailwind`), **`shadcn/ui`** (Radix UI primitives), **`lucide-react`**, and **`nanostores`** (`@nanostores/react`) paired with Astro's `<ClientRouter />` (`transition:persist="dnam-audio-engine"`) so audio/WASM preview playback continues uninterrupted across `/explore`, `/models/[slug]`, and `/u/[handle]` navigations.
+  - **Edge Compute, Auth & Database:** Deployed on **Cloudflare Workers** (`@astrojs/cloudflare`) with per-route `COOP`/`COEP` header isolation (`src/middleware.ts`), **`Better Auth`** + Cloudflare KV session caching, **Cloudflare R2** Two-Bucket storage (Public CDN bucket for `.webp`/`.opus`/`Lite` previews at `$0` egress + Private bucket for `Ultra` masters), **Cloudflare Queues** write-behind counter batching, and **`TiDB Cloud Starter`** (`@tidbcloud/serverless` + `drizzle-orm/tidb-serverless` with auto-sharded Rust `TiKV` row storage and `TiFlash` `VECTOR(160)` `VEC_COSINE_DISTANCE` clone detection).
 
 ---
 

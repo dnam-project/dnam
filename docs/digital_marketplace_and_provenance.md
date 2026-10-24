@@ -216,3 +216,197 @@ A critical requirement of DNAM's Hybrid Binary Container ([`dnam_container_schem
    - When the user selects a preset on the Anagram, the Linux/UI thread on **Cortex-A55** verifies `marketplace_receipt` (`< 80 µs`), passes `wrapped_cek` into `OP-TEE` on the RK3582 to unwrap `CEK` and decrypts only the needed tier prefix (`22,336 B` `Full` = `349` blocks in **$< 15\text{ }\mu\text{s}$** via ARMv8 NEON/CryptoEngine), verifies `arena_crc32c_full` over the decrypted plaintext arena, and hands the 64-byte aligned RAM pointer to the isolated **Cortex-A76 real-time audio core** (`< 50 ns` pointer swap, **$0\text{ flops}$ at $48\text{ kHz}$**).
    - Crucially, **the decrypted `Arena 0..2` weights in RAM still retain the buyer's Dual-Mechanism Isometric Gauge + Tardos Watermark (§4)**—so even a hardware memory-probe dump remains 100% traceable to the buyer's `license_id`.
 
+---
+
+## 8. Layer 6: Cloud Edge Infrastructure, `TiDB Cloud Starter` Schema & R2 Storage Topology
+
+The commercial marketplace, interactive documentation, and WASM studio in `packages/web` are unified in a single **Cloudflare Workers + Astro 5 + TiDB Cloud Starter + Cloudflare R2** edge architecture designed to scale horizontally from launch (`$0` database tier) to millions of models, comments, ratings, and watermarked downloads without manual re-sharding.
+
+### 8.1 Edge Compute, UI Stack, Two-Bucket R2 Storage & Write-Behind Queues
+
+```mermaid
+flowchart LR
+    User["Browser Client (packages/web)<br/>• Astro 5 + Starlight + React 19<br/>• Tailwind CSS v4 + shadcn/ui + Lucide<br/>• nanostores + transition:persist Audio Bar<br/>• @dnam-project/engine WASM Worklet"] --> Edge
+
+    subgraph Cloudflare ["Cloudflare Global Edge (Workers + R2 + Queues + KV)"]
+        Edge["Astro SSR Worker & Astro Actions<br/>• Per-Route COOP/COEP Header Isolation<br/>• Better Auth + KV Session Cache<br/>• < 0.2 ms Buyer Watermarking & Ed25519 Receipt<br/>• Stage A/B/C Ingestion Scanner"]
+        R2Pub["R2 Public Bucket (cdn.dnam.store)<br/>• .webp Artwork, .opus Demo Clips<br/>• Ephemeral 10.5 KB Lite Audition Models<br/>• $0.00 Egress via Edge CDN"]
+        R2Priv["R2 Private Bucket (dnam-masters-private)<br/>• Canonical Creator-Signed Master .dnam (36.2 KB)<br/>• Zero Public Access"]
+        Queue["Cloudflare Queues<br/>• Buffers Play & Download Increments<br/>• Batched Rollups + Trending Score (15s)"]
+    end
+
+    Edge --> R2Priv
+    Edge --> Queue
+    User --> R2Pub
+
+    subgraph TiDB ["TiDB Cloud Starter (Serverless Distributed MySQL 8.0)"]
+        direction TB
+        TiKV["TiKV Row Engine (Rust Raft 96 MB Regions)<br/>• Auto-Sharded Models, Users, Comments, Ratings & Licenses<br/>• Clustered BINARY(16) Keys + Multi-Valued Tag Index"]
+        TiFlash["TiFlash Columnar Replica<br/>• 160-D Structural Hash VECTOR(160) Index<br/>• VEC_COSINE_DISTANCE Stage B Clone Detection"]
+    end
+
+    Edge --> TiDB
+    Queue --> TiDB
+```
+
+1. **Unified Frontend & Edge Backend (`packages/web`):**
+   - **Framework:** **`Astro 5` + `@astrojs/cloudflare` + `@astrojs/starlight` + `@astrojs/react` (React 19)**. Static routes (`/`, `/docs/*`, `/playground`) prerender at build time, while dynamic marketplace routes (`/explore`, `/models/[slug]`, `/u/[handle]`, `/api/marketplace/*`) use on-demand SSR (`export const prerender = false`) and type-safe **Astro Actions** (`zod`-validated).
+   - **UI & Design System:** **`Tailwind CSS v4`** (`@tailwindcss/vite` + `@astrojs/starlight-tailwind`), **`shadcn/ui`** (Radix UI primitives for faceted search accordions, sort selects, category pills, dialogs, and comment threads), **`lucide-react`** icons, and custom pointer-capture **SVG rotary knobs / switches** bound to [`ControlSchemaDef`](dnam_container_schema.md#3-user-definable-controls_schema-continuous-ranges--discrete-switches).
+   - **Uninterrupted Catalog Auditioning (`<ClientRouter />` + `nanostores`):** Enabling Astro's `<ClientRouter />` with `transition:persist="dnam-audio-engine"` on the persistent bottom player bar and sharing playback state via `nanostores` (`@nanostores/react`) ensures WebAudio `AudioWorklet` / `.opus` preview playback never cuts out when navigating between `/explore` search results, `/models/[slug]` details, and `/u/[handle]` creator profiles.
+   - **Per-Route `COOP` / `COEP` Isolation:** Middleware (`src/middleware.ts`) applies `Cross-Origin-Opener-Policy: same-origin` and `Cross-Origin-Embedder-Policy: credentialless` (or `require-corp`) on `/playground` and `/explore` so [`DnamWorkletNode`](monorepo_implementation_guide.md#42-packaged-nodejs--webaudio-engine-library-packagesjs--phase-2b) unlocks lock-free `SharedArrayBuffer` atomics and $60\text{ fps}$ `Seqlock` telemetry without breaking third-party OAuth or payment embeds on `/checkout/*`.
+   - **Authentication:** **`Better Auth`** (`drizzleAdapter(db, { provider: "mysql" })`) stores `users`, `sessions`, and `accounts` directly in the core relational schema while caching active sessions in **Cloudflare KV** for $< 1\text{ ms}$ edge verification.
+2. **Two-Bucket Cloudflare R2 Storage (`$0.00` Egress):**
+   - **Public CDN Bucket (`cdn.dnam.store`):** Serves public cover artwork (`.webp`), pre-rendered audio previews (`.opus`), and session-watermarked `Lite` (`10.5 KB`) WASM audition models directly through Cloudflare's edge cache.
+   - **Private Master Bucket (`dnam-masters-private`):** Stores canonical creator-signed `Ultra` master `.dnam` containers (`36.2 KB`). Accessible exclusively to the Astro Worker during ingestion (`PUT`) and personalized buyer download (`GET` $\to$ [`DnamContainer.withWatermark`](monorepo_implementation_guide.md#42-packaged-nodejs--webaudio-engine-library-packagesjs--phase-2b) in $< 0.2\text{ ms}$).
+3. **Write-Behind Counter Buffering via Cloudflare Queues:**
+   - Rather than executing synchronous `UPDATE models SET download_count = download_count + 1` row locks on every play or download, the Worker emits lightweight events to **Cloudflare Queues**, which flushes batched counter deltas and updates `trending_score` every 15 seconds.
+
+### 8.2 Horizontally Scalable `TiDB Cloud Starter` (`TiKV` + `TiFlash` `VECTOR(160)`) Production Schema
+
+The marketplace database runs on **`TiDB Cloud Starter`** accessed from Cloudflare Workers via `@tidbcloud/serverless` and **Drizzle ORM** (`drizzle-orm/tidb-serverless`, optionally fronted by **Cloudflare Hyperdrive** over MySQL protocol for edge query caching):
+- **Auto-Sharded Rust `TiKV` Row Engine:** Automatically splits tables and indexes into `96 MB` Raft key-value ranges across storage nodes with in-place clustered B+Tree updates and zero PostgreSQL-style heap `AUTOVACUUM` bloat.
+- **Skinny Catalog vs. Heavy Manifest Separation:** The `models` table scanned on `/explore` is kept strictly under `300 bytes/row` (zero large JSON blobs) with $O(\log N)$ keyset (cursor) pagination, MySQL 8.0 Multi-Valued JSON array indexing on `tag_ids`, and `FULLTEXT` keyword search, while multi-kilobyte `controls_schema` JSON and the `160-D` structural vector live in a 1:1 `model_manifests` table replicated to **`TiFlash`** for hardware-accelerated `VEC_COSINE_DISTANCE` `HNSW` clone detection.
+- **Zero-Parse Binary Keys & Watermarks:** Primary keys use 16-byte `BINARY(16)` UUIDs, and per-license buyer watermark parameters (`kappa_48_bin` = `192 B`, `q_buyer_bin` = `64 B`) are stored as fixed binary columns that map directly to `new Float32Array(buf)` in the edge Worker with zero JSON parsing overhead.
+
+```sql
+-- 1. USERS / CREATORS (Clustered on 16-byte UUID)
+CREATE TABLE users (
+  id              BINARY(16) NOT NULL,
+  handle          VARCHAR(64) NOT NULL,
+  display_name    VARCHAR(120) NOT NULL,
+  avatar_url      VARCHAR(512),
+  is_verified     BOOLEAN NOT NULL DEFAULT FALSE,
+  creator_pubkey  BINARY(32),                           -- 32-byte Ed25519 public key
+  model_count     INT UNSIGNED NOT NULL DEFAULT 0,
+  follower_count  INT UNSIGNED NOT NULL DEFAULT 0,
+  created_at      DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_users_handle (handle)
+);
+
+-- 2. SKINNY CATALOG TABLE (Scanned on /explore — < 300 B/row, O(log N) cursor pagination)
+CREATE TABLE models (
+  id                BINARY(16) NOT NULL,
+  creator_id        BINARY(16) NOT NULL,
+  slug              VARCHAR(160) NOT NULL,
+  title             VARCHAR(200) NOT NULL,
+  subtitle          VARCHAR(200),
+
+  -- Fast 1-byte integer facets for category pills & sidebar filters
+  format_kind       TINYINT UNSIGNED NOT NULL,          -- 1 = DNAM, 2 = NAM, 3 = IR
+  category_kind     TINYINT UNSIGNED NOT NULL,          -- 1 = Amp+Cab, 2 = Head, 3 = Cab, 4 = Pedal, 5 = Outboard, 6 = Spaces
+  capability_mask   SMALLINT UNSIGNED NOT NULL DEFAULT 0,
+  license_tier      TINYINT UNSIGNED NOT NULL DEFAULT 0,
+  price_cents       INT UNSIGNED NOT NULL DEFAULT 0,
+  tag_ids           JSON NOT NULL,                      -- Indexed via Multi-Valued B+Tree array index
+
+  -- Public R2 CDN URLs (cdn.dnam.store)
+  artwork_url       VARCHAR(512),
+  preview_audio_url VARCHAR(512),
+  lite_wasm_url     VARCHAR(512),
+
+  -- Pre-computed counters (flushed asynchronously via Cloudflare Queues)
+  download_count    BIGINT UNSIGNED NOT NULL DEFAULT 0,
+  capture_count     SMALLINT UNSIGNED NOT NULL DEFAULT 1,
+  comment_count     INT UNSIGNED NOT NULL DEFAULT 0,
+  rating_count      INT UNSIGNED NOT NULL DEFAULT 0,
+  rating_sum        BIGINT UNSIGNED NOT NULL DEFAULT 0,
+  trending_score    DOUBLE NOT NULL DEFAULT 0,
+
+  search_text       TEXT NOT NULL,
+  is_published      BOOLEAN NOT NULL DEFAULT TRUE,
+  created_at        DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_models_slug (slug),
+  KEY idx_models_trending (is_published, category_kind, format_kind, trending_score DESC, id DESC),
+  KEY idx_models_downloads (is_published, category_kind, format_kind, download_count DESC, id DESC),
+  KEY idx_models_newest (is_published, category_kind, format_kind, created_at DESC, id DESC),
+  KEY idx_models_creator (creator_id, is_published, created_at DESC, id DESC),
+  INDEX idx_models_tags ((CAST(tag_ids AS UNSIGNED ARRAY))),
+  FULLTEXT KEY idx_models_ft (title, subtitle, search_text)
+);
+
+-- 3. HEAVY MANIFEST & TIFLASH 160-D VECTOR TABLE (1:1 — Fetched on /models/[slug] & Stage B Ingestion)
+CREATE TABLE model_manifests (
+  model_id                BINARY(16) NOT NULL,
+  r2_master_key           VARCHAR(255) NOT NULL,
+  immutable_header_sha256 BINARY(32) NOT NULL,
+  master_arena_sha256     BINARY(32) NOT NULL,
+  dataset_manifest_sha256 BINARY(32) NOT NULL,
+  creator_signature       BINARY(64) NOT NULL,
+  structural_hash_160d    VECTOR(160) NOT NULL,         -- Stage B 160-D gauge-invariant vector
+  controls_schema_json    JSON NOT NULL,
+  gear_modeled_json       JSON NOT NULL,
+  royalty_splits_json     JSON NOT NULL,
+  PRIMARY KEY (model_id),
+  VECTOR INDEX idx_structural ((VEC_COSINE_DISTANCE(structural_hash_160d)))
+);
+ALTER TABLE model_manifests SET TIFLASH REPLICA 1;
+
+-- 4. RATINGS, COMMENTS & BUYER LICENSES (Auto-sharded across TiKV regions)
+CREATE TABLE model_ratings (
+  model_id    BINARY(16) NOT NULL,
+  user_id     BINARY(16) NOT NULL,
+  stars       TINYINT UNSIGNED NOT NULL,
+  created_at  DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (model_id, user_id)
+);
+
+CREATE TABLE model_comments (
+  model_id    BINARY(16) NOT NULL,
+  id          BINARY(16) NOT NULL,
+  parent_id   BINARY(16),
+  user_id     BINARY(16) NOT NULL,
+  body        TEXT NOT NULL,
+  upvotes     INT UNSIGNED NOT NULL DEFAULT 0,
+  created_at  DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (model_id, id),
+  KEY idx_comments_parent (model_id, parent_id, created_at ASC, id ASC)
+);
+
+CREATE TABLE licenses (
+  id            BINARY(16) NOT NULL,                    -- license_id embedded in Tardos watermark
+  model_id      BINARY(16) NOT NULL,
+  buyer_id      BINARY(16) NOT NULL,
+  license_tier  TINYINT UNSIGNED NOT NULL,
+  kappa_48_bin  BINARY(192) NOT NULL,                   -- 48 x float32 (zero-parse Float32Array)
+  q_buyer_bin   BINARY(64) NOT NULL,                    -- 16 x float32 (zero-parse Float32Array)
+  created_at    DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_license_buyer (model_id, buyer_id),
+  KEY idx_licenses_model (model_id)
+);
+
+-- 5. PAID CLOUD TRAINER WALLETS & SERVERLESS GPU JOBS (See training_and_iterative_resume.md §3)
+CREATE TABLE credit_wallets (
+  user_id           BINARY(16) NOT NULL PRIMARY KEY,
+  balance_credits   INT UNSIGNED NOT NULL DEFAULT 0,
+  reserved_credits  INT UNSIGNED NOT NULL DEFAULT 0,    -- Held atomically while training_jobs run
+  plan_tier         TINYINT UNSIGNED NOT NULL DEFAULT 0,-- 0 = Free, 1 = Creator Pro, 2 = Studio
+  updated_at        DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3)
+);
+
+CREATE TABLE training_jobs (
+  id                  BINARY(16) NOT NULL PRIMARY KEY,  -- UUIDv7 job ID
+  user_id             BINARY(16) NOT NULL,
+  parent_job_id       BINARY(16),                       -- Set when resuming from an existing .dnam-ckpt
+  job_kind            TINYINT UNSIGNED NOT NULL,        -- 1 = Static, 2 = Full Multi-Stem, 3 = Tier-1 Resume, 4 = Tier-2 Resume
+  status              TINYINT UNSIGNED NOT NULL,        -- 0 = Queued, 1 = Running, 2 = Completed, 3 = Failed
+  credits_held        SMALLINT UNSIGNED NOT NULL DEFAULT 0,
+  credits_charged     SMALLINT UNSIGNED NOT NULL DEFAULT 0,
+  stem_count          SMALLINT UNSIGNED NOT NULL,
+  esr_lite_db         FLOAT,
+  esr_full_db         FLOAT,
+  esr_ultra_db        FLOAT,
+  r2_dnam_key         VARCHAR(255),                     -- Private R2 output: "vault/<user>/<job>.dnam"
+  r2_ckpt_key         VARCHAR(255),                     -- Private R2 checkpoint: "vault/<user>/<job>.dnam-ckpt"
+  audit_report_json   JSON,                             -- Final 3-Phase Audit & Stem Prescription Report
+  gpu_duration_ms     INT UNSIGNED NOT NULL DEFAULT 0,
+  created_at          DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  completed_at        DATETIME(3),
+  KEY idx_jobs_user (user_id, created_at DESC, id DESC)
+);
+```
+
+

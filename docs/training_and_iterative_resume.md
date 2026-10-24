@@ -66,3 +66,57 @@ $$\mathbf{G}_{\text{updated}} = \sum_{s=1}^{S + S_{\text{new}}} \mathbf{G}_{\tex
 2. **Tier 2 — Warm-Started Backbone Fine-Tuning ($\sim 15\text{--}20\%$ Epochs, $4\times\text{--}6\times$ Faster):**
    - Automatically triggered only if the Tier-1 residual ESR on the newly added stem(s) exceeds the target threshold (e.g., adding a high-gain `"fuzz"` or `"ultra"` stem whose nonlinear saturation harmonics were absent from a clean-only checkpoint).
    - Re-solves the head from $\{\mathbf{G}_{\text{audio}}^{(s)}, \mathbf{C}_{\text{audio}}^{(s)}\}$ using the conservative ridge $\lambda_{\text{init}} = 10^{-3}\bar{\tau}$ in $5\text{ ms}$ (un-pinning the polish before `Adam` steps), runs 20–30 warm `Adam` epochs ($70\%$ new stem batch sampling + $30\%$ old stem replay), and re-runs the Stage-4 Cholesky Polish ($\lambda_{\text{polish}} = 10^{-6}\bar{\tau}$), updating both `.dnam` and `.dnam-ckpt`.
+
+---
+
+## 3. Paid Cloud Trainer & Serverless GPU Worker Architecture (`Modal` L4 $\to$ `RunPod` RTX 4090)
+
+`packages/trainer` (`dnam_trainer`) natively supports both local execution (`LocalTrainingBackend`) and cloud execution (`RemoteTrainingBackend`, `prepare_request_for_remote`, and `format_training_event_sse`). The **Paid Cloud Trainer** pairs the **Astro 5 + Cloudflare Workers + R2 + `TiDB Cloud Starter`** control plane ([`digital_marketplace_and_provenance.md` §8](digital_marketplace_and_provenance.md#8-layer-6-cloud-edge-infrastructure-tidb-cloud-starter-schema--r2-storage-topology)) with a **scale-to-zero Serverless GPU Worker** billed strictly per second of active training.
+
+### 3.1 End-to-End Cloud Training & Iterative Resume Lifecycle
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Client as Creator (Web Studio / `dnam train --backend remote`)
+    participant Worker as Astro Cloudflare Worker (`packages/web`)
+    participant TiDB as TiDB Cloud Starter (`credit_wallets` & `training_jobs`)
+    participant R2 as Cloudflare R2 (`dnam-stems-private` & `dnam-masters-private`)
+    participant GPU as Serverless GPU Worker (`Modal` L4 / `RunPod` RTX 4090)
+
+    Client->>Worker: 1. Submit `TrainingJobRequest` / `ResumeJobRequest` (`pcm_sha256` manifest)
+    Worker->>R2: 2. Check existing `stems/{pcm_sha256}.pcm` objects (deduplicate stems)
+    Worker-->>Client: 3. Return Presigned R2 `PUT` URLs ONLY for uncached `.pcm` stems
+    Client->>R2: 4. Direct upload of new `.pcm` stems ($0 Worker bandwidth)
+    Client->>Worker: 5. Start Job -> Atomic Credit Hold in TiDB (`status = 'queued'`)
+    Worker->>GPU: 6. Dispatch signed job payload to Serverless GPU (`dnam_trainer`)
+    GPU->>R2: 7. Pull `.pcm` stems & `.dnam-ckpt` (if resume) from R2 ($0 egress)
+    loop Stages 1–4 (`DnamTrainer.fit_job` / `resume_from_checkpoint`)
+        GPU-->>Client: 8. Stream `TrainingEvent` SSE (`esr_lite/full/ultra_db`, `AuditPhaseEvent`)
+    end
+    GPU->>R2: 9. Write `.dnam` (36.2 KB) + `.dnam-ckpt` (`Arena 3` `uplo='U'`) to R2 Vault
+    GPU->>Worker: 10. Completion Webhook -> Capture Held Credits in TiDB & Unlock Audition / 1-Click Publish
+```
+
+1. **Content-Addressed Stem Deduplication (`stems/{pcm_sha256}.pcm`):**
+   - `prepare_request_for_remote` converts every input and target stem into a content-addressed `RemoteBlobUriRef` keyed by its raw IEEE-754 PCM SHA-256 digest (`{pcm_sha256}.pcm`).
+   - Standard excitation signals (`input.wav`) and previously uploaded stems are deduplicated across sessions in $0\text{ ms}$. During a `.dnam-ckpt` resume (`ResumeJobRequest`), the client uploads **only the newly added stem(s)**; old audio stems are never re-uploaded or re-read because their `float64` sufficient statistics $\{\operatorname{pack}_{\text{U}}(\mathbf{G}_{\text{audio}}^{(s)}), \mathbf{C}_{\text{audio}}^{(s)}\}$ already reside in `Arena 3` of `.dnam-ckpt` in R2.
+2. **Sub-Second Cold Starts (`< 1.5 s` via GPU Memory Snapshots):**
+   - Unlike LLM or diffusion services that must load $10\text{--}40\text{ GB}$ of base weights on startup, `DnamTrainer` has **`0 MB` of pre-trained base weights**—every job initializes deterministically in Stage 1 ($< 200\text{ ms}$).
+   - Snapshot-restoring the Python 3.14 + PyTorch + `dnam-engine` CUDA context (`Modal` GPU Memory Snapshots / `RunPod FlashBoot`) boots workers from `0 -> 1` in **`< 1.5 seconds`** with **`$0.00/month` idle cost**.
+3. **Why IEEE-754 `float32` Sequential IIR Recurrences Favor `Modal` L4 (Launch) & `RunPod` RTX 4090 (Scale):**
+   - Per [`packages/trainer/CONTRIBUTING.md`](../packages/trainer/CONTRIBUTING.md), stateful IIR recurrences (`PolyADAA` $R_{\text{ac}} = 0.9993$, `SelectiveRgLru` $r \le 0.9995$, `ModulatedUfdn` Lagrange delay loop across $L = 32,768$ TBPTT steps) must execute in IEEE-754 `float32` (`torch.autocast(enabled=False)`), while channel width is compact (`C = 4, 8, 12`).
+   - Unlike Cloud TPUs—whose $128 \times 128$ systolic `MXU` sits $> 90\%$ idle on `C = 12` channels and incurs 2–5 minute GKE Autopilot node cold starts plus 20–60s XLA compilation stalls—high-clock CUDA GPUs keep `C = 12` state in thread registers and L2 SRAM:
+     - **Launch Tier — `Modal` (`NVIDIA L4`, `$0.000222/s`):** Includes **`$30/month` in recurring free compute credits** on the `$0/mo` Starter plan (covering **$\sim 2,200$ full multi-stem training jobs/month at `$0.00` cost**) with native FastAPI `StreamingResponse` SSE support.
+     - **High-Scale / Turbo Tier — `RunPod Serverless` (`NVIDIA RTX 4090`, `$0.000306/s` w/ `FlashBoot`):** Runs at **`2.52 GHz` boost clock with `82.6 TFLOPS` IEEE-754 `float32`** ($2.7\times$ L4's `30.3 TFLOPS`) and `1,008 GB/s` bandwidth, cutting multi-stem training wall-clock time in half ($\sim 25\text{ s}$) for **`~$0.008` per job** with `$0/mo` platform fees.
+
+### 3.2 Cloud Training Job Tiers, Execution Times & Unit Economics
+
+| Job Kind (`job_kind`) | Execution Target & Duration | Raw Cloud Compute Cost (`L4` / `RTX 4090`) | Credit Deduction Policy | Key Architectural Mechanism |
+| :--- | :---: | :---: | :--- | :--- |
+| **0. Pre-Flight Phase-1 Control Audit** (`audit_only=True`) | Worker CPU (`< 200 ms`) | **`$0.0000`** | **0 Credits (Free)** | Verifies stem coverage & preview clamps before spending credits. |
+| **1. Static Snapshot Rig** (`1` Stem, `0` Controls, `Lite`+`Full`+`Ultra`) | Serverless GPU (`~10–18 s`) | **`~$0.003`** (`0.3¢`) | **2 Credits** | Step-0 `float64` Wiener-Hopf warm-start reaches `-25.4 dB` ESR before Epoch 1. |
+| **2. Full Parametric Multi-Stem Rig** (`Range` & `Switch` Controls) | Serverless GPU (`~25 s` on 4090 / `~55 s` on L4) | **`~$0.008 – $0.012`** (`~1¢`) | **10 Credits** | Trains all 3 slimmable tiers (`Lite`, `Full`, `Ultra`) in one pass + saves `.dnam-ckpt`. |
+| **3. Tier-1 `.dnam-ckpt` Stem Expansion** ([§2](#two-tier-resume-execution-dnam-train---resume-modeldnam-ckpt---add-stems-)) | Serverless GPU (`< 5 s`) | **`~$0.001`** (`0.1¢`) | **1 Credit** *(or Free on Pro)* | Reuses `Arena 3` `uplo='U'` Gram matrices $\{\operatorname{pack}_{\text{U}}(\mathbf{G}_{\text{audio}}^{(s)}), \mathbf{C}_{\text{audio}}^{(s)}\}$ (`0` old-stem audio passes). |
+| **4. Tier-2 `.dnam-ckpt` Backbone Fine-Tune** (`15–20%` Warm Epochs) | Serverless GPU (`~12–20 s`) | **`~$0.004`** (`0.4¢`) | **3 Credits** | Warm-started from `.dnam-ckpt` + Stage-4 Cholesky Polish (`-47.6 dB` ESR). |
+
