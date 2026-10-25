@@ -40,6 +40,8 @@ tasks:
       - "ruff"
       - "format"
       - "packages/trainer"
+    deps:
+      - "python:build"
     options:
       runFromWorkspaceRoot: true
       cache: false
@@ -56,6 +58,8 @@ tasks:
       - "format"
       - "--check"
       - "packages/trainer"
+    deps:
+      - "python:build"
     inputs:
       - "pyproject.toml"
       - "src/**/*"
@@ -76,6 +80,8 @@ tasks:
       - "ruff"
       - "check"
       - "packages/trainer"
+    deps:
+      - "python:build"
     inputs:
       - "pyproject.toml"
       - "src/**/*"

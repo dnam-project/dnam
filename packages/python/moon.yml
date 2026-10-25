@@ -20,6 +20,8 @@ tasks:
   format:
     type: "run"
     script: "uv run --no-sync ruff format packages/python && cargo fmt --package dnam-python"
+    deps:
+      - "~:build"
     options:
       runFromWorkspaceRoot: true
       cache: false
@@ -29,6 +31,8 @@ tasks:
 
   format-check:
     script: "uv run --no-sync ruff format --check packages/python && cargo fmt --package dnam-python -- --check"
+    deps:
+      - "~:build"
     inputs:
       - "Cargo.toml"
       - "pyproject.toml"
@@ -46,6 +50,8 @@ tasks:
 
   lint:
     script: "uv run --no-sync ruff check packages/python && cargo clippy --package dnam-python --all-targets -- -D warnings"
+    deps:
+      - "~:build"
     inputs:
       - "Cargo.toml"
       - "pyproject.toml"
@@ -74,6 +80,8 @@ tasks:
       - "check"
       - "--min-severity=warn"
       - "packages/python"
+    deps:
+      - "~:build"
     inputs:
       - "pyproject.toml"
       - "src/**/*"
@@ -90,27 +98,22 @@ tasks:
     type: "build"
     command: "uv"
     args:
-      - "run"
-      - "--no-sync"
-      - "maturin"
-      - "develop"
-      - "--release"
-      - "--manifest-path"
-      - "packages/python/Cargo.toml"
+      - "sync"
+      - "--locked"
     inputs:
       - "Cargo.toml"
       - "pyproject.toml"
       - "rust/**/*"
       - "src/**/*.py"
       - "src/**/*.pyi"
+      - "/.cargo/config.toml"
       - "/Cargo.toml"
       - "/Cargo.lock"
       - "/pyproject.toml"
       - "/uv.lock"
       - "/packages/engine/Cargo.toml"
       - "/packages/engine/src/**/*"
-    outputs:
-      - "src/dnam_engine/_native.*"
+      - "/packages/trainer/pyproject.toml"
     options:
       runFromWorkspaceRoot: true
       mutex: "cargo"

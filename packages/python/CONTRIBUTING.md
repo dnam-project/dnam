@@ -29,13 +29,10 @@ Consult [`AGENTS.md`](AGENTS.md) for the module-to-spec discovery table:
 
 ## 2. Development Setup & Editable Release Builds
 
-`packages/python/pyproject.toml` sets `editable-profile = "release"` under `[tool.maturin]`, so `uv sync` and `uv run` automatically compile `dnam_engine._native` with `--release` optimizations:
+`packages/python/pyproject.toml` sets `editable-profile = "release"` under `[tool.maturin]`, so `moon` (`uv run --locked`) automatically syncs `.venv` and compiles `dnam_engine._native` with `--release` optimizations:
 
 ```bash
-# Sync dependencies and build the optimized editable wheel
-uv sync
-
-# Or explicitly recompile the PyO3 extension via moon
+# Explicitly recompile the PyO3 extension via moon
 moon run python:build
 ```
 

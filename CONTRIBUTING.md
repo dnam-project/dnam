@@ -48,10 +48,8 @@ DNAM uses **`mise`** ([`mise.toml`](mise.toml)) to provision toolchains and **`m
 ### 3.1 Setup & Local Development (CLI, Desktop Studio UI & React Cosmos)
 
 ```bash
-# Install pinned toolchains (moon, uv, node, pnpm, python, rust) and workspace dependencies
+# Install pinned toolchains (moon, uv, node, pnpm, python, rust)
 mise install
-pnpm install
-uv sync
 
 # Run the unified `dnam` CLI (`init`, `model`, `capture`, `train`, `inspect`, `studio`)
 moon run studio:cli -- --help
