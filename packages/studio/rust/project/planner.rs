@@ -362,3 +362,247 @@ fn make_step(
         already_captured,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::project::manifest::{
+        CaptureSettings, ControlRangeSpec, ControlSwitchOptionSpec, ControlSwitchSpec,
+    };
+    use dnam_engine::container::{ARENA_OFFSET_ULTRA_END, build_dnam_container};
+    use dnam_engine::schema::{AuditReport, ControlSchemaDef, DnamJsonHeader};
+    use proptest::prelude::*;
+    use std::env;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(32))]
+
+        #[test]
+        fn prop_build_capture_plan_normalized_bounds_and_tiers(
+            n_ranges in 0_usize..=5,
+            n_switches in 0_usize..=3,
+            include_corners in proptest::bool::ANY,
+            default_fracs in proptest::collection::vec(0.0_f32..=1.0_f32, 5),
+        ) {
+            let ranges: Vec<ControlRangeSpec> = (0..n_ranges)
+                .map(|i| {
+                    let def = default_fracs[i] * 10.0;
+                    ControlRangeSpec {
+                        id: format!("r_{i}"),
+                        label: format!("R{i}"),
+                        min: 0.0,
+                        max: 10.0,
+                        default_value: def,
+                        unit: None,
+                    }
+                })
+                .collect();
+            let switches: Vec<ControlSwitchSpec> = (0..n_switches)
+                .map(|i| ControlSwitchSpec {
+                    id: format!("sw_{i}"),
+                    label: format!("SW{i}"),
+                    options: vec![
+                        ControlSwitchOptionSpec { index: 0, label: "a".to_string() },
+                        ControlSwitchOptionSpec { index: 1, label: "b".to_string() },
+                    ],
+                    default_index: 0,
+                })
+                .collect();
+            let model = ModelManifest {
+                model_id: "prop_m".to_string(),
+                title: "Prop".to_string(),
+                tier: "Full".to_string(),
+                description: String::new(),
+                topology: "auto".to_string(),
+                output_mode: "stereo".to_string(),
+                capture: CaptureSettings::default(),
+                ranges,
+                switches,
+                presets: Vec::new(),
+                stems: Vec::new(),
+            };
+
+            let plan = build_capture_plan(&model, include_corners);
+            prop_assert!(!plan.steps.is_empty());
+            prop_assert_eq!(plan.steps[0].tier, CaptureTier::StarCenter);
+            for step in &plan.steps {
+                prop_assert_eq!(step.normalized_ranges.len(), n_ranges);
+                prop_assert_eq!(step.switches.len(), n_switches);
+                for &u in step.normalized_ranges.values() {
+                    prop_assert!((0.0..=1.0).contains(&u));
+                }
+                for &idx in step.switches.values() {
+                    prop_assert!(idx < 2);
+                }
+            }
+            if include_corners && n_ranges >= 2 {
+                prop_assert!(plan.steps.iter().any(|s| s.tier == CaptureTier::CornerAnchor));
+            }
+        }
+    }
+
+    fn temp_dir(tag: &str) -> std::path::PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let dir = env::temp_dir().join(format!("dnam_planner_unit_{tag}_{nanos}"));
+        let _ = fs::create_dir_all(&dir);
+        dir
+    }
+
+    fn sample_model() -> ModelManifest {
+        ModelManifest {
+            model_id: "amp".to_string(),
+            title: "Amp".to_string(),
+            tier: "Full".to_string(),
+            description: String::new(),
+            topology: "auto".to_string(),
+            output_mode: "stereo".to_string(),
+            capture: CaptureSettings::default(),
+            ranges: vec![
+                ControlRangeSpec {
+                    id: "gain".to_string(),
+                    label: "Gain".to_string(),
+                    min: 0.0,
+                    max: 10.0,
+                    default_value: 5.0,
+                    unit: None,
+                },
+                ControlRangeSpec {
+                    id: "tone".to_string(),
+                    label: "Tone".to_string(),
+                    min: 0.0,
+                    max: 10.0,
+                    default_value: 10.0,
+                    unit: None,
+                },
+            ],
+            switches: vec![ControlSwitchSpec {
+                id: "bright".to_string(),
+                label: "Bright".to_string(),
+                options: vec![
+                    ControlSwitchOptionSpec {
+                        index: 0,
+                        label: "off".to_string(),
+                    },
+                    ControlSwitchOptionSpec {
+                        index: 1,
+                        label: "on".to_string(),
+                    },
+                ],
+                default_index: 0,
+            }],
+            presets: Vec::new(),
+            stems: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn planner_builds_star_switch_corner_and_deltas() {
+        let empty_model = ModelManifest {
+            model_id: "unity".to_string(),
+            title: "Unity".to_string(),
+            tier: "Full".to_string(),
+            description: String::new(),
+            topology: "auto".to_string(),
+            output_mode: "stereo".to_string(),
+            capture: CaptureSettings::default(),
+            ranges: Vec::new(),
+            switches: Vec::new(),
+            presets: Vec::new(),
+            stems: Vec::new(),
+        };
+        let unity_plan = build_capture_plan(&empty_model, false);
+        assert_eq!(unity_plan.steps.len(), 1);
+        assert_eq!(unity_plan.steps[0].prompt, "Capture unity reference stem");
+
+        let model = sample_model();
+        let plan = build_capture_plan(&model, true);
+        assert!(plan.steps.iter().any(|s| s.tier == CaptureTier::StarCenter));
+        assert!(plan.steps.iter().any(|s| s.tier == CaptureTier::StarAxis));
+        assert!(
+            plan.steps
+                .iter()
+                .any(|s| s.tier == CaptureTier::SwitchState)
+        );
+        assert!(
+            plan.steps
+                .iter()
+                .any(|s| s.tier == CaptureTier::CornerAnchor)
+        );
+
+        let d0 = compute_control_deltas(
+            &model,
+            None,
+            None,
+            &plan.steps[0].normalized_ranges,
+            &plan.steps[0].switches,
+        );
+        assert_eq!(d0.len(), 3);
+        assert!(d0.iter().all(|d| d.changed && d.previous_value.is_none()));
+
+        let d1 = compute_control_deltas(
+            &model,
+            Some(&plan.steps[0].normalized_ranges),
+            Some(&plan.steps[0].switches),
+            &plan.steps[1].normalized_ranges,
+            &plan.steps[1].switches,
+        );
+        assert!(d1.iter().any(|d| d.changed));
+        assert!(d1.iter().any(|d| !d.changed));
+    }
+
+    #[test]
+    fn extract_checkpoint_prescriptions_parses_clamp_warning_and_audit_report() {
+        let dir = temp_dir("presc");
+        let model = sample_model();
+        let missing = dir.join("missing.dnam-ckpt");
+        assert!(extract_checkpoint_prescriptions(&missing, &model).is_empty());
+
+        let bad = dir.join("bad.dnam-ckpt");
+        fs::write(&bad, b"not a container").expect("write bad");
+        assert!(extract_checkpoint_prescriptions(&bad, &model).is_empty());
+
+        let mut header = DnamJsonHeader::default_reference(false);
+        let c1: ControlSchemaDef = serde_json::from_value(serde_json::json!({
+            "id": "gain",
+            "name": "Gain",
+            "type": "range",
+            "declared_range": [0.0, 10.0],
+            "safe_clamped_range": [0.0, 5.0],
+            "default": 5.0,
+            "clamp_warning": "Capture gain=10.0"
+        }))
+        .expect("c1");
+        header.controls_schema = vec![c1];
+        header.audit_report = Some(AuditReport {
+            phase1_clamps: vec!["CLAMP-RANGE".to_string()],
+            phase2_rail_warnings: Vec::new(),
+            phase3_clamps: Vec::new(),
+            prescriptions: vec!["Capture stem at (gain=8.0, bright='on')".to_string()],
+        });
+
+        let arena = vec![0u8; ARENA_OFFSET_ULTRA_END as usize];
+        let bytes =
+            build_dnam_container(&mut header, &arena, &arena, false).expect("build container");
+        let ckpt_path = dir.join("test.dnam-ckpt");
+        fs::write(&ckpt_path, &bytes).expect("write ckpt");
+
+        let presc = extract_checkpoint_prescriptions(&ckpt_path, &model);
+        assert_eq!(presc.len(), 2);
+        assert!((presc[0].0["gain"] - 1.0).abs() < 1e-5);
+        assert!((presc[1].0["gain"] - 0.8).abs() < 1e-5);
+        assert_eq!(presc[1].1["bright"], 1);
+
+        let plan_with_presc = build_capture_plan_with_prescriptions(&model, false, &presc);
+        assert!(
+            plan_with_presc
+                .steps
+                .iter()
+                .any(|s| s.tier == CaptureTier::Prescribed)
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+}

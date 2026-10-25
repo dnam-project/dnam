@@ -288,6 +288,19 @@ fn test_cli_end_to_end_workflow_and_ipc_handler() {
         .is_err()
     );
 
+    // End-to-end binary execution check (`dnam` CLI entrypoint in `main.rs`)
+    let bin_ok = std::process::Command::new(env!("CARGO_BIN_EXE_dnam"))
+        .args(["--workspace", &ws, "studio", "--headless-check"])
+        .output()
+        .expect("run dnam binary ok");
+    assert!(bin_ok.status.success());
+
+    let bin_err = std::process::Command::new(env!("CARGO_BIN_EXE_dnam"))
+        .args(["--workspace", "/nonexistent_ws_xyz_999", "status"])
+        .output()
+        .expect("run dnam binary err");
+    assert!(!bin_err.status.success());
+
     let _ = fs::remove_dir_all(&dir);
 }
 

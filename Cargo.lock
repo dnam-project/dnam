@@ -1387,6 +1387,7 @@ dependencies = [
  "dnam-engine",
  "ed25519-dalek",
  "ndarray",
+ "proptest",
  "realfft",
  "serde",
  "serde_json",

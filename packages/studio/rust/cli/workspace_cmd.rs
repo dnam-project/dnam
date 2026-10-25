@@ -626,3 +626,313 @@ pub fn run_studio(workspace: &Path, headless_check: bool) -> StudioResult<String
     });
     Ok(serde_json::to_string_pretty(&payload)?)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::capture::{generate_excitation_signal, write_wav_24bit};
+    use dnam_engine::container::{ARENA_OFFSET_ULTRA_END, build_dnam_container};
+    use dnam_engine::schema::DnamJsonHeader;
+    use std::env;
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_dir(tag: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let dir = env::temp_dir().join(format!("dnam_wscli_unit_{tag}_{nanos}"));
+        let _ = fs::create_dir_all(&dir);
+        dir
+    }
+
+    #[test]
+    fn workspace_cli_handlers_cover_model_control_preset_stem_inspect_and_render() {
+        let dir = temp_dir("ws_cli");
+        let ws = dir.as_path();
+
+        let init_out = run_init(ws, "MyWS", "Author", Some("init_mod")).expect("run_init");
+        assert!(init_out.contains("MyWS"));
+
+        let st_out = run_status(ws).expect("run_status");
+        assert!(st_out.contains("init_mod"));
+
+        // Model Add (empty title fallback + inline range & switch), List, Show, Update, Remove
+        run_model(
+            ws,
+            &ModelAction::Add {
+                id: "amp".to_string(),
+                title: String::new(),
+                tier: "Full".to_string(),
+                ranges: vec!["gain=0..10:5".to_string()],
+                switches: vec!["voice=clean,lead:clean".to_string()],
+            },
+        )
+        .expect("model add");
+        assert!(
+            run_model(ws, &ModelAction::List)
+                .expect("list")
+                .contains("amp")
+        );
+        assert!(
+            run_model(
+                ws,
+                &ModelAction::Show {
+                    id: "amp".to_string()
+                }
+            )
+            .expect("show")
+            .contains("gain")
+        );
+        run_model(
+            ws,
+            &ModelAction::Update {
+                id: "amp".to_string(),
+                title: Some("Amp V2".to_string()),
+                tier: Some("Ultra".to_string()),
+                description: Some("Updated".to_string()),
+                output_mode: Some("mono".to_string()),
+                topology: Some("core1_only".to_string()),
+            },
+        )
+        .expect("model update");
+        run_model(
+            ws,
+            &ModelAction::Remove {
+                id: "init_mod".to_string(),
+                delete_files: true,
+            },
+        )
+        .expect("model remove");
+
+        // Control Add, AddRange, AddSwitch, List, Update, Remove
+        assert!(
+            run_control(
+                ws,
+                &ControlAction::Add {
+                    model: "amp".to_string(),
+                    range: None,
+                    switch: None,
+                }
+            )
+            .is_err()
+        );
+        run_control(
+            ws,
+            &ControlAction::Add {
+                model: "amp".to_string(),
+                range: Some("bass=0..10:5".to_string()),
+                switch: None,
+            },
+        )
+        .expect("control add range");
+        run_control(
+            ws,
+            &ControlAction::Add {
+                model: "amp".to_string(),
+                range: None,
+                switch: Some("pad=off,on:off".to_string()),
+            },
+        )
+        .expect("control add switch");
+        run_control(
+            ws,
+            &ControlAction::AddRange {
+                model: "amp".to_string(),
+                spec: "treble=0..10:5".to_string(),
+            },
+        )
+        .expect("control add-range");
+        run_control(
+            ws,
+            &ControlAction::AddSwitch {
+                model: "amp".to_string(),
+                spec: "bright=off,on:off".to_string(),
+            },
+        )
+        .expect("control add-switch");
+        assert!(
+            run_control(
+                ws,
+                &ControlAction::List {
+                    model: "amp".to_string()
+                }
+            )
+            .expect("control list")
+            .contains("treble")
+        );
+        run_control(
+            ws,
+            &ControlAction::Update {
+                model: "amp".to_string(),
+                id: "treble".to_string(),
+                label: Some("Treble2".to_string()),
+                min: Some(1.0),
+                max: Some(9.0),
+                default: Some("4.0".to_string()),
+                options: None,
+            },
+        )
+        .expect("control update");
+        run_control(
+            ws,
+            &ControlAction::Remove {
+                model: "amp".to_string(),
+                id: "bright".to_string(),
+            },
+        )
+        .expect("control remove");
+
+        // Preset Add, List, Update, Remove + assignment error branches
+        run_preset(
+            ws,
+            &PresetAction::Add {
+                model: "amp".to_string(),
+                id: "p1".to_string(),
+                label: "P1".to_string(),
+                set_controls: vec!["gain=7.5,voice=lead,pad=1,extra_num=2.0".to_string()],
+            },
+        )
+        .expect("preset add");
+        assert!(
+            run_preset(
+                ws,
+                &PresetAction::List {
+                    model: "amp".to_string()
+                }
+            )
+            .expect("preset list")
+            .contains("p1")
+        );
+        run_preset(
+            ws,
+            &PresetAction::Update {
+                model: "amp".to_string(),
+                id: "p1".to_string(),
+                label: Some("P1-Updated".to_string()),
+                set_controls: vec!["gain=8.0".to_string()],
+            },
+        )
+        .expect("preset update");
+        assert!(
+            run_preset(
+                ws,
+                &PresetAction::Update {
+                    model: "amp".to_string(),
+                    id: "p1".to_string(),
+                    label: None,
+                    set_controls: vec!["bad_token".to_string()],
+                }
+            )
+            .is_err()
+        );
+        assert!(
+            run_preset(
+                ws,
+                &PresetAction::Update {
+                    model: "amp".to_string(),
+                    id: "p1".to_string(),
+                    label: None,
+                    set_controls: vec!["gain=nan_val".to_string()],
+                }
+            )
+            .is_err()
+        );
+        assert!(
+            run_preset(
+                ws,
+                &PresetAction::Update {
+                    model: "amp".to_string(),
+                    id: "p1".to_string(),
+                    label: None,
+                    set_controls: vec!["voice=nonexistent".to_string()],
+                }
+            )
+            .is_err()
+        );
+        run_preset(
+            ws,
+            &PresetAction::Remove {
+                model: "amp".to_string(),
+                id: "p1".to_string(),
+            },
+        )
+        .expect("preset remove");
+
+        // Stem Add, List, Update, Remove
+        let dry_sig = generate_excitation_signal(48_000, 1024);
+        let ext_wet = ws.join("ext_wet.wav");
+        write_wav_24bit(&ext_wet, &dry_sig, 48_000, 1).expect("write ext_wet");
+        run_stem(
+            ws,
+            &StemAction::Add {
+                model: "amp".to_string(),
+                id: "s_ext".to_string(),
+                wet_wav: ext_wet,
+                set_controls: vec!["gain=6.0,voice=lead".to_string()],
+            },
+        )
+        .expect("stem add");
+        assert!(
+            run_stem(
+                ws,
+                &StemAction::List {
+                    model: "amp".to_string()
+                }
+            )
+            .expect("stem list")
+            .contains("s_ext")
+        );
+        run_stem(
+            ws,
+            &StemAction::Update {
+                model: "amp".to_string(),
+                id: "s_ext".to_string(),
+                set_controls: vec!["gain=9.0".to_string()],
+            },
+        )
+        .expect("stem update");
+        run_stem(
+            ws,
+            &StemAction::Remove {
+                model: "amp".to_string(),
+                id: "s_ext".to_string(),
+                delete_files: true,
+            },
+        )
+        .expect("stem remove");
+
+        // Inspect & Render
+        let mut header = DnamJsonHeader::default_reference(false);
+        let arena = vec![0u8; ARENA_OFFSET_ULTRA_END as usize];
+        let c_bytes =
+            build_dnam_container(&mut header, &arena, &arena, false).expect("build container");
+        let c_path = ws.join("test.dnam");
+        std::fs::write(&c_path, &c_bytes).expect("write dnam");
+        assert!(
+            run_inspect(&c_path)
+                .expect("inspect")
+                .contains("Reference DNAM Model")
+        );
+        let out_wav = ws.join("rendered.wav");
+        let render_msg = run_render(
+            &c_path,
+            &ws.join("models/amp/stems/input.wav"),
+            &out_wav,
+            "lite",
+            None,
+            &["gain=5.0".to_string()],
+        )
+        .expect("render");
+        assert!(render_msg.contains("Rendered 24-bit WAV"));
+
+        // Studio headless check
+        assert!(
+            run_studio(ws, true)
+                .expect("studio")
+                .contains("dnam-studio")
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+}

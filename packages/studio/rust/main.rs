@@ -3,15 +3,17 @@
 #![forbid(unsafe_code)]
 
 use std::process::ExitCode;
+#[cfg(all(feature = "desktop", not(coverage)))]
 use std::sync::Mutex;
 
 use clap::Parser;
 use dnam_studio::cli::{DnamCli, DnamCommand, execute_cli};
+#[cfg(all(feature = "desktop", not(coverage)))]
 use dnam_studio::ipc::{
     StudioIpcHandler, StudioIpcRequest, StudioIpcResponse, parse_dnam_deep_link,
 };
 
-#[cfg(feature = "desktop")]
+#[cfg(all(feature = "desktop", not(coverage)))]
 #[tauri::command]
 fn studio_ipc(
     state: tauri::State<'_, Mutex<StudioIpcHandler>>,
@@ -22,7 +24,7 @@ fn studio_ipc(
     guard.handle(&req, None).map_err(|e| e.to_string())
 }
 
-#[cfg(feature = "desktop")]
+#[cfg(all(feature = "desktop", not(coverage)))]
 #[tauri::command]
 fn prepare_studio_export() -> Result<String, String> {
     eprintln!("[DNAM Studio IPC] prepare_studio_export called");
@@ -36,7 +38,7 @@ fn prepare_studio_export() -> Result<String, String> {
     Ok(path.display().to_string())
 }
 
-#[cfg(feature = "desktop")]
+#[cfg(all(feature = "desktop", not(coverage)))]
 #[tauri::command]
 fn prepare_studio_report(app: tauri::AppHandle) -> Result<String, String> {
     use tauri_plugin_opener::OpenerExt;
@@ -77,7 +79,7 @@ fn prepare_studio_report(app: tauri::AppHandle) -> Result<String, String> {
     Ok(path_str)
 }
 
-#[cfg(feature = "desktop")]
+#[cfg(all(feature = "desktop", not(coverage)))]
 #[tauri::command]
 fn notify_studio_event(
     app: tauri::AppHandle,
@@ -105,7 +107,7 @@ fn notify_studio_event(
         .map_err(|e| e.to_string())
 }
 
-#[cfg(feature = "desktop")]
+#[cfg(all(feature = "desktop", not(coverage)))]
 #[tauri::command]
 fn check_studio_update(app: tauri::AppHandle) -> Result<String, String> {
     use tauri_plugin_updater::UpdaterExt;
@@ -117,7 +119,7 @@ fn check_studio_update(app: tauri::AppHandle) -> Result<String, String> {
     })
 }
 
-#[cfg(feature = "desktop")]
+#[cfg(all(feature = "desktop", not(coverage)))]
 fn launch_desktop_window() -> Result<(), String> {
     use tauri::{Emitter, Manager};
     use tauri_plugin_deep_link::DeepLinkExt;
@@ -166,15 +168,15 @@ fn launch_desktop_window() -> Result<(), String> {
 
 fn main() -> ExitCode {
     let cli = DnamCli::parse();
-    let should_open_desktop = matches!(
+    let _should_open_desktop = matches!(
         cli.command,
         Some(DnamCommand::Studio {
             headless_check: false
         })
     ) || (cli.command.is_none() && std::env::args_os().len() == 1);
 
-    #[cfg(feature = "desktop")]
-    if should_open_desktop {
+    #[cfg(all(feature = "desktop", not(coverage)))]
+    if _should_open_desktop {
         if let Err(err) = launch_desktop_window() {
             eprintln!("Error launching DNAM Studio window: {err}");
             return ExitCode::FAILURE;

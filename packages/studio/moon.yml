@@ -252,6 +252,33 @@ tasks:
     tags:
       - "e2e"
 
+  coverage-rust:
+    type: "run"
+    command: "cargo"
+    args:
+      - "llvm-cov"
+      - "--package"
+      - "dnam-studio"
+      - "--fail-under-lines"
+      - "95"
+    inputs:
+      - "Cargo.toml"
+      - "build.rs"
+      - "tauri.conf.json"
+      - "capabilities/**/*"
+      - "isolation/**/*"
+      - "rust/**/*"
+      - "tests/**/*.rs"
+      - "/Cargo.toml"
+      - "/Cargo.lock"
+      - "/packages/engine/Cargo.toml"
+      - "/packages/engine/src/**/*"
+    options:
+      mutex: "cargo"
+      runInCI: "skip"
+    tags:
+      - "coverage"
+
   coverage:
     type: "run"
     command: "pnpm"
@@ -262,6 +289,7 @@ tasks:
       - "--coverage"
     deps:
       - "~:build"
+      - "~:coverage-rust"
     inputs:
       - "package.json"
       - "tsconfig*.json"

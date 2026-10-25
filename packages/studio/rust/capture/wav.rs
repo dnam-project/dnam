@@ -157,3 +157,108 @@ fn decode_pcm_payload(payload: &[u8], bits_per_sample: u16) -> StudioResult<Vec<
         ))),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::env;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use proptest::prelude::*;
+
+    use super::*;
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(32))]
+
+        #[test]
+        fn prop_wav_24bit_roundtrip_and_canonical_sha256(
+            samples in proptest::collection::vec(-0.999_f32..0.999_f32, 4..128),
+            flip_idx in 0_usize..128,
+        ) {
+            // 1. Canonical -0.0 / +0.0 / NaN invariance in compute_pcm_sha256
+            let mut pos_zero = samples.clone();
+            let mut neg_zero = samples.clone();
+            let mut nan_zero = samples.clone();
+            let idx = flip_idx % samples.len();
+            pos_zero[idx] = 0.0;
+            neg_zero[idx] = -0.0;
+            nan_zero[idx] = f32::NAN;
+            prop_assert_eq!(compute_pcm_sha256(&pos_zero), compute_pcm_sha256(&neg_zero));
+            prop_assert_eq!(compute_pcm_sha256(&pos_zero), compute_pcm_sha256(&nan_zero));
+
+            // 2. 24-bit WAV encode/decode quantization error <= 2 LSB (2 / 8_388_608)
+            let scaled: Vec<u8> = samples
+                .iter()
+                .flat_map(|&s| {
+                    let q = (s.clamp(-1.0, 0.999_999_9) * 8_388_607.0).round() as i32;
+                    let b = q.to_le_bytes();
+                    [b[0], b[1], b[2]]
+                })
+                .collect();
+            let decoded = decode_pcm_payload(&scaled, 24).expect("decode 24-bit payload");
+            prop_assert_eq!(decoded.len(), samples.len());
+            for (&orig, &dec) in samples.iter().zip(decoded.iter()) {
+                prop_assert!((orig - dec).abs() <= 2.5e-7, "orig={orig}, dec={dec}");
+            }
+        }
+    }
+
+    #[test]
+    fn test_wav_16_24_32bit_io_and_error_branches() {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let dir = env::temp_dir().join(format!("dnam_wav_unit_{nanos}"));
+        let _ = fs::create_dir_all(&dir);
+
+        // Canonical -0.0 and NaN handling in compute_pcm_sha256
+        let h1 = compute_pcm_sha256(&[0.0, 0.5]);
+        let h2 = compute_pcm_sha256(&[-0.0, 0.5]);
+        let h3 = compute_pcm_sha256(&[f32::NAN, 0.5]);
+        assert_eq!(h1, h2);
+        assert_eq!(h1, h3);
+
+        // 0 channels error
+        assert!(write_wav_24bit(dir.join("bad.wav"), &[0.0], 48_000, 0).is_err());
+
+        // 24-bit write & read
+        let p24 = dir.join("m24.wav");
+        let sig = vec![0.0, 0.25, -0.5, 0.75, -1.0];
+        write_wav_24bit(&p24, &sig, 48_000, 1).expect("write 24-bit");
+        let r24 = read_wav(&p24).expect("read 24-bit");
+        assert_eq!(r24.sample_rate_hz, 48_000);
+        assert_eq!(r24.channels, 1);
+        assert_eq!(r24.samples.len(), 5);
+
+        // 16-bit decode
+        let decoded_16 = decode_pcm_payload(&0x4000_i16.to_le_bytes(), 16).expect("decode 16");
+        assert!((decoded_16[0] - 0.5).abs() < 1e-4);
+
+        // 32-bit decode
+        let decoded_32 = decode_pcm_payload(&0x4000_0000_i32.to_le_bytes(), 32).expect("decode 32");
+        assert!((decoded_32[0] - 0.5).abs() < 1e-5);
+
+        // Unsupported bit depth
+        assert!(decode_pcm_payload(&[0, 1, 2, 3], 8).is_err());
+
+        // Invalid RIFF header
+        let bad_hdr = dir.join("bad_hdr.wav");
+        fs::write(&bad_hdr, b"NOT_A_WAV").expect("write bad hdr");
+        assert!(read_wav(&bad_hdr).is_err());
+
+        // Valid RIFF/WAVE header but missing data chunk
+        let mut no_data = vec![0_u8; 44];
+        no_data[0..4].copy_from_slice(b"RIFF");
+        no_data[8..12].copy_from_slice(b"WAVE");
+        no_data[12..16].copy_from_slice(b"fmt ");
+        no_data[16..20].copy_from_slice(&16_u32.to_le_bytes());
+        no_data[36..40].copy_from_slice(b"JUNK");
+        no_data[40..44].copy_from_slice(&0_u32.to_le_bytes());
+        let no_data_path = dir.join("no_data.wav");
+        fs::write(&no_data_path, &no_data).expect("write no_data");
+        assert!(read_wav(&no_data_path).is_err());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+}

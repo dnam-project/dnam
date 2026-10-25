@@ -230,8 +230,9 @@ pub fn align_hardware_latency(
     let mut best_corr = f32::NEG_INFINITY;
     for (idx, &norm_c) in corr_map.iter().enumerate() {
         let lag = (idx as i32) - (max_lag as i32);
-        if norm_c > best_corr {
-            best_corr = norm_c;
+        let abs_c = norm_c.abs();
+        if abs_c > best_corr {
+            best_corr = abs_c;
             best_lag = lag;
         }
     }
@@ -244,15 +245,15 @@ pub fn align_hardware_latency(
         let best_idx = (best_lag + (max_lag as i32)) as usize;
         let mut frac = 0.0_f32;
         if best_idx > 0 && best_idx + 1 < corr_map.len() {
-            let y_prev = corr_map[best_idx - 1];
-            let y_curr = corr_map[best_idx];
-            let y_next = corr_map[best_idx + 1];
+            let y_prev = corr_map[best_idx - 1].abs();
+            let y_curr = corr_map[best_idx].abs();
+            let y_next = corr_map[best_idx + 1].abs();
             let denom = y_prev - 2.0 * y_curr + y_next;
             if denom.abs() > 1e-9 {
                 frac = (0.5 * (y_prev - y_next) / denom).clamp(-0.5, 0.5);
             }
         }
-        (best_lag, frac, best_corr.abs().clamp(0.0, 1.0))
+        (best_lag, frac, best_corr.clamp(0.0, 1.0))
     };
 
     let noise_floor_dbfs =
@@ -314,5 +315,107 @@ pub fn analyze_hot_corner_nonlinearity(
         net_gain_over_unity_db,
         compression_ratio,
         clipped_sample_fraction,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use proptest::prelude::*;
+
+    use crate::capture::excitation::generate_excitation_signal;
+
+    use super::*;
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(24))]
+
+        #[test]
+        fn prop_align_hardware_latency_recovers_arbitrary_lag_gain_and_polarity(
+            true_lag in 0_usize..=28,
+            gain in 0.15_f32..=1.0,
+            invert in proptest::bool::ANY,
+        ) {
+            let dry = generate_excitation_signal(48_000, 2_048);
+            let sign = if invert { -1.0_f32 } else { 1.0_f32 };
+            let mut wet = vec![0.0_f32; dry.len()];
+            for i in true_lag..dry.len() {
+                wet[i] = sign * gain * dry[i - true_lag];
+            }
+            let report = align_hardware_latency(&dry, &wet, 48, None, 48_000, None)
+                .expect("align hardware latency");
+            prop_assert_eq!(report.coarse_lag_samples, true_lag as i32);
+            prop_assert!(report.peak_correlation > 0.85);
+            prop_assert!(report.snr_db.is_finite());
+        }
+
+        #[test]
+        fn prop_apply_subsample_shift_preserves_length_and_finiteness(
+            samples in proptest::collection::vec(-1.0_f32..1.0_f32, 16..128),
+            shift in -8.0_f32..8.0_f32,
+        ) {
+            let shifted = apply_subsample_shift_fft(&samples, shift);
+            prop_assert_eq!(shifted.len(), samples.len());
+            prop_assert!(shifted.iter().all(|s| s.is_finite()));
+        }
+    }
+
+    #[test]
+    fn test_align_hardware_latency_polarity_inversion_and_locked_delay_lag() {
+        let dry = generate_excitation_signal(48_000, 4_096);
+        let true_lag = 19_usize;
+        let mut wet_inv = vec![0.0_f32; dry.len()];
+        for i in true_lag..dry.len() {
+            wet_inv[i] = -0.85 * dry[i - true_lag];
+        }
+
+        let res = align_hardware_latency(&dry, &wet_inv, 64, None, 48_000, None)
+            .expect("align inverted wet");
+        assert_eq!(res.coarse_lag_samples, true_lag as i32);
+        assert!(res.peak_correlation > 0.90);
+
+        // Locked hardware latency on a kill-dry delay stem preserves the echo tap offset
+        let hw_lag = 12_i32;
+        let echo_tap = 200_usize;
+        let mut wet_delay = vec![0.0_f32; dry.len()];
+        let total_shift = (hw_lag as usize) + echo_tap;
+        for i in total_shift..dry.len() {
+            wet_delay[i] = 0.9 * dry[i - total_shift];
+        }
+        let locked = align_hardware_latency(&dry, &wet_delay, 64, Some(hw_lag), 48_000, None)
+            .expect("locked align");
+        assert_eq!(locked.coarse_lag_samples, hw_lag);
+
+        // Error on empty or mismatched lengths
+        assert!(align_hardware_latency(&[], &[], 16, None, 48_000, None).is_err());
+        assert!(align_hardware_latency(&[1.0, 2.0], &[1.0], 16, None, 48_000, None).is_err());
+    }
+
+    #[test]
+    fn test_subsample_shift_silent_window_and_hot_corner_clipping() {
+        assert!(apply_subsample_shift_fft(&[], 1.5).is_empty());
+        let sig: Vec<f32> = (0..128).map(|i| ((i as f32) * 0.1).sin()).collect();
+        let shifted_int = apply_subsample_shift_fft(&sig, 4.0);
+        assert_eq!(shifted_int.len(), 128);
+        let shifted_frac = apply_subsample_shift_fft(&sig, 4.35);
+        assert_eq!(shifted_frac.len(), 128);
+
+        assert_eq!(measure_silent_window_noise_floor(&[], 48_000, None), -120.0);
+        let mut ringing = vec![0.0_f32; 4_096];
+        for s in &mut ringing[2_000..3_500] {
+            *s = 0.25;
+        }
+        for s in &mut ringing[3_500..] {
+            *s = 1e-4;
+        }
+        let nf = measure_silent_window_noise_floor(&ringing, 48_000, Some(-90.0));
+        assert!(nf <= -75.0);
+
+        let dry = generate_excitation_signal(48_000, 1_024);
+        let hot_wet: Vec<f32> = dry.iter().map(|&x| (x * 4.0).clamp(-1.0, 1.0)).collect();
+        let stats = analyze_hot_corner_nonlinearity(&dry, &hot_wet, 0.0);
+        assert!(stats.measured_return_peak_dbfs > -0.2);
+        assert!(stats.net_gain_over_unity_db > 2.0);
+        assert!(stats.compression_ratio > 1.1);
+        assert!(stats.clipped_sample_fraction > 0.01);
     }
 }

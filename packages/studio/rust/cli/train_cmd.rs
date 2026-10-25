@@ -180,3 +180,97 @@ pub fn run_trainer_env(workspace: &Path, action: &TrainerAction) -> StudioResult
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::project::manifest::StemRecord;
+    use std::collections::BTreeMap;
+    use std::env;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_dir(tag: &str) -> std::path::PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let dir = env::temp_dir().join(format!("dnam_traincli_unit_{tag}_{nanos}"));
+        let _ = fs::create_dir_all(&dir);
+        dir
+    }
+
+    #[test]
+    fn train_cli_and_trainer_env_subcommands() {
+        let dir = temp_dir("train_cli");
+        let mut proj = DnamProject::init(&dir, "WS", "Auth").expect("init");
+
+        // Zero models -> error when --model omitted
+        assert!(run_train(&dir, TrainCommandArgs::default()).is_err());
+
+        proj.add_model("m1", "M1", "Full").expect("add m1");
+        proj.register_stem(
+            "m1",
+            StemRecord {
+                stem_id: "s0".to_string(),
+                dry_wav_path: "models/m1/stems/input.wav".to_string(),
+                wet_wav_path: "models/m1/stems/s0.wav".to_string(),
+                normalized_ranges: BTreeMap::new(),
+                switches: BTreeMap::new(),
+                pcm_sha256: "a".repeat(64),
+                dry_pcm_sha256: "b".repeat(64),
+                aligned_lag_samples: 0.0,
+                snr_db: 40.0,
+                noise_floor_dbfs: -90.0,
+            },
+        )
+        .expect("reg stem");
+
+        // Single model auto-select + dry_run + signed
+        let out_dry = run_train(
+            &dir,
+            TrainCommandArgs {
+                dry_run: true,
+                ..TrainCommandArgs::default()
+            },
+        )
+        .expect("dry_run single model");
+        assert!(out_dry.contains("Wrote training request JSON for 'm1'"));
+
+        // all_models + unsigned + dry_run = false with mock .venv/bin/dnam-train
+        let venv_bin = dir.join(".venv/bin");
+        fs::create_dir_all(&venv_bin).expect("create venv_bin");
+        let mock_worker = venv_bin.join("dnam-train");
+        fs::write(
+            &mock_worker,
+            "#!/bin/sh\nprintf '{\"event\":\"training_complete\"}\\n'\n",
+        )
+        .expect("write mock worker");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&mock_worker, fs::Permissions::from_mode(0o755))
+                .expect("chmod mock worker");
+        }
+
+        let out_worker = run_train(
+            &dir,
+            TrainCommandArgs {
+                all_models: true,
+                unsigned: true,
+                epochs: Some(2),
+                ..TrainCommandArgs::default()
+            },
+        )
+        .expect("run with mock worker");
+        assert!(out_worker.contains("Trained model 'm1'"));
+
+        // Trainer env status / install --dry-run / uninstall
+        let st_json = run_trainer_env(&dir, &TrainerAction::Status).expect("status");
+        assert!(st_json.contains("venv_dir"));
+        let inst_json = run_trainer_env(&dir, &TrainerAction::Install { dry_run: true })
+            .expect("install dry_run");
+        assert!(inst_json.contains("\"installed\": true"));
+        let _ = run_trainer_env(&dir, &TrainerAction::Uninstall).expect("uninstall");
+        let _ = fs::remove_dir_all(&dir);
+    }
+}

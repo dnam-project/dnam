@@ -93,13 +93,25 @@ pub fn ensure_creator_ed25519_keypair(
     };
 
     let seed_bytes: [u8; 32] = if resolved.is_file() {
-        let raw_text = fs::read_to_string(&resolved)?;
-        decode_hex_32(raw_text.trim()).ok_or_else(|| {
-            StudioError::Validation(format!(
-                "Invalid Ed25519 secret seed in {}: expected 64 hex chars (32 bytes)",
-                resolved.display()
-            ))
-        })?
+        let raw_bytes = fs::read(&resolved)?;
+        if raw_bytes.len() == 32 {
+            let mut arr = [0_u8; 32];
+            arr.copy_from_slice(&raw_bytes);
+            arr
+        } else {
+            let raw_text = String::from_utf8(raw_bytes).map_err(|_| {
+                StudioError::Validation(format!(
+                    "Invalid Ed25519 secret seed in {}: expected 64 hex chars or 32 raw bytes",
+                    resolved.display()
+                ))
+            })?;
+            decode_hex_32(raw_text.trim()).ok_or_else(|| {
+                StudioError::Validation(format!(
+                    "Invalid Ed25519 secret seed in {}: expected 64 hex chars (32 bytes)",
+                    resolved.display()
+                ))
+            })?
+        }
     } else {
         if let Some(parent) = resolved.parent() {
             fs::create_dir_all(parent)?;
@@ -383,7 +395,11 @@ impl DnamProject {
     /// `.gitignore`, and provisioning the user's `Ed25519` creator keypair in
     /// `default_user_config_dir()`.
     pub fn init(root_dir: impl AsRef<Path>, name: &str, author: &str) -> StudioResult<Self> {
-        let root = root_dir.as_ref().to_path_buf();
+        Self::init_inner(root_dir.as_ref(), name, author)
+    }
+
+    fn init_inner(root_dir: &Path, name: &str, author: &str) -> StudioResult<Self> {
+        let root = root_dir.to_path_buf();
         fs::create_dir_all(root.join("dist"))?;
         fs::create_dir_all(root.join("models"))?;
 
@@ -416,7 +432,11 @@ impl DnamProject {
 
     /// Loads an existing DNAM workspace from `root_dir`.
     pub fn open(root_dir: impl AsRef<Path>) -> StudioResult<Self> {
-        let root = root_dir.as_ref().to_path_buf();
+        Self::open_inner(root_dir.as_ref())
+    }
+
+    fn open_inner(root_dir: &Path) -> StudioResult<Self> {
+        let root = root_dir.to_path_buf();
         let manifest_path = root.join("dnam.toml");
         let content = fs::read_to_string(&manifest_path)?;
         let manifest: DnamProjectManifest =
@@ -927,4 +947,283 @@ fn decode_hex_32(hex_str: &str) -> Option<[u8; 32]> {
         out[idx] = u8::from_str_radix(s, 16).ok()?;
     }
     Some(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use proptest::prelude::*;
+
+    use super::*;
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(32))]
+
+        #[test]
+        fn prop_compact_range_and_switch_parsers_roundtrip(
+            min_v in -24.0_f32..24.0_f32,
+            span in 0.5_f32..24.0_f32,
+            frac in 0.0_f32..=1.0_f32,
+            n_opts in 2_usize..=5,
+            def_idx_raw in 0_usize..10,
+        ) {
+            let max_v = min_v + span;
+            let def_v = min_v + frac * span;
+            let spec_eq = format!("knob_a={min_v:.3}..{max_v:.3}:{def_v:.3}");
+            let parsed_eq = parse_compact_range_spec(&spec_eq).expect("parse =/: range");
+            prop_assert_eq!(parsed_eq.id, "knob_a");
+            prop_assert!(parsed_eq.min < parsed_eq.max);
+            prop_assert!(parsed_eq.default_value >= parsed_eq.min - 1e-3);
+            prop_assert!(parsed_eq.default_value <= parsed_eq.max + 1e-3);
+
+            let spec_at = format!("knob_a:Knob A:{min_v:.3}..{max_v:.3}@{def_v:.3}");
+            let parsed_at = parse_compact_range_spec(&spec_at).expect("parse :/@ range");
+            prop_assert_eq!(parsed_at.id, "knob_a");
+            prop_assert_eq!(parsed_at.label, "Knob A");
+
+            let opts: Vec<String> = (0..n_opts).map(|i| format!("opt_{i}")).collect();
+            let def_idx = def_idx_raw % n_opts;
+            let sw_spec = format!("mode={}:{}", opts.join(","), opts[def_idx]);
+            let parsed_sw = parse_compact_switch_spec(&sw_spec).expect("parse switch");
+            prop_assert_eq!(parsed_sw.options.len(), n_opts);
+            prop_assert_eq!(parsed_sw.default_index, def_idx);
+        }
+    }
+
+    fn temp_dir(tag: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let dir = env::temp_dir().join(format!("dnam_ws_unit_{tag}_{nanos}"));
+        let _ = fs::create_dir_all(&dir);
+        dir
+    }
+
+    #[test]
+    fn test_ed25519_keypair_and_compact_parsers() {
+        let dir = temp_dir("keys_parsers");
+        assert!(default_user_config_dir().ends_with("dnam"));
+
+        let key_path = dir.join("nested_keys").join("creator.key");
+        let (p1, seed1, pub1) =
+            ensure_creator_ed25519_keypair(Some(&key_path)).expect("generate key");
+        assert_eq!(p1, key_path);
+        assert_eq!(pub1.len(), 64);
+
+        let (_, seed2, pub2) =
+            ensure_creator_ed25519_keypair(Some(&key_path)).expect("reuse existing key");
+        assert_eq!(seed1, seed2);
+        assert_eq!(pub1, pub2);
+
+        // Raw 32-byte binary key file is also supported
+        let raw_key_path = dir.join("raw32.key");
+        fs::write(&raw_key_path, seed1).expect("write raw 32B key");
+        let (_, seed3, pub3) =
+            ensure_creator_ed25519_keypair(Some(&raw_key_path)).expect("load raw 32B key");
+        assert_eq!(seed3, seed1);
+        assert_eq!(pub3, pub1);
+
+        // Invalid key length raises Validation error (both UTF-8 hex and non-UTF-8 binary)
+        let bad_key = dir.join("bad.key");
+        fs::write(&bad_key, "001122\n").expect("write bad key");
+        assert!(ensure_creator_ed25519_keypair(Some(&bad_key)).is_err());
+        let bad_bin_key = dir.join("bad_bin.key");
+        fs::write(&bad_bin_key, [0xff_u8, 0xfe, 0xfd]).expect("write bad bin key");
+        assert!(ensure_creator_ed25519_keypair(Some(&bad_bin_key)).is_err());
+
+        // Compact range parser (=/: and :/@ formats + error branches)
+        let r1 = parse_compact_range_spec("drive_gain=0..10:6.5").expect("r1");
+        assert_eq!(r1.id, "drive_gain");
+        assert_eq!(r1.label, "Drive Gain");
+        assert!((r1.default_value - 6.5).abs() < 1e-6);
+
+        let r2 = parse_compact_range_spec("blend=-12..12").expect("r2");
+        assert!((r2.default_value - 0.0).abs() < 1e-6);
+
+        assert!(parse_compact_range_spec("=0..10").is_err());
+        assert!(parse_compact_range_spec("drive=10").is_err());
+        assert!(parse_compact_range_spec("drive=10..0").is_err());
+        assert!(parse_compact_range_spec("drive=0..10:15").is_err());
+        assert!(parse_compact_range_spec("drive=0..10:not_a_num").is_err());
+        assert!(parse_compact_range_spec("drive").is_err());
+        assert!(parse_compact_range_spec(":Label:0..10@5").is_err());
+        assert!(parse_compact_range_spec("drive:Label:0..10").is_err());
+        assert!(parse_compact_range_spec("drive:Label:0@5").is_err());
+        assert!(parse_compact_range_spec("drive:Drive:10..0@5").is_err());
+        assert!(parse_compact_range_spec("drive:Drive:0..10@15").is_err());
+
+        // Compact switch parser (=/: and :/@ formats + error branches)
+        let s1 = parse_compact_switch_spec("attack=cut,flat,boost:boost").expect("s1");
+        assert_eq!(s1.id, "attack");
+        assert_eq!(s1.default_index, 2);
+
+        let s2 = parse_compact_switch_spec("voice=clean,lead:1").expect("s2");
+        assert_eq!(s2.default_index, 1);
+
+        let s3 = parse_compact_switch_spec("voice=clean,lead").expect("s3");
+        assert_eq!(s3.default_index, 0);
+
+        assert!(parse_compact_switch_spec("=a,b").is_err());
+        assert!(parse_compact_switch_spec("attack=only_one").is_err());
+        assert!(parse_compact_switch_spec("attack=cut,boost:invalid").is_err());
+        assert!(parse_compact_switch_spec("voice:OnlyTwoParts").is_err());
+        assert!(parse_compact_switch_spec(":Label:a,b@0").is_err());
+        assert!(parse_compact_switch_spec("voice:Label:a,b").is_err());
+        assert!(parse_compact_switch_spec("voice:Voice:only_one@0").is_err());
+        assert!(parse_compact_switch_spec("voice:Voice:a,b@5").is_err());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_dnam_project_crud_and_stem_lifecycle() {
+        let dir = temp_dir("crud");
+        let mut proj = DnamProject::init(&dir, "Test Pedal Pack", "peter").expect("init");
+        assert_eq!(proj.root_dir(), dir.as_path());
+
+        let reloaded = DnamProject::open(&dir).expect("open");
+        assert_eq!(reloaded.manifest().project.name, "Test Pedal Pack");
+
+        assert!(proj.add_model("", "Bad", "Full").is_err());
+        let _ = proj
+            .add_model("b7k_drive", "B7K Drive", "Full")
+            .expect("add model");
+        let _ = proj
+            .add_model("alpha_omega", "Alpha Omega", "Lite")
+            .expect("add second model");
+        assert_eq!(proj.list_models().len(), 2);
+
+        let up_m = proj
+            .update_model(
+                "alpha_omega",
+                Some("Alpha Omega Ultra"),
+                Some("Ultra"),
+                Some("Bass distortion"),
+                Some("dual_mono"),
+                Some("core1_only"),
+            )
+            .expect("update model");
+        assert_eq!(up_m.description, "Bass distortion");
+        assert_eq!(up_m.output_mode, "dual_mono");
+        assert_eq!(up_m.topology, "core1_only");
+
+        proj.remove_model("alpha_omega", true)
+            .expect("remove model");
+        assert!(proj.load_model("alpha_omega").is_err());
+
+        proj.update_calibration("b7k_drive", "usb", "cpal_0", 32, -92.0)
+            .expect("update cal");
+        assert_eq!(
+            proj.load_model("b7k_drive")
+                .expect("load")
+                .capture
+                .calibrated_latency_samples,
+            32
+        );
+
+        proj.add_range_control(
+            "b7k_drive",
+            parse_compact_range_spec("drive=0..10:5").expect("drive"),
+        )
+        .expect("add range");
+        proj.add_switch_control(
+            "b7k_drive",
+            parse_compact_switch_spec("attack=cut,flat,boost:flat").expect("attack"),
+        )
+        .expect("add switch");
+
+        proj.update_control(
+            "b7k_drive",
+            "drive",
+            Some("Drive Gain"),
+            Some(0.0),
+            Some(12.0),
+            Some("6.0"),
+            None,
+        )
+        .expect("update range");
+        proj.update_control(
+            "b7k_drive",
+            "attack",
+            Some("Attack Switch"),
+            None,
+            None,
+            Some("boost"),
+            Some("cut,flat,boost"),
+        )
+        .expect("update switch by label");
+        proj.update_control("b7k_drive", "attack", None, None, None, Some("0"), None)
+            .expect("update switch by index");
+        assert!(
+            proj.update_control(
+                "b7k_drive",
+                "attack",
+                None,
+                None,
+                None,
+                None,
+                Some("only_one")
+            )
+            .is_err()
+        );
+        assert!(
+            proj.update_control(
+                "b7k_drive",
+                "attack",
+                None,
+                None,
+                None,
+                Some("nonexistent"),
+                None
+            )
+            .is_err()
+        );
+        assert!(
+            proj.update_control("b7k_drive", "missing", Some("X"), None, None, None, None)
+                .is_err()
+        );
+        assert!(proj.remove_control("b7k_drive", "missing").is_err());
+        assert!(proj.remove_preset("b7k_drive", "missing").is_err());
+        assert!(
+            proj.update_preset("b7k_drive", "missing", Some("X"), None, None)
+                .is_err()
+        );
+
+        // External stem registration, update, and removal
+        let ext_wet = dir.join("ext_wet.wav");
+        let sig: Vec<f32> = (0..2048).map(|i| ((i as f32) * 0.05).sin() * 0.3).collect();
+        write_wav_24bit(&ext_wet, &sig, 48_000, 1).expect("write ext wet");
+
+        let mut stem_ranges = BTreeMap::new();
+        stem_ranges.insert("drive".to_string(), 0.5);
+        let rec = proj
+            .register_external_stem(
+                "b7k_drive",
+                "s_00",
+                &ext_wet,
+                stem_ranges.clone(),
+                BTreeMap::new(),
+            )
+            .expect("register external stem");
+        assert_eq!(rec.stem_id, "s_00");
+        assert!(proj.model_dry_input_wav_path("b7k_drive").is_file());
+
+        stem_ranges.insert("drive".to_string(), 0.8);
+        let up_s = proj
+            .update_stem("b7k_drive", "s_00", stem_ranges, BTreeMap::new())
+            .expect("update stem");
+        assert!((up_s.normalized_ranges["drive"] - 0.8).abs() < 1e-6);
+        assert!(
+            proj.update_stem("b7k_drive", "missing", BTreeMap::new(), BTreeMap::new())
+                .is_err()
+        );
+
+        proj.remove_stem("b7k_drive", "s_00", true)
+            .expect("remove stem");
+        assert!(proj.remove_stem("b7k_drive", "s_00", false).is_err());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
 }

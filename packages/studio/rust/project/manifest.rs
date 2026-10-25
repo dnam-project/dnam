@@ -190,3 +190,34 @@ pub struct ModelManifest {
     /// Registered dry/wet stems.
     pub stems: Vec<StemRecord>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_manifest_serde_defaults() {
+        let toml_str = r#"
+model_id = "test_m"
+title = "Test Model"
+tier = "Full"
+ranges = []
+switches = []
+presets = []
+[[stems]]
+stem_id = "s0"
+dry_wav_path = "models/test_m/stems/input.wav"
+wet_wav_path = "models/test_m/stems/s0.wav"
+pcm_sha256 = "00"
+aligned_lag_samples = 0.0
+snr_db = 40.0
+[stems.normalized_ranges]
+[stems.switches]
+"#;
+        let parsed: ModelManifest = toml::from_str(toml_str).expect("parse model manifest");
+        assert_eq!(parsed.output_mode, "stereo");
+        assert_eq!(parsed.topology, "auto");
+        assert_eq!(parsed.capture.backend, "software");
+        assert_eq!(parsed.stems[0].noise_floor_dbfs, -96.0);
+    }
+}

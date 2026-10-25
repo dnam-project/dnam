@@ -326,3 +326,128 @@ pub fn run_capture(workspace: &Path, action: &CaptureAction) -> StudioResult<Str
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::project::parse_compact_range_spec;
+    use std::env;
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_dir(tag: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let dir = env::temp_dir().join(format!("dnam_capcli_unit_{tag}_{nanos}"));
+        let _ = fs::create_dir_all(&dir);
+        dir
+    }
+
+    #[test]
+    fn capture_cli_subcommands_cover_generate_calibrate_plan_and_record() {
+        let dir = temp_dir("cap_cli");
+        let mut proj = DnamProject::init(&dir, "WS", "Auth").expect("init");
+
+        // 0 models -> resolve_target_model_id error
+        assert!(
+            run_capture(
+                &dir,
+                &CaptureAction::Plan {
+                    model: None,
+                    no_corners: false,
+                }
+            )
+            .is_err()
+        );
+
+        let backends = run_capture(&dir, &CaptureAction::Backends).expect("backends");
+        assert!(backends.contains("anagram"));
+        let devs = run_capture(
+            &dir,
+            &CaptureAction::Devices {
+                backend: Some("software".to_string()),
+            },
+        )
+        .expect("devices");
+        assert!(devs.contains("loopback_default"));
+
+        let out_wav = dir.join("gen.wav");
+        let gen_msg = run_capture(
+            &dir,
+            &CaptureAction::Generate {
+                output: out_wav.clone(),
+                samples: 512,
+                duration_sec: Some(0.1),
+                sample_rate_hz: 8_000,
+            },
+        )
+        .expect("generate duration");
+        assert!(gen_msg.contains("800 samples @ 8000 Hz"));
+        assert!(out_wav.is_file());
+
+        proj.add_model("m1", "M1", "Full").expect("add m1");
+        proj.add_range_control(
+            "m1",
+            parse_compact_range_spec("gain=0..10:5").expect("range"),
+        )
+        .expect("add range");
+
+        // Record before calibration -> auto-calibrates and records
+        let rec1 = run_capture(
+            &dir,
+            &CaptureAction::Record {
+                model: None,
+                backend: Some("software".to_string()),
+                samples: 1024,
+                yes: true,
+                countdown_sec: 0.0,
+                all_stems: false,
+            },
+        )
+        .expect("record uncalibrated");
+        assert!(rec1.contains("Recorded and aligned 3 stems"));
+
+        // Explicit calibrate
+        let cal_out = run_capture(
+            &dir,
+            &CaptureAction::Calibrate {
+                model: Some("m1".to_string()),
+                backend: "software".to_string(),
+                device: "loopback_default".to_string(),
+                send_gain_db: Some(0.0),
+                yes: true,
+            },
+        )
+        .expect("calibrate");
+        assert!(cal_out.contains("excitation_profile"));
+
+        // Plan shows [CAPTURED]
+        let plan_out = run_capture(
+            &dir,
+            &CaptureAction::Plan {
+                model: None,
+                no_corners: true,
+            },
+        )
+        .expect("plan");
+        assert!(plan_out.contains("[CAPTURED]"));
+
+        // Record again with all_stems = true
+        let rec2 = run_capture(
+            &dir,
+            &CaptureAction::Record {
+                model: Some("m1".to_string()),
+                backend: None,
+                samples: 1024,
+                yes: true,
+                countdown_sec: 0.0,
+                all_stems: true,
+            },
+        )
+        .expect("record all_stems");
+        assert!(rec2.contains("Recorded and aligned 3 stems"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+}

@@ -175,6 +175,22 @@ pub fn format_stem_prompt_panel(
     lines.join("\n")
 }
 
+/// Maps a zero-based `dialoguer::Select` menu index to a [`StemPromptAction`].
+pub const fn map_stem_prompt_selection(stem_index: usize, selection: usize) -> StemPromptAction {
+    if stem_index > 1 {
+        match selection {
+            1 => StemPromptAction::Retake,
+            2 => StemPromptAction::Skip,
+            _ => StemPromptAction::Record,
+        }
+    } else {
+        match selection {
+            1 => StemPromptAction::Skip,
+            _ => StemPromptAction::Record,
+        }
+    }
+}
+
 /// Displays Calibration Step 1/2 guidance and waits for confirmation via `dialoguer::Confirm` when `!auto_yes`.
 pub fn prompt_calibration_step1(setup_instructions: &str, auto_yes: bool) -> StudioResult<()> {
     let panel = format_calibration_step1_panel(setup_instructions);
@@ -248,36 +264,165 @@ pub fn prompt_next_stem_action(
         return Ok(StemPromptAction::Record);
     }
 
-    if stem_index > 1 {
-        let items = ["Record stem", "Retake previous stem", "Skip stem"];
-        let selection = Select::with_theme(&ColorfulTheme::default())
-            .with_prompt(format!(
-                "Stem [{stem_index}/{total_stems}] '{}' action",
-                step.stem_id
-            ))
-            .items(items)
-            .default(0)
-            .interact()
-            .map_err(|e| StudioError::Audio(format!("Stem capture prompt cancelled: {e}")))?;
-        Ok(match selection {
-            1 => StemPromptAction::Retake,
-            2 => StemPromptAction::Skip,
-            _ => StemPromptAction::Record,
-        })
+    let items: &[&str] = if stem_index > 1 {
+        &["Record stem", "Retake previous stem", "Skip stem"]
     } else {
-        let items = ["Record stem", "Skip stem"];
-        let selection = Select::with_theme(&ColorfulTheme::default())
-            .with_prompt(format!(
-                "Stem [{stem_index}/{total_stems}] '{}' action",
-                step.stem_id
-            ))
-            .items(items)
-            .default(0)
-            .interact()
-            .map_err(|e| StudioError::Audio(format!("Stem capture prompt cancelled: {e}")))?;
-        Ok(match selection {
-            1 => StemPromptAction::Skip,
-            _ => StemPromptAction::Record,
-        })
+        &["Record stem", "Skip stem"]
+    };
+    let selection = Select::with_theme(&ColorfulTheme::default())
+        .with_prompt(format!(
+            "Stem [{stem_index}/{total_stems}] '{}' action",
+            step.stem_id
+        ))
+        .items(items)
+        .default(0)
+        .interact()
+        .map_err(|e| StudioError::Audio(format!("Stem capture prompt cancelled: {e}")))?;
+    Ok(map_stem_prompt_selection(stem_index, selection))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::project::manifest::{
+        CaptureSettings, ControlRangeSpec, ControlSwitchOptionSpec, ControlSwitchSpec,
+        ProjectMetadata,
+    };
+    use crate::project::planner::CaptureTier;
+
+    #[test]
+    fn format_panels_and_auto_yes_prompts() {
+        assert!(format_cli_banner().contains("DNAM Studio & CLI"));
+
+        let manifest = DnamProjectManifest {
+            schema_version: "1.0".to_string(),
+            project: ProjectMetadata {
+                name: "WS".to_string(),
+                author: "Auth".to_string(),
+                sample_rate_hz: 48_000,
+                creator_public_key_hex: String::new(),
+                signing_key_path: None,
+            },
+            models: vec!["amp".to_string()],
+        };
+        let model = ModelManifest {
+            model_id: "amp".to_string(),
+            title: "Amp".to_string(),
+            description: String::new(),
+            tier: "Full".to_string(),
+            topology: "auto".to_string(),
+            output_mode: "stereo".to_string(),
+            capture: CaptureSettings::default(),
+            ranges: vec![ControlRangeSpec {
+                id: "gain".to_string(),
+                label: "Gain".to_string(),
+                min: 0.0,
+                max: 10.0,
+                default_value: 5.0,
+                unit: None,
+            }],
+            switches: vec![ControlSwitchSpec {
+                id: "bright".to_string(),
+                label: "Bright".to_string(),
+                options: vec![
+                    ControlSwitchOptionSpec {
+                        index: 0,
+                        label: "off".to_string(),
+                    },
+                    ControlSwitchOptionSpec {
+                        index: 1,
+                        label: "on".to_string(),
+                    },
+                ],
+                default_index: 0,
+            }],
+            presets: Vec::new(),
+            stems: Vec::new(),
+        };
+        let status = format_workspace_status(&manifest, std::slice::from_ref(&model));
+        assert!(status.contains("Workspace: WS"));
+        assert!(status.contains("amp (Amp"));
+
+        let mut ranges = BTreeMap::new();
+        ranges.insert("gain".to_string(), 0.5_f32);
+        let mut switches = BTreeMap::new();
+        switches.insert("bright".to_string(), 0_usize);
+        let step1 = CapturePlanStep {
+            stem_id: "stem_00".to_string(),
+            tier: CaptureTier::StarCenter,
+            normalized_ranges: ranges.clone(),
+            switches: switches.clone(),
+            prompt: "Set Gain=5.0".to_string(),
+            already_captured: true,
+        };
+        let mut ranges2 = BTreeMap::new();
+        ranges2.insert("gain".to_string(), 1.0_f32);
+        let step2 = CapturePlanStep {
+            stem_id: "stem_01".to_string(),
+            tier: CaptureTier::StarAxis,
+            normalized_ranges: ranges2,
+            switches,
+            prompt: "Set Gain=10.0".to_string(),
+            already_captured: false,
+        };
+        let plan = CapturePlan {
+            model_id: "amp".to_string(),
+            steps: vec![step1.clone(), step2.clone()],
+        };
+        let plan_txt = format_capture_plan(&plan);
+        assert!(plan_txt.contains("[CAPTURED]"));
+        assert!(plan_txt.contains("[PENDING]"));
+
+        // Empty model stem prompt panel (`(fixed)`)
+        let empty_model = ModelManifest {
+            ranges: Vec::new(),
+            switches: Vec::new(),
+            ..model.clone()
+        };
+        let empty_panel = format_stem_prompt_panel(&empty_model, &step1, 1, 2, None, None);
+        assert!(empty_panel.contains("(fixed)"));
+
+        // Delta stem prompt panel
+        let delta_panel = format_stem_prompt_panel(
+            &model,
+            &step2,
+            2,
+            2,
+            Some(&step1.normalized_ranges),
+            Some(&step1.switches),
+        );
+        assert!(delta_panel.contains("TURN / FLIP"));
+        assert!(delta_panel.contains("Unchanged"));
+
+        // Calibration step1 & step2 panels + auto_yes prompts + non-TTY error path
+        prompt_calibration_step1("Connect Send 1 -> Input", true).expect("step1 auto_yes");
+        let _ = prompt_calibration_step1("Connect Send 1 -> Input", false);
+        let s1_metrics = Step1CalibrationMetrics {
+            backend: "software".to_string(),
+            device_id: "loopback_default".to_string(),
+            send_gain_db: -6.0,
+            latency_samples: 12,
+            unity_ref_dbfs: -18.0,
+            noise_floor_dbfs: -92.0,
+            snr_db: 50.0,
+        };
+        prompt_calibration_step2(&s1_metrics, true).expect("step2 auto_yes");
+        let _ = prompt_calibration_step2(&s1_metrics, false);
+
+        // prompt_next_stem_action with countdown, auto_yes, non-TTY, and map_stem_prompt_selection
+        let act_cd = prompt_next_stem_action(&model, &step1, 1, 2, None, None, false, 0.001)
+            .expect("countdown");
+        assert_eq!(act_cd, StemPromptAction::Record);
+        let act_yes =
+            prompt_next_stem_action(&model, &step1, 1, 2, None, None, true, 0.0).expect("auto_yes");
+        assert_eq!(act_yes, StemPromptAction::Record);
+        let _ = prompt_next_stem_action(&model, &step1, 1, 2, None, None, false, 0.0);
+        let _ = prompt_next_stem_action(&model, &step2, 2, 2, None, None, false, 0.0);
+
+        assert_eq!(map_stem_prompt_selection(1, 0), StemPromptAction::Record);
+        assert_eq!(map_stem_prompt_selection(1, 1), StemPromptAction::Skip);
+        assert_eq!(map_stem_prompt_selection(2, 0), StemPromptAction::Record);
+        assert_eq!(map_stem_prompt_selection(2, 1), StemPromptAction::Retake);
+        assert_eq!(map_stem_prompt_selection(2, 2), StemPromptAction::Skip);
     }
 }

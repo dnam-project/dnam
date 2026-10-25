@@ -157,3 +157,73 @@ fn exe_name(base: &str) -> String {
         base.to_string()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_dir(tag: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let dir = env::temp_dir().join(format!("dnam_envmgr_unit_{tag}_{nanos}"));
+        let _ = fs::create_dir_all(&dir);
+        dir
+    }
+
+    #[test]
+    fn trainer_env_manager_discovers_installs_and_uninstalls() {
+        let dir = temp_dir("lifecycle");
+        let cfg_dir = dir.join("cfg");
+        let monorepo = dir.join("repo/packages/studio");
+        let repo_venv_bin = dir.join("repo/.venv").join(venv_bin_subdir());
+        fs::create_dir_all(&repo_venv_bin).expect("create repo venv");
+        let repo_worker = repo_venv_bin.join(exe_name("dnam-train"));
+        fs::write(&repo_worker, "#!/bin/sh\nexit 0\n").expect("write repo worker");
+
+        let mgr = TrainerEnvManager::new(&cfg_dir, Some(monorepo));
+        // Discovers worker from ancestor .venv
+        assert_eq!(mgr.discover_worker_binary(), Some(repo_worker));
+
+        // Dry-run install creates managed trainer-venv/bin/dnam-train
+        let st_dry = mgr.install(true).expect("dry-run install");
+        assert!(st_dry.installed);
+        assert!(
+            st_dry
+                .worker_binary_path
+                .as_deref()
+                .unwrap_or("")
+                .contains("trainer-venv")
+        );
+
+        // Uninstall removes trainer-venv
+        let _ = mgr.uninstall().expect("uninstall");
+        assert!(!mgr.venv_dir().exists());
+
+        // Local uv binary inside <config_dir>/bin/uv
+        let local_bin = cfg_dir.join("bin");
+        fs::create_dir_all(&local_bin).expect("create local bin");
+        let local_uv = local_bin.join(exe_name("uv"));
+        fs::write(&local_uv, "#!/bin/sh\nexit 0\n").expect("write local uv");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&local_uv, fs::Permissions::from_mode(0o755)).expect("chmod +x");
+        }
+        assert_eq!(mgr.discover_uv(), Some(local_uv.clone()));
+
+        // Real install with stub uv succeeding
+        let _ = mgr.install(false).expect("install with stub uv");
+
+        // Real install with stub uv failing
+        fs::write(&local_uv, "#!/bin/sh\nexit 1\n").expect("write failing uv");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&local_uv, fs::Permissions::from_mode(0o755)).expect("chmod +x");
+        }
+        assert!(mgr.install(false).is_err());
+    }
+}

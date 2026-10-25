@@ -255,3 +255,155 @@ pub fn render_wav_with_container(
         2,
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use std::env;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use dnam_engine::container::{ARENA_OFFSET_ULTRA_END, build_dnam_container};
+    use dnam_engine::schema::{ControlKind, ControlSchemaDef, DnamJsonHeader, PresetDef};
+
+    use super::*;
+
+    fn temp_dir(tag: &str) -> std::path::PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let dir = env::temp_dir().join(format!("dnam_runner_unit_{tag}_{nanos}"));
+        let _ = fs::create_dir_all(&dir);
+        dir
+    }
+
+    fn make_test_container(core2_active: bool, is_ckpt: bool) -> Vec<u8> {
+        let mut header = DnamJsonHeader::default_reference(core2_active);
+        if is_ckpt {
+            header.container_kind = "dnam-ckpt".to_string();
+        }
+        let mut ctrl = serde_json::json!({
+            "id": "gain",
+            "name": "Gain",
+            "type": "range",
+            "declared_range": [0.0, 10.0],
+            "safe_clamped_range": [0.0, 10.0],
+            "default": 5.0
+        });
+        let c1: ControlSchemaDef = serde_json::from_value(ctrl.take()).expect("c1");
+        let c2: ControlSchemaDef = serde_json::from_value(serde_json::json!({
+            "id": "voice",
+            "name": "Voice",
+            "type": "switch",
+            "declared_options": ["clean", "lead"],
+            "active_options": ["clean", "lead"],
+            "default": "clean"
+        }))
+        .expect("c2");
+        header.controls_schema = vec![c1, c2];
+        let mut preset_ctrls = BTreeMap::new();
+        preset_ctrls.insert("gain".to_string(), serde_json::json!(6.0));
+        preset_ctrls.insert("voice".to_string(), serde_json::json!("lead"));
+        header.presets = vec![PresetDef {
+            id: "lead_preset".to_string(),
+            name: "Lead".to_string(),
+            description: None,
+            controls: preset_ctrls,
+            user_metadata: BTreeMap::new(),
+        }];
+        assert_eq!(header.controls_schema[0].kind, ControlKind::Range);
+        let arena = vec![0u8; ARENA_OFFSET_ULTRA_END as usize];
+        build_dnam_container(&mut header, &arena, &arena, false).expect("build container")
+    }
+
+    #[test]
+    fn test_inspect_and_render_with_dnam_engine() {
+        let dir = temp_dir("inspect_render");
+        let dnam_bytes = make_test_container(true, false);
+        let ckpt_bytes = make_test_container(false, true);
+
+        let dnam_path = dir.join("ref.dnam");
+        let ckpt_path = dir.join("ref.dnam-ckpt");
+        fs::write(&dnam_path, &dnam_bytes).expect("write ref.dnam");
+        fs::write(&ckpt_path, &ckpt_bytes).expect("write ref.dnam-ckpt");
+
+        let summary = inspect_container(&dnam_path).expect("inspect dnam");
+        assert_eq!(summary.magic, "DNAM");
+        assert!(!summary.is_checkpoint);
+        assert!(summary.core2_active);
+        assert_eq!(summary.sample_rate_train_hz, 48_000);
+        assert!(!summary.detected_simd_backend.is_empty());
+
+        let ckpt_summary = inspect_container(&ckpt_path).expect("inspect ckpt");
+        assert!(ckpt_summary.is_checkpoint);
+
+        assert!(inspect_container_bytes(b"bad_magic").is_err());
+
+        let mono_in: Vec<f32> = (0..512).map(|i| ((i as f32) * 0.05).sin() * 0.25).collect();
+        let in_mono_path = dir.join("in_mono.wav");
+        write_wav_24bit(&in_mono_path, &mono_in, 48_000, 1).expect("write mono wav");
+
+        let stereo_in: Vec<f32> = (0..1024)
+            .map(|i| ((i as f32) * 0.03).sin() * 0.25)
+            .collect();
+        let in_stereo_path = dir.join("in_stereo.wav");
+        write_wav_24bit(&in_stereo_path, &stereo_in, 48_000, 2).expect("write stereo wav");
+
+        let out_wav = dir.join("out.wav");
+        let crypto = DefaultCryptoProvider::default();
+        let view = DnamContainerView::from_bytes(&dnam_bytes, &crypto).expect("parse view");
+        let first_preset = view.header.presets.first().map(|p| p.id.as_str());
+        let mut overrides = BTreeMap::new();
+        for ctrl in &view.header.controls_schema {
+            if ctrl.declared_range.is_some() {
+                overrides.insert(ctrl.id.clone(), "5.0".to_string());
+            } else if let Some(opts) = &ctrl.declared_options
+                && let Some(first_opt) = opts.first()
+            {
+                overrides.insert(ctrl.id.clone(), first_opt.clone());
+            }
+        }
+
+        render_wav_with_options(
+            &dnam_path,
+            &in_mono_path,
+            &out_wav,
+            "lite",
+            first_preset,
+            &overrides,
+        )
+        .expect("render lite");
+        render_wav_with_options(
+            &dnam_path,
+            &in_stereo_path,
+            &out_wav,
+            "full",
+            None,
+            &overrides,
+        )
+        .expect("render full stereo");
+        render_wav_with_options(
+            &dnam_path,
+            &in_mono_path,
+            &out_wav,
+            "ultra",
+            None,
+            &BTreeMap::new(),
+        )
+        .expect("render ultra");
+
+        let decoded = read_wav(&out_wav).expect("read rendered wav");
+        assert_eq!(decoded.sample_rate_hz, 48_000);
+        assert_eq!(decoded.channels, 2);
+        assert_eq!(decoded.samples.len(), 1024);
+        assert!(decoded.samples.iter().all(|x| x.is_finite()));
+
+        let out_wav2 = dir.join("out2.wav");
+        render_wav_with_container(&dnam_path, &in_mono_path, &out_wav2, &[0.5, 0.5])
+            .expect("render_wav_with_container");
+        render_wav_with_container(&dnam_path, &in_stereo_path, &out_wav2, &[0.5])
+            .expect("render_wav_with_container stereo");
+        assert!(out_wav2.is_file());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+}

@@ -218,3 +218,75 @@ pub fn execute_cli(cli: &DnamCli) -> StudioResult<String> {
         None => Ok(format::format_cli_banner()),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::capture::write_wav_24bit;
+    use dnam_engine::container::{ARENA_OFFSET_ULTRA_END, build_dnam_container};
+    use dnam_engine::schema::DnamJsonHeader;
+    use std::env;
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn execute_cli_dispatches_all_top_level_commands() {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let dir = env::temp_dir().join(format!("dnam_cli_router_{nanos}"));
+        let _ = fs::create_dir_all(&dir);
+
+        let banner = execute_cli(&DnamCli {
+            workspace: dir.clone(),
+            command: None,
+        })
+        .expect("banner");
+        assert!(banner.contains("DNAM Studio & CLI"));
+
+        let mut header = DnamJsonHeader::default_reference(false);
+        let arena = vec![0u8; ARENA_OFFSET_ULTRA_END as usize];
+        let c_bytes =
+            build_dnam_container(&mut header, &arena, &arena, false).expect("build container");
+        let c_path = dir.join("m.dnam");
+        fs::write(&c_path, &c_bytes).expect("write dnam");
+        let in_wav = dir.join("in.wav");
+        let out_wav = dir.join("out.wav");
+        write_wav_24bit(&in_wav, &[0.1, -0.1, 0.2, -0.2], 48_000, 1).expect("write in wav");
+
+        let insp = execute_cli(&DnamCli {
+            workspace: dir.clone(),
+            command: Some(DnamCommand::Inspect {
+                container_path: c_path.clone(),
+            }),
+        })
+        .expect("inspect");
+        assert!(insp.contains("Reference DNAM Model"));
+
+        let rend = execute_cli(&DnamCli {
+            workspace: dir.clone(),
+            command: Some(DnamCommand::Render {
+                container_path: c_path,
+                input_wav: in_wav,
+                output_wav: out_wav,
+                tier: "lite".to_string(),
+                preset: None,
+                set_controls: vec!["gain=5.0".to_string()],
+            }),
+        })
+        .expect("render");
+        assert!(rend.contains("Rendered 24-bit WAV"));
+
+        let tr_st = execute_cli(&DnamCli {
+            workspace: dir.clone(),
+            command: Some(DnamCommand::Trainer {
+                action: train_cmd::TrainerAction::Status,
+            }),
+        })
+        .expect("trainer status");
+        assert!(tr_st.contains("venv_dir"));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+}

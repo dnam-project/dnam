@@ -891,3 +891,90 @@ pub fn create_capture_backend(
 ) -> Box<dyn CaptureBackend> {
     create_capture_backend_with_gain(backend, device_id, sample_rate_hz, 0.0)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_ring_buffer_and_backends_virtual_loopback() {
+        let rb = AtomicF32RingBuffer::with_capacity(8);
+        assert_eq!(rb.capacity(), 8);
+        assert_eq!(rb.available_write(), 8);
+        assert_eq!(rb.push_slice(&[1.0, 2.0, 3.0]), 3);
+        assert_eq!(rb.available_read(), 3);
+        assert_eq!(rb.available_write(), 5);
+
+        let all_devs = list_backend_devices("all");
+        assert!(!all_devs.is_empty());
+        let sw_devs = list_backend_devices("software");
+        assert_eq!(sw_devs[0].device_id, "loopback_default");
+
+        let mut usb = UsbAudioInterfaceBackend {
+            device_id: Some("usb_class_compliant_0".to_string()),
+            ..UsbAudioInterfaceBackend::default()
+        };
+        assert_eq!(usb.backend_name(), "usb");
+        usb.set_send_gain_db(-3.0);
+        assert_eq!(usb.send_gain_db(), -3.0);
+        let cal_usb = usb
+            .calibrate("usb_class_compliant_0", 48_000)
+            .expect("calibrate usb virtual");
+        assert_eq!(cal_usb.backend, "usb");
+
+        let mut anagram = DarkglassAnagramBackend {
+            device_id: Some("anagram_rk3582_usb".to_string()),
+            return_channels: vec![1],
+            anagram_preset: Some("B7K Lead".to_string()),
+            ..DarkglassAnagramBackend::default()
+        };
+        assert_eq!(anagram.backend_name(), "anagram");
+        assert!(
+            anagram
+                .setup_instructions(48_000)
+                .contains("Input 1 (Mono)")
+        );
+        assert!(
+            anagram
+                .setup_instructions(48_000)
+                .contains("Preset: B7K Lead")
+        );
+        anagram.set_send_gain_db(0.0);
+        assert_eq!(anagram.send_gain_db(), 0.0);
+        let cal_anagram = anagram
+            .calibrate("anagram_rk3582_usb", 48_000)
+            .expect("calibrate anagram virtual");
+        assert_eq!(cal_anagram.backend, "anagram");
+
+        let mut sw = SoftwareLoopbackBackend::default();
+        sw.set_send_gain_db(-1.5);
+        assert_eq!(sw.send_gain_db(), -1.5);
+        assert!(sw.setup_instructions(48_000).contains("-1.5 dB"));
+
+        let mut dyn_usb = create_capture_backend("usb", Some("usb_class_compliant_0"), 48_000);
+        assert_eq!(dyn_usb.backend_name(), "usb");
+        dyn_usb.set_send_gain_db(0.0);
+
+        // Empty dry slice returns empty Vec immediately in cpal_play_and_record
+        let empty_rec = cpal_play_and_record(None, 48_000, 1, &[1], 0.0, &[]).expect("empty cpal");
+        assert!(empty_rec.is_empty());
+
+        assert!(!list_backend_devices("usb").is_empty());
+        assert!(!list_backend_devices("anagram").is_empty());
+        assert!(resolve_cpal_device(Some("nonexistent_device_xyz_999"), false).is_err());
+        let _ = resolve_cpal_device(Some("0"), false);
+        let _ = cpal_play_and_record(None, 48_000, 1, &[1], 0.0, &[0.05; 256]);
+
+        let usb_hw = UsbAudioInterfaceBackend {
+            device_id: None,
+            ..UsbAudioInterfaceBackend::default()
+        };
+        let _ = usb_hw.capture_stem(&[0.0; 64], &BTreeMap::new(), &BTreeMap::new());
+
+        let anagram_hw = DarkglassAnagramBackend {
+            device_id: None,
+            ..DarkglassAnagramBackend::default()
+        };
+        let _ = anagram_hw.capture_stem(&[0.0; 64], &BTreeMap::new(), &BTreeMap::new());
+    }
+}

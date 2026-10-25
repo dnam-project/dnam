@@ -530,3 +530,86 @@ pub fn generate_excitation_signal_with_profile(
 pub fn generate_excitation_signal(sample_rate_hz: u32, num_samples: usize) -> Vec<f32> {
     generate_excitation_signal_with_profile(sample_rate_hz, num_samples, None)
 }
+
+#[cfg(test)]
+mod tests {
+    use proptest::prelude::*;
+
+    use super::*;
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(24))]
+
+        #[test]
+        fn prop_generate_excitation_signal_with_profile_bounds_and_finiteness(
+            sample_rate_hz in 8_000_u32..=96_000,
+            num_samples in 64_usize..=2_048,
+            knee in 0.02_f32..=0.80,
+            sat_offset in 0.05_f32..=0.18,
+            has_tail in proptest::bool::ANY,
+            max_delay_ms in 0.0_f32..=500.0,
+            tail_t60_ms in 0.0_f32..=2_000.0,
+            lfo_hz in 0.0_f32..=10.0,
+            res_hz in 80.0_f32..=6_000.0,
+        ) {
+            let prof = TargetExcitationProfile {
+                knee_amplitude_lin: knee,
+                saturation_ceiling_lin: (knee + sat_offset).min(0.98),
+                has_delay_or_reverb_tail: has_tail,
+                estimated_max_delay_ms: max_delay_ms,
+                estimated_tail_t60_ms: tail_t60_ms,
+                detected_lfo_hz: lfo_hz,
+                dominant_resonance_hz: res_hz,
+            };
+            let sig = generate_excitation_signal_with_profile(sample_rate_hz, num_samples, Some(&prof));
+            prop_assert_eq!(sig.len(), num_samples);
+            prop_assert!(sig.iter().all(|&x| x.is_finite() && (-1.0..=1.0).contains(&x)));
+        }
+    }
+
+    #[test]
+    fn test_synth_alignment_pulses_probe_and_excitation_analysis() {
+        assert!(synth_alignment_pulses(48_000, 0).is_empty());
+        assert!(generate_calibration_probe(48_000, 0).is_empty());
+        assert!(generate_excitation_signal_with_profile(48_000, 0, None).is_empty());
+
+        // Short slice fallback in analyze_probe_for_excitation
+        let short_prof = analyze_probe_for_excitation(&[0.0; 16], &[0.0; 16], 48_000);
+        assert_eq!(short_prof, TargetExcitationProfile::default());
+
+        // 8 kHz low sample-rate excitation exercises Nyquist multitone cutoff guard
+        let sig_8k = generate_excitation_signal(8_000, 2_048);
+        assert_eq!(sig_8k.len(), 2_048);
+
+        // Probe synthesis + delay/LFO/soft-clip analysis (ported from test_excitation.py)
+        let n = 48_000_usize;
+        let probe = generate_calibration_probe(48_000, n);
+        let mut wet_delay = vec![0.0_f32; n];
+        for i in 0..n {
+            let t = (i as f32) / 48_000.0;
+            let lfo_mod = 1.0 + 0.65 * (TAU * 3.0 * t).cos();
+            let driven = (probe[i] * 4.5).tanh() * lfo_mod;
+            wet_delay[i] = driven;
+        }
+        let echo_samples = 1_200_usize;
+        for i in echo_samples..n {
+            wet_delay[i] += 0.45 * wet_delay[i - echo_samples];
+        }
+        // Inject decaying echo energy in the Part C silent listening gap (82..95%)
+        let gap_start = (n * 82) / 100;
+        let gap_end = (n * 95) / 100;
+        for (k, sample) in wet_delay[gap_start..gap_end].iter_mut().enumerate() {
+            let decay = (-((k as f32) / 1_500.0)).exp();
+            *sample = 0.18 * decay * (TAU * 600.0 * (k as f32) / 48_000.0).sin();
+        }
+
+        let prof = analyze_probe_for_excitation(&probe, &wet_delay, 48_000);
+        assert!(prof.has_delay_or_reverb_tail);
+        assert!(prof.estimated_max_delay_ms >= 15.0);
+        assert!(prof.estimated_tail_t60_ms >= 80.0);
+        assert!(prof.knee_amplitude_lin < prof.saturation_ceiling_lin);
+
+        let tailored = generate_excitation_signal_with_profile(48_000, 8_192, Some(&prof));
+        assert_eq!(tailored.len(), 8_192);
+    }
+}

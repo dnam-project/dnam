@@ -434,3 +434,283 @@ impl StudioIpcHandler {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proptest::prelude::*;
+    use std::env;
+    use std::fs;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(32))]
+
+        #[test]
+        fn prop_ipc_isolation_and_deep_link_roundtrip(
+            slug in "[a-zA-Z0-9_-]{1,24}",
+            prefix in "[a-zA-Z0-9_]{0,12}",
+            suffix in "[a-zA-Z0-9_]{0,12}",
+        ) {
+            let model_uri = format!("dnam://models/{slug}");
+            let parsed_m = parse_dnam_deep_link(&model_uri).expect("valid model uri");
+            prop_assert_eq!(parsed_m.kind, "model");
+            prop_assert_eq!(parsed_m.target, slug.as_str());
+
+            let market_uri = format!("dnam://marketplace/{slug}");
+            let parsed_mk = parse_dnam_deep_link(&market_uri).expect("valid market uri");
+            prop_assert_eq!(parsed_mk.kind, "marketplace");
+            prop_assert_eq!(parsed_mk.target, slug.as_str());
+
+            let safe_req = StudioIpcRequest {
+                command: "set_parameter".to_string(),
+                args: json!({ "id": slug, "nested": [prefix.clone(), suffix.clone()] }),
+            };
+            prop_assert!(validate_isolated_ipc_request(&safe_req).is_ok());
+
+            let traversal_req = StudioIpcRequest {
+                command: "get_workspace".to_string(),
+                args: json!({ "path": format!("{prefix}..{suffix}") }),
+            };
+            prop_assert!(validate_isolated_ipc_request(&traversal_req).is_err());
+
+            let null_req = StudioIpcRequest {
+                command: "get_workspace".to_string(),
+                args: json!({ "nested": [format!("{prefix}\0{suffix}")] }),
+            };
+            prop_assert!(validate_isolated_ipc_request(&null_req).is_err());
+        }
+    }
+
+    fn temp_dir(tag: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let dir = env::temp_dir().join(format!("dnam_ipc_unit_{tag}_{nanos}"));
+        let _ = fs::create_dir_all(&dir);
+        dir
+    }
+
+    #[test]
+    fn ipc_deep_links_isolation_and_all_handler_commands() {
+        assert_eq!(official_tauri_plugins().len(), 8);
+
+        // Deep link parsing
+        assert_eq!(
+            parse_dnam_deep_link("dnam://models/b7k")
+                .expect("model")
+                .target,
+            "b7k"
+        );
+        assert_eq!(
+            parse_dnam_deep_link("dnam://marketplace/item1")
+                .expect("market")
+                .target,
+            "item1"
+        );
+        assert_eq!(
+            parse_dnam_deep_link("dnam://open?path=/tmp/a.dnam")
+                .expect("open")
+                .target,
+            "/tmp/a.dnam"
+        );
+        assert!(parse_dnam_deep_link("http://bad").is_err());
+        assert!(parse_dnam_deep_link("dnam://models/").is_err());
+        assert!(parse_dnam_deep_link("dnam://marketplace/").is_err());
+        assert!(parse_dnam_deep_link("dnam://open?path=").is_err());
+        assert!(parse_dnam_deep_link("dnam://unknown/route").is_err());
+
+        // Isolation validation
+        assert!(
+            validate_isolated_ipc_request(&StudioIpcRequest {
+                command: "   ".to_string(),
+                args: json!({}),
+            })
+            .is_err()
+        );
+        assert!(
+            validate_isolated_ipc_request(&StudioIpcRequest {
+                command: "get_telemetry".to_string(),
+                args: json!({"arr": ["../secret"]}),
+            })
+            .is_err()
+        );
+
+        let dir = temp_dir("ipc_handler");
+        let mut proj = DnamProject::init(&dir, "WS", "Auth").expect("init");
+        proj.add_model("default", "Default", "Full").expect("add");
+
+        let mut handler = StudioIpcHandler::default();
+        assert!(
+            handler
+                .handle(
+                    &StudioIpcRequest {
+                        command: "get_telemetry".to_string(),
+                        args: json!({}),
+                    },
+                    None
+                )
+                .expect("telemetry")
+                .ok
+        );
+        assert!(
+            handler
+                .handle(
+                    &StudioIpcRequest {
+                        command: "set_parameter".to_string(),
+                        args: json!({"id": "gain", "value": 0.8}),
+                    },
+                    None
+                )
+                .expect("set_parameter")
+                .ok
+        );
+        assert!(
+            handler
+                .handle(
+                    &StudioIpcRequest {
+                        command: "set_switch".to_string(),
+                        args: json!({"id": "voice", "index": 1}),
+                    },
+                    None
+                )
+                .expect("set_switch")
+                .ok
+        );
+        assert!(
+            handler
+                .handle(
+                    &StudioIpcRequest {
+                        command: "list_backends".to_string(),
+                        args: json!({}),
+                    },
+                    None
+                )
+                .expect("list_backends")
+                .ok
+        );
+        assert!(
+            !handler
+                .handle(
+                    &StudioIpcRequest {
+                        command: "get_workspace".to_string(),
+                        args: json!({}),
+                    },
+                    None
+                )
+                .expect("get_workspace none")
+                .ok
+        );
+        assert!(
+            handler
+                .handle(
+                    &StudioIpcRequest {
+                        command: "get_workspace".to_string(),
+                        args: json!({}),
+                    },
+                    Some(dir.as_path())
+                )
+                .expect("get_workspace some")
+                .ok
+        );
+        assert!(
+            !handler
+                .handle(
+                    &StudioIpcRequest {
+                        command: "get_capture_plan".to_string(),
+                        args: json!({}),
+                    },
+                    None
+                )
+                .expect("get_capture_plan none")
+                .ok
+        );
+        assert!(
+            handler
+                .handle(
+                    &StudioIpcRequest {
+                        command: "get_capture_plan".to_string(),
+                        args: json!({"model_id": "default"}),
+                    },
+                    Some(dir.as_path())
+                )
+                .expect("get_capture_plan some")
+                .ok
+        );
+        assert!(
+            handler
+                .handle(
+                    &StudioIpcRequest {
+                        command: "get_plugins".to_string(),
+                        args: json!({}),
+                    },
+                    None
+                )
+                .expect("get_plugins")
+                .ok
+        );
+        assert!(
+            handler
+                .handle(
+                    &StudioIpcRequest {
+                        command: "parse_deep_link".to_string(),
+                        args: json!({"uri": "dnam://models/default"}),
+                    },
+                    None
+                )
+                .expect("parse_deep_link")
+                .ok
+        );
+        assert!(
+            handler
+                .handle(
+                    &StudioIpcRequest {
+                        command: "save_window_state".to_string(),
+                        args: json!({"width": 1600, "height": 900, "x": 10, "y": 20, "maximized": true}),
+                    },
+                    None
+                )
+                .expect("save_window_state")
+                .ok
+        );
+        assert!(
+            handler
+                .handle(
+                    &StudioIpcRequest {
+                        command: "get_window_state".to_string(),
+                        args: json!({}),
+                    },
+                    None
+                )
+                .expect("get_window_state")
+                .ok
+        );
+        assert!(
+            handler
+                .handle(
+                    &StudioIpcRequest {
+                        command: "send_notification".to_string(),
+                        args: json!({"title": "Done", "body": "Ready"}),
+                    },
+                    None
+                )
+                .expect("send_notification")
+                .ok
+        );
+        assert!(
+            !handler
+                .handle(
+                    &StudioIpcRequest {
+                        command: "unknown_cmd".to_string(),
+                        args: json!({}),
+                    },
+                    None
+                )
+                .expect("unknown_cmd")
+                .ok
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+}
