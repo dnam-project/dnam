@@ -25,10 +25,12 @@ tasks:
   cli:
     command: "node"
     args:
-      - "./bin/dnam.mjs"
+      - "./packages/studio/bin/dnam.mjs"
     deps:
       - "~:build-rust"
     preset: "utility"
+    options:
+      runFromWorkspaceRoot: true
     tags:
       - "cli"
 
@@ -175,6 +177,8 @@ tasks:
       - "/pnpm-lock.yaml"
     outputs:
       - "dist/**/*"
+    options:
+      outputStyle: "buffer-only-failure"
     tags:
       - "build"
 

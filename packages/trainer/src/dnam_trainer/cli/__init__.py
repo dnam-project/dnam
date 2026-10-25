@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 from collections.abc import Sequence
 from pathlib import Path
@@ -90,6 +91,8 @@ def main(argv: Sequence[str] | None = None) -> None:
     if argv is not None:
         app(list(argv), result_action="return_value")
     else:
+        if moon_cwd := os.environ.get("MOON_WORKING_DIR"):
+            os.chdir(moon_cwd)
         app()
 
 
