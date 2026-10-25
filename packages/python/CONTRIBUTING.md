@@ -35,8 +35,8 @@ Consult [`AGENTS.md`](AGENTS.md) for the module-to-spec discovery table:
 # Sync dependencies and build the optimized editable wheel
 uv sync
 
-# Or explicitly recompile the PyO3 extension after editing packages/python/rust/*.rs
-uv run maturin develop --manifest-path packages/python/Cargo.toml --release
+# Or explicitly recompile the PyO3 extension via moon
+pnpm moon run python:build
 ```
 
 ---
@@ -47,8 +47,8 @@ uv run maturin develop --manifest-path packages/python/Cargo.toml --release
    - Target Python 3.14 (`py314`). Every function, method, property, pytest fixture, and test helper must have explicit type annotations.
    - Never disable rules, downscale presets, or use `# type: ignore`.
    - Whenever you add or modify a `#[pyfunction]` or `#[pymethods]` signature in `rust/*.rs`, update [`src/dnam_engine/_native.pyi`](src/dnam_engine/_native.pyi) in lockstep.
-2. **Code Formatting & Linting (`ruff`):**
-   - Enforce `line-length = 100` and pass `uv run ruff format --check packages/python` and `uv run ruff check packages/python` with zero warnings.
+2. **Code Formatting & Linting (`ruff` + `clippy`):**
+   - Enforce `line-length = 100` and pass `pnpm moon run python:format-check` and `pnpm moon run python:lint` with zero warnings.
 3. **Zero Per-Element Python Loops Over Audio or Control Arrays:**
    - Never loop over 1D or 2D NumPy arrays in Python to invoke scalar FFI functions. Always pass C-contiguous NumPy arrays into a slice-based `#[pyfunction]` in `rust/*.rs`.
    - Release the GIL (`py.detach(|| ...)`) in `rust/engine.rs` during block audio processing.
@@ -63,26 +63,20 @@ uv run maturin develop --manifest-path packages/python/Cargo.toml --release
 All test files reside in [`tests/`](tests/) (`test_schema.py`, `test_container.py`, `test_control.py`, `test_dsp.py`, `test_provenance.py`, `test_engine.py`, and `test_benchmarks.py`):
 
 ```bash
-# 1. Run Ruff formatter and linter
-uv run ruff format --check packages/python
-uv run ruff check packages/python
+# 1. Run all python quality gates (format-check, lint, typecheck, build, test)
+pnpm moon check python
 
-# 2. Run strict Pyrefly static type checker
-uv run pyrefly check --min-severity=warn
+# 2. Run unit, property-based (Hypothesis), and smoke benchmark tests with >= 95% coverage
+pnpm moon run python:coverage
 
-# 3. Run unit, property-based (Hypothesis), and smoke benchmark tests with >= 95% coverage
-uv run pytest packages/python/tests --cov=dnam_engine --cov-report=term-missing --cov-fail-under=95
-
-# 4. Run full calibrated pytest-benchmark suite
-uv run pytest packages/python/tests/test_benchmarks.py --benchmark-enable --benchmark-columns=min,mean,median,iqr,ops --benchmark-sort=name
+# 3. Run full calibrated pytest-benchmark suite
+pnpm moon run python:bench
 ```
 
 ---
 
 ## 5. Pre-Commit Checklist for `packages/python/`
 
-- [ ] `cargo fmt --all -- --check` and `cargo clippy --package dnam-python --all-targets -- -D warnings` pass with `0` warnings.
-- [ ] `uv run ruff format --check packages/python` and `uv run ruff check packages/python` pass with `0` errors.
-- [ ] `uv run pyrefly check --min-severity=warn` reports `0` diagnostics (with `src/dnam_engine/_native.pyi` up to date).
-- [ ] `uv run pytest packages/python/tests --cov=dnam_engine --cov-fail-under=95` passes with $\ge 95\%$ coverage.
-- [ ] `uv run pytest packages/python/tests/test_benchmarks.py --benchmark-enable` confirms no performance regressions.
+- [ ] `pnpm moon check python` passes all Ruff, Clippy, Pyrefly (`0` diagnostics with `src/dnam_engine/_native.pyi` up to date), build, and test checks.
+- [ ] `pnpm moon run python:coverage` passes with $\ge 95\%$ coverage.
+- [ ] `pnpm moon run python:bench` confirms no performance regressions.

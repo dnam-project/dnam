@@ -15,14 +15,18 @@ This guide covers development, numerical precision, hardware acceleration, and v
 4. **Reference Calibration Integrity:**
    - `dnam capture calibrate` must never back off `send_gain_db` when a hardware device compresses or clips in Step 2; DNAM captures 100% of device gain, compression, and clipping relative to the Step-1 bypass `unity_ref_dbfs`.
 
-## 2. Verification Commands
+## 2. Local Development & Verification Commands
 
 Run from the monorepo root:
 
 ```bash
-uv run ruff format --check
-uv run ruff check
-uv run pyrefly check --min-severity=warn
-uv run pytest packages/trainer/tests --cov=dnam_trainer --cov-report=term-missing --cov-fail-under=95
-uv run pytest packages/trainer/tests/test_benchmarks.py --benchmark-enable
+# Run the `dnam-train` headless 4-stage trainer CLI
+pnpm dnam-train --help  # or: pnpm moon run trainer:cli -- --help
+
+# Run all trainer quality gates (format-check, lint, typecheck, build, test)
+pnpm moon check trainer
+
+# Run trainer coverage (>= 95%) and benchmarks
+pnpm moon run trainer:coverage
+pnpm moon run trainer:bench
 ```

@@ -17,6 +17,20 @@ dependsOn:
   - "python"
 
 tasks:
+  cli:
+    command: "uv"
+    args:
+      - "run"
+      - "--no-sync"
+      - "dnam-train"
+    deps:
+      - "python:build"
+    preset: "utility"
+    options:
+      runFromWorkspaceRoot: true
+    tags:
+      - "cli"
+
   format-check:
     command: "uv"
     args:

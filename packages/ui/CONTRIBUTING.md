@@ -16,13 +16,14 @@ All contributions must also comply with the root [`CONTRIBUTING.md`](../../CONTR
 
 ---
 
-## 2. Verification Commands
+## 2. Local Development & Verification Commands
 
 ```bash
-pnpm --filter @dnam-project/ui dev
-pnpm --filter @dnam-project/ui lint
-pnpm --filter @dnam-project/ui format:check
-pnpm --filter @dnam-project/ui typecheck
-pnpm --filter @dnam-project/ui coverage
-pnpm --filter @dnam-project/ui bench
+# Launch the React Cosmos interactive component & visualizer workbench (http://localhost:5000)
+pnpm ui:dev             # or: pnpm moon run ui:dev
+
+# Run UI quality gates, headless Chromium accessibility/component tests, and benchmarks
+pnpm moon check ui
+pnpm moon run ui:coverage
+pnpm moon run ui:bench
 ```

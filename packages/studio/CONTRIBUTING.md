@@ -14,13 +14,20 @@ All contributions must also comply with the root [`CONTRIBUTING.md`](../../CONTR
 
 ---
 
-## 2. Verification Commands
+## 2. Local Development & Verification Commands
 
 ```bash
-cargo fmt --all -- --check
-cargo clippy --package dnam-studio --all-targets -- -D warnings
-cargo test --package dnam-studio
-pnpm --filter @dnam-project/studio lint
-pnpm --filter @dnam-project/studio typecheck
-pnpm --filter @dnam-project/studio coverage
+# Run the `dnam` CLI (`init`, `model`, `capture`, `train`, `inspect`, `studio`)
+pnpm dnam --help        # or: pnpm moon run studio:cli -- --help
+
+# Launch the Studio UI Vite dev server (http://localhost:1420)
+pnpm studio:dev         # or: pnpm moon run studio:dev
+
+# Launch the native Tauri v2 Desktop Studio app
+pnpm studio:tauri       # or: pnpm moon run studio:tauri-dev
+
+# Run studio quality gates, unit/integration tests, and Playwright E2E tests
+pnpm moon check studio
+pnpm moon run studio:test-e2e
+pnpm moon run studio:coverage
 ```

@@ -47,31 +47,28 @@ Consult [`AGENTS.md`](AGENTS.md) and the submodule `AGENTS.md` files for progres
 
 ## 3. Testing, Coverage ($\ge 95\%$) & Benchmarking Commands
 
-Run all commands from the monorepo root:
+Run all commands from the monorepo root via `moon`:
 
 ```bash
-# 1. Format and lint with zero warnings
-cargo fmt --all -- --check
-cargo clippy --package dnam-engine --all-targets -- -D warnings
+# 1. Run all engine quality gates (format-check, lint, typecheck, build, test)
+pnpm moon check engine
 
-# 2. Run all unit, property-based (proptest), and integration tests
-cargo test --package dnam-engine
+# 2. Run individual engine tasks
+pnpm moon run engine:format-check
+pnpm moon run engine:lint
+pnpm moon run engine:test
 
 # 3. Verify >= 95% line, region, and function coverage
-cargo llvm-cov --package dnam-engine --show-missing-lines
+pnpm moon run engine:coverage
 
 # 4. Run real-time throughput benchmarks
-cargo bench --package dnam-engine
-
-# 5. Run the standalone examples
-cargo run --package dnam-engine --example realtime_audio_block --release
+pnpm moon run engine:bench
 ```
 
 ---
 
 ## 4. Pre-Commit Checklist for `packages/engine/`
 
-- [ ] `cargo fmt --all -- --check` and `cargo clippy --package dnam-engine --all-targets -- -D warnings` pass with `0` warnings.
-- [ ] `cargo test --package dnam-engine` passes all unit, `proptest`, and integration tests (including `tests/realtime_safety.rs` and `tests/backend_parity.rs`).
-- [ ] `cargo llvm-cov --package dnam-engine` confirms $\ge 95\%$ coverage, including all newly added or modified functions and tier branches.
+- [ ] `pnpm moon check engine` passes all formatting, Clippy (`-D warnings`), build, and unit/`proptest`/integration tests (`tests/realtime_safety.rs` and `tests/backend_parity.rs`).
+- [ ] `pnpm moon run engine:coverage` confirms $\ge 95\%$ coverage, including all newly added or modified functions and tier branches.
 - [ ] If any public API or FFI signature changed, `packages/python/rust/` bindings and scoped `AGENTS.md` files (`< 2,500 B`) are updated accordingly.

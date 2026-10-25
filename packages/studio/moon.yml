@@ -22,6 +22,16 @@ dependsOn:
   - "trainer"
 
 tasks:
+  cli:
+    command: "node"
+    args:
+      - "./bin/dnam.mjs"
+    deps:
+      - "~:build-rust"
+    preset: "utility"
+    tags:
+      - "cli"
+
   dev:
     command: "pnpm"
     args:
@@ -136,6 +146,7 @@ tasks:
       - "/packages/engine/src/**/*"
     options:
       mutex: "cargo"
+      outputStyle: "buffer-only-failure"
     tags:
       - "build"
 

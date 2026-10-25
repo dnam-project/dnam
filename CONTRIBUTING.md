@@ -34,51 +34,61 @@ DNAM is organized as a multi-language workspace under `packages/*`. Before modif
 | **Python Engine (`dnam_engine`)** | `packages/python/` | [`packages/python/AGENTS.md`](packages/python/AGENTS.md) | [`packages/python/CONTRIBUTING.md`](packages/python/CONTRIBUTING.md) |
 | **JS / WebAudio SDK (`@dnam-project/engine`)** | `packages/js/` | [`packages/js/AGENTS.md`](packages/js/AGENTS.md) | [`packages/js/CONTRIBUTING.md`](packages/js/CONTRIBUTING.md) |
 | **PyTorch 4-Stage Trainer (`dnam_trainer`)** | `packages/trainer/` | [`packages/trainer/AGENTS.md`](packages/trainer/AGENTS.md) | [`packages/trainer/CONTRIBUTING.md`](packages/trainer/CONTRIBUTING.md) |
+| **Design System & Visualizers (`@dnam-project/ui`)** | `packages/ui/` | [`packages/ui/AGENTS.md`](packages/ui/AGENTS.md) | [`packages/ui/CONTRIBUTING.md`](packages/ui/CONTRIBUTING.md) |
+| **CLI & Desktop Studio (`@dnam-project/studio`)** | `packages/studio/` | [`packages/studio/AGENTS.md`](packages/studio/AGENTS.md) | [`packages/studio/CONTRIBUTING.md`](packages/studio/CONTRIBUTING.md) |
 | **VST3 / CLAP / Standalone Plugin** | `packages/plugin/` | *(Phase 4)* | [`docs/monorepo_implementation_guide.md`](docs/monorepo_implementation_guide.md) |
 | **Web Docs & Interactive Studio** | `packages/web/` | *(Phase 5)* | [`docs/monorepo_implementation_guide.md`](docs/monorepo_implementation_guide.md) |
 
 ---
 
-## 3. Workspace Setup & Verification Commands
+## 3. Workspace Setup, Local Development & Verification Commands
 
-DNAM uses **`moon`** (`@moonrepo/cli`) to orchestrate and cache tasks across **`cargo`** (Rust 2024 edition, `1.85+`), **`uv`** (Python `3.14`), and **`pnpm`** (Node.js `24` / `26` LTS):
+DNAM uses **`moon`** (`@moonrepo/cli`) to orchestrate and cache tasks across **`cargo`** (Rust 2024 edition, `1.99+`), **`uv`** (Python `3.14`), and **`pnpm`** (Node.js `24` / `26` LTS):
+
+### 3.1 Setup & Local Development (CLI, Desktop Studio UI & React Cosmos)
 
 ```bash
 # Install workspace dependencies (Node/moon + Python editable virtual environment)
 pnpm install
 uv sync
 
+# Run the unified `dnam` CLI (`init`, `model`, `capture`, `train`, `inspect`, `studio`)
+pnpm dnam --help        # or: pnpm moon run studio:cli -- --help
+
+# Run the Python 4-stage trainer worker CLI (`dnam-train`)
+pnpm dnam-train --help  # or: pnpm moon run trainer:cli -- --help
+
+# Launch the Desktop Studio UI in browser dev mode (Vite HMR at http://localhost:1420)
+pnpm studio:dev         # or: pnpm moon run studio:dev
+
+# Launch the native Tauri v2 Desktop Studio app (Rust host + WebView)
+pnpm studio:tauri       # or: pnpm moon run studio:tauri-dev
+
+# Launch the React Cosmos component & visualizer workbench (http://localhost:5000)
+pnpm ui:dev             # or: pnpm moon run ui:dev
+```
+
+### 3.2 Quality Gates, Tests & Benchmarks
+
+```bash
 # Run the unified moon DAG across all Rust, Python, and JS/TS packages
 pnpm check              # or: pnpm moon check --all (format-check, lint, typecheck, build, test)
+pnpm build              # or: pnpm moon run :build
+pnpm test               # or: pnpm moon run :test
+pnpm lint               # or: pnpm moon run :lint
+pnpm format:check       # or: pnpm moon run :format-check
+pnpm typecheck          # or: pnpm moon run :typecheck
 pnpm coverage           # or: pnpm moon run :coverage (>= 95% coverage across all packages)
 pnpm bench              # or: pnpm moon run :bench
 pnpm test:e2e           # or: pnpm moon run studio:test-e2e
 
-# Target a single project or task in moon
-pnpm moon run engine:test
-pnpm moon run python:test
-pnpm moon run trainer:test
-pnpm moon run js:test
-pnpm moon run ui:test
-pnpm moon run studio:test
-```
-
-You can also invoke each language toolchain directly when working inside a single ecosystem:
-
-```bash
-# Run Rust formatting, workspace Clippy lints, and engine unit/integration tests
-cargo fmt --all -- --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --package dnam-engine
-
-# Run Python formatting, Ruff lints, strict Pyrefly type checking, and pytest with >= 95% coverage
-uv run ruff format --check
-uv run ruff check
-uv run pyrefly check --min-severity=warn
-uv run pytest packages/python/tests --cov=dnam_engine --cov-report=term-missing --cov-fail-under=95
-
-# Run the monorepo architectural, schema, and link-integrity guardrail verifier
-uv run pytest packages/trainer/tests/test_guardrails.py packages/trainer/tests/integration/test_dnam_verification.py
+# Check or test a single package via moon
+pnpm moon check engine
+pnpm moon check python
+pnpm moon check trainer
+pnpm moon check js
+pnpm moon check ui
+pnpm moon check studio
 ```
 
 ---
@@ -134,7 +144,7 @@ Never copy mathematical equations, clamp tables (`CL-XX`), or JSON schemas into 
 ## 6. Submitting a Pull Request
 
 1. **Create a topic branch** from `main` (`git checkout -b feat/your-feature`).
-2. **Run all package and workspace quality gates** (see [§3](#3-workspace-setup--verification-commands) and the relevant package `CONTRIBUTING.md`).
-3. **Verify `AGENTS.md` byte budgets and Markdown link integrity** via `uv run pytest packages/trainer/tests/test_guardrails.py`.
+2. **Run all package and workspace quality gates** (see [§3](#3-workspace-setup-local-development--verification-commands) and the relevant package `CONTRIBUTING.md`).
+3. **Verify `AGENTS.md` byte budgets and Markdown link integrity** via `pnpm moon run trainer:test`.
 4. **Sign off your commit** (`git commit -s -m "feat(scope): summary"`).
 5. **Open a Pull Request** against `main` describing the motivation, architectural invariants preserved, and benchmark/test results.

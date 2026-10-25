@@ -22,17 +22,14 @@ Consult [`AGENTS.md`](AGENTS.md) for the module-to-spec discovery table:
 
 ## 2. Build & Development Commands
 
-Always use **`pnpm`** from the workspace root or scoped to `@dnam-project/engine`:
+Run all commands via **`moon`**:
 
 ```bash
 # 1. Compile both the native Node.js N-API v8 addon (.node) and WASM SIMD128 binary (.wasm)
-pnpm --filter @dnam-project/engine build:rust
+pnpm moon run js:build-rust
 
-# 2. Bundle ESM entry points, self-contained worklet-processor.js, and .d.ts declarations
-pnpm --filter @dnam-project/engine build:js
-
-# 3. Full build (Rust + TypeScript)
-pnpm --filter @dnam-project/engine build
+# 2. Full build (Rust N-API + WASM + TypeScript ESM bundles + worklet-processor.js + .d.ts)
+pnpm moon run js:build
 ```
 
 ---
@@ -50,16 +47,12 @@ Root [`biome.json`](../../biome.json) and [`tsconfig.json`](tsconfig.json) enfor
 ## 4. Testing, Coverage ($\ge 95\%$) & Benchmarks (`vitest` v5 + `fast-check`)
 
 ```bash
-# 1. Run Biome linter and formatter checks
-pnpm --filter @dnam-project/engine lint
-pnpm --filter @dnam-project/engine format:check
+# 1. Run all js quality gates (format-check, lint, typecheck, build, test)
+pnpm moon check js
 
-# 2. Run strict TypeScript typechecker
-pnpm --filter @dnam-project/engine typecheck
+# 2. Run unit, fast-check property, and differential N-API vs WASM tests with >= 95% v8 coverage
+pnpm moon run js:coverage
 
-# 3. Run unit, fast-check property, and differential N-API vs WASM tests with >= 95% v8 coverage
-pnpm --filter @dnam-project/engine coverage
-
-# 4. Run statistical Vitest 5 benchmarks
-pnpm --filter @dnam-project/engine bench
+# 3. Run statistical Vitest 5 benchmarks
+pnpm moon run js:bench
 ```

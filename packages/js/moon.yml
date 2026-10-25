@@ -102,6 +102,7 @@ tasks:
       - "dist/dnam_engine.wasm"
     options:
       mutex: "cargo"
+      outputStyle: "buffer-only-failure"
     tags:
       - "build"
 
@@ -123,6 +124,8 @@ tasks:
       - "dist/**/*.js.map"
       - "dist/**/*.d.ts"
       - "dist/**/*.d.ts.map"
+    options:
+      outputStyle: "buffer-only-failure"
     tags:
       - "build"
 

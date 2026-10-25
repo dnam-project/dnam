@@ -24,6 +24,8 @@
     "lint": "moon run :lint",
     "format:check": "moon run :format-check",
     "typecheck": "moon run :typecheck",
+    "dnam": "moon run studio:cli --",
+    "dnam-train": "moon run trainer:cli --",
     "ui:dev": "moon run ui:dev",
     "studio:dev": "moon run studio:dev",
     "studio:tauri": "moon run studio:tauri-dev"

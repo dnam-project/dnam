@@ -108,6 +108,7 @@ tasks:
     options:
       runFromWorkspaceRoot: true
       mutex: "cargo"
+      outputStyle: "buffer-only-failure"
     tags:
       - "build"
 

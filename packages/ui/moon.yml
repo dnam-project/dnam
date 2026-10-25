@@ -104,6 +104,8 @@ tasks:
       - "/pnpm-lock.yaml"
     outputs:
       - "dist/**/*"
+    options:
+      outputStyle: "buffer-only-failure"
     tags:
       - "build"
 
