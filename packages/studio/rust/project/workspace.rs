@@ -403,15 +403,6 @@ impl DnamProject {
                 creator_public_key_hex: pub_hex,
                 signing_key_path: None,
             },
-            capture: CaptureSettings {
-                backend: "software".to_string(),
-                device_id: "loopback_default".to_string(),
-                calibrated_latency_samples: 0,
-                noise_floor_dbfs: -96.0,
-                send_gain_db: 0.0,
-                unity_ref_dbfs: 0.0,
-                excitation_profile: None,
-            },
             models: Vec::new(),
         };
 
@@ -455,25 +446,28 @@ impl DnamProject {
             .join("input.wav")
     }
 
-    /// Updates capture calibration settings and saves `dnam.toml`.
+    /// Updates capture calibration settings on `model_id` and saves `models/<model_id>/model.toml`.
     pub fn update_calibration(
-        &mut self,
+        &self,
+        model_id: &str,
         backend: &str,
         device_id: &str,
         latency_samples: i32,
         noise_floor_dbfs: f32,
     ) -> StudioResult<()> {
-        self.manifest.capture.backend = backend.to_string();
-        self.manifest.capture.device_id = device_id.to_string();
-        self.manifest.capture.calibrated_latency_samples = latency_samples;
-        self.manifest.capture.noise_floor_dbfs = noise_floor_dbfs;
-        self.save()
+        let mut model = self.load_model(model_id)?;
+        model.capture.backend = backend.to_string();
+        model.capture.device_id = device_id.to_string();
+        model.capture.calibrated_latency_samples = latency_samples;
+        model.capture.noise_floor_dbfs = noise_floor_dbfs;
+        self.save_model(&model)
     }
 
-    /// Updates full 2-step calibration settings including `send_gain_db` and [`TargetExcitationProfile`] and saves `dnam.toml`.
+    /// Updates full 2-step calibration settings on `model_id` including `send_gain_db` and [`TargetExcitationProfile`] and saves `models/<model_id>/model.toml`.
     #[allow(clippy::too_many_arguments)]
     pub fn update_calibration_with_profile(
-        &mut self,
+        &self,
+        model_id: &str,
         backend: &str,
         device_id: &str,
         send_gain_db: f32,
@@ -482,14 +476,15 @@ impl DnamProject {
         unity_ref_dbfs: f32,
         profile: TargetExcitationProfile,
     ) -> StudioResult<()> {
-        self.manifest.capture.backend = backend.to_string();
-        self.manifest.capture.device_id = device_id.to_string();
-        self.manifest.capture.send_gain_db = send_gain_db;
-        self.manifest.capture.calibrated_latency_samples = latency_samples;
-        self.manifest.capture.noise_floor_dbfs = noise_floor_dbfs;
-        self.manifest.capture.unity_ref_dbfs = unity_ref_dbfs;
-        self.manifest.capture.excitation_profile = Some(profile);
-        self.save()
+        let mut model = self.load_model(model_id)?;
+        model.capture.backend = backend.to_string();
+        model.capture.device_id = device_id.to_string();
+        model.capture.send_gain_db = send_gain_db;
+        model.capture.calibrated_latency_samples = latency_samples;
+        model.capture.noise_floor_dbfs = noise_floor_dbfs;
+        model.capture.unity_ref_dbfs = unity_ref_dbfs;
+        model.capture.excitation_profile = Some(profile);
+        self.save_model(&model)
     }
 
     /// Atomically persists `dnam.toml`.
@@ -535,7 +530,7 @@ impl DnamProject {
             description: String::new(),
             output_mode: "stereo".to_string(),
             topology: "auto".to_string(),
-            excitation_profile: None,
+            capture: CaptureSettings::default(),
             ranges: Vec::new(),
             switches: Vec::new(),
             presets: Vec::new(),
@@ -797,22 +792,15 @@ impl DnamProject {
         normalized_ranges: BTreeMap<String, f32>,
         switches: BTreeMap<String, usize>,
     ) -> StudioResult<StemRecord> {
+        let model = self.load_model(model_id)?;
         let dry_rel = format!("models/{model_id}/stems/input.wav");
         let dry_path = self.model_dry_input_wav_path(model_id);
         let wet_wav = read_wav(wet_wav_path)?;
         if !dry_path.is_file() {
-            let model_prof = self
-                .load_model(model_id)
-                .ok()
-                .and_then(|m| m.excitation_profile);
-            let prof_ref =
-                model_prof
-                    .as_ref()
-                    .or(self.manifest.capture.excitation_profile.as_ref());
             let synth = generate_excitation_signal_with_profile(
                 self.manifest.project.sample_rate_hz,
                 wet_wav.samples.len().max(2_048),
-                prof_ref,
+                model.capture.excitation_profile.as_ref(),
             );
             write_wav_24bit(&dry_path, &synth, self.manifest.project.sample_rate_hz, 1)?;
         }
@@ -823,8 +811,8 @@ impl DnamProject {
                 "External wet WAV contains 0 samples".to_string(),
             ));
         }
-        let locked_lag = if self.manifest.capture.calibrated_latency_samples != 0 {
-            Some(self.manifest.capture.calibrated_latency_samples)
+        let locked_lag = if model.capture.calibrated_latency_samples != 0 {
+            Some(model.capture.calibrated_latency_samples)
         } else {
             None
         };
@@ -834,7 +822,7 @@ impl DnamProject {
             64,
             locked_lag,
             self.manifest.project.sample_rate_hz,
-            Some(self.manifest.capture.noise_floor_dbfs),
+            Some(model.capture.noise_floor_dbfs),
         )?;
         let aligned_wet =
             apply_subsample_shift_fft(&wet_wav.samples[..min_len], align.subsample_lag_samples);

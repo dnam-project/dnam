@@ -25,8 +25,6 @@ pub struct DnamProjectManifest {
     pub schema_version: String,
     /// Workspace metadata.
     pub project: ProjectMetadata,
-    /// Capture & re-amp hardware defaults.
-    pub capture: CaptureSettings,
     /// Registered model IDs in `models/<id>/model.toml`.
     pub models: Vec<String>,
 }
@@ -47,7 +45,7 @@ pub struct ProjectMetadata {
     pub signing_key_path: Option<String>,
 }
 
-/// Hardware/software capture defaults in `dnam.toml`.
+/// Per-model hardware/software capture & calibration settings in `models/<id>/model.toml`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CaptureSettings {
     /// Active backend (`"software"`, `"usb"`, or `"anagram"`).
@@ -64,9 +62,23 @@ pub struct CaptureSettings {
     /// Step-1 unity reference level in dBFS (`0.0` default).
     #[serde(default)]
     pub unity_ref_dbfs: f32,
-    /// Probed target device excitation profile used to synthesize `audio/input.wav`.
+    /// Probed target device excitation profile used to synthesize `models/<id>/stems/input.wav`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub excitation_profile: Option<TargetExcitationProfile>,
+}
+
+impl Default for CaptureSettings {
+    fn default() -> Self {
+        Self {
+            backend: "software".to_string(),
+            device_id: "loopback_default".to_string(),
+            calibrated_latency_samples: 0,
+            noise_floor_dbfs: -96.0,
+            send_gain_db: 0.0,
+            unity_ref_dbfs: 0.0,
+            excitation_profile: None,
+        }
+    }
 }
 
 /// Continuous range parameter definition in `models/<id>/model.toml`.
@@ -166,9 +178,9 @@ pub struct ModelManifest {
     /// Architecture topology (`"auto"`, `"core1_only"`, or `"full"`).
     #[serde(default = "default_topology")]
     pub topology: String,
-    /// Optional per-model probed target device excitation profile.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub excitation_profile: Option<TargetExcitationProfile>,
+    /// Per-model capture & calibration settings.
+    #[serde(default)]
+    pub capture: CaptureSettings,
     /// Continuous range controls.
     pub ranges: Vec<ControlRangeSpec>,
     /// Discrete switch controls.

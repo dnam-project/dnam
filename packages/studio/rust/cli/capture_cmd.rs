@@ -143,9 +143,11 @@ pub fn run_capture(workspace: &Path, action: &CaptureAction) -> StudioResult<Str
             send_gain_db,
             yes,
         } => {
-            let mut proj = DnamProject::open(workspace)?;
+            let proj = DnamProject::open(workspace)?;
             let sr = proj.manifest().project.sample_rate_hz;
-            let initial_gain_db = send_gain_db.unwrap_or(proj.manifest().capture.send_gain_db);
+            let model_id = resolve_target_model_id(&proj, model.as_deref())?;
+            let model_manifest = proj.load_model(&model_id)?;
+            let initial_gain_db = send_gain_db.unwrap_or(model_manifest.capture.send_gain_db);
             let cap_backend =
                 create_capture_backend_with_gain(backend, Some(device), sr, initial_gain_db);
             let auto_yes = *yes || backend == "software";
@@ -155,20 +157,12 @@ pub fn run_capture(workspace: &Path, action: &CaptureAction) -> StudioResult<Str
                 &mut |setup| format::prompt_calibration_step1(setup, auto_yes),
                 &mut |step1| format::prompt_calibration_step2(step1, auto_yes),
             )?;
-            if let Ok(model_id) = resolve_target_model_id(&proj, model.as_deref()) {
-                let tailored = generate_excitation_signal_with_profile(
-                    sr,
-                    4_096,
-                    Some(&cal.excitation_profile),
-                );
-                let dry_path = proj.model_dry_input_wav_path(&model_id);
-                write_wav_24bit(&dry_path, &tailored, sr, 1)?;
-                if let Ok(mut m) = proj.load_model(&model_id) {
-                    m.excitation_profile = Some(cal.excitation_profile.clone());
-                    let _ = proj.save_model(&m);
-                }
-            }
+            let tailored =
+                generate_excitation_signal_with_profile(sr, 4_096, Some(&cal.excitation_profile));
+            let dry_path = proj.model_dry_input_wav_path(&model_id);
+            write_wav_24bit(&dry_path, &tailored, sr, 1)?;
             proj.update_calibration_with_profile(
+                &model_id,
                 backend,
                 device,
                 cal.send_gain_db,
@@ -200,9 +194,9 @@ pub fn run_capture(workspace: &Path, action: &CaptureAction) -> StudioResult<Str
             countdown_sec,
             all_stems,
         } => {
-            let mut proj = DnamProject::open(workspace)?;
+            let proj = DnamProject::open(workspace)?;
             let model_id = resolve_target_model_id(&proj, model.as_deref())?;
-            let manifest = proj.load_model(&model_id)?;
+            let mut manifest = proj.load_model(&model_id)?;
             let ckpt_path = workspace
                 .join("models")
                 .join(&model_id)
@@ -212,24 +206,20 @@ pub fn run_capture(workspace: &Path, action: &CaptureAction) -> StudioResult<Str
             let sr = proj.manifest().project.sample_rate_hz;
             let backend_name = backend
                 .as_deref()
-                .unwrap_or(&proj.manifest().capture.backend)
+                .unwrap_or(&manifest.capture.backend)
                 .to_string();
-            let device_id = proj.manifest().capture.device_id.clone();
+            let device_id = manifest.capture.device_id.clone();
             let auto_yes = *yes || backend_name == "software";
             let mut cap_backend = create_capture_backend_with_gain(
                 &backend_name,
                 Some(&device_id),
                 sr,
-                proj.manifest().capture.send_gain_db,
+                manifest.capture.send_gain_db,
             );
 
             // Always ensure target probe calibration & probe-optimized dry stem synthesis have run
             let dry_path = proj.model_dry_input_wav_path(&model_id);
-            let mut active_profile = manifest
-                .excitation_profile
-                .clone()
-                .or_else(|| proj.manifest().capture.excitation_profile.clone());
-            if active_profile.is_none() || !dry_path.is_file() {
+            if manifest.capture.excitation_profile.is_none() || !dry_path.is_file() {
                 let cal = cap_backend.calibrate_with_prompts(
                     &device_id,
                     sr,
@@ -237,11 +227,8 @@ pub fn run_capture(workspace: &Path, action: &CaptureAction) -> StudioResult<Str
                     &mut |step1| format::prompt_calibration_step2(step1, auto_yes),
                 )?;
                 cap_backend.set_send_gain_db(cal.send_gain_db);
-                active_profile = Some(cal.excitation_profile.clone());
-                let mut m = proj.load_model(&model_id)?;
-                m.excitation_profile = Some(cal.excitation_profile.clone());
-                proj.save_model(&m)?;
                 proj.update_calibration_with_profile(
+                    &model_id,
                     &backend_name,
                     &device_id,
                     cal.send_gain_db,
@@ -250,21 +237,25 @@ pub fn run_capture(workspace: &Path, action: &CaptureAction) -> StudioResult<Str
                     cal.unity_ref_dbfs,
                     cal.excitation_profile,
                 )?;
+                manifest = proj.load_model(&model_id)?;
             }
 
-            let dry =
-                generate_excitation_signal_with_profile(sr, *samples, active_profile.as_ref());
+            let dry = generate_excitation_signal_with_profile(
+                sr,
+                *samples,
+                manifest.capture.excitation_profile.as_ref(),
+            );
             let dry_sha = compute_pcm_sha256(&dry);
             let stems_dir = workspace.join("models").join(&model_id).join("stems");
             let dry_rel = format!("models/{model_id}/stems/input.wav");
             write_wav_24bit(&dry_path, &dry, sr, 1)?;
 
-            let locked_lag = if proj.manifest().capture.calibrated_latency_samples != 0 {
-                Some(proj.manifest().capture.calibrated_latency_samples)
+            let locked_lag = if manifest.capture.calibrated_latency_samples != 0 {
+                Some(manifest.capture.calibrated_latency_samples)
             } else {
                 None
             };
-            let baseline_noise = Some(proj.manifest().capture.noise_floor_dbfs);
+            let baseline_noise = Some(manifest.capture.noise_floor_dbfs);
 
             let pending: Vec<_> = plan
                 .steps

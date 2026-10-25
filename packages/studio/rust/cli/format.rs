@@ -40,24 +40,20 @@ pub fn format_workspace_status(manifest: &DnamProjectManifest, models: &[ModelMa
         manifest.project.name, manifest.project.author, manifest.project.sample_rate_hz
     ));
     lines.push(format!(
-        "Capture: backend={} device={} send={:+.1} dB latency={} samples noise={:.1} dBFS",
-        manifest.capture.backend,
-        manifest.capture.device_id,
-        manifest.capture.send_gain_db,
-        manifest.capture.calibrated_latency_samples,
-        manifest.capture.noise_floor_dbfs
-    ));
-    lines.push(format!(
         "Native SIMD Engine: {}",
         detect_native_backend_str()
     ));
     lines.push(format!("Models ({}):", models.len()));
     for m in models {
         lines.push(format!(
-            "  - {} ({}, tier={}, ranges={}, switches={}, stems={})",
+            "  - {} ({}, tier={}, backend={}:{}, send={:+.1} dB, latency={} samples, ranges={}, switches={}, stems={})",
             m.model_id,
             m.title,
             m.tier,
+            m.capture.backend,
+            m.capture.device_id,
+            m.capture.send_gain_db,
+            m.capture.calibrated_latency_samples,
             m.ranges.len(),
             m.switches.len(),
             m.stems.len()
