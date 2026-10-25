@@ -1,0 +1,15 @@
+[settings]
+lockfile = true
+idiomatic_version_file_enable_tools = ["node", "pnpm", "python", "rust"]
+# Restrict to built-in core & verified aqua binaries; forbid third-party shell/lua plugin repos
+disable_backends = ["asdf", "vfox"]
+cargo.binstall = false
+
+[settings.aqua]
+github_attestations = true
+cosign = true
+slsa = true
+
+[tools]
+"aqua:moonrepo/moon" = "2.6.4"
+uv = "0.11.21"

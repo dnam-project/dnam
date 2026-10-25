@@ -34,5 +34,12 @@
     "@biomejs/biome": "catalog:",
     "@moonrepo/cli": "catalog:",
     "typescript": "catalog:"
+  },
+  "devEngines": {
+    "runtime": {
+      "name": "node",
+      "version": "26.12.1",
+      "onFail": "download"
+    }
   }
 }
