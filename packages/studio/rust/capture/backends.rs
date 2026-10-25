@@ -242,14 +242,18 @@ pub fn query_cpal_devices(backend: &str) -> Vec<AudioDeviceDescriptor> {
                     .map(cpal::SupportedStreamConfig::sample_rate)
             })
             .unwrap_or(48_000);
-        if backend == "anagram" {
-            let lower = name.to_ascii_lowercase();
-            if !lower.contains("anagram") && !lower.contains("darkglass") {
-                continue;
-            }
+        let lower = name.to_ascii_lowercase();
+        let is_anagram = lower.contains("anagram") || lower.contains("darkglass");
+        if backend == "anagram" && !is_anagram {
+            continue;
         }
+        let resolved_backend = if backend == "all" || backend.is_empty() {
+            if is_anagram { "anagram" } else { "usb" }
+        } else {
+            backend
+        };
         out.push(AudioDeviceDescriptor {
-            backend: backend.to_string(),
+            backend: resolved_backend.to_string(),
             device_id: format!("cpal_{idx}"),
             name,
             sample_rate_hz: sr,
@@ -260,9 +264,23 @@ pub fn query_cpal_devices(backend: &str) -> Vec<AudioDeviceDescriptor> {
     out
 }
 
-/// Lists available devices for `backend`, querying `cpal` hardware devices for `"usb"` and `"anagram"`.
+/// Lists available devices for `backend` (`"all"`, `"anagram"`, `"usb"`, or `"software"`).
 pub fn list_backend_devices(backend: &str) -> Vec<AudioDeviceDescriptor> {
     match backend {
+        "all" | "" => {
+            let mut devs = query_cpal_devices("all");
+            if devs.is_empty() {
+                devs.push(AudioDeviceDescriptor {
+                    backend: "usb".to_string(),
+                    device_id: "usb_class_compliant_0".to_string(),
+                    name: "USB Audio Class 2.0 24-Bit Re-Amp Interface".to_string(),
+                    sample_rate_hz: 48_000,
+                    max_input_channels: 2,
+                    max_output_channels: 2,
+                });
+            }
+            devs
+        }
         "anagram" => {
             let mut devs = query_cpal_devices("anagram");
             if devs.is_empty() {
@@ -272,8 +290,8 @@ pub fn list_backend_devices(backend: &str) -> Vec<AudioDeviceDescriptor> {
                     name: "Darkglass Anagram RK3582 Re-Amp Interface (USB Out 9 -> In 1/2)"
                         .to_string(),
                     sample_rate_hz: 48_000,
-                    max_input_channels: 2,
-                    max_output_channels: 10,
+                    max_input_channels: 3,
+                    max_output_channels: 9,
                 });
             }
             devs

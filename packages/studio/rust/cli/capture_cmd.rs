@@ -23,11 +23,11 @@ use crate::project::{
 pub enum CaptureAction {
     /// List available capture backends (`software`, `usb`, `anagram`).
     Backends,
-    /// List audio interfaces for a capture backend.
+    /// List audio interfaces (lists all discovered `cpal` hardware devices when `--backend` is omitted).
     Devices {
-        /// Backend name (`software`, `usb`, `anagram`).
-        #[arg(long, default_value = "software")]
-        backend: String,
+        /// Optional backend filter (`anagram`, `usb`, `software`).
+        #[arg(long)]
+        backend: Option<String>,
     },
     /// Generate a 24-bit dry excitation WAV file.
     Generate {
@@ -114,7 +114,7 @@ pub fn run_capture(workspace: &Path, action: &CaptureAction) -> StudioResult<Str
             Ok(serde_json::to_string_pretty(&list)?)
         }
         CaptureAction::Devices { backend } => {
-            let devices = list_backend_devices(backend);
+            let devices = list_backend_devices(backend.as_deref().unwrap_or("all"));
             Ok(serde_json::to_string_pretty(&devices)?)
         }
         CaptureAction::Generate {
