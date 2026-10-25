@@ -37,7 +37,7 @@ packages/js/coverage/
 *.wav
 
 # IDEs & OS
-.vscode/
+*.code-workspace
 .DS_Store
 *.swp
 

@@ -1,0 +1,58 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "moon: check",
+      "type": "shell",
+      "command": "pnpm",
+      "args": ["moon", "check", "--all"],
+      "group": {
+        "kind": "test",
+        "isDefault": true
+      },
+      "problemMatcher": ["$tsc", "$rustc"]
+    },
+    {
+      "label": "moon: test",
+      "type": "shell",
+      "command": "pnpm",
+      "args": ["moon", "run", ":test"],
+      "group": "test",
+      "problemMatcher": []
+    },
+    {
+      "label": "moon: build",
+      "type": "shell",
+      "command": "pnpm",
+      "args": ["moon", "run", ":build"],
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      "problemMatcher": ["$tsc", "$rustc"]
+    },
+    {
+      "label": "moon: lint & typecheck",
+      "type": "shell",
+      "command": "pnpm",
+      "args": ["moon", "run", ":format-check", ":lint", ":typecheck"],
+      "problemMatcher": ["$tsc", "$rustc"]
+    },
+    {
+      "label": "studio: dev",
+      "type": "shell",
+      "command": "pnpm",
+      "args": ["moon", "run", "studio:dev"],
+      "isBackground": true,
+      "problemMatcher": []
+    },
+    {
+      "label": "ui: dev",
+      "type": "shell",
+      "command": "pnpm",
+      "args": ["moon", "run", "ui:dev"],
+      "isBackground": true,
+      "problemMatcher": []
+    }
+  ]
+}

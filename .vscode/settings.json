@@ -1,0 +1,103 @@
+{
+  "editor.formatOnSave": true,
+  "editor.rulers": [100],
+  "files.eol": "\n",
+  "files.insertFinalNewline": true,
+  "files.trimTrailingWhitespace": true,
+  "files.exclude": {
+    "**/.DS_Store": true,
+    "**/.hypothesis": true,
+    "**/.pytest_cache": true,
+    "**/.ruff_cache": true,
+    "**/.vitest": true,
+    "**/__pycache__": true,
+    ".benchmarks": true,
+    ".moon/cache": true,
+    ".moon/docker": true
+  },
+  "search.exclude": {
+    "**/.benchmarks": true,
+    "**/.hypothesis": true,
+    "**/.moon/cache": true,
+    "**/.moon/docker": true,
+    "**/.playwright": true,
+    "**/.playwright-cli": true,
+    "**/.pytest_cache": true,
+    "**/.ruff_cache": true,
+    "**/.venv": true,
+    "**/.vitest": true,
+    "**/build": true,
+    "**/cosmos-export": true,
+    "**/coverage": true,
+    "**/dist": true,
+    "**/node_modules": true,
+    "**/playwright-report": true,
+    "**/target": true,
+    "**/test-results": true,
+    "pnpm-lock.yaml": true,
+    "uv.lock": true,
+    "Cargo.lock": true
+  },
+  "files.watcherExclude": {
+    "**/.benchmarks/**": true,
+    "**/.git/objects/**": true,
+    "**/.git/subtree-cache/**": true,
+    "**/.hypothesis/**": true,
+    "**/.moon/cache/**": true,
+    "**/.moon/docker/**": true,
+    "**/.playwright/**": true,
+    "**/.playwright-cli/**": true,
+    "**/.pytest_cache/**": true,
+    "**/.ruff_cache/**": true,
+    "**/.venv/**": true,
+    "**/.vitest/**": true,
+    "**/build/**": true,
+    "**/cosmos-export/**": true,
+    "**/coverage/**": true,
+    "**/dist/**": true,
+    "**/node_modules/**": true,
+    "**/playwright-report/**": true,
+    "**/target/**": true,
+    "**/test-results/**": true
+  },
+  "[javascript]": {
+    "editor.defaultFormatter": "biomejs.biome"
+  },
+  "[javascriptreact]": {
+    "editor.defaultFormatter": "biomejs.biome"
+  },
+  "[typescript]": {
+    "editor.defaultFormatter": "biomejs.biome"
+  },
+  "[typescriptreact]": {
+    "editor.defaultFormatter": "biomejs.biome"
+  },
+  "[json]": {
+    "editor.defaultFormatter": "biomejs.biome"
+  },
+  "[jsonc]": {
+    "editor.defaultFormatter": "biomejs.biome"
+  },
+  "[css]": {
+    "editor.defaultFormatter": "biomejs.biome"
+  },
+  "typescript.tsdk": "node_modules/typescript/lib",
+  "[python]": {
+    "editor.defaultFormatter": "charliermarsh.ruff",
+    "editor.codeActionsOnSave": {
+      "source.fixAll.ruff": "explicit",
+      "source.organizeImports.ruff": "explicit"
+    }
+  },
+  "python.defaultInterpreterPath": "${workspaceFolder}/.venv/bin/python",
+  "python.analysis.typeCheckingMode": "off",
+  "python.testing.pytestEnabled": true,
+  "python.testing.unittestEnabled": false,
+  "python.testing.pytestArgs": ["packages/python/tests", "packages/trainer/tests"],
+  "[rust]": {
+    "editor.defaultFormatter": "rust-lang.rust-analyzer"
+  },
+  "rust-analyzer.linkedProjects": ["Cargo.toml"],
+  "rust-analyzer.check.command": "clippy",
+  "rust-analyzer.check.extraArgs": ["--all-targets", "--", "-D", "warnings"]
+}
