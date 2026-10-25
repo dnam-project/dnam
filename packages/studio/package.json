@@ -3,7 +3,12 @@
   "version": "0.1.0",
   "description": "Unified Rust/Node dnam CLI and Tauri v2 Desktop Studio for Dynamic Neural Audio Modeler (DNAM / Tri-Physics)",
   "type": "module",
-  "license": "Apache-2.0",
+  "license": "LicenseRef-DNAM-1.0.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/dnam-project/dnam.git",
+    "directory": "packages/studio"
+  },
   "engines": {
     "node": ">=24.0.0"
   },
@@ -32,46 +37,43 @@
     }
   },
   "scripts": {
-    "dev": "vite",
-    "build": "vite build --mode lib && tsc -p tsconfig.build.json --emitDeclarationOnly",
-    "tauri": "tauri",
-    "tauri:dev": "tauri dev",
-    "tauri:build": "tauri build",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
-    "lint": "biome check .",
-    "format:check": "biome format .",
-    "test": "vitest run",
-    "test:e2e": "playwright test",
-    "coverage": "vitest run --coverage"
+    "dev": "moon run studio:dev",
+    "build": "moon run studio:build",
+    "tauri:dev": "moon run studio:tauri-dev",
+    "typecheck": "moon run studio:typecheck",
+    "lint": "moon run studio:lint",
+    "format:check": "moon run studio:format-check",
+    "test": "moon run studio:test",
+    "test:e2e": "moon run studio:test-e2e",
+    "coverage": "moon run studio:coverage"
   },
   "dependencies": {
     "@dnam-project/engine": "workspace:*",
     "@dnam-project/ui": "workspace:*",
-    "@tailwindcss/vite": "^4.1.0",
-    "@tauri-apps/api": "^2.12.4",
-    "@tauri-apps/plugin-dialog": "^2.8.3",
-    "@tauri-apps/plugin-opener": "^2.7.2",
-    "lucide-react": "^1.0.0",
-    "react": "^19.1.0",
-    "react-dom": "^19.1.0",
-    "tailwindcss": "^4.1.0"
+    "@tailwindcss/vite": "catalog:",
+    "@tauri-apps/api": "catalog:",
+    "@tauri-apps/plugin-dialog": "catalog:",
+    "@tauri-apps/plugin-opener": "catalog:",
+    "lucide-react": "catalog:",
+    "react": "catalog:",
+    "react-dom": "catalog:",
+    "tailwindcss": "catalog:"
   },
   "devDependencies": {
-    "@axe-core/playwright": "^4.14.0",
-    "@biomejs/biome": "^2.6.2",
-    "@playwright/test": "^1.64.1",
-    "@tauri-apps/cli": "^2.12.4",
-    "@types/node": "^26.0.0",
-    "@types/react": "^19.1.0",
-    "@types/react-dom": "^19.1.0",
-    "@vitejs/plugin-react": "^6.1.2",
-    "@vitest/browser-playwright": "^5.0.5",
-    "@vitest/coverage-v8": "^5.0.5",
-    "axe-core": "^4.14.0",
-    "playwright": "^1.64.1",
-    "typescript": "^5.8.3",
-    "vite": "^8.3.5",
-    "vitest": "^5.0.5",
-    "vitest-browser-react": "^2.3.0"
+    "@axe-core/playwright": "catalog:",
+    "@playwright/test": "catalog:",
+    "@tauri-apps/cli": "catalog:",
+    "@types/node": "catalog:",
+    "@types/react": "catalog:",
+    "@types/react-dom": "catalog:",
+    "@vitejs/plugin-react": "catalog:",
+    "@vitest/browser-playwright": "catalog:",
+    "@vitest/coverage-v8": "catalog:",
+    "axe-core": "catalog:",
+    "playwright": "catalog:",
+    "typescript": "catalog:",
+    "vite": "catalog:",
+    "vitest": "catalog:",
+    "vitest-browser-react": "catalog:"
   }
 }

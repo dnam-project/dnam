@@ -1,0 +1,171 @@
+$schema: "https://moonrepo.dev/schemas/project.json"
+
+id: "ui"
+language: "typescript"
+layer: "library"
+stack: "frontend"
+tags:
+  - "typescript"
+  - "react"
+  - "ui"
+  - "tailwind"
+
+project:
+  name: "@dnam-project/ui"
+  description: "Unified React 19, Tailwind CSS v4, shadcn/ui (Base UI), and lucide-react Design System for DNAM"
+
+dependsOn:
+  - "js"
+
+tasks:
+  dev:
+    command: "pnpm"
+    args:
+      - "exec"
+      - "cosmos"
+    deps:
+      - "js:build"
+    preset: "server"
+
+  format-check:
+    command: "pnpm"
+    args:
+      - "exec"
+      - "biome"
+      - "format"
+      - "."
+    inputs:
+      - "package.json"
+      - "tsconfig*.json"
+      - "vite.config.ts"
+      - "cosmos.config.json"
+      - "src/**/*"
+      - "tests/**/*"
+      - "/biome.json"
+      - "/pnpm-lock.yaml"
+    tags:
+      - "quality"
+      - "format"
+
+  lint:
+    command: "pnpm"
+    args:
+      - "exec"
+      - "biome"
+      - "check"
+      - "."
+    inputs:
+      - "package.json"
+      - "tsconfig*.json"
+      - "vite.config.ts"
+      - "cosmos.config.json"
+      - "src/**/*"
+      - "tests/**/*"
+      - "/biome.json"
+      - "/pnpm-lock.yaml"
+    tags:
+      - "quality"
+      - "lint"
+
+  typecheck:
+    command: "pnpm"
+    args:
+      - "exec"
+      - "tsc"
+      - "-p"
+      - "tsconfig.json"
+      - "--noEmit"
+    deps:
+      - "js:build"
+    inputs:
+      - "package.json"
+      - "tsconfig*.json"
+      - "vite.config.ts"
+      - "src/**/*"
+      - "tests/**/*"
+      - "/pnpm-lock.yaml"
+    tags:
+      - "quality"
+      - "typecheck"
+
+  build:
+    type: "build"
+    script: "pnpm exec vite build --mode lib && pnpm exec tsc -p tsconfig.build.json --emitDeclarationOnly"
+    deps:
+      - "js:build"
+    inputs:
+      - "package.json"
+      - "tsconfig*.json"
+      - "vite.config.ts"
+      - "src/**/*"
+      - "!src/**/*.test.*"
+      - "!src/**/*.bench.*"
+      - "!src/**/*.fixture.*"
+      - "/pnpm-lock.yaml"
+    outputs:
+      - "dist/**/*"
+    tags:
+      - "build"
+
+  test:
+    command: "pnpm"
+    args:
+      - "exec"
+      - "vitest"
+      - "run"
+    deps:
+      - "js:build"
+    inputs:
+      - "package.json"
+      - "tsconfig*.json"
+      - "vite.config.ts"
+      - "src/**/*"
+      - "tests/**/*"
+      - "/pnpm-lock.yaml"
+    tags:
+      - "test"
+
+  coverage:
+    type: "run"
+    command: "pnpm"
+    args:
+      - "exec"
+      - "vitest"
+      - "run"
+      - "--coverage"
+    deps:
+      - "js:build"
+    inputs:
+      - "package.json"
+      - "tsconfig*.json"
+      - "vite.config.ts"
+      - "src/**/*"
+      - "tests/**/*"
+      - "/pnpm-lock.yaml"
+    options:
+      runInCI: "skip"
+    tags:
+      - "coverage"
+
+  bench:
+    type: "run"
+    command: "pnpm"
+    args:
+      - "exec"
+      - "vitest"
+      - "bench"
+      - "--run"
+    deps:
+      - "js:build"
+    inputs:
+      - "package.json"
+      - "tsconfig*.json"
+      - "vite.config.ts"
+      - "src/**/*"
+      - "tests/**/*"
+      - "/pnpm-lock.yaml"
+    options:
+      cache: false
+      runInCI: false
+    tags:
+      - "bench"

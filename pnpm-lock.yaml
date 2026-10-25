@@ -162,43 +162,158 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
+catalogs:
+  default:
+    '@axe-core/playwright':
+      specifier: ^4.14.0
+      version: 4.14.0
+    '@base-ui/react':
+      specifier: ^1.3.0
+      version: 1.9.0
+    '@biomejs/biome':
+      specifier: ^2.6.2
+      version: 2.6.2
+    '@fast-check/vitest':
+      specifier: ^0.5.0
+      version: 0.5.0
+    '@moonrepo/cli':
+      specifier: ^2.6.4
+      version: 2.6.4
+    '@playwright/test':
+      specifier: ^1.64.1
+      version: 1.64.1
+    '@standard-schema/spec':
+      specifier: ^1.1.0
+      version: 1.1.0
+    '@tailwindcss/vite':
+      specifier: ^4.1.0
+      version: 4.3.3
+    '@tauri-apps/api':
+      specifier: ^2.12.4
+      version: 2.12.4
+    '@tauri-apps/cli':
+      specifier: ^2.12.4
+      version: 2.12.4
+    '@tauri-apps/plugin-dialog':
+      specifier: ^2.8.3
+      version: 2.8.3
+    '@tauri-apps/plugin-opener':
+      specifier: ^2.7.2
+      version: 2.7.2
+    '@types/node':
+      specifier: ^26.0.0
+      version: 26.6.5
+    '@types/react':
+      specifier: ^19.1.0
+      version: 19.3.0
+    '@types/react-dom':
+      specifier: ^19.1.0
+      version: 19.3.0
+    '@vitejs/plugin-react':
+      specifier: ^6.1.2
+      version: 6.1.2
+    '@vitest/browser-playwright':
+      specifier: ^5.0.5
+      version: 5.0.5
+    '@vitest/coverage-v8':
+      specifier: ^5.0.5
+      version: 5.0.5
+    axe-core:
+      specifier: ^4.14.0
+      version: 4.14.0
+    class-variance-authority:
+      specifier: ^0.7.1
+      version: 0.7.1
+    clsx:
+      specifier: ^2.1.1
+      version: 2.1.1
+    fast-check:
+      specifier: ^4.10.2
+      version: 4.10.2
+    lucide-react:
+      specifier: ^1.0.0
+      version: 1.61.0
+    playwright:
+      specifier: ^1.64.1
+      version: 1.64.1
+    react:
+      specifier: ^19.1.0
+      version: 19.3.1
+    react-cosmos:
+      specifier: ^7.4.1
+      version: 7.4.1
+    react-cosmos-plugin-vite:
+      specifier: ^7.4.0
+      version: 7.4.0
+    react-dom:
+      specifier: ^19.1.0
+      version: 19.3.1
+    tailwind-merge:
+      specifier: ^3.2.0
+      version: 3.7.0
+    tailwindcss:
+      specifier: ^4.1.0
+      version: 4.3.3
+    typescript:
+      specifier: ^5.8.3
+      version: 5.9.3
+    vite:
+      specifier: ^8.3.5
+      version: 8.3.5
+    vitest:
+      specifier: ^5.0.5
+      version: 5.0.5
+    vitest-browser-react:
+      specifier: ^2.3.0
+      version: 2.3.0
+    zod:
+      specifier: ^4.6.7
+      version: 4.6.7
+
 importers:
 
-  .: {}
+  .:
+    devDependencies:
+      '@biomejs/biome':
+        specifier: 'catalog:'
+        version: 2.6.2
+      '@moonrepo/cli':
+        specifier: 'catalog:'
+        version: 2.6.4
+      typescript:
+        specifier: 'catalog:'
+        version: 5.9.3
 
   packages/js:
     dependencies:
       '@standard-schema/spec':
-        specifier: ^1.1.0
+        specifier: 'catalog:'
         version: 1.1.0
       zod:
-        specifier: ^4.6.7
+        specifier: 'catalog:'
         version: 4.6.7
     devDependencies:
-      '@biomejs/biome':
-        specifier: ^2.6.2
-        version: 2.6.2
       '@fast-check/vitest':
-        specifier: ^0.5.0
+        specifier: 'catalog:'
         version: 0.5.0(vitest@5.0.5)
       '@types/node':
-        specifier: ^26.0.0
+        specifier: 'catalog:'
         version: 26.6.5
       '@vitest/coverage-v8':
-        specifier: ^5.0.5
-        version: 5.0.5(vitest@5.0.5)
+        specifier: 'catalog:'
+        version: 5.0.5(@vitest/browser@5.0.5)(vitest@5.0.5)
       fast-check:
-        specifier: ^4.10.2
+        specifier: 'catalog:'
         version: 4.10.2
       typescript:
-        specifier: ^5.8.3
+        specifier: 'catalog:'
         version: 5.9.3
       vite:
-        specifier: ^8.3.5
+        specifier: 'catalog:'
         version: 8.3.5(@types/node@26.6.5)(jiti@2.7.0)
       vitest:
-        specifier: ^5.0.5
-        version: 5.0.5(@types/node@26.6.5)(@vitest/coverage-v8@5.0.5)(vite@8.3.5(@types/node@26.6.5)(jiti@2.7.0))
+        specifier: 'catalog:'
+        version: 5.0.5(@types/node@26.6.5)(@vitest/browser-playwright@5.0.5)(@vitest/coverage-v8@5.0.5)(@vitest/ui@5.0.5)(vite@8.3.5(@types/node@26.6.5)(jiti@2.7.0))
 
   packages/studio:
     dependencies:
@@ -209,156 +324,150 @@ importers:
         specifier: workspace:*
         version: link:../ui
       '@tailwindcss/vite':
-        specifier: ^4.1.0
+        specifier: 'catalog:'
         version: 4.3.3(vite@8.3.5(@types/node@26.6.5)(jiti@2.7.0))
       '@tauri-apps/api':
-        specifier: ^2.12.4
+        specifier: 'catalog:'
         version: 2.12.4
       '@tauri-apps/plugin-dialog':
-        specifier: ^2.8.3
+        specifier: 'catalog:'
         version: 2.8.3
       '@tauri-apps/plugin-opener':
-        specifier: ^2.7.2
+        specifier: 'catalog:'
         version: 2.7.2
       lucide-react:
-        specifier: ^1.0.0
+        specifier: 'catalog:'
         version: 1.61.0(@types/react@19.3.0)(react@19.3.1)
       react:
-        specifier: ^19.1.0
+        specifier: 'catalog:'
         version: 19.3.1
       react-dom:
-        specifier: ^19.1.0
+        specifier: 'catalog:'
         version: 19.3.1(react@19.3.1)
       tailwindcss:
-        specifier: ^4.1.0
+        specifier: 'catalog:'
         version: 4.3.3
     devDependencies:
       '@axe-core/playwright':
-        specifier: ^4.14.0
+        specifier: 'catalog:'
         version: 4.14.0(playwright-core@1.64.1)
-      '@biomejs/biome':
-        specifier: ^2.6.2
-        version: 2.6.2
       '@playwright/test':
-        specifier: ^1.64.1
+        specifier: 'catalog:'
         version: 1.64.1
       '@tauri-apps/cli':
-        specifier: ^2.12.4
+        specifier: 'catalog:'
         version: 2.12.4
       '@types/node':
-        specifier: ^26.0.0
+        specifier: 'catalog:'
         version: 26.6.5
       '@types/react':
-        specifier: ^19.1.0
+        specifier: 'catalog:'
         version: 19.3.0
       '@types/react-dom':
-        specifier: ^19.1.0
+        specifier: 'catalog:'
         version: 19.3.0(@types/react@19.3.0)
       '@vitejs/plugin-react':
-        specifier: ^6.1.2
+        specifier: 'catalog:'
         version: 6.1.2(vite@8.3.5(@types/node@26.6.5)(jiti@2.7.0))
       '@vitest/browser-playwright':
-        specifier: ^5.0.5
+        specifier: 'catalog:'
         version: 5.0.5(playwright@1.64.1)(vite@8.3.5(@types/node@26.6.5)(jiti@2.7.0))(vitest@5.0.5)
       '@vitest/coverage-v8':
-        specifier: ^5.0.5
+        specifier: 'catalog:'
         version: 5.0.5(@vitest/browser@5.0.5)(vitest@5.0.5)
       axe-core:
-        specifier: ^4.14.0
+        specifier: 'catalog:'
         version: 4.14.0
       playwright:
-        specifier: ^1.64.1
+        specifier: 'catalog:'
         version: 1.64.1
       typescript:
-        specifier: ^5.8.3
+        specifier: 'catalog:'
         version: 5.9.3
       vite:
-        specifier: ^8.3.5
+        specifier: 'catalog:'
         version: 8.3.5(@types/node@26.6.5)(jiti@2.7.0)
       vitest:
-        specifier: ^5.0.5
+        specifier: 'catalog:'
         version: 5.0.5(@types/node@26.6.5)(@vitest/browser-playwright@5.0.5)(@vitest/coverage-v8@5.0.5)(@vitest/ui@5.0.5)(vite@8.3.5(@types/node@26.6.5)(jiti@2.7.0))
       vitest-browser-react:
-        specifier: ^2.3.0
+        specifier: 'catalog:'
         version: 2.3.0(@types/react-dom@19.3.0(@types/react@19.3.0))(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(vitest@5.0.5)
 
   packages/ui:
     dependencies:
       '@base-ui/react':
-        specifier: ^1.3.0
+        specifier: 'catalog:'
         version: 1.9.0(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
       '@dnam-project/engine':
         specifier: workspace:*
         version: link:../js
       '@tailwindcss/vite':
-        specifier: ^4.1.0
+        specifier: 'catalog:'
         version: 4.3.3(vite@8.3.5(@types/node@26.6.5)(jiti@2.7.0))
       class-variance-authority:
-        specifier: ^0.7.1
+        specifier: 'catalog:'
         version: 0.7.1
       clsx:
-        specifier: ^2.1.1
+        specifier: 'catalog:'
         version: 2.1.1
       lucide-react:
-        specifier: ^1.0.0
+        specifier: 'catalog:'
         version: 1.61.0(@types/react@19.3.0)(react@19.3.1)
       react:
-        specifier: ^19.1.0
+        specifier: 'catalog:'
         version: 19.3.1
       react-dom:
-        specifier: ^19.1.0
+        specifier: 'catalog:'
         version: 19.3.1(react@19.3.1)
       tailwind-merge:
-        specifier: ^3.2.0
+        specifier: 'catalog:'
         version: 3.7.0
       tailwindcss:
-        specifier: ^4.1.0
+        specifier: 'catalog:'
         version: 4.3.3
     devDependencies:
-      '@biomejs/biome':
-        specifier: ^2.6.2
-        version: 2.6.2
       '@types/node':
-        specifier: ^26.0.0
+        specifier: 'catalog:'
         version: 26.6.5
       '@types/react':
-        specifier: ^19.1.0
+        specifier: 'catalog:'
         version: 19.3.0
       '@types/react-dom':
-        specifier: ^19.1.0
+        specifier: 'catalog:'
         version: 19.3.0(@types/react@19.3.0)
       '@vitejs/plugin-react':
-        specifier: ^6.1.2
+        specifier: 'catalog:'
         version: 6.1.2(vite@8.3.5(@types/node@26.6.5)(jiti@2.7.0))
       '@vitest/browser-playwright':
-        specifier: ^5.0.5
+        specifier: 'catalog:'
         version: 5.0.5(playwright@1.64.1)(vite@8.3.5(@types/node@26.6.5)(jiti@2.7.0))(vitest@5.0.5)
       '@vitest/coverage-v8':
-        specifier: ^5.0.5
+        specifier: 'catalog:'
         version: 5.0.5(@vitest/browser@5.0.5)(vitest@5.0.5)
       axe-core:
-        specifier: ^4.14.0
+        specifier: 'catalog:'
         version: 4.14.0
       playwright:
-        specifier: ^1.64.1
+        specifier: 'catalog:'
         version: 1.64.1
       react-cosmos:
-        specifier: ^7.4.1
+        specifier: 'catalog:'
         version: 7.4.1(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
       react-cosmos-plugin-vite:
-        specifier: ^7.4.0
+        specifier: 'catalog:'
         version: 7.4.0(react-cosmos@7.4.1(react-dom@19.3.1(react@19.3.1))(react@19.3.1))(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(vite@8.3.5(@types/node@26.6.5)(jiti@2.7.0))
       typescript:
-        specifier: ^5.8.3
+        specifier: 'catalog:'
         version: 5.9.3
       vite:
-        specifier: ^8.3.5
+        specifier: 'catalog:'
         version: 8.3.5(@types/node@26.6.5)(jiti@2.7.0)
       vitest:
-        specifier: ^5.0.5
+        specifier: 'catalog:'
         version: 5.0.5(@types/node@26.6.5)(@vitest/browser-playwright@5.0.5)(@vitest/coverage-v8@5.0.5)(@vitest/ui@5.0.5)(vite@8.3.5(@types/node@26.6.5)(jiti@2.7.0))
       vitest-browser-react:
-        specifier: ^2.3.0
+        specifier: 'catalog:'
         version: 2.3.0(@types/react-dom@19.3.0(@types/react@19.3.0))(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(vitest@5.0.5)
 
 packages:
@@ -527,6 +636,49 @@ packages:
 
   '@jridgewell/trace-mapping@0.3.31':
     resolution: {integrity: sha512-zzNR+SdQSDJzc8joaeP8QQoCQr8NuYx2dIIytl1QeBEZHJ9uW6hebsrYgbz8hJwUQao3TWCMtmfV8Nu1twOLAw==}
+
+  '@moonrepo/cli@2.6.4':
+    resolution: {integrity: sha512-ek5nUwgLkuh5rNVzhsaCvzRnWvIerDdRJVbHESmeblSONIHL1R52MflKoeibqLJ2XhE5RNCyjfS78B1M7Qf/Cg==}
+    hasBin: true
+
+  '@moonrepo/core-linux-arm64-gnu@2.6.4':
+    resolution: {integrity: sha512-BIzo1E7t1AnLO5TZr3YU8/p9I34WkmUypCdvIe/AUAdQUo+IES8DgaryBO16YeYB2anAveDGA8DxhhWds2lMiw==}
+    cpu: [arm64]
+    os: [linux]
+    libc: [glibc]
+
+  '@moonrepo/core-linux-arm64-musl@2.6.4':
+    resolution: {integrity: sha512-NBE08jmxc+XvAGfA3FmI4xhAMXS1f2H3ld3ZecQ+VQLV0dVH2yU6JIN0ZvseiSthJFv8p/SHh+eovI5/y54+pg==}
+    cpu: [arm64]
+    os: [linux]
+    libc: [musl]
+
+  '@moonrepo/core-linux-x64-gnu@2.6.4':
+    resolution: {integrity: sha512-RJdBV8c3CVPZzqYx3Hd43mbfBds3mnvGn80rvogmK0YMKnQOb8MUEKt4LnKDzsbJPOItBKaRXGR2vVQ3ins1SA==}
+    cpu: [x64]
+    os: [linux]
+    libc: [glibc]
+
+  '@moonrepo/core-linux-x64-musl@2.6.4':
+    resolution: {integrity: sha512-IlmCBulxt81R3k+qgIM47iTz8whgwhkTWzZcel4cZMPQdArAqSv4x13kULVQ3SJ2q00wovdiBlqIWLpjqvQ9LQ==}
+    cpu: [x64]
+    os: [linux]
+    libc: [musl]
+
+  '@moonrepo/core-macos-arm64@2.6.4':
+    resolution: {integrity: sha512-DY63ZWr+PgaIG91GnIXi1ZBuK67qQs+gkHPHU31zTn8M2hYf6lHPDSMeLJ7bXoDPmQTvMWSmNjpDLxet3nw5Iw==}
+    cpu: [arm64]
+    os: [darwin]
+
+  '@moonrepo/core-macos-x64@2.6.4':
+    resolution: {integrity: sha512-m3/yh5nYpCjtt9ulwV0DTdq9zgpFxk0+kzl0y2RFQgMpJ4SqYp+gIME3X/C3to8AyC1TVsuFJ995PVJHQvnRIg==}
+    cpu: [x64]
+    os: [darwin]
+
+  '@moonrepo/core-windows-x64-msvc@2.6.4':
+    resolution: {integrity: sha512-NvAFdbbpu1dpTx6L0y3LwQUnaezW6iPw0L1YBaGPm0/FD2qN0YFRE1FB5iqUz7oyiRhvn9uJiMIlt3wux8fSaw==}
+    cpu: [x64]
+    os: [win32]
 
   '@oxc-project/types@0.155.0':
     resolution: {integrity: sha512-SeE8JPwW1xs1tHeNycjUtUBdhorRa8o4jlvjwk49R7/Z291i+4DQa7JJIgOm/TaYQZx+QrPQbVJ/9c8dMIZN8Q==}
@@ -2083,6 +2235,39 @@ snapshots:
       '@jridgewell/resolve-uri': 3.1.2
       '@jridgewell/sourcemap-codec': 1.6.0
 
+  '@moonrepo/cli@2.6.4':
+    dependencies:
+      detect-libc: 2.1.2
+    optionalDependencies:
+      '@moonrepo/core-linux-arm64-gnu': 2.6.4
+      '@moonrepo/core-linux-arm64-musl': 2.6.4
+      '@moonrepo/core-linux-x64-gnu': 2.6.4
+      '@moonrepo/core-linux-x64-musl': 2.6.4
+      '@moonrepo/core-macos-arm64': 2.6.4
+      '@moonrepo/core-macos-x64': 2.6.4
+      '@moonrepo/core-windows-x64-msvc': 2.6.4
+
+  '@moonrepo/core-linux-arm64-gnu@2.6.4':
+    optional: true
+
+  '@moonrepo/core-linux-arm64-musl@2.6.4':
+    optional: true
+
+  '@moonrepo/core-linux-x64-gnu@2.6.4':
+    optional: true
+
+  '@moonrepo/core-linux-x64-musl@2.6.4':
+    optional: true
+
+  '@moonrepo/core-macos-arm64@2.6.4':
+    optional: true
+
+  '@moonrepo/core-macos-x64@2.6.4':
+    optional: true
+
+  '@moonrepo/core-windows-x64-msvc@2.6.4':
+    optional: true
+
   '@oxc-project/types@0.155.0': {}
 
   '@playwright/test@1.64.1':
@@ -2343,18 +2528,6 @@ snapshots:
       vitest: 5.0.5(@types/node@26.6.5)(@vitest/browser-playwright@5.0.5)(@vitest/coverage-v8@5.0.5)(@vitest/ui@5.0.5)(vite@8.3.5(@types/node@26.6.5)(jiti@2.7.0))
     optionalDependencies:
       '@vitest/browser': 5.0.5(vite@8.3.5(@types/node@26.6.5)(jiti@2.7.0))(vitest@5.0.5)
-
-  '@vitest/coverage-v8@5.0.5(vitest@5.0.5)':
-    dependencies:
-      '@bcoe/v8-coverage': 1.0.2
-      '@vitest/istanbul-lib-coverage': 1.0.2
-      '@vitest/istanbul-lib-report': 1.0.2
-      ast-v8-to-istanbul: 1.0.7
-      magicast: 0.5.5
-      obug: 3.0.0
-      std-env: 4.3.0
-      tinyrainbow: 3.2.0
-      vitest: 5.0.5(@types/node@26.6.5)(@vitest/coverage-v8@5.0.5)(vite@8.3.5(@types/node@26.6.5)(jiti@2.7.0))
 
   '@vitest/istanbul-lib-coverage@1.0.2': {}
 
@@ -3251,28 +3424,6 @@ snapshots:
       '@vitest/browser-playwright': 5.0.5(playwright@1.64.1)(vite@8.3.5(@types/node@26.6.5)(jiti@2.7.0))(vitest@5.0.5)
       '@vitest/coverage-v8': 5.0.5(@vitest/browser@5.0.5)(vitest@5.0.5)
       '@vitest/ui': 5.0.5(vitest@5.0.5)
-    transitivePeerDependencies:
-      - msw
-
-  vitest@5.0.5(@types/node@26.6.5)(@vitest/coverage-v8@5.0.5)(vite@8.3.5(@types/node@26.6.5)(jiti@2.7.0)):
-    dependencies:
-      '@types/chai': 5.2.3
-      '@vitest/mocker': 5.0.5(vite@8.3.5(@types/node@26.6.5)(jiti@2.7.0))
-      chai: 6.3.0
-      es-module-lexer: 2.3.2
-      expect-type: 1.4.0
-      magic-string: 1.4.3
-      obug: 3.0.0
-      picomatch: 4.0.7
-      std-env: 4.3.0
-      tinybench: 6.2.2
-      tinyexec: 1.3.1
-      tinyglobby: 0.2.17
-      vite: 8.3.5(@types/node@26.6.5)(jiti@2.7.0)
-      why-is-node-running: 3.2.1
-    optionalDependencies:
-      '@types/node': 26.6.5
-      '@vitest/coverage-v8': 5.0.5(vitest@5.0.5)
     transitivePeerDependencies:
       - msw
 

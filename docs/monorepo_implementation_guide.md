@@ -18,6 +18,8 @@ dynamic-neural-audio-modeler/
 ├── pnpm-workspace.yaml              # pnpm workspace root -> ["packages/js", "packages/ui", "packages/studio", "packages/web"]
 ├── package.json                     # JS/TS workspace root -> ["packages/js", "packages/ui", "packages/studio", "packages/web"]
 ├── biome.json                       # Strict agentic @biomejs/biome configuration
+├── .moon/                           # moonrepo polyglot DAG & content-addressed cache configuration
+│   └── workspace.yml
 ├── docs/                            # 1. Pure Single-Source-of-Truth (SSOT) Markdown Specifications
 │   ├── index.md
 │   ├── architecture_design.md

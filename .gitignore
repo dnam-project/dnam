@@ -44,3 +44,7 @@ packages/js/coverage/
 
 # Playwright CLI output (may contain credentials)
 .playwright-cli/
+
+# moon
+.moon/cache
+.moon/docker

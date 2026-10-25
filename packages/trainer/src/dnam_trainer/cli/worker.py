@@ -46,10 +46,10 @@ def get_trainer_status_payload(
         "python_version": sys.version.split()[0],
         "torch_version": str(torch.__version__),
         "resolved_device": prof.device_type,
-        "torch_device": str(prof.torch_device),
+        "torch_device": prof.torch_device,
         "contraction_dtype": str(prof.contraction_dtype),
-        "cuda_available": bool(torch.cuda.is_available()),
-        "mps_available": bool(hasattr(torch.backends, "mps") and torch.backends.mps.is_available()),
+        "cuda_available": torch.cuda.is_available(),
+        "mps_available": hasattr(torch.backends, "mps") and torch.backends.mps.is_available(),
     }
 
 

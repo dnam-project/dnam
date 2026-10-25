@@ -1,0 +1,253 @@
+$schema: "https://moonrepo.dev/schemas/project.json"
+
+id: "studio"
+language: "typescript"
+layer: "application"
+stack: "frontend"
+tags:
+  - "typescript"
+  - "rust"
+  - "tauri"
+  - "cli"
+  - "react"
+
+project:
+  name: "@dnam-project/studio"
+  description: "Unified Rust/Node dnam CLI and Tauri v2 Desktop Studio for DNAM"
+
+dependsOn:
+  - "engine"
+  - "js"
+  - "ui"
+  - "trainer"
+
+tasks:
+  dev:
+    command: "pnpm"
+    args:
+      - "exec"
+      - "vite"
+    deps:
+      - "js:build"
+      - "ui:build"
+    preset: "server"
+
+  tauri-dev:
+    command: "pnpm"
+    args:
+      - "exec"
+      - "tauri"
+      - "dev"
+    deps:
+      - "js:build"
+      - "ui:build"
+    preset: "server"
+
+  format-check:
+    script: "pnpm exec biome format . && cargo fmt --package dnam-studio -- --check"
+    inputs:
+      - "Cargo.toml"
+      - "build.rs"
+      - "package.json"
+      - "playwright.config.ts"
+      - "tsconfig*.json"
+      - "vite.config.ts"
+      - "bin/**/*"
+      - "rust/**/*"
+      - "src/**/*"
+      - "tests/**/*"
+      - "/biome.json"
+      - "/Cargo.toml"
+      - "/pnpm-lock.yaml"
+    tags:
+      - "quality"
+      - "format"
+
+  lint:
+    script: "pnpm exec biome check . && cargo clippy --package dnam-studio --all-targets -- -D warnings"
+    inputs:
+      - "Cargo.toml"
+      - "build.rs"
+      - "package.json"
+      - "playwright.config.ts"
+      - "tauri.conf.json"
+      - "tsconfig*.json"
+      - "vite.config.ts"
+      - "bin/**/*"
+      - "capabilities/**/*"
+      - "isolation/**/*"
+      - "rust/**/*"
+      - "src/**/*"
+      - "tests/**/*"
+      - "/biome.json"
+      - "/Cargo.toml"
+      - "/Cargo.lock"
+      - "/pnpm-lock.yaml"
+      - "/packages/engine/Cargo.toml"
+      - "/packages/engine/src/**/*"
+    options:
+      mutex: "cargo"
+    tags:
+      - "quality"
+      - "lint"
+
+  typecheck:
+    command: "pnpm"
+    args:
+      - "exec"
+      - "tsc"
+      - "-p"
+      - "tsconfig.json"
+      - "--noEmit"
+    deps:
+      - "js:build"
+      - "ui:build"
+    inputs:
+      - "package.json"
+      - "playwright.config.ts"
+      - "tsconfig*.json"
+      - "vite.config.ts"
+      - "src/**/*"
+      - "tests/**/*.ts"
+      - "tests/**/*.tsx"
+      - "/pnpm-lock.yaml"
+    tags:
+      - "quality"
+      - "typecheck"
+
+  build-rust:
+    type: "build"
+    command: "cargo"
+    args:
+      - "build"
+      - "--package"
+      - "dnam-studio"
+    inputs:
+      - "Cargo.toml"
+      - "build.rs"
+      - "tauri.conf.json"
+      - "capabilities/**/*"
+      - "icons/**/*"
+      - "isolation/**/*"
+      - "rust/**/*"
+      - "/Cargo.toml"
+      - "/Cargo.lock"
+      - "/packages/engine/Cargo.toml"
+      - "/packages/engine/src/**/*"
+    options:
+      mutex: "cargo"
+    tags:
+      - "build"
+
+  build:
+    type: "build"
+    script: "pnpm exec vite build --mode lib && pnpm exec tsc -p tsconfig.build.json --emitDeclarationOnly"
+    deps:
+      - "js:build"
+      - "ui:build"
+      - "~:build-rust"
+    inputs:
+      - "package.json"
+      - "tsconfig*.json"
+      - "vite.config.ts"
+      - "src/**/*"
+      - "!src/**/*.test.*"
+      - "/pnpm-lock.yaml"
+    outputs:
+      - "dist/**/*"
+    tags:
+      - "build"
+
+  test-rust:
+    command: "cargo"
+    args:
+      - "test"
+      - "--package"
+      - "dnam-studio"
+    deps:
+      - "python:build"
+    inputs:
+      - "Cargo.toml"
+      - "build.rs"
+      - "tauri.conf.json"
+      - "capabilities/**/*"
+      - "isolation/**/*"
+      - "rust/**/*"
+      - "tests/**/*.rs"
+      - "/Cargo.toml"
+      - "/Cargo.lock"
+      - "/packages/engine/Cargo.toml"
+      - "/packages/engine/src/**/*"
+      - "/packages/trainer/src/**/*"
+    options:
+      mutex: "cargo"
+    tags:
+      - "test"
+
+  test:
+    command: "pnpm"
+    args:
+      - "exec"
+      - "vitest"
+      - "run"
+    deps:
+      - "~:build"
+      - "~:test-rust"
+    inputs:
+      - "package.json"
+      - "tsconfig*.json"
+      - "vite.config.ts"
+      - "bin/**/*"
+      - "src/**/*"
+      - "tests/**/*.ts"
+      - "tests/**/*.tsx"
+      - "!tests/e2e/**/*"
+      - "/pnpm-lock.yaml"
+    tags:
+      - "test"
+
+  test-e2e:
+    type: "run"
+    command: "pnpm"
+    args:
+      - "exec"
+      - "playwright"
+      - "test"
+    deps:
+      - "~:build"
+    inputs:
+      - "package.json"
+      - "playwright.config.ts"
+      - "index.html"
+      - "vite.config.ts"
+      - "src/**/*"
+      - "tests/e2e/**/*"
+      - "/pnpm-lock.yaml"
+    options:
+      runInCI: "skip"
+    tags:
+      - "e2e"
+
+  coverage:
+    type: "run"
+    command: "pnpm"
+    args:
+      - "exec"
+      - "vitest"
+      - "run"
+      - "--coverage"
+    deps:
+      - "~:build"
+    inputs:
+      - "package.json"
+      - "tsconfig*.json"
+      - "vite.config.ts"
+      - "src/**/*"
+      - "tests/**/*.ts"
+      - "tests/**/*.tsx"
+      - "!tests/e2e/**/*"
+      - "/pnpm-lock.yaml"
+    options:
+      runInCI: "skip"
+    tags:
+      - "coverage"

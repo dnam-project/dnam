@@ -1,0 +1,152 @@
+$schema: "https://moonrepo.dev/schemas/project.json"
+
+id: "engine"
+language: "rust"
+layer: "library"
+stack: "systems"
+tags:
+  - "rust"
+  - "dsp"
+  - "simd"
+
+project:
+  name: "dnam-engine"
+  description: "Pure Rust #![no_std] + alloc, zero-audio-alloc real-time SIMD audio engine for DNAM"
+
+tasks:
+  format-check:
+    command: "cargo"
+    args:
+      - "fmt"
+      - "--package"
+      - "dnam-engine"
+      - "--"
+      - "--check"
+    inputs:
+      - "Cargo.toml"
+      - "src/**/*"
+      - "tests/**/*"
+      - "benches/**/*"
+      - "/Cargo.toml"
+    tags:
+      - "quality"
+      - "format"
+
+  lint:
+    command: "cargo"
+    args:
+      - "clippy"
+      - "--package"
+      - "dnam-engine"
+      - "--all-targets"
+      - "--"
+      - "-D"
+      - "warnings"
+    inputs:
+      - "Cargo.toml"
+      - "src/**/*"
+      - "tests/**/*"
+      - "benches/**/*"
+      - "/Cargo.toml"
+      - "/Cargo.lock"
+    options:
+      mutex: "cargo"
+    tags:
+      - "quality"
+      - "lint"
+
+  typecheck:
+    command: "cargo"
+    args:
+      - "check"
+      - "--package"
+      - "dnam-engine"
+      - "--all-targets"
+    inputs:
+      - "Cargo.toml"
+      - "src/**/*"
+      - "tests/**/*"
+      - "benches/**/*"
+      - "/Cargo.toml"
+      - "/Cargo.lock"
+    options:
+      mutex: "cargo"
+    tags:
+      - "quality"
+      - "typecheck"
+
+  build:
+    type: "build"
+    command: "cargo"
+    args:
+      - "build"
+      - "--package"
+      - "dnam-engine"
+      - "--release"
+    inputs:
+      - "Cargo.toml"
+      - "src/**/*"
+      - "/Cargo.toml"
+      - "/Cargo.lock"
+    options:
+      mutex: "cargo"
+    tags:
+      - "build"
+
+  test:
+    command: "cargo"
+    args:
+      - "test"
+      - "--package"
+      - "dnam-engine"
+    inputs:
+      - "Cargo.toml"
+      - "src/**/*"
+      - "tests/**/*"
+      - "/Cargo.toml"
+      - "/Cargo.lock"
+    options:
+      mutex: "cargo"
+    tags:
+      - "test"
+
+  coverage:
+    type: "run"
+    command: "cargo"
+    args:
+      - "llvm-cov"
+      - "--package"
+      - "dnam-engine"
+      - "--fail-under-lines"
+      - "95"
+    inputs:
+      - "Cargo.toml"
+      - "src/**/*"
+      - "tests/**/*"
+      - "/Cargo.toml"
+      - "/Cargo.lock"
+    options:
+      mutex: "cargo"
+      runInCI: "skip"
+    tags:
+      - "coverage"
+
+  bench:
+    type: "run"
+    command: "cargo"
+    args:
+      - "bench"
+      - "--package"
+      - "dnam-engine"
+    inputs:
+      - "Cargo.toml"
+      - "src/**/*"
+      - "benches/**/*"
+      - "/Cargo.toml"
+      - "/Cargo.lock"
+    options:
+      cache: false
+      mutex: "cargo"
+      runInCI: false
+    tags:
+      - "bench"

@@ -3,7 +3,12 @@
   "version": "0.1.0",
   "description": "TypeScript, Node.js N-API, and WebAssembly SIMD128 / WebAudio AudioWorklet SDK for the Dynamic Neural Audio Modeler (DNAM / Tri-Physics)",
   "type": "module",
-  "license": "Apache-2.0",
+  "license": "LicenseRef-DNAM-1.0.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/dnam-project/dnam.git",
+    "directory": "packages/js"
+  },
   "engines": {
     "node": ">=24.0.0"
   },
@@ -44,28 +49,25 @@
     "./dnam_engine.wasm": "./dist/dnam_engine.wasm"
   },
   "scripts": {
-    "build:rust": "node ./scripts/build_wasm.mjs",
-    "build:js": "vite build && vite build --mode worklet && tsc -p tsconfig.build.json --emitDeclarationOnly",
-    "build": "pnpm run build:rust && pnpm run build:js",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
-    "lint": "biome check ../../",
-    "format:check": "biome format ../../",
-    "test": "vitest run",
-    "coverage": "vitest run --coverage",
-    "bench": "vitest bench --run"
+    "build": "moon run js:build",
+    "typecheck": "moon run js:typecheck",
+    "lint": "moon run js:lint",
+    "format:check": "moon run js:format-check",
+    "test": "moon run js:test",
+    "coverage": "moon run js:coverage",
+    "bench": "moon run js:bench"
   },
   "dependencies": {
-    "@standard-schema/spec": "^1.1.0",
-    "zod": "^4.6.7"
+    "@standard-schema/spec": "catalog:",
+    "zod": "catalog:"
   },
   "devDependencies": {
-    "@biomejs/biome": "^2.6.2",
-    "@fast-check/vitest": "^0.5.0",
-    "@types/node": "^26.0.0",
-    "@vitest/coverage-v8": "^5.0.5",
-    "fast-check": "^4.10.2",
-    "typescript": "^5.8.3",
-    "vite": "^8.3.5",
-    "vitest": "^5.0.5"
+    "@fast-check/vitest": "catalog:",
+    "@types/node": "catalog:",
+    "@vitest/coverage-v8": "catalog:",
+    "fast-check": "catalog:",
+    "typescript": "catalog:",
+    "vite": "catalog:",
+    "vitest": "catalog:"
   }
 }

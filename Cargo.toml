@@ -11,6 +11,7 @@ license = "LicenseRef-DNAM-1.0.0"
 repository = "https://github.com/dnam-project/dnam"
 
 [workspace.dependencies]
+dnam-engine = { path = "packages/engine", default-features = true }
 serde = { version = "1.0", default-features = false, features = ["derive", "alloc"] }
 serde_json = { version = "1.0", default-features = false, features = ["alloc"] }
 toml = "0.8"
@@ -29,6 +30,16 @@ numpy = "0.30"
 napi = { version = "3.15", default-features = false, features = ["napi8", "compat-mode"] }
 napi-derive = "3.6"
 napi-build = "2.6"
+tauri = { version = "2", features = ["isolation"] }
+tauri-build = { version = "2", features = ["isolation"] }
+tauri-plugin-dialog = "2"
+tauri-plugin-opener = "2"
+tauri-plugin-window-state = "2"
+tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
+tauri-plugin-deep-link = "2"
+tauri-plugin-notification = "2"
+tauri-plugin-updater = "2"
+tauri-plugin-process = "2"
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"

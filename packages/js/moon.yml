@@ -1,0 +1,188 @@
+$schema: "https://moonrepo.dev/schemas/project.json"
+
+id: "js"
+language: "typescript"
+layer: "library"
+stack: "systems"
+tags:
+  - "typescript"
+  - "rust"
+  - "wasm"
+  - "napi"
+
+project:
+  name: "@dnam-project/engine"
+  description: "TypeScript, Node.js N-API, and WebAssembly SIMD128 / WebAudio AudioWorklet SDK for DNAM"
+
+dependsOn:
+  - "engine"
+
+tasks:
+  format-check:
+    command: "pnpm"
+    args:
+      - "exec"
+      - "biome"
+      - "format"
+      - "."
+    inputs:
+      - "package.json"
+      - "tsconfig*.json"
+      - "vite.config.ts"
+      - "scripts/**/*"
+      - "src/**/*"
+      - "tests/**/*"
+      - "/biome.json"
+      - "/pnpm-lock.yaml"
+    tags:
+      - "quality"
+      - "format"
+
+  lint:
+    script: "pnpm exec biome check . && cargo clippy --package dnam-js --all-targets -- -D warnings"
+    inputs:
+      - "Cargo.toml"
+      - "build.rs"
+      - "package.json"
+      - "tsconfig*.json"
+      - "vite.config.ts"
+      - "rust/**/*"
+      - "scripts/**/*"
+      - "src/**/*"
+      - "tests/**/*"
+      - "/biome.json"
+      - "/Cargo.toml"
+      - "/Cargo.lock"
+      - "/pnpm-lock.yaml"
+      - "/packages/engine/Cargo.toml"
+      - "/packages/engine/src/**/*"
+    options:
+      mutex: "cargo"
+    tags:
+      - "quality"
+      - "lint"
+
+  typecheck:
+    command: "pnpm"
+    args:
+      - "exec"
+      - "tsc"
+      - "-p"
+      - "tsconfig.json"
+      - "--noEmit"
+    inputs:
+      - "package.json"
+      - "tsconfig*.json"
+      - "vite.config.ts"
+      - "src/**/*"
+      - "tests/**/*"
+      - "/pnpm-lock.yaml"
+    tags:
+      - "quality"
+      - "typecheck"
+
+  build-rust:
+    type: "build"
+    command: "node"
+    args:
+      - "./scripts/build_wasm.mjs"
+    inputs:
+      - "Cargo.toml"
+      - "build.rs"
+      - "rust/**/*"
+      - "scripts/build_wasm.mjs"
+      - "/Cargo.toml"
+      - "/Cargo.lock"
+      - "/packages/engine/Cargo.toml"
+      - "/packages/engine/src/**/*"
+    outputs:
+      - "dist/dnam_js.*.node"
+      - "dist/dnam_engine.wasm"
+    options:
+      mutex: "cargo"
+    tags:
+      - "build"
+
+  build:
+    type: "build"
+    script: "pnpm exec vite build && pnpm exec vite build --mode worklet && pnpm exec tsc -p tsconfig.build.json --emitDeclarationOnly"
+    deps:
+      - "~:build-rust"
+    inputs:
+      - "package.json"
+      - "tsconfig*.json"
+      - "vite.config.ts"
+      - "src/**/*"
+      - "!src/**/*.test.ts"
+      - "!src/**/*.bench.ts"
+      - "/pnpm-lock.yaml"
+    outputs:
+      - "dist/**/*.js"
+      - "dist/**/*.js.map"
+      - "dist/**/*.d.ts"
+      - "dist/**/*.d.ts.map"
+    tags:
+      - "build"
+
+  test:
+    command: "pnpm"
+    args:
+      - "exec"
+      - "vitest"
+      - "run"
+    deps:
+      - "~:build"
+    inputs:
+      - "package.json"
+      - "tsconfig*.json"
+      - "vite.config.ts"
+      - "src/**/*"
+      - "tests/**/*"
+      - "/pnpm-lock.yaml"
+    tags:
+      - "test"
+
+  coverage:
+    type: "run"
+    command: "pnpm"
+    args:
+      - "exec"
+      - "vitest"
+      - "run"
+      - "--coverage"
+    deps:
+      - "~:build"
+    inputs:
+      - "package.json"
+      - "tsconfig*.json"
+      - "vite.config.ts"
+      - "src/**/*"
+      - "tests/**/*"
+      - "/pnpm-lock.yaml"
+    options:
+      runInCI: "skip"
+    tags:
+      - "coverage"
+
+  bench:
+    type: "run"
+    command: "pnpm"
+    args:
+      - "exec"
+      - "vitest"
+      - "bench"
+      - "--run"
+    deps:
+      - "~:build"
+    inputs:
+      - "package.json"
+      - "tsconfig*.json"
+      - "vite.config.ts"
+      - "src/**/*"
+      - "tests/**/*"
+      - "/pnpm-lock.yaml"
+    options:
+      cache: false
+      runInCI: false
+    tags:
+      - "bench"

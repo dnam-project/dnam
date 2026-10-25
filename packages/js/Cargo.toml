@@ -6,6 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "Dual-target Node-API v8 (napi-rs) and WebAssembly SIMD128 bindings for Dynamic Neural Audio Modeler (DNAM)"
+publish = false
 
 [lib]
 name = "dnam_js"
@@ -14,15 +15,15 @@ crate-type = ["cdylib"]
 bench = false
 
 [dependencies]
-dnam-engine = { path = "../engine" }
-serde_json = { workspace = true }
+dnam-engine.workspace = true
+serde_json.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-napi = { workspace = true }
-napi-derive = { workspace = true }
+napi.workspace = true
+napi-derive.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.build-dependencies]
-napi-build = { workspace = true }
+napi-build.workspace = true
 
 [lints]
 workspace = true

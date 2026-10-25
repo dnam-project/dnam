@@ -3,7 +3,12 @@
   "version": "0.1.0",
   "description": "Unified React 19, Tailwind CSS v4, shadcn/ui (Base UI), and lucide-react Design System for DNAM Desktop Studio and Web Playground",
   "type": "module",
-  "license": "Apache-2.0",
+  "license": "LicenseRef-DNAM-1.0.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/dnam-project/dnam.git",
+    "directory": "packages/ui"
+  },
   "engines": {
     "node": ">=24.0.0"
   },
@@ -36,43 +41,41 @@
     }
   },
   "scripts": {
-    "dev": "cosmos",
-    "cosmos:export": "cosmos-export",
-    "build": "vite build --mode lib && tsc -p tsconfig.build.json --emitDeclarationOnly",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
-    "lint": "biome check .",
-    "format:check": "biome format .",
-    "test": "vitest run",
-    "coverage": "vitest run --coverage",
-    "bench": "vitest bench --run"
+    "dev": "moon run ui:dev",
+    "build": "moon run ui:build",
+    "typecheck": "moon run ui:typecheck",
+    "lint": "moon run ui:lint",
+    "format:check": "moon run ui:format-check",
+    "test": "moon run ui:test",
+    "coverage": "moon run ui:coverage",
+    "bench": "moon run ui:bench"
   },
   "dependencies": {
-    "@base-ui/react": "^1.3.0",
+    "@base-ui/react": "catalog:",
     "@dnam-project/engine": "workspace:*",
-    "@tailwindcss/vite": "^4.1.0",
-    "class-variance-authority": "^0.7.1",
-    "clsx": "^2.1.1",
-    "lucide-react": "^1.0.0",
-    "react": "^19.1.0",
-    "react-dom": "^19.1.0",
-    "tailwind-merge": "^3.2.0",
-    "tailwindcss": "^4.1.0"
+    "@tailwindcss/vite": "catalog:",
+    "class-variance-authority": "catalog:",
+    "clsx": "catalog:",
+    "lucide-react": "catalog:",
+    "react": "catalog:",
+    "react-dom": "catalog:",
+    "tailwind-merge": "catalog:",
+    "tailwindcss": "catalog:"
   },
   "devDependencies": {
-    "@biomejs/biome": "^2.6.2",
-    "@types/node": "^26.0.0",
-    "@types/react": "^19.1.0",
-    "@types/react-dom": "^19.1.0",
-    "@vitejs/plugin-react": "^6.1.2",
-    "@vitest/browser-playwright": "^5.0.5",
-    "@vitest/coverage-v8": "^5.0.5",
-    "axe-core": "^4.14.0",
-    "playwright": "^1.64.1",
-    "react-cosmos": "^7.4.1",
-    "react-cosmos-plugin-vite": "^7.4.0",
-    "typescript": "^5.8.3",
-    "vite": "^8.3.5",
-    "vitest": "^5.0.5",
-    "vitest-browser-react": "^2.3.0"
+    "@types/node": "catalog:",
+    "@types/react": "catalog:",
+    "@types/react-dom": "catalog:",
+    "@vitejs/plugin-react": "catalog:",
+    "@vitest/browser-playwright": "catalog:",
+    "@vitest/coverage-v8": "catalog:",
+    "axe-core": "catalog:",
+    "playwright": "catalog:",
+    "react-cosmos": "catalog:",
+    "react-cosmos-plugin-vite": "catalog:",
+    "typescript": "catalog:",
+    "vite": "catalog:",
+    "vitest": "catalog:",
+    "vitest-browser-react": "catalog:"
   }
 }

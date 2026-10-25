@@ -7,23 +7,30 @@
   "engines": {
     "node": ">=24.0.0"
   },
-  "description": "Dynamic Neural Audio Modeler (DNAM / Tri-Physics) JavaScript, TypeScript & WebAudio Workspace",
+  "description": "Dynamic Neural Audio Modeler (DNAM / Tri-Physics) Monorepo Workspace",
   "license": "LicenseRef-DNAM-1.0.0",
   "repository": {
     "type": "git",
     "url": "https://github.com/dnam-project/dnam.git"
   },
   "scripts": {
-    "build": "pnpm -r run build",
-    "test": "pnpm -r run test",
-    "test:e2e": "pnpm --filter @dnam-project/studio run test:e2e",
-    "coverage": "pnpm -r run coverage",
-    "bench": "pnpm -r run bench",
-    "lint": "pnpm --filter @dnam-project/engine run lint",
-    "format:check": "pnpm --filter @dnam-project/engine run format:check",
-    "typecheck": "pnpm -r run typecheck",
-    "ui:dev": "pnpm --filter @dnam-project/ui run dev",
-    "studio:dev": "pnpm --filter @dnam-project/studio run dev",
-    "studio:tauri": "pnpm --filter @dnam-project/studio run tauri:dev"
+    "moon": "moon",
+    "check": "moon check --all",
+    "build": "moon run :build",
+    "test": "moon run :test",
+    "test:e2e": "moon run studio:test-e2e",
+    "coverage": "moon run :coverage",
+    "bench": "moon run :bench",
+    "lint": "moon run :lint",
+    "format:check": "moon run :format-check",
+    "typecheck": "moon run :typecheck",
+    "ui:dev": "moon run ui:dev",
+    "studio:dev": "moon run studio:dev",
+    "studio:tauri": "moon run studio:tauri-dev"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "catalog:",
+    "@moonrepo/cli": "catalog:",
+    "typescript": "catalog:"
   }
 }

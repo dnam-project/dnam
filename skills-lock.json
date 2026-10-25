@@ -1,6 +1,12 @@
 {
   "version": 1,
   "skills": {
+    "debug-task": {
+      "source": "moonrepo/moon",
+      "sourceType": "github",
+      "skillPath": "skills/debug-task/SKILL.md",
+      "computedHash": "74f2fd3e55a7788c6f69cca3d3457113651d7b295afe6f36c839017edb6ab3a7"
+    },
     "migrate-radix-to-base": {
       "source": "shadcn/ui",
       "sourceType": "github",

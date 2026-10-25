@@ -1,0 +1,27 @@
+$schema: "https://moonrepo.dev/schemas/workspace.json"
+
+# Configures all projects within the workspace to create a project graph.
+projects:
+  - "packages/*"
+
+# Configures the version control system (VCS).
+vcs:
+  defaultBranch: "main"
+  provider: "github"
+
+# Configures aspects of the content-addressed hashing engine.
+hasher:
+  walkStrategy: "vcs"
+  ignorePatterns:
+    - "**/*.dnam"
+    - "**/*.dnam-ckpt"
+    - "**/*.nam"
+    - "**/*.nam-ckpt"
+    - "**/*.wav"
+    - "**/coverage/**"
+    - "**/.pytest_cache/**"
+    - "**/.ruff_cache/**"
+    - "**/.hypothesis/**"
+    - "**/.benchmarks/**"
+    - "**/playwright-report/**"
+    - "**/test-results/**"

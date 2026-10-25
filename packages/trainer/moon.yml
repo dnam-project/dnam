@@ -1,0 +1,169 @@
+$schema: "https://moonrepo.dev/schemas/project.json"
+
+id: "trainer"
+language: "python"
+layer: "application"
+stack: "backend"
+tags:
+  - "python"
+  - "pytorch"
+  - "trainer"
+
+project:
+  name: "dnam-trainer"
+  description: "PyTorch 4-Stage Differentiable Trainer and headless dnam-train worker for DNAM"
+
+dependsOn:
+  - "python"
+
+tasks:
+  format-check:
+    command: "uv"
+    args:
+      - "run"
+      - "--no-sync"
+      - "ruff"
+      - "format"
+      - "--check"
+      - "packages/trainer"
+    inputs:
+      - "pyproject.toml"
+      - "src/**/*"
+      - "tests/**/*"
+      - "/pyproject.toml"
+      - "/uv.lock"
+    options:
+      runFromWorkspaceRoot: true
+    tags:
+      - "quality"
+      - "format"
+
+  lint:
+    command: "uv"
+    args:
+      - "run"
+      - "--no-sync"
+      - "ruff"
+      - "check"
+      - "packages/trainer"
+    inputs:
+      - "pyproject.toml"
+      - "src/**/*"
+      - "tests/**/*"
+      - "/pyproject.toml"
+      - "/uv.lock"
+    options:
+      runFromWorkspaceRoot: true
+    tags:
+      - "quality"
+      - "lint"
+
+  typecheck:
+    command: "uv"
+    args:
+      - "run"
+      - "--no-sync"
+      - "pyrefly"
+      - "check"
+      - "--min-severity=warn"
+      - "packages/trainer"
+    deps:
+      - "python:build"
+    inputs:
+      - "pyproject.toml"
+      - "src/**/*"
+      - "tests/**/*"
+      - "/pyproject.toml"
+      - "/uv.lock"
+      - "/packages/python/src/**/*"
+    options:
+      runFromWorkspaceRoot: true
+    tags:
+      - "quality"
+      - "typecheck"
+
+  build:
+    type: "build"
+    command: "noop"
+    deps:
+      - "python:build"
+    tags:
+      - "build"
+
+  test:
+    command: "uv"
+    args:
+      - "run"
+      - "--no-sync"
+      - "pytest"
+      - "packages/trainer/tests"
+    deps:
+      - "python:build"
+    inputs:
+      - "pyproject.toml"
+      - "src/**/*"
+      - "tests/**/*"
+      - "/AGENTS.md"
+      - "/docs/**/*.md"
+      - "/packages/**/AGENTS.md"
+      - "/pyproject.toml"
+      - "/uv.lock"
+      - "/packages/python/src/**/*"
+    options:
+      runFromWorkspaceRoot: true
+    tags:
+      - "test"
+
+  coverage:
+    type: "run"
+    command: "uv"
+    args:
+      - "run"
+      - "--no-sync"
+      - "pytest"
+      - "packages/trainer/tests"
+      - "--cov=dnam_trainer"
+      - "--cov-report=term-missing"
+      - "--cov-fail-under=95"
+    deps:
+      - "python:build"
+    inputs:
+      - "pyproject.toml"
+      - "src/**/*"
+      - "tests/**/*"
+      - "/AGENTS.md"
+      - "/docs/**/*.md"
+      - "/packages/**/AGENTS.md"
+      - "/pyproject.toml"
+      - "/uv.lock"
+      - "/packages/python/src/**/*"
+    options:
+      runFromWorkspaceRoot: true
+      runInCI: "skip"
+    tags:
+      - "coverage"
+
+  bench:
+    type: "run"
+    command: "uv"
+    args:
+      - "run"
+      - "--no-sync"
+      - "pytest"
+      - "packages/trainer/tests/test_benchmarks.py"
+      - "--benchmark-enable"
+    deps:
+      - "python:build"
+    inputs:
+      - "pyproject.toml"
+      - "src/**/*"
+      - "tests/**/*"
+      - "/pyproject.toml"
+      - "/uv.lock"
+      - "/packages/python/src/**/*"
+    options:
+      runFromWorkspaceRoot: true
+      cache: false
+      runInCI: false
+    tags:
+      - "bench"

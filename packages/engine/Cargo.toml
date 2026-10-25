@@ -27,7 +27,7 @@ crypto = [
 serde = { workspace = true, default-features = false, features = ["alloc", "derive"] }
 serde_json = { workspace = true, default-features = false, features = ["alloc"] }
 zeroize = { workspace = true, default-features = false, features = ["alloc", "derive"] }
-zerocopy = { workspace = true }
+zerocopy.workspace = true
 ed25519-dalek = { workspace = true, optional = true }
 x25519-dalek = { workspace = true, optional = true }
 chacha20poly1305 = { workspace = true, optional = true }
@@ -35,13 +35,8 @@ hkdf = { workspace = true, optional = true }
 sha2 = { workspace = true, optional = true }
 
 [dev-dependencies]
-criterion = { workspace = true }
-proptest = { workspace = true }
-ed25519-dalek = { workspace = true }
-x25519-dalek = { workspace = true }
-chacha20poly1305 = { workspace = true }
-hkdf = { workspace = true }
-sha2 = { workspace = true }
+criterion.workspace = true
+proptest.workspace = true
 
 [[bench]]
 name = "engine_benchmarks"

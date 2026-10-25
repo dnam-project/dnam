@@ -1,0 +1,181 @@
+$schema: "https://moonrepo.dev/schemas/project.json"
+
+id: "python"
+language: "python"
+layer: "library"
+stack: "backend"
+tags:
+  - "python"
+  - "rust"
+  - "pyo3"
+
+project:
+  name: "dnam-python"
+  description: "Idiomatic Python 3.14 interface & zero-copy PyO3 NumPy SIMD engine bindings for DNAM"
+
+dependsOn:
+  - "engine"
+
+tasks:
+  format-check:
+    command: "uv"
+    args:
+      - "run"
+      - "--no-sync"
+      - "ruff"
+      - "format"
+      - "--check"
+      - "packages/python"
+    inputs:
+      - "pyproject.toml"
+      - "src/**/*"
+      - "tests/**/*"
+      - "/pyproject.toml"
+      - "/uv.lock"
+    options:
+      runFromWorkspaceRoot: true
+    tags:
+      - "quality"
+      - "format"
+
+  lint:
+    script: "uv run --no-sync ruff check packages/python && cargo clippy --package dnam-python --all-targets -- -D warnings"
+    inputs:
+      - "Cargo.toml"
+      - "pyproject.toml"
+      - "rust/**/*"
+      - "src/**/*"
+      - "tests/**/*"
+      - "/Cargo.toml"
+      - "/Cargo.lock"
+      - "/pyproject.toml"
+      - "/uv.lock"
+      - "/packages/engine/Cargo.toml"
+      - "/packages/engine/src/**/*"
+    options:
+      runFromWorkspaceRoot: true
+      mutex: "cargo"
+    tags:
+      - "quality"
+      - "lint"
+
+  typecheck:
+    command: "uv"
+    args:
+      - "run"
+      - "--no-sync"
+      - "pyrefly"
+      - "check"
+      - "--min-severity=warn"
+      - "packages/python"
+    inputs:
+      - "pyproject.toml"
+      - "src/**/*"
+      - "tests/**/*"
+      - "/pyproject.toml"
+      - "/uv.lock"
+    options:
+      runFromWorkspaceRoot: true
+    tags:
+      - "quality"
+      - "typecheck"
+
+  build:
+    type: "build"
+    command: "uv"
+    args:
+      - "run"
+      - "--no-sync"
+      - "maturin"
+      - "develop"
+      - "--release"
+      - "--manifest-path"
+      - "packages/python/Cargo.toml"
+    inputs:
+      - "Cargo.toml"
+      - "pyproject.toml"
+      - "rust/**/*"
+      - "src/**/*.py"
+      - "src/**/*.pyi"
+      - "/Cargo.toml"
+      - "/Cargo.lock"
+      - "/pyproject.toml"
+      - "/uv.lock"
+      - "/packages/engine/Cargo.toml"
+      - "/packages/engine/src/**/*"
+    outputs:
+      - "src/dnam_engine/_native.*"
+    options:
+      runFromWorkspaceRoot: true
+      mutex: "cargo"
+    tags:
+      - "build"
+
+  test:
+    command: "uv"
+    args:
+      - "run"
+      - "--no-sync"
+      - "pytest"
+      - "packages/python/tests"
+    deps:
+      - "~:build"
+    inputs:
+      - "pyproject.toml"
+      - "src/**/*"
+      - "tests/**/*"
+      - "/pyproject.toml"
+      - "/uv.lock"
+    options:
+      runFromWorkspaceRoot: true
+    tags:
+      - "test"
+
+  coverage:
+    type: "run"
+    command: "uv"
+    args:
+      - "run"
+      - "--no-sync"
+      - "pytest"
+      - "packages/python/tests"
+      - "--cov=dnam_engine"
+      - "--cov-report=term-missing"
+      - "--cov-fail-under=95"
+    deps:
+      - "~:build"
+    inputs:
+      - "pyproject.toml"
+      - "src/**/*"
+      - "tests/**/*"
+      - "/pyproject.toml"
+      - "/uv.lock"
+    options:
+      runFromWorkspaceRoot: true
+      runInCI: "skip"
+    tags:
+      - "coverage"
+
+  bench:
+    type: "run"
+    command: "uv"
+    args:
+      - "run"
+      - "--no-sync"
+      - "pytest"
+      - "packages/python/tests/test_benchmarks.py"
+      - "--benchmark-enable"
+    deps:
+      - "~:build"
+    inputs:
+      - "pyproject.toml"
+      - "src/**/*"
+      - "tests/**/*"
+      - "/pyproject.toml"
+      - "/uv.lock"
+    options:
+      runFromWorkspaceRoot: true
+      cache: false
+      runInCI: false
+    tags:
+      - "bench"

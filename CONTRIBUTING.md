@@ -41,12 +41,31 @@ DNAM is organized as a multi-language workspace under `packages/*`. Before modif
 
 ## 3. Workspace Setup & Verification Commands
 
-DNAM uses **`cargo`** (Rust 2024 edition, `1.85+`) for native crates, **`uv`** (Python `3.14`) for Python packages, and **`pnpm`** (Node.js `24` / `26` LTS) for JS/TS packages:
+DNAM uses **`moon`** (`@moonrepo/cli`) to orchestrate and cache tasks across **`cargo`** (Rust 2024 edition, `1.85+`), **`uv`** (Python `3.14`), and **`pnpm`** (Node.js `24` / `26` LTS):
 
 ```bash
-# Sync Python workspace dependencies and build the release editable PyO3 extension
+# Install workspace dependencies (Node/moon + Python editable virtual environment)
+pnpm install
 uv sync
 
+# Run the unified moon DAG across all Rust, Python, and JS/TS packages
+pnpm check              # or: pnpm moon check --all (format-check, lint, typecheck, build, test)
+pnpm coverage           # or: pnpm moon run :coverage (>= 95% coverage across all packages)
+pnpm bench              # or: pnpm moon run :bench
+pnpm test:e2e           # or: pnpm moon run studio:test-e2e
+
+# Target a single project or task in moon
+pnpm moon run engine:test
+pnpm moon run python:test
+pnpm moon run trainer:test
+pnpm moon run js:test
+pnpm moon run ui:test
+pnpm moon run studio:test
+```
+
+You can also invoke each language toolchain directly when working inside a single ecosystem:
+
+```bash
 # Run Rust formatting, workspace Clippy lints, and engine unit/integration tests
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
@@ -57,16 +76,6 @@ uv run ruff format --check
 uv run ruff check
 uv run pyrefly check --min-severity=warn
 uv run pytest packages/python/tests --cov=dnam_engine --cov-report=term-missing --cov-fail-under=95
-
-# Run the Python statistical performance benchmark suite
-uv run pytest packages/python/tests/test_benchmarks.py --benchmark-enable
-
-# Run JS/TS Biome formatting & lints, TypeScript strict check, Vitest >= 95% coverage & benchmarks
-pnpm format:check
-pnpm lint
-pnpm typecheck
-pnpm coverage
-pnpm bench
 
 # Run the monorepo architectural, schema, and link-integrity guardrail verifier
 uv run pytest packages/trainer/tests/test_guardrails.py packages/trainer/tests/integration/test_dnam_verification.py

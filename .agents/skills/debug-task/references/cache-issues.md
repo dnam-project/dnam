@@ -1,0 +1,688 @@
+# Cache issues: Diagnosis and fixes
+
+moon's cache is powered by content-based hashing. Every task run generates a hash from multiple
+sources (command, args, inputs, outputs, env, dependencies, toolchains, etc). If the hash matches a
+previous run, moon skips execution and restores the cached output.
+
+When the cache behaves unexpectedly, it's almost always because the inputs to the hash don't match
+what you think they should.
+
+---
+
+## Table of contents
+
+1. [Unexpected cache hit](#unexpected-cache-hit) — task uses stale results
+2. [Unexpected cache miss](#unexpected-cache-miss) — task re-runs every time
+3. [Outputs not restored](#outputs-not-restored) — cache hit but files missing
+4. [Dependency cache strategies](#dependency-cache-strategies) — controlling how deps invalidate the
+   hash (v2.3+)
+5. [Fingerprint checks in the hash](#fingerprint-checks-in-the-hash) — checks that fold script
+   output into the hash (v2.4+)
+6. [Experimental caching layers](#experimental-caching-layers) — native file hashing, local CAS
+   (v2.3+), shared worktree cache (v2.5+)
+7. [Daemon-offloaded archiving & hydration](#daemon-offloaded-archiving--hydration) — background
+   cache work and where its errors go (v2.5+)
+8. [Debugging tools](#debugging-tools) — commands for any cache issue
+
+---
+
+## Unexpected cache hit
+
+**Symptom:** The task returns cached results when it should re-run. A source file changed, but moon
+says "cached" and serves old output.
+
+**Root cause:** The changed file isn't covered by the task's `inputs`.
+
+### Diagnosis
+
+```bash
+# 1. Get the hash from the last run
+cat .moon/cache/states/<project>/<task>/lastRun.json
+
+# 2. Inspect what was included in the hash
+moon hash <hash>
+```
+
+The hash manifest shows every source that contributed to the hash. If the file you changed isn't
+listed, it's not in `inputs`.
+
+> <sup>v2.6+</sup> If `moon hash` reports "Unable to find a hash manifest", the manifest was
+> probably garbage collected (GC removes hash manifests once they're older than the cache lifetime,
+> counted from when they were first written). Re-run the task to regenerate it — on a cache hit,
+> compare against a fresh `--force` run instead.
+
+### Common causes
+
+**Inputs don't cover all relevant files:**
+
+```yaml
+# PROBLEM: only src/ is covered, but tests import from shared/
+inputs:
+  - 'src/**/*'
+
+# FIX: add the missing directory
+inputs:
+  - 'src/**/*'
+  - 'shared/**/*'
+```
+
+**Undeclared task dependency:**
+
+If task A depends on the output of task B, but `deps` doesn't include B, then B's outputs won't be
+factored into A's hash.
+
+```yaml
+# FIX: declare the dependency
+tasks:
+  build-app:
+    command: 'vite build'
+    deps:
+      - 'shared-lib:build'
+```
+
+**Dependency declared but `cacheStrategy` is `'ignored'`** <sup>v2.3+</sup>:
+
+In v2.3 the default `cacheStrategy` for a dep without outputs is `ignored`, meaning the dep's hash
+no longer contributes to this task. If you have a build task depending on a `lint` or `test` task
+(neither of which declares outputs) and expect the lint/test changes to invalidate the build, the
+v2.3 default will **not** invalidate it. To restore the old behavior:
+
+```yaml
+tasks:
+  build:
+    command: 'vite build'
+    deps:
+      - target: '~:lint'
+        cacheStrategy: 'hash' # was the implicit default before v2.3
+```
+
+See [Dependency cache strategies](#dependency-cache-strategies) for the full picture.
+
+**The dep that changed is a `cleanup` or `wait` dep** <sup>v2.6+</sup>:
+
+`cleanup` and `wait` deps never contribute to the task's hash, as they don't complete before the
+task runs — their `cacheStrategy` can only be `ignored`. Changing a server that the task waits on
+won't invalidate the task. If the task's results depend on it, track its source files in the task's
+`inputs`, or make it a `required` dep.
+
+**Environment variable not included:**
+
+If the task's behavior changes based on an env var (like `NODE_ENV`), but that var isn't declared in
+the task's `env` config, it won't affect the hash.
+
+```yaml
+# FIX: declare env vars that affect the output
+tasks:
+  build:
+    command: 'vite build'
+    env:
+      NODE_ENV: 'production'
+```
+
+Alternatively, you can track an env var in `inputs` using the `$` prefix:
+
+```yaml
+inputs:
+  - 'src/**/*'
+  - '$NODE_ENV'
+```
+
+### Quick fix
+
+```bash
+# Force a fresh run to confirm the problem is cache-related
+moon run <project>:<task> --force
+```
+
+If `--force` produces the correct output, the cache is stale. Expand inputs to cover the missing
+files.
+
+---
+
+## Unexpected cache miss
+
+**Symptom:** The task re-runs from scratch every time, even though nothing meaningful changed. You
+never see "cached" in the output.
+
+**Root cause:** Something in the hash changes on every run — usually the inputs are too broad, or
+they pick up files that are regenerated on every run.
+
+### Diagnosis
+
+```bash
+# 1. Run the task twice
+moon run <project>:<task> --force
+moon run <project>:<task>
+
+# 2. Get both hashes
+cat .moon/cache/states/<project>/<task>/lastRun.json
+# Note: you need hashes from two consecutive runs
+
+# 3. Diff the hashes to see what changed
+moon hash <hash1> <hash2>
+```
+
+The diff highlights exactly which fields differ between runs. This tells you what's causing the
+cache miss.
+
+### Common causes
+
+**Inputs too broad:**
+
+With the default `hasher.walkStrategy: 'vcs'`, a project's glob inputs only see files that git lists
+(tracked, plus untracked files that aren't ignored). With `walkStrategy: 'glob'` (and always for
+root-level projects), the file system is walked instead, and only `.git`/`.svn` and a project-root
+`node_modules` are excluded. See "Unexpected files in the hash manifest" below.
+
+```yaml
+# PROBLEM: **/* matches too many irrelevant files in the project directory
+inputs:
+  - '**/*'
+
+# FIX: be specific
+inputs:
+  - 'src/**/*'
+  - 'package.json'
+  - 'tsconfig.json'
+```
+
+**Generated files that match `inputs`, but aren't declared as `outputs`:**
+
+A task's own declared `outputs` are excluded from its inputs, and their contents never go into its
+own hash (only the configured output paths do). But files the task (or another task) regenerates on
+every run — timestamps in generated files, sourcemaps with absolute paths, build manifests with
+dates — cause the hash to differ when they match `inputs` without being declared as `outputs`.
+Likewise, an upstream dep's volatile outputs propagate when consumed through
+`cacheStrategy: 'outputs'`.
+
+**Lockfile and dependency changes:**
+
+If `package-lock.json`, `yarn.lock`, etc, is in `inputs`, any change to it invalidates the cache.
+But even when it's not, the toolchain layer hashes the project's manifest dependencies — with
+versions resolved from the lockfile when `hasher.optimization` is `'accuracy'` (the default) — so a
+dependency bump still invalidates tasks. `hasher.optimization: 'performance'` skips parsing the
+lockfile.
+
+**Tasks re-ran once after upgrading to v2.6:**
+
+Expected. A task's resolved `toolchains` list is part of its hash, and was previously ordered by an
+internal hash set. In v2.6 it's ordered by configuration (configured toolchains first, then related
+ones), which changes the hash once for tasks that resolve multiple toolchains (tasks with zero or
+one keep their hash). The next run should hit the cache — if it doesn't, the cause is something
+else.
+
+**The task is used as a `cleanup` or `wait` dep** <sup>v2.6+</sup>:
+
+A task that's ran as a `cleanup` or `wait` dep always runs its command and is never hydrated from
+the cache, since the task depending on it relies on it actually running (like starting a server).
+This is by design, not a cache miss.
+
+**A `fingerprint` check with volatile output** <sup>v2.4+</sup>:
+
+If the task has a `fingerprint` check, the script's output is folded into the hash on every run. If
+that output changes each time (a timestamp, PID, random value, or a rapidly-changing version), the
+hash changes and the cache always misses. See
+[Fingerprint checks in the hash](#fingerprint-checks-in-the-hash).
+
+**Unexpected files in the hash manifest:**
+
+Whether `.gitignore` applies depends on how the inputs were collected:
+
+- **Default (`hasher.walkStrategy: 'vcs'`)** — project-relative glob inputs are collected from git
+  (`git ls-files --cached --modified --others --exclude-standard`), so **untracked ignored files are
+  excluded**. `.gitignore` does _not_ help for tracked files, explicit file inputs,
+  workspace-relative (`/`-prefixed) globs, or root-level projects.
+- **`walkStrategy: 'glob'`** (and always for root-level projects, or without a VCS) — the file
+  system is walked, and `.gitignore` is **not** consulted. Only `.git`/`.svn` (at any depth) and a
+  project-root-anchored `node_modules/**` are excluded (nested `node_modules` deeper in a project
+  are NOT).
+
+In both cases, task outputs are excluded from their own inputs, and everything else must be handled
+by narrowing `inputs` or adding patterns to the workspace `hasher.ignorePatterns` setting.
+
+### Quick fix
+
+```bash
+# Narrow inputs to only the files that matter
+# Exclude volatile outputs
+# Use moon hash diff to pinpoint the changing field
+```
+
+---
+
+## Outputs not restored
+
+**Symptom:** moon says "cached" (cache hit), but the expected output files don't appear in the
+project directory.
+
+**Root cause:** The `outputs` configuration doesn't match the actual files the task produces, or the
+archive is missing.
+
+### Diagnosis
+
+```bash
+# 1. Verify the outputs config
+moon task <project>:<task> --json
+# Check outputFiles and outputGlobs
+
+# 2. Check if the archive exists
+ls .moon/cache/outputs/<hash>.tar.gz
+
+# 3. If the archive exists, inspect its contents
+tar tzf .moon/cache/outputs/<hash>.tar.gz
+```
+
+> If `experiments.casOutputsCache` is enabled (v2.3+), outputs are stored in a content-addressable
+> store rather than per-hash tarballs — see
+> [Experimental caching layers](#experimental-caching-layers) for what to look for instead.
+
+### Common causes
+
+**Outputs misconfigured — path relativity:**
+
+Output paths can be project-relative or workspace-relative. By default they are project-relative,
+but you can use workspace-relative paths directly in the `outputs` config. If the build tool writes
+to an unexpected location, the paths won't match.
+
+```yaml
+# PROBLEM: build writes to <workspace>/dist, not <project>/dist
+outputs:
+  - 'dist' # relative to project root
+
+
+# FIX: adjust the path or the build tool's output directory
+```
+
+**Glob outputs + extra files:**
+
+If `outputs` uses a glob like `dist/**/*`, and the build produces files outside that glob, those
+files won't be archived. On hydration, only the archived files are restored.
+
+**Archive doesn't exist:**
+
+If the task has never completed successfully with caching enabled, there's no archive to restore.
+This happens when:
+
+- The task was previously run with `--cache off`
+- The task errored on the run that generated this hash
+- The cache was cleaned (`moon clean`)
+- <sup>v2.4+</sup> `cache.cas.maxSize` evicted it — least-recently-used, when the CAS experiment is
+  enabled. Eviction only runs during garbage collection (`moon clean`, or the post-pipeline cleanup
+  when a daemon is connected and `pipeline.autoCleanCache` is enabled, the default), never at write
+  time.
+- <sup>v2.5+</sup> A daemon-side archive failure (CAS or remote cache only) — archiving through the
+  daemon is fire-and-forget, so a failed archive stores nothing and the only evidence is in the
+  daemon's server logs.
+
+**Remote cache request failures** (HTTP API):
+
+With an HTTP remote cache, a transient error (like a `503` from a CDN under load) on a single blob
+used to drop that blob, so hydration produced a partial set of outputs, and the task failed with
+`task_runner::missing_outputs`. The debug log shows "Failed to retrieve blobs" with the HTTP status.
+<sup>v2.6+</sup> Requests that fail with a transient error (connection failure, timeout, `5xx`,
+`408`, or `429`) are retried with exponential backoff, up to `remote.cache.retryCount` times
+(default `3`, `0` disables). If failures persist, raise the count, or check the remote service. A
+host that's unreachable while connecting disables the remote cache for that run, with a warning.
+Retries don't apply to the gRPC API.
+
+**Daemon errors are swallowed** <sup>v2.5+</sup>:
+
+When the daemon is enabled **and** outputs go to the local CAS (`casOutputsCache`) or a remote
+cache, archiving and hydration go through it. (The default `.tar.gz` archives checked above are
+always packed and unpacked in-process.) Storage failures inside the daemon aren't surfaced: a
+daemon-side hydrate failure is reported back as "nothing cached", so the task silently re-runs (an
+unexpected cache miss) instead of erroring — the real cause only exists in the daemon's server logs.
+See [Daemon-offloaded archiving & hydration](#daemon-offloaded-archiving--hydration).
+
+### Quick fix
+
+```bash
+# 1. Clear cache and force a successful run
+moon run <project>:<task> --force
+
+# 2. Verify the archive was created
+ls .moon/cache/outputs/
+
+# 3. Run again without --force to test hydration
+moon run <project>:<task>
+
+# 4. Check if output files appeared
+ls <project>/dist/  # or whatever the output directory is
+```
+
+---
+
+## Dependency cache strategies
+
+Available in v2.3+.
+
+Each entry in `deps` can declare a `cacheStrategy` that controls how that dep contributes to the
+current task's cache hash:
+
+| Strategy    | Effect on this task's hash                                                                                           | Use when                                                       |
+| ----------- | -------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------- |
+| `'hash'`    | Mixes in the dep's full hash. Any change to the dep (inputs, command, args, env) invalidates this task.              | You want any upstream change to force a rebuild.               |
+| `'ignored'` | Dep is a sequencing edge only; its changes never invalidate this task.                                               | The dep produces no artifact you care about (e.g. lint, test). |
+| `'outputs'` | Mixes in the dep's output files instead of its hash. This task is only invalidated when upstream **outputs** change. | Build tasks that consume a dep's artifacts but not its source. |
+
+### The v2.3 default change
+
+When `cacheStrategy` is omitted, the effective default is chosen based on whether the dep declares
+outputs:
+
+- Dep **with** outputs → defaults to `'hash'` (same as pre-v2.3).
+- Dep **without** outputs → defaults to `'ignored'` (pre-v2.3 was always `'hash'`).
+
+This means tasks that depend on output-less tasks (lint, test, typecheck, etc.) will see **fewer**
+cache invalidations after upgrading to v2.3 — which is usually correct, but can surprise you if you
+were intentionally relying on lint/test churn to invalidate downstream tasks.
+
+### Diagnosis
+
+```bash
+# Inspect the resolved deps and their cacheStrategy
+moon task <project>:<task> --json
+```
+
+Each entry under `deps` shows its resolved `cacheStrategy`. If you didn't set it, the field reflects
+the default chosen for you.
+
+<sup>v2.6+</sup> Only `required` deps (the default `type`) can use `hash` or `outputs`. `cleanup`
+and `wait` deps don't complete before the task runs, so they're always `ignored`, and configuring
+another strategy is a validation error.
+
+Mechanism note for `'outputs'`: the dep's output files and globs are injected into the consuming
+task's **inputs** by the expander (the hash itself only records a marker for the strategy). So in
+`moon hash` output, an upstream's `dist/` files showing up as this task's inputs is expected, not a
+config bug.
+
+### Common surprises
+
+**A build task no longer rebuilds when upstream source changes**
+
+You used to rely on the implicit `hash` strategy on a `^:build` dep. v2.3 still defaults to `hash`
+for deps that declare outputs, so this should not change — but if the upstream task lost its
+`outputs` declaration, the dep silently flipped to `ignored`. Re-declare outputs on the upstream
+task or explicitly set `cacheStrategy: 'hash'`.
+
+**A build task rebuilds even when only an upstream's source comments changed**
+
+The upstream is contributing its full hash. Switch the dep to `cacheStrategy: 'outputs'` so only
+output-file changes invalidate this task:
+
+```yaml
+tasks:
+  build:
+    command: 'webpack'
+    deps:
+      - target: '^:build'
+        cacheStrategy: 'outputs'
+```
+
+**Build invalidated by a `test` dep**
+
+You declared `deps: ['~:test']` on a build task in pre-v2.3 expecting the lint/test changes to
+invalidate. v2.3 makes this `ignored` by default. Set `cacheStrategy: 'hash'` explicitly if you need
+the old behavior.
+
+---
+
+## Fingerprint checks in the hash
+
+Available in v2.4+.
+
+A task's `checks` can include one or more `fingerprint` entries. Unlike `requirement` and
+`condition` checks (which gate or skip a task), a `fingerprint` check always runs and folds its
+script output into the task's cache hash. This lets you invalidate the cache based on **external
+state** that isn't captured by `inputs` — for example, a compiler version or a remote API's schema.
+
+```yaml
+tasks:
+  build:
+    command: 'cargo build'
+    checks:
+      - check: 'fingerprint'
+        script: 'rustc --version'
+        # What portion of the run to hash:
+        #   true (default) → all output   'exit-code' → just the code
+        #   'stdout' → stdout only         'stderr' → stderr only
+        hash: 'stdout'
+```
+
+### Symptom: cache misses on every run after adding a fingerprint
+
+The fingerprint script's output is volatile. `rustc --version` is stable; `date` or a build
+timestamp is not. Anything non-deterministic in the hashed portion changes the hash each run.
+
+**Diagnosis:**
+
+```bash
+# Diff two consecutive runs — the fingerprint check contributes to the hash manifest
+moon run <project>:<task> --force
+moon hash <hash1> <hash2>
+```
+
+If the differing field corresponds to a check, the fingerprint output is the cause.
+
+**Fixes:**
+
+- Narrow what's hashed with the `hash` field — `hash: 'exit-code'` ignores volatile stdout/stderr.
+- Make the script deterministic (print only a stable version string, not a timestamp).
+- Remove the fingerprint if the external state doesn't actually affect the output.
+
+### Symptom: a fingerprint check aborts the task
+
+If the fingerprint script exits **non-zero**, moon raises `FingerprintCheckFailed`
+(`task_runner::hash_check_failed`) during hash generation and the task does not run. A script that
+fails to spawn at all is also fatal, but the underlying process error propagates as-is instead of
+that variant. Run the script manually to debug it.
+
+One exception: a fingerprint script that hits the task's `options.timeout` is **silently non-fatal**
+— the attempt is marked timed-out and contributes _nothing_ to the hash, so the hash quietly loses
+that content instead of erroring.
+
+> Fingerprint checks run during hash generation, which happens on **every** run — even on cache
+> hits, and even when the task's cache is disabled. Setting `hash: false` still runs the script but
+> hashes nothing. For the gating/skipping check types (`requirement`, `condition`), see
+> [config-mistakes.md § Task checks](./config-mistakes.md#task-checks).
+
+---
+
+## Experimental caching layers
+
+Available in v2.3+.
+
+Two experiments change how the local cache stores and verifies content. If a user reports unexpected
+cache behavior, check the state of both in `.moon/workspace.yml` — and note that
+`nativeFileHashing`'s **default changed in v2.5** (`casOutputsCache` is still opt-in):
+
+```yaml
+experiments:
+  casOutputsCache: true # local content-addressable store for task outputs (opt-in)
+  nativeFileHashing: true # bypass VCS for input hashing (DEFAULT in v2.5+)
+```
+
+Both can also be toggled from the environment (`MOON_EXPERIMENT_CAS_OUTPUTS_CACHE`,
+`MOON_EXPERIMENT_NATIVE_FILE_HASHING`) — check the shell and CI environment for overrides the config
+doesn't show.
+
+### `casOutputsCache`
+
+When enabled, task outputs are stored in a local content-addressable store (CAS) instead of as
+per-hash `.tar.gz` archives under `.moon/cache/outputs/`. The CAS lives in **sibling directories**:
+`.moon/cache/manifests/` and `.moon/cache/blobs/`, each prefix-sharded by hash (e.g.
+`blobs/ab/cdef1234…`). In v2.4 these were renamed from the earlier `ac/` and `cas/` directories
+(migrated automatically).
+
+**What to check when this is on:**
+
+- New `.tar.gz` files stop appearing in `.moon/cache/outputs/` — look under `manifests/` and
+  `blobs/` instead.
+- `tar tzf` won't work on individual blobs; they're raw content-addressed files.
+- <sup>v2.4+</sup> If `cache.cas.maxSize` is set (e.g. `'10gb'`), least-recently-used outputs are
+  **evicted** when the limit is exceeded — a missing archive may simply have been evicted. Eviction
+  only happens during garbage collection (`moon clean`, or the post-pipeline cleanup when a daemon
+  is connected) — never at write time, so the cache can temporarily exceed the limit.
+
+<sup>v2.6+</sup> The local CAS is **always enabled**, as it stores the hash manifest of every ran
+task (previously `.moon/cache/hashes/<hash>.json`). The experiment now only controls whether task
+_outputs_ are stored in it — so `blobs/` existing doesn't mean the experiment is on.
+
+**Quick toggle for diagnosis:**
+
+```yaml
+# Temporarily disable to confirm the experiment is the culprit
+experiments:
+  casOutputsCache: false
+```
+
+The `cache.cas.verifyIntegrity` setting is meant to re-verify blob content when it's read (never for
+manifests), but local hydration links blobs straight from their paths without reading them through
+the verifying code path — so turning it on doesn't catch corruption during local hydration. For
+suspected corruption, delete `.moon/cache/blobs` and `.moon/cache/manifests` (or run
+`moon clean --all`), then re-run with `--force`.
+
+### `nativeFileHashing`
+
+When enabled, input hashing runs inside moon's task pool instead of shelling out to Git. This is
+generally faster but produces hashes from a different code path than the VCS implementation.
+<sup>v2.5+</sup> This experiment is **enabled by default** — a workspace upgrading from v2.4
+switches hashing code paths without any config change.
+
+**Symptoms that suggest this experiment is involved:**
+
+- Hashes don't match what they were before enabling the experiment (or before upgrading to v2.5) —
+  expected, but worth confirming.
+- Hash diff (`moon hash <a> <b>`) attributes the change to file content even though Git reports the
+  file as identical.
+
+**Quick toggle for diagnosis:**
+
+```yaml
+experiments:
+  nativeFileHashing: false
+```
+
+### Shared worktree cache <sup>v2.5+</sup>
+
+The `cache.sharedWorktreeCache` setting (alias `unstable_sharedWorktreeCache` — check for both
+names), or the `MOON_CACHE_SHARED_WORKTREE_CACHE` environment variable, shares the CAS between all
+git worktrees of a repository on the same machine. It only takes effect when moon runs inside a git
+worktree, and sharing task outputs requires the `casOutputsCache` experiment.
+
+**What changes when it's on:**
+
+- `blobs/` and `manifests/` live in the **base checkout's** `.moon/cache` directory (or
+  `~/.moon/cache/shared` for bare clones) — a worktree's own `.moon/cache/blobs/` being empty or
+  absent is normal, not a corruption sign.
+- Locks and states remain worktree-specific, so `lastRun.json` and `stdout.log` are still local to
+  each worktree. Hash manifests were also local before v2.6; <sup>v2.6+</sup> they're stored as
+  blobs, so they're shared along with everything else in `blobs/`.
+- A cache hit in a fresh worktree may hydrate from a task that ran in a _different_ worktree. If the
+  restored outputs look wrong, diff the hash manifests from both worktrees before blaming the
+  restore itself.
+
+**Quick toggle for diagnosis:**
+
+```bash
+MOON_CACHE_SHARED_WORKTREE_CACHE=false moon run <project>:<task>
+```
+
+---
+
+## Daemon-offloaded archiving & hydration
+
+Available in v2.5+.
+
+When the [daemon](https://moonrepo.dev/docs/guides/daemon) is enabled **and** task outputs go to the
+local CAS (`experiments.casOutputsCache`) or a remote cache, output archiving (after a run) and
+hydration (on a cache hit) are routed through it. The default `.tar.gz` archives are always handled
+in-process. **Storage failures** inside the daemon aren't surfaced by the main process — the daemon
+logs a warning and the pipeline carries on. (Other failures, like an unpack error inside the daemon,
+a missing backend, or an RPC timeout, do propagate and fail the task.) The two paths behave
+differently:
+
+- **Archiving is fire-and-forget.** The daemon acknowledges the request, then does the storage work
+  in the background. A failure means nothing was stored — silently — and archives can appear
+  slightly _after_ the run completes, so an immediately-after `ls` of the cache can race the daemon.
+- **Hydration is awaited**, but a daemon-side failure is reported back as "nothing cached", which
+  the runner treats as a plain cache miss — the task re-runs instead of erroring. An unexpected
+  re-run (or a cache that never seems to hit) can therefore be a hydrate failure in disguise.
+
+**Debugging implications:**
+
+- For either symptom, the only evidence lives in the daemon's server logs:
+
+  ```bash
+  moon daemon logs
+  # or read directly:
+  cat .moon/cache/daemon/server.log
+  ```
+
+- To take the daemon out of the equation, re-run with the daemon disabled — hydration then runs
+  in-process and surfaces errors directly. (In-process CAS/remote archiving is still queued in the
+  background, so archive failures show up as `warn` log lines, like "Failed to store blobs, will
+  skip caching the manifest", rather than task errors.)
+
+  ```bash
+  MOON_DAEMON=false moon run <project>:<task> --force
+  ```
+
+---
+
+## Debugging tools
+
+These commands are useful for any cache investigation:
+
+```bash
+# Inspect a hash manifest (all sources that generated the hash)
+# v2.6+: manifests are blobs in .moon/cache/blobs/ — read them through this command
+moon hash <hash>
+
+# Compare two hashes (see exactly what changed)
+moon hash <hash1> <hash2>
+
+# JSON output for programmatic analysis
+moon hash <hash> --json
+moon hash <hash1> <hash2> --json
+
+# See last run metadata (exit code, hash, timing)
+cat .moon/cache/states/<project>/<task>/lastRun.json
+
+# See full project snapshot (all resolved tasks and config)
+cat .moon/cache/states/<project>/snapshot.json
+
+# List cached output archives
+ls .moon/cache/outputs/
+
+# Inspect archive contents
+tar tzf .moon/cache/outputs/<hash>.tar.gz
+
+# Tail the daemon's server log — archive/hydrate failures land here (v2.5+)
+moon daemon logs
+
+# Run with the daemon disabled, so cache errors surface in-process (v2.5+)
+MOON_DAEMON=false moon run <project>:<task> --force
+
+# Force a fresh run (bypasses cache, writes new cache)
+moon run <project>:<task> --force
+
+# Disable cache entirely (no reads or writes)
+moon run <project>:<task> --cache off
+
+# Other cache modes
+moon run <project>:<task> --cache read   # read but don't write
+moon run <project>:<task> --cache write  # write but don't read
+```
+
+### `--force` vs `--cache off`
+
+These are different:
+
+| Flag            | Reads cache | Writes cache | Use when                                                   |
+| --------------- | ----------- | ------------ | ---------------------------------------------------------- |
+| `--force`       | No          | Yes          | You want a fresh run but still want to populate the cache. |
+| `--cache off`   | No          | No           | You want to completely bypass caching (e.g., debugging).   |
+| `--cache read`  | Yes         | No           | You want to use existing cache but not pollute it.         |
+| `--cache write` | No          | Yes          | Like `--force`, but doesn't skip affected checks.          |
+| (default)       | Yes         | Yes          | Normal operation.                                          |

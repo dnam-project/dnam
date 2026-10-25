@@ -12,13 +12,14 @@ publish = false
 name = "_native"
 path = "rust/lib.rs"
 crate-type = ["cdylib"]
+bench = false
 
 [dependencies]
-dnam-engine = { path = "../engine", default-features = true }
+dnam-engine.workspace = true
 pyo3.workspace = true
 numpy.workspace = true
-serde = { workspace = true }
-serde_json = { workspace = true }
+serde.workspace = true
+serde_json.workspace = true
 
 [lints]
 workspace = true

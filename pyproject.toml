@@ -11,12 +11,6 @@ dev = [
     "dnam-engine",
     "dnam-trainer",
     "maturin>=1.8.0",
-    "numpy>=2.1.0",
-    "pydantic>=2.10.0",
-    "cyclopts>=5.0.0",
-    "torch>=2.6.0",
-    "polars>=1.20.0",
-    "altair>=5.5.0",
     "pytest>=8.3.0",
     "pytest-benchmark>=5.1.0",
     "pytest-cov>=6.0.0",
@@ -27,6 +21,7 @@ dev = [
 ]
 
 [tool.uv]
+package = false
 environments = [
     "sys_platform == 'darwin' and platform_machine == 'arm64'",
     "sys_platform == 'win32' and platform_machine == 'AMD64'",
