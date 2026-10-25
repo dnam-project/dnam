@@ -51,24 +51,24 @@ Run all commands from the monorepo root via `moon`:
 
 ```bash
 # 1. Run all engine quality gates (format-check, lint, typecheck, build, test)
-pnpm moon check engine
+moon check engine
 
 # 2. Run individual engine tasks
-pnpm moon run engine:format-check
-pnpm moon run engine:lint
-pnpm moon run engine:test
+moon run engine:format-check
+moon run engine:lint
+moon run engine:test
 
 # 3. Verify >= 95% line, region, and function coverage
-pnpm moon run engine:coverage
+moon run engine:coverage
 
 # 4. Run real-time throughput benchmarks
-pnpm moon run engine:bench
+moon run engine:bench
 ```
 
 ---
 
 ## 4. Pre-Commit Checklist for `packages/engine/`
 
-- [ ] `pnpm moon check engine` passes all formatting, Clippy (`-D warnings`), build, and unit/`proptest`/integration tests (`tests/realtime_safety.rs` and `tests/backend_parity.rs`).
-- [ ] `pnpm moon run engine:coverage` confirms $\ge 95\%$ coverage, including all newly added or modified functions and tier branches.
+- [ ] `moon check engine` passes all formatting, Clippy (`-D warnings`), build, and unit/`proptest`/integration tests (`tests/realtime_safety.rs` and `tests/backend_parity.rs`).
+- [ ] `moon run engine:coverage` confirms $\ge 95\%$ coverage, including all newly added or modified functions and tier branches.
 - [ ] If any public API or FFI signature changed, `packages/python/rust/` bindings and scoped `AGENTS.md` files (`< 2,500 B`) are updated accordingly.

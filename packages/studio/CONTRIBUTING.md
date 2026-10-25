@@ -18,16 +18,16 @@ All contributions must also comply with the root [`CONTRIBUTING.md`](../../CONTR
 
 ```bash
 # Run the `dnam` CLI (`init`, `model`, `capture`, `train`, `inspect`, `studio`)
-pnpm dnam --help        # or: pnpm moon run studio:cli -- --help
+moon run studio:cli -- --help
 
 # Launch the Studio UI Vite dev server (http://localhost:1420)
-pnpm studio:dev         # or: pnpm moon run studio:dev
+moon run studio:dev
 
 # Launch the native Tauri v2 Desktop Studio app
-pnpm studio:tauri       # or: pnpm moon run studio:tauri-dev
+moon run studio:tauri-dev
 
 # Run studio quality gates, unit/integration tests, and Playwright E2E tests
-pnpm moon check studio
-pnpm moon run studio:test-e2e
-pnpm moon run studio:coverage
+moon check studio
+moon run studio:test-e2e
+moon run studio:coverage
 ```

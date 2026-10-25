@@ -36,17 +36,6 @@
       "default": "./dist/ui/index.js"
     }
   },
-  "scripts": {
-    "dev": "moon run studio:dev",
-    "build": "moon run studio:build",
-    "tauri:dev": "moon run studio:tauri-dev",
-    "typecheck": "moon run studio:typecheck",
-    "lint": "moon run studio:lint",
-    "format:check": "moon run studio:format-check",
-    "test": "moon run studio:test",
-    "test:e2e": "moon run studio:test-e2e",
-    "coverage": "moon run studio:coverage"
-  },
   "dependencies": {
     "@dnam-project/engine": "workspace:*",
     "@dnam-project/ui": "workspace:*",

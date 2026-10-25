@@ -17,19 +17,25 @@ dependsOn:
   - "engine"
 
 tasks:
-  format-check:
-    command: "uv"
-    args:
-      - "run"
-      - "--no-sync"
-      - "ruff"
+  format:
+    type: "run"
+    script: "uv run --no-sync ruff format packages/python && cargo fmt --package dnam-python"
+    options:
+      runFromWorkspaceRoot: true
+      cache: false
+      runInCI: false
+    tags:
       - "format"
-      - "--check"
-      - "packages/python"
+
+  format-check:
+    script: "uv run --no-sync ruff format --check packages/python && cargo fmt --package dnam-python -- --check"
     inputs:
+      - "Cargo.toml"
       - "pyproject.toml"
+      - "rust/**/*"
       - "src/**/*"
       - "tests/**/*"
+      - "/Cargo.toml"
       - "/pyproject.toml"
       - "/uv.lock"
     options:

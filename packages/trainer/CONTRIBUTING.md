@@ -21,12 +21,12 @@ Run from the monorepo root:
 
 ```bash
 # Run the `dnam-train` headless 4-stage trainer CLI
-pnpm dnam-train --help  # or: pnpm moon run trainer:cli -- --help
+moon run trainer:cli -- --help
 
 # Run all trainer quality gates (format-check, lint, typecheck, build, test)
-pnpm moon check trainer
+moon check trainer
 
 # Run trainer coverage (>= 95%) and benchmarks
-pnpm moon run trainer:coverage
-pnpm moon run trainer:bench
+moon run trainer:coverage
+moon run trainer:bench
 ```

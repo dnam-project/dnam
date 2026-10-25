@@ -36,7 +36,7 @@ Consult [`AGENTS.md`](AGENTS.md) for the module-to-spec discovery table:
 uv sync
 
 # Or explicitly recompile the PyO3 extension via moon
-pnpm moon run python:build
+moon run python:build
 ```
 
 ---
@@ -48,7 +48,7 @@ pnpm moon run python:build
    - Never disable rules, downscale presets, or use `# type: ignore`.
    - Whenever you add or modify a `#[pyfunction]` or `#[pymethods]` signature in `rust/*.rs`, update [`src/dnam_engine/_native.pyi`](src/dnam_engine/_native.pyi) in lockstep.
 2. **Code Formatting & Linting (`ruff` + `clippy`):**
-   - Enforce `line-length = 100` and pass `pnpm moon run python:format-check` and `pnpm moon run python:lint` with zero warnings.
+   - Enforce `line-length = 100` and pass `moon run python:format-check` and `moon run python:lint` with zero warnings.
 3. **Zero Per-Element Python Loops Over Audio or Control Arrays:**
    - Never loop over 1D or 2D NumPy arrays in Python to invoke scalar FFI functions. Always pass C-contiguous NumPy arrays into a slice-based `#[pyfunction]` in `rust/*.rs`.
    - Release the GIL (`py.detach(|| ...)`) in `rust/engine.rs` during block audio processing.
@@ -64,19 +64,19 @@ All test files reside in [`tests/`](tests/) (`test_schema.py`, `test_container.p
 
 ```bash
 # 1. Run all python quality gates (format-check, lint, typecheck, build, test)
-pnpm moon check python
+moon check python
 
 # 2. Run unit, property-based (Hypothesis), and smoke benchmark tests with >= 95% coverage
-pnpm moon run python:coverage
+moon run python:coverage
 
 # 3. Run full calibrated pytest-benchmark suite
-pnpm moon run python:bench
+moon run python:bench
 ```
 
 ---
 
 ## 5. Pre-Commit Checklist for `packages/python/`
 
-- [ ] `pnpm moon check python` passes all Ruff, Clippy, Pyrefly (`0` diagnostics with `src/dnam_engine/_native.pyi` up to date), build, and test checks.
-- [ ] `pnpm moon run python:coverage` passes with $\ge 95\%$ coverage.
-- [ ] `pnpm moon run python:bench` confirms no performance regressions.
+- [ ] `moon check python` passes all Ruff, Clippy, Pyrefly (`0` diagnostics with `src/dnam_engine/_native.pyi` up to date), build, and test checks.
+- [ ] `moon run python:coverage` passes with $\ge 95\%$ coverage.
+- [ ] `moon run python:bench` confirms no performance regressions.

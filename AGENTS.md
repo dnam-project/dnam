@@ -7,9 +7,9 @@
 
 ## 1. Global Tech Stack & Tooling Rules
 
-- **Monorepo Orchestration (`moon`):** Run all builds, quality gates, tests, CLIs, and dev servers via `moon` ([`.moon/workspace.yml`](.moon/workspace.yml)): `pnpm check` (`moon check --all`), `pnpm moon check <project>`, or `pnpm moon run <project>:<task>`.
-- **CLIs & Dev Servers:** `pnpm dnam -- <args>` (`studio:cli`), `pnpm dnam-train -- <args>` (`trainer:cli`), `pnpm studio:dev` (`studio:dev`), `pnpm studio:tauri` (`studio:tauri-dev`), and `pnpm ui:dev` (`ui:dev`).
-- **Quality Gates:** `pnpm format:check` (`:format-check`), `pnpm lint` (`:lint`), `pnpm typecheck` (`:typecheck` — zero `# type: ignore` or `any`), `pnpm coverage` ($\ge 95\%$), and `pnpm bench`.
+- **Monorepo Orchestration (`moon` + `mise`):** Run all builds, quality gates, tests, CLIs, and dev servers via `moon` ([`.moon/workspace.yml`](.moon/workspace.yml) & [`mise.toml`](mise.toml)): `moon check --all`, `moon check <project>`, or `moon run <project>:<task>`.
+- **CLIs & Dev Servers:** `moon run studio:cli -- <args>`, `moon run trainer:cli -- <args>`, `moon run studio:dev`, `moon run studio:tauri-dev`, and `moon run ui:dev`.
+- **Quality Gates:** `moon run :format-check`, `moon run :lint`, `moon run :typecheck` (zero `# type: ignore` or `any`), `moon run :coverage` ($\ge 95\%$), and `moon run :bench`.
 - **Git & CLA:** Sign off commits via `git commit -s` per [`CLA.md`](CLA.md) and [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 ## 2. Core Cross-Cutting Architectural Invariants

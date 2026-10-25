@@ -13,26 +13,8 @@
     "type": "git",
     "url": "https://github.com/dnam-project/dnam.git"
   },
-  "scripts": {
-    "moon": "moon",
-    "check": "moon check --all",
-    "build": "moon run :build",
-    "test": "moon run :test",
-    "test:e2e": "moon run studio:test-e2e",
-    "coverage": "moon run :coverage",
-    "bench": "moon run :bench",
-    "lint": "moon run :lint",
-    "format:check": "moon run :format-check",
-    "typecheck": "moon run :typecheck",
-    "dnam": "moon run studio:cli --",
-    "dnam-train": "moon run trainer:cli --",
-    "ui:dev": "moon run ui:dev",
-    "studio:dev": "moon run studio:dev",
-    "studio:tauri": "moon run studio:tauri-dev"
-  },
   "devDependencies": {
     "@biomejs/biome": "catalog:",
-    "@moonrepo/cli": "catalog:",
     "typescript": "catalog:"
   },
   "devEngines": {

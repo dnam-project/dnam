@@ -31,6 +31,22 @@ tasks:
     tags:
       - "cli"
 
+  format:
+    type: "run"
+    command: "uv"
+    args:
+      - "run"
+      - "--no-sync"
+      - "ruff"
+      - "format"
+      - "packages/trainer"
+    options:
+      runFromWorkspaceRoot: true
+      cache: false
+      runInCI: false
+    tags:
+      - "format"
+
   format-check:
     command: "uv"
     args:

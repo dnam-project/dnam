@@ -40,16 +40,6 @@
       "default": "./dist/components/visualizers/index.js"
     }
   },
-  "scripts": {
-    "dev": "moon run ui:dev",
-    "build": "moon run ui:build",
-    "typecheck": "moon run ui:typecheck",
-    "lint": "moon run ui:lint",
-    "format:check": "moon run ui:format-check",
-    "test": "moon run ui:test",
-    "coverage": "moon run ui:coverage",
-    "bench": "moon run ui:bench"
-  },
   "dependencies": {
     "@base-ui/react": "catalog:",
     "@dnam-project/engine": "workspace:*",

@@ -26,10 +26,10 @@ Run all commands via **`moon`**:
 
 ```bash
 # 1. Compile both the native Node.js N-API v8 addon (.node) and WASM SIMD128 binary (.wasm)
-pnpm moon run js:build-rust
+moon run js:build-rust
 
 # 2. Full build (Rust N-API + WASM + TypeScript ESM bundles + worklet-processor.js + .d.ts)
-pnpm moon run js:build
+moon run js:build
 ```
 
 ---
@@ -48,11 +48,11 @@ Root [`biome.json`](../../biome.json) and [`tsconfig.json`](tsconfig.json) enfor
 
 ```bash
 # 1. Run all js quality gates (format-check, lint, typecheck, build, test)
-pnpm moon check js
+moon check js
 
 # 2. Run unit, fast-check property, and differential N-API vs WASM tests with >= 95% v8 coverage
-pnpm moon run js:coverage
+moon run js:coverage
 
 # 3. Run statistical Vitest 5 benchmarks
-pnpm moon run js:bench
+moon run js:bench
 ```

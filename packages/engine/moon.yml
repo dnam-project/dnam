@@ -14,6 +14,19 @@ project:
   description: "Pure Rust #![no_std] + alloc, zero-audio-alloc real-time SIMD audio engine for DNAM"
 
 tasks:
+  format:
+    type: "run"
+    command: "cargo"
+    args:
+      - "fmt"
+      - "--package"
+      - "dnam-engine"
+    options:
+      cache: false
+      runInCI: false
+    tags:
+      - "format"
+
   format-check:
     command: "cargo"
     args:

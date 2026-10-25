@@ -18,21 +18,29 @@ dependsOn:
   - "engine"
 
 tasks:
-  format-check:
-    command: "pnpm"
-    args:
-      - "exec"
-      - "biome"
+  format:
+    type: "run"
+    script: "pnpm exec biome format --write . && cargo fmt --package dnam-js"
+    options:
+      cache: false
+      runInCI: false
+    tags:
       - "format"
-      - "."
+
+  format-check:
+    script: "pnpm exec biome format . && cargo fmt --package dnam-js -- --check"
     inputs:
+      - "Cargo.toml"
+      - "build.rs"
       - "package.json"
       - "tsconfig*.json"
       - "vite.config.ts"
+      - "rust/**/*"
       - "scripts/**/*"
       - "src/**/*"
       - "tests/**/*"
       - "/biome.json"
+      - "/Cargo.toml"
       - "/pnpm-lock.yaml"
     tags:
       - "quality"

@@ -27,6 +27,45 @@ tasks:
       - "js:build"
     preset: "server"
 
+  cosmos-export:
+    type: "build"
+    command: "pnpm"
+    args:
+      - "exec"
+      - "cosmos-export"
+    deps:
+      - "js:build"
+    inputs:
+      - "package.json"
+      - "tsconfig*.json"
+      - "vite.config.ts"
+      - "cosmos.config.json"
+      - "src/**/*"
+      - "!src/**/*.test.*"
+      - "!src/**/*.bench.*"
+      - "/pnpm-lock.yaml"
+    outputs:
+      - "cosmos-export/**/*"
+    options:
+      runInCI: "skip"
+    tags:
+      - "build"
+
+  format:
+    type: "run"
+    command: "pnpm"
+    args:
+      - "exec"
+      - "biome"
+      - "format"
+      - "--write"
+      - "."
+    options:
+      cache: false
+      runInCI: false
+    tags:
+      - "format"
+
   format-check:
     command: "pnpm"
     args:

@@ -4,8 +4,8 @@
     {
       "label": "moon: check",
       "type": "shell",
-      "command": "pnpm",
-      "args": ["moon", "check", "--all"],
+      "command": "moon",
+      "args": ["check", "--all"],
       "group": {
         "kind": "test",
         "isDefault": true
@@ -15,16 +15,16 @@
     {
       "label": "moon: test",
       "type": "shell",
-      "command": "pnpm",
-      "args": ["moon", "run", ":test"],
+      "command": "moon",
+      "args": ["run", ":test"],
       "group": "test",
       "problemMatcher": []
     },
     {
       "label": "moon: build",
       "type": "shell",
-      "command": "pnpm",
-      "args": ["moon", "run", ":build"],
+      "command": "moon",
+      "args": ["run", ":build"],
       "group": {
         "kind": "build",
         "isDefault": true
@@ -34,23 +34,23 @@
     {
       "label": "moon: lint & typecheck",
       "type": "shell",
-      "command": "pnpm",
-      "args": ["moon", "run", ":format-check", ":lint", ":typecheck"],
+      "command": "moon",
+      "args": ["run", ":format-check", ":lint", ":typecheck"],
       "problemMatcher": ["$tsc", "$rustc"]
     },
     {
       "label": "studio: dev",
       "type": "shell",
-      "command": "pnpm",
-      "args": ["moon", "run", "studio:dev"],
+      "command": "moon",
+      "args": ["run", "studio:dev"],
       "isBackground": true,
       "problemMatcher": []
     },
     {
       "label": "ui: dev",
       "type": "shell",
-      "command": "pnpm",
-      "args": ["moon", "run", "ui:dev"],
+      "command": "moon",
+      "args": ["run", "ui:dev"],
       "isBackground": true,
       "problemMatcher": []
     }

@@ -48,15 +48,6 @@
     },
     "./dnam_engine.wasm": "./dist/dnam_engine.wasm"
   },
-  "scripts": {
-    "build": "moon run js:build",
-    "typecheck": "moon run js:typecheck",
-    "lint": "moon run js:lint",
-    "format:check": "moon run js:format-check",
-    "test": "moon run js:test",
-    "coverage": "moon run js:coverage",
-    "bench": "moon run js:bench"
-  },
   "dependencies": {
     "@standard-schema/spec": "catalog:",
     "zod": "catalog:"

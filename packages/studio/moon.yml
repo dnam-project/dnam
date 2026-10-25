@@ -53,6 +53,15 @@ tasks:
       - "ui:build"
     preset: "server"
 
+  format:
+    type: "run"
+    script: "pnpm exec biome format --write . && cargo fmt --package dnam-studio"
+    options:
+      cache: false
+      runInCI: false
+    tags:
+      - "format"
+
   format-check:
     script: "pnpm exec biome format . && cargo fmt --package dnam-studio -- --check"
     inputs:
