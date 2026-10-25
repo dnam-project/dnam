@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<module type="WEB_MODULE" version="4">
+  <component name="NewModuleRootManager">
+    <content url="file://$MODULE_DIR$/packages/ui">
+      <sourceFolder url="file://$MODULE_DIR$/packages/ui/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/packages/ui/tests" isTestSource="true" />
+      <excludeFolder url="file://$MODULE_DIR$/packages/ui/.vitest" />
+      <excludeFolder url="file://$MODULE_DIR$/packages/ui/cosmos-export" />
+      <excludeFolder url="file://$MODULE_DIR$/packages/ui/coverage" />
+      <excludeFolder url="file://$MODULE_DIR$/packages/ui/dist" />
+      <excludeFolder url="file://$MODULE_DIR$/packages/ui/node_modules" />
+    </content>
+    <orderEntry type="inheritedJdk" />
+    <orderEntry type="sourceFolder" forTests="false" />
+    <orderEntry type="module" module-name="js" exported="" />
+  </component>
+</module>

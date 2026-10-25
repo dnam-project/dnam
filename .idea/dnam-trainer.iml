@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<module external.system.id="pyproject.toml" type="PYTHON_MODULE" version="4">
+  <component name="NewModuleRootManager">
+    <content url="file://$MODULE_DIR$/packages/trainer">
+      <sourceFolder url="file://$MODULE_DIR$/packages/trainer/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/packages/trainer/tests" isTestSource="true" />
+      <excludeFolder url="file://$MODULE_DIR$/packages/trainer/.hypothesis" />
+      <excludeFolder url="file://$MODULE_DIR$/packages/trainer/.pytest_cache" />
+      <excludeFolder url="file://$MODULE_DIR$/packages/trainer/.ruff_cache" />
+      <excludeFolder url="file://$MODULE_DIR$/packages/trainer/build" />
+      <excludeFolder url="file://$MODULE_DIR$/packages/trainer/dist" />
+    </content>
+    <orderEntry type="inheritedJdk" />
+    <orderEntry type="sourceFolder" forTests="false" />
+    <orderEntry type="module" module-name="dnam-engine" exported="" />
+  </component>
+</module>

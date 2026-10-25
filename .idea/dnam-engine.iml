@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<module external.system.id="pyproject.toml" type="PYTHON_MODULE" version="4">
+  <component name="NewModuleRootManager">
+    <content url="file://$MODULE_DIR$/packages/python">
+      <sourceFolder url="file://$MODULE_DIR$/packages/python/rust" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/packages/python/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/packages/python/tests" isTestSource="true" />
+      <excludeFolder url="file://$MODULE_DIR$/packages/python/.hypothesis" />
+      <excludeFolder url="file://$MODULE_DIR$/packages/python/.pytest_cache" />
+      <excludeFolder url="file://$MODULE_DIR$/packages/python/.ruff_cache" />
+      <excludeFolder url="file://$MODULE_DIR$/packages/python/build" />
+      <excludeFolder url="file://$MODULE_DIR$/packages/python/dist" />
+    </content>
+    <orderEntry type="inheritedJdk" />
+    <orderEntry type="sourceFolder" forTests="false" />
+  </component>
+</module>

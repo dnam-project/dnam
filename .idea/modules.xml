@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="ProjectModuleManager">
+    <modules>
+      <module fileurl="file://$PROJECT_DIR$/.idea/dnam-workspace.iml" filepath="$PROJECT_DIR$/.idea/dnam-workspace.iml" />
+      <module fileurl="file://$PROJECT_DIR$/.idea/dnam-engine.iml" filepath="$PROJECT_DIR$/.idea/dnam-engine.iml" />
+      <module fileurl="file://$PROJECT_DIR$/.idea/dnam-trainer.iml" filepath="$PROJECT_DIR$/.idea/dnam-trainer.iml" />
+      <module fileurl="file://$PROJECT_DIR$/.idea/engine.iml" filepath="$PROJECT_DIR$/.idea/engine.iml" />
+      <module fileurl="file://$PROJECT_DIR$/.idea/js.iml" filepath="$PROJECT_DIR$/.idea/js.iml" />
+      <module fileurl="file://$PROJECT_DIR$/.idea/studio.iml" filepath="$PROJECT_DIR$/.idea/studio.iml" />
+      <module fileurl="file://$PROJECT_DIR$/.idea/ui.iml" filepath="$PROJECT_DIR$/.idea/ui.iml" />
+    </modules>
+  </component>
+</project>

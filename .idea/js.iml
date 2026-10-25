@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<module type="WEB_MODULE" version="4">
+  <component name="NewModuleRootManager">
+    <content url="file://$MODULE_DIR$/packages/js">
+      <sourceFolder url="file://$MODULE_DIR$/packages/js/rust" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/packages/js/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/packages/js/scripts" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/packages/js/tests" isTestSource="true" />
+      <excludeFolder url="file://$MODULE_DIR$/packages/js/.vitest" />
+      <excludeFolder url="file://$MODULE_DIR$/packages/js/coverage" />
+      <excludeFolder url="file://$MODULE_DIR$/packages/js/dist" />
+      <excludeFolder url="file://$MODULE_DIR$/packages/js/node_modules" />
+    </content>
+    <orderEntry type="inheritedJdk" />
+    <orderEntry type="sourceFolder" forTests="false" />
+    <orderEntry type="module" module-name="engine" exported="" />
+  </component>
+</module>

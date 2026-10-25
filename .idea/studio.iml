@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<module type="WEB_MODULE" version="4">
+  <component name="NewModuleRootManager">
+    <content url="file://$MODULE_DIR$/packages/studio">
+      <sourceFolder url="file://$MODULE_DIR$/packages/studio/rust" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/packages/studio/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/packages/studio/bin" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/packages/studio/tests" isTestSource="true" />
+      <excludeFolder url="file://$MODULE_DIR$/packages/studio/.vitest" />
+      <excludeFolder url="file://$MODULE_DIR$/packages/studio/coverage" />
+      <excludeFolder url="file://$MODULE_DIR$/packages/studio/dist" />
+      <excludeFolder url="file://$MODULE_DIR$/packages/studio/gen" />
+      <excludeFolder url="file://$MODULE_DIR$/packages/studio/node_modules" />
+      <excludeFolder url="file://$MODULE_DIR$/packages/studio/playwright-report" />
+      <excludeFolder url="file://$MODULE_DIR$/packages/studio/test-results" />
+    </content>
+    <orderEntry type="inheritedJdk" />
+    <orderEntry type="sourceFolder" forTests="false" />
+    <orderEntry type="module" module-name="engine" exported="" />
+    <orderEntry type="module" module-name="js" exported="" />
+    <orderEntry type="module" module-name="ui" exported="" />
+    <orderEntry type="module" module-name="dnam-trainer" exported="" />
+  </component>
+</module>
