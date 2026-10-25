@@ -4,6 +4,7 @@ pub mod bridge;
 pub mod env_manager;
 
 pub use bridge::{
-    TrainerBridge, TrainingEventMessage, build_training_request_json, parse_jsonl_events,
+    TrainerBridge, TrainerJobOptions, TrainingEventMessage, build_training_request_json,
+    parse_jsonl_events,
 };
 pub use env_manager::{TrainerEnvManager, TrainerEnvStatus};

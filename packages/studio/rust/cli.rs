@@ -31,7 +31,7 @@ pub struct DnamCli {
 /// Top-level `dnam` subcommands.
 #[derive(Debug, Subcommand)]
 pub enum DnamCommand {
-    /// Initialize a new DNAM workspace (`dnam.toml`, `keys/`, `models/`).
+    /// Initialize a new DNAM workspace (`dnam.toml`, `audio/input.wav`, `dist/`, `models/`).
     Init {
         /// Workspace project name.
         #[arg(long, default_value = "DNAM Studio Workspace")]
@@ -39,20 +39,58 @@ pub enum DnamCommand {
         /// Creator or studio handle.
         #[arg(long, default_value = "studio")]
         author: String,
+        /// Optional initial model ID to create immediately.
+        #[arg(long)]
+        model_id: Option<String>,
     },
     /// Show workspace, models, capture calibration, and hardware SIMD status.
     Status,
-    /// Manage models in `models/<id>/model.toml`.
+    /// Inspect a `.dnam` or `.dnam-ckpt` container's preamble, tiers, controls, and provenance.
+    Inspect {
+        /// Path to the `.dnam` or `.dnam-ckpt` container.
+        container_path: PathBuf,
+    },
+    /// Render `input_wav` through the native Rust SIMD `DnamEngine` and write a 24-bit WAV.
+    Render {
+        /// Path to the `.dnam` or `.dnam-ckpt` container.
+        container_path: PathBuf,
+        /// Input dry WAV path.
+        input_wav: PathBuf,
+        /// Output rendered 24-bit WAV path.
+        output_wav: PathBuf,
+        /// Slimmable tier (`lite`, `full`, `ultra`).
+        #[arg(long, default_value = "ultra")]
+        tier: String,
+        /// Optional factory preset ID to apply before rendering.
+        #[arg(long)]
+        preset: Option<String>,
+        /// Control overrides (`--set drive=7.5 --set voice=Crunch`).
+        #[arg(long = "set", short = 'c')]
+        set_controls: Vec<String>,
+    },
+    /// Manage models in `models/<id>/model.toml` (`add`, `list`, `show`, `update`, `remove`).
     Model {
-        /// Action (`add` or `show`).
+        /// Model action (`add`, `list`, `show`, `update`, `remove`).
         #[command(subcommand)]
         action: workspace_cmd::ModelAction,
     },
-    /// Add continuous `range` or discrete `switch` controls to a model.
+    /// Manage continuous `range` and discrete `switch` controls on a model (`add`, `add-range`, `add-switch`, `list`, `update`, `remove`).
     Control {
-        /// Action (`add-range` or `add-switch`).
+        /// Control action.
         #[command(subcommand)]
         action: workspace_cmd::ControlAction,
+    },
+    /// Manage presets on a model (`add`, `list`, `update`, `remove`).
+    Preset {
+        /// Preset action.
+        #[command(subcommand)]
+        action: workspace_cmd::PresetAction,
+    },
+    /// Manage recorded stems on a model (`add`, `list`, `update`, `remove`).
+    Stem {
+        /// Stem action.
+        #[command(subcommand)]
+        action: workspace_cmd::StemAction,
     },
     /// Manage re-amp hardware/software capture, calibration, excitation generation, and schedules.
     Capture {
@@ -60,14 +98,41 @@ pub enum DnamCommand {
         #[command(subcommand)]
         action: capture_cmd::CaptureAction,
     },
-    /// Prepare and run the headless Python 4-stage trainer (`dnam-train`).
+    /// Train or iteratively resume a model (`dist/<id>.dnam` + `models/<id>/checkpoint.dnam-ckpt`).
     Train {
-        /// Model ID to train.
+        /// Model ID to train (optional if `--all-models` or only one model exists).
         #[arg(long)]
-        model: String,
+        model: Option<String>,
+        /// Train all models in the workspace that have recorded stems.
+        #[arg(long)]
+        all_models: bool,
         /// Optional epoch count override.
         #[arg(long)]
         epochs: Option<u32>,
+        /// Ignore any existing `.dnam-ckpt` and train all 4 stages from scratch.
+        #[arg(long)]
+        from_scratch: bool,
+        /// Run Phase 1..3 control clamping audit without full gradient optimization.
+        #[arg(long)]
+        audit_only: bool,
+        /// Force Tier-2 micro-polish during `.dnam-ckpt` resume.
+        #[arg(long)]
+        force_tier2: bool,
+        /// Architecture topology override (`auto`, `core1_only`, `full`).
+        #[arg(long)]
+        topology: Option<String>,
+        /// Training backend (`local` or `remote`).
+        #[arg(long)]
+        backend: Option<String>,
+        /// Accelerator device (`auto`, `cpu`, `cuda`, `rocm`, `mps`, `tpu`).
+        #[arg(long)]
+        device: Option<String>,
+        /// Mixed-precision policy (`auto`, `fp32`, `bf16`, `fp16`).
+        #[arg(long)]
+        precision: Option<String>,
+        /// Skip `Ed25519` creator signing.
+        #[arg(long)]
+        unsigned: bool,
         /// Emit only the generated `--request-json` file without spawning `dnam-train`.
         #[arg(long)]
         dry_run: bool,
@@ -89,18 +154,63 @@ pub enum DnamCommand {
 /// Executes a parsed [`DnamCli`] invocation and returns formatted output lines.
 pub fn execute_cli(cli: &DnamCli) -> StudioResult<String> {
     match &cli.command {
-        Some(DnamCommand::Init { name, author }) => {
-            workspace_cmd::run_init(&cli.workspace, name, author)
-        }
+        Some(DnamCommand::Init {
+            name,
+            author,
+            model_id,
+        }) => workspace_cmd::run_init(&cli.workspace, name, author, model_id.as_deref()),
         Some(DnamCommand::Status) => workspace_cmd::run_status(&cli.workspace),
+        Some(DnamCommand::Inspect { container_path }) => workspace_cmd::run_inspect(container_path),
+        Some(DnamCommand::Render {
+            container_path,
+            input_wav,
+            output_wav,
+            tier,
+            preset,
+            set_controls,
+        }) => workspace_cmd::run_render(
+            container_path,
+            input_wav,
+            output_wav,
+            tier,
+            preset.as_deref(),
+            set_controls,
+        ),
         Some(DnamCommand::Model { action }) => workspace_cmd::run_model(&cli.workspace, action),
         Some(DnamCommand::Control { action }) => workspace_cmd::run_control(&cli.workspace, action),
+        Some(DnamCommand::Preset { action }) => workspace_cmd::run_preset(&cli.workspace, action),
+        Some(DnamCommand::Stem { action }) => workspace_cmd::run_stem(&cli.workspace, action),
         Some(DnamCommand::Capture { action }) => capture_cmd::run_capture(&cli.workspace, action),
         Some(DnamCommand::Train {
             model,
+            all_models,
             epochs,
+            from_scratch,
+            audit_only,
+            force_tier2,
+            topology,
+            backend,
+            device,
+            precision,
+            unsigned,
             dry_run,
-        }) => train_cmd::run_train(&cli.workspace, model, *epochs, *dry_run),
+        }) => train_cmd::run_train(
+            &cli.workspace,
+            train_cmd::TrainCommandArgs {
+                model_id: model.clone(),
+                all_models: *all_models,
+                epochs: *epochs,
+                from_scratch: *from_scratch,
+                audit_only: *audit_only,
+                force_tier2: *force_tier2,
+                topology: topology.clone(),
+                backend: backend.clone(),
+                device: device.clone(),
+                precision: precision.clone(),
+                unsigned: *unsigned,
+                dry_run: *dry_run,
+            },
+        ),
         Some(DnamCommand::Trainer { action }) => train_cmd::run_trainer_env(&cli.workspace, action),
         Some(DnamCommand::Studio { headless_check }) => {
             workspace_cmd::run_studio(&cli.workspace, *headless_check)

@@ -11,7 +11,7 @@ use dnam_studio::ipc::{
     validate_isolated_ipc_request,
 };
 use dnam_studio::trainer::{TrainerEnvManager, parse_jsonl_events};
-use serde_json::json;
+use serde_json::{Value, json};
 
 fn unique_temp_dir(tag: &str) -> std::path::PathBuf {
     let nanos = SystemTime::now()
@@ -47,6 +47,8 @@ fn test_cli_end_to_end_workflow_and_ipc_handler() {
         "Marshall Plexi 50W",
         "--tier",
         "Full",
+        "-r",
+        "drive=0..10:5",
     ]);
     assert!(add_out.contains("Created model 'Plexi50'"));
 
@@ -67,6 +69,39 @@ fn test_cli_end_to_end_workflow_and_ipc_handler() {
         "bright:Bright:Off,On@0",
     ]);
 
+    let ctrl_list = run(&["control", "list", "--model", "Plexi50"]);
+    assert!(ctrl_list.contains("\"drive\""));
+    assert!(ctrl_list.contains("\"gain\""));
+
+    let _ = run(&["control", "remove", "--model", "Plexi50", "--id", "drive"]);
+
+    let _ = run(&[
+        "preset",
+        "add",
+        "--model",
+        "Plexi50",
+        "--id",
+        "crunch",
+        "--title",
+        "Crunch Rhythm",
+        "-c",
+        "gain=7.5",
+        "-c",
+        "bright=On",
+    ]);
+    let preset_list = run(&["preset", "list", "--model", "Plexi50"]);
+    assert!(preset_list.contains("Crunch Rhythm"));
+
+    let cal_out = run(&[
+        "capture",
+        "calibrate",
+        "--backend",
+        "software",
+        "--device",
+        "loopback_default",
+    ]);
+    assert!(cal_out.contains("excitation_profile"));
+
     let plan_out = run(&["capture", "plan", "--model", "Plexi50"]);
     assert!(plan_out.contains("stem_00_star_center"));
 
@@ -80,8 +115,31 @@ fn test_cli_end_to_end_workflow_and_ipc_handler() {
     ]);
     assert!(rec_out.contains("Recorded and aligned 4 stems"));
 
+    let stem_list = run(&["stem", "list", "--model", "Plexi50"]);
+    assert!(stem_list.contains("stem_00_star_center"));
+
     let train_out = run(&["train", "--model", "Plexi50", "--epochs", "4", "--dry-run"]);
     assert!(train_out.contains("training_request.json"));
+
+    let req_path = dir
+        .join("models")
+        .join("Plexi50")
+        .join("reports")
+        .join("training_request.json");
+    let req_json: Value =
+        serde_json::from_str(&fs::read_to_string(&req_path).expect("read training_request.json"))
+            .expect("parse training_request.json");
+    assert_eq!(req_json["model_name"], json!("Marshall Plexi 50W"));
+    assert!(req_json["controls_schema"].is_array());
+    assert!(req_json["stem_descriptors"].is_array());
+    assert!(
+        req_json["stem_descriptors"][0]["input_ref"]["path"]
+            .as_str()
+            .is_some()
+    );
+
+    let show_out = run(&["model", "show", "--id", "Plexi50"]);
+    assert!(show_out.contains("Marshall Plexi 50W"));
 
     let status_out = run(&["status"]);
     assert!(status_out.contains("Plexi50"));

@@ -38,6 +38,10 @@ serde = { workspace = true, features = ["std", "derive"] }
 serde_json = { workspace = true, features = ["std"] }
 toml.workspace = true
 clap.workspace = true
+dialoguer.workspace = true
+cpal.workspace = true
+ndarray.workspace = true
+realfft.workspace = true
 sha2.workspace = true
 ed25519-dalek.workspace = true
 tauri = { workspace = true, optional = true }

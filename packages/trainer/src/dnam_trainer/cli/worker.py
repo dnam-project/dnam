@@ -53,6 +53,24 @@ def get_trainer_status_payload(
     }
 
 
+def default_user_config_dir() -> Path:
+    """Returns the OS-level user configuration directory for DNAM (`DNAM_CONFIG_DIR` override)."""
+    env_override = os.environ.get("DNAM_CONFIG_DIR", "").strip()
+    if env_override:
+        return Path(env_override).expanduser()
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Application Support" / "dnam"
+    if sys.platform == "win32":
+        appdata = os.environ.get("APPDATA", "").strip()
+        if appdata:
+            return Path(appdata) / "dnam"
+        return Path.home() / "AppData" / "Roaming" / "dnam"
+    xdg_cfg = os.environ.get("XDG_CONFIG_HOME", "").strip()
+    if xdg_cfg:
+        return Path(xdg_cfg).expanduser() / "dnam"
+    return Path.home() / ".config" / "dnam"
+
+
 def _resolve_creator_seed_hex(explicit_seed_hex: str | None, unsigned: bool) -> str | None:
     if unsigned:
         return None
@@ -64,6 +82,11 @@ def _resolve_creator_seed_hex(explicit_seed_hex: str | None, unsigned: bool) -> 
     env_key_path = os.environ.get("DNAM_SIGNING_KEY", "").strip()
     if env_key_path and Path(env_key_path).is_file():
         return Path(env_key_path).read_text(encoding="utf-8").strip()
+    user_key_path = default_user_config_dir() / "keys" / "creator_ed25519.key"
+    if user_key_path.is_file():
+        seed_text = user_key_path.read_text(encoding="utf-8").strip()
+        if len(seed_text) == 64:
+            return seed_text
     return None
 
 

@@ -4,6 +4,20 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+use crate::capture::TargetExcitationProfile;
+
+fn default_output_mode() -> String {
+    "stereo".to_string()
+}
+
+fn default_topology() -> String {
+    "auto".to_string()
+}
+
+fn default_noise_floor_dbfs() -> f32 {
+    -96.0
+}
+
 /// Top-level `dnam.toml` workspace manifest.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DnamProjectManifest {
@@ -28,6 +42,9 @@ pub struct ProjectMetadata {
     pub sample_rate_hz: u32,
     /// Public Ed25519 creator key in hex.
     pub creator_public_key_hex: String,
+    /// Optional explicit path override for the creator signing key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signing_key_path: Option<String>,
 }
 
 /// Hardware/software capture defaults in `dnam.toml`.
@@ -41,6 +58,15 @@ pub struct CaptureSettings {
     pub calibrated_latency_samples: i32,
     /// Measured input noise floor in dBFS.
     pub noise_floor_dbfs: f32,
+    /// Hardware send trim in dB (`0.0` default).
+    #[serde(default)]
+    pub send_gain_db: f32,
+    /// Step-1 unity reference level in dBFS (`0.0` default).
+    #[serde(default)]
+    pub unity_ref_dbfs: f32,
+    /// Probed target device excitation profile used to synthesize `audio/input.wav`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub excitation_profile: Option<TargetExcitationProfile>,
 }
 
 /// Continuous range parameter definition in `models/<id>/model.toml`.
@@ -110,10 +136,16 @@ pub struct StemRecord {
     pub switches: BTreeMap<String, usize>,
     /// IEEE-754 `<f4` SHA-256 hex digest of aligned wet PCM.
     pub pcm_sha256: String,
+    /// IEEE-754 `<f4` SHA-256 hex digest of dry excitation PCM.
+    #[serde(default)]
+    pub dry_pcm_sha256: String,
     /// Sub-sample aligned latency in samples.
     pub aligned_lag_samples: f32,
     /// Signal-to-noise ratio in dB.
     pub snr_db: f32,
+    /// Measured silent-window noise floor in dBFS.
+    #[serde(default = "default_noise_floor_dbfs")]
+    pub noise_floor_dbfs: f32,
 }
 
 /// Per-model manifest stored at `models/<id>/model.toml`.
@@ -125,6 +157,18 @@ pub struct ModelManifest {
     pub title: String,
     /// Target tier (`"Lite"`, `"Full"`, or `"Ultra"`).
     pub tier: String,
+    /// Optional model description.
+    #[serde(default)]
+    pub description: String,
+    /// Output channel mode (`"stereo"`, `"mono"`, or `"dual_mono"`).
+    #[serde(default = "default_output_mode")]
+    pub output_mode: String,
+    /// Architecture topology (`"auto"`, `"core1_only"`, or `"full"`).
+    #[serde(default = "default_topology")]
+    pub topology: String,
+    /// Optional per-model probed target device excitation profile.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub excitation_profile: Option<TargetExcitationProfile>,
     /// Continuous range controls.
     pub ranges: Vec<ControlRangeSpec>,
     /// Discrete switch controls.

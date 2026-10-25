@@ -6,18 +6,46 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 
+use crate::capture::{compute_pcm_sha256, read_wav};
 use crate::error::{StudioError, StudioResult};
 use crate::project::{DnamProjectManifest, ModelManifest};
 
 /// Parsed JSONL event emitted by `dnam-train --event-format jsonl`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TrainingEventMessage {
-    /// Event discriminator (`"stage_started"`, `"epoch_completed"`, `"audit_completed"`, `"training_completed"`, etc.).
+    /// Event discriminator (`"training_stage"`, `"training_step"`, `"audit_phase"`, `"training_complete"`, etc.).
     pub event: String,
     /// Full structured payload.
     pub payload: Value,
+}
+
+/// Optional execution flags forwarded to `dnam-train` by [`TrainerBridge::run_job_with_options`].
+#[derive(Debug, Clone, Default)]
+pub struct TrainerJobOptions {
+    /// Existing `.dnam-ckpt` checkpoint path for Two-Tier Kronecker resume.
+    pub checkpoint_in: Option<std::path::PathBuf>,
+    /// Ignore any existing `.dnam-ckpt` and train all 4 stages from scratch.
+    pub from_scratch: bool,
+    /// Run Phase 1..3 control clamping audit without full gradient optimization.
+    pub audit_only: bool,
+    /// Force Tier-2 micro-polish during `.dnam-ckpt` resume.
+    pub force_tier2: bool,
+    /// Epoch count override.
+    pub epochs: Option<u32>,
+    /// Topology override (`"auto"`, `"core1_only"`, `"full"`).
+    pub topology: Option<String>,
+    /// Backend override (`"local"`, `"remote"`).
+    pub backend: Option<String>,
+    /// Device override (`"auto"`, `"cpu"`, `"cuda"`, `"rocm"`, `"mps"`, `"tpu"`).
+    pub device: Option<String>,
+    /// Precision override (`"auto"`, `"fp32"`, `"bf16"`, `"fp16"`).
+    pub precision: Option<String>,
+    /// Skip `Ed25519` creator signing.
+    pub unsigned: bool,
+    /// Explicit 64-character hex `Ed25519` creator secret seed.
+    pub creator_seed_hex: Option<String>,
 }
 
 /// Builds the canonical `TrainingJobRequest` JSON object consumed by `dnam-train --request-json`.
@@ -31,59 +59,177 @@ pub fn build_training_request_json(
         .ranges
         .iter()
         .map(|r| {
-            json!({
+            let mut obj = json!({
                 "id": r.id,
-                "label": r.label,
+                "name": r.label,
                 "kind": "range",
-                "min_val": r.min,
-                "max_val": r.max,
-                "default_val": r.default_value,
-                "unit": r.unit.clone().unwrap_or_default(),
-            })
+                "declared_range": [r.min, r.max],
+                "safe_clamped_range": [r.min, r.max],
+                "default": r.default_value,
+            });
+            if let Some(u) = &r.unit {
+                obj["unit"] = json!(u);
+            }
+            obj
         })
         .chain(model.switches.iter().map(|s| {
             let labels: Vec<String> = s.options.iter().map(|o| o.label.clone()).collect();
+            let default_label = s
+                .options
+                .iter()
+                .find(|o| o.index == s.default_index)
+                .or_else(|| s.options.first())
+                .map(|o| o.label.clone())
+                .unwrap_or_else(|| "default".to_string());
             json!({
                 "id": s.id,
-                "label": s.label,
+                "name": s.label,
                 "kind": "switch",
-                "options": labels,
-                "default_index": s.default_index,
+                "declared_options": labels,
+                "active_options": labels,
+                "default": default_label,
             })
         }))
         .collect();
 
-    let stems: Vec<Value> = model
+    let presets: Vec<Value> = model
+        .presets
+        .iter()
+        .map(|p| {
+            let mut ctrl_map = Map::new();
+            for (k, &v) in &p.ranges {
+                ctrl_map.insert(k.clone(), json!(v));
+            }
+            for (k, &idx) in &p.switches {
+                if let Some(sw) = model.switches.iter().find(|s| s.id == *k)
+                    && let Some(opt) = sw.options.iter().find(|o| o.index == idx)
+                {
+                    ctrl_map.insert(k.clone(), json!(opt.label));
+                }
+            }
+            json!({
+                "id": p.id,
+                "name": p.label,
+                "controls": ctrl_map,
+            })
+        })
+        .collect();
+
+    let stem_descriptors: Vec<Value> = model
         .stems
         .iter()
         .map(|st| {
+            let dry_abs = workspace_root.join(&st.dry_wav_path);
+            let wet_abs = workspace_root.join(&st.wet_wav_path);
+
+            let (dry_sha, dry_sr, dry_ch, dry_frames) = match read_wav(&dry_abs) {
+                Ok(w) => {
+                    let frames = w.samples.len() / usize::from(w.channels.max(1));
+                    let sha = if st.dry_pcm_sha256.len() == 64 {
+                        st.dry_pcm_sha256.clone()
+                    } else {
+                        compute_pcm_sha256(&w.samples)
+                    };
+                    (sha, w.sample_rate_hz, w.channels, frames.max(1))
+                }
+                Err(_) => (
+                    if st.dry_pcm_sha256.len() == 64 {
+                        st.dry_pcm_sha256.clone()
+                    } else {
+                        st.pcm_sha256.clone()
+                    },
+                    workspace.project.sample_rate_hz,
+                    1,
+                    1024,
+                ),
+            };
+
+            let (wet_sha, wet_sr, wet_ch, wet_frames) = match read_wav(&wet_abs) {
+                Ok(w) => {
+                    let frames = w.samples.len() / usize::from(w.channels.max(1));
+                    let sha = if st.pcm_sha256.len() == 64 {
+                        st.pcm_sha256.clone()
+                    } else {
+                        compute_pcm_sha256(&w.samples)
+                    };
+                    (sha, w.sample_rate_hz, w.channels, frames.max(1))
+                }
+                Err(_) => (
+                    st.pcm_sha256.clone(),
+                    workspace.project.sample_rate_hz,
+                    1,
+                    dry_frames,
+                ),
+            };
+
+            let mut controls_meta = Map::new();
+            for r in &model.ranges {
+                let u = st.normalized_ranges.get(&r.id).copied().unwrap_or(0.5);
+                let phys = r.min + u * (r.max - r.min);
+                controls_meta.insert(r.id.clone(), json!(phys));
+            }
+            for s in &model.switches {
+                let idx = st.switches.get(&s.id).copied().unwrap_or(s.default_index);
+                let label = s
+                    .options
+                    .iter()
+                    .find(|o| o.index == idx)
+                    .or_else(|| s.options.first())
+                    .map(|o| o.label.clone())
+                    .unwrap_or_else(|| "default".to_string());
+                controls_meta.insert(s.id.clone(), json!(label));
+            }
+
             json!({
                 "stem_id": st.stem_id,
-                "dry_audio": {
-                    "kind": "local_wav",
-                    "path": workspace_root.join(&st.dry_wav_path).display().to_string(),
+                "controls_meta": controls_meta,
+                "input_ref": {
+                    "ref_kind": "local_path",
+                    "path": dry_abs.display().to_string(),
+                    "pcm_sha256": dry_sha,
+                    "sample_rate_hz": dry_sr,
+                    "channels": dry_ch,
+                    "num_samples": dry_frames,
                 },
-                "wet_audio": {
-                    "kind": "local_wav",
-                    "path": workspace_root.join(&st.wet_wav_path).display().to_string(),
+                "target_ref": {
+                    "ref_kind": "local_path",
+                    "path": wet_abs.display().to_string(),
+                    "pcm_sha256": wet_sha,
+                    "sample_rate_hz": wet_sr,
+                    "channels": wet_ch,
+                    "num_samples": wet_frames,
                 },
-                "normalized_ranges": st.normalized_ranges,
-                "switches": st.switches,
-                "pcm_sha256": st.pcm_sha256,
+                "noise_floor_dbfs": st.noise_floor_dbfs,
             })
         })
         .collect();
 
     let epochs = epochs_override.unwrap_or(12);
+    let topology = if model.topology.is_empty() {
+        "auto"
+    } else {
+        model.topology.as_str()
+    };
+    let output_mode = if model.output_mode.is_empty() {
+        "stereo"
+    } else {
+        model.output_mode.as_str()
+    };
+
     json!({
         "model_id": model.model_id,
-        "title": model.title,
+        "model_name": model.title,
         "author": workspace.project.author,
-        "sample_rate_hz": workspace.project.sample_rate_hz,
-        "tier": model.tier,
-        "epochs": epochs,
+        "description": model.description,
         "controls_schema": controls_schema,
-        "stems": stems,
+        "presets": presets,
+        "config": {
+            "sample_rate_train_hz": workspace.project.sample_rate_hz,
+            "topology": topology,
+            "output_mode": output_mode,
+            "epochs": epochs,
+        },
+        "stem_descriptors": stem_descriptors,
     })
 }
 
@@ -134,6 +280,29 @@ impl TrainerBridge {
         output_dnam: &Path,
         output_ckpt: &Path,
         reports_dir: &Path,
+        on_event: impl FnMut(&TrainingEventMessage),
+    ) -> StudioResult<Vec<TrainingEventMessage>> {
+        self.run_job_with_options(
+            request_json,
+            request_path,
+            output_dnam,
+            output_ckpt,
+            reports_dir,
+            &TrainerJobOptions::default(),
+            on_event,
+        )
+    }
+
+    /// Writes `request_json` to `request_path` and executes `dnam-train` with [`TrainerJobOptions`].
+    #[allow(clippy::too_many_arguments)]
+    pub fn run_job_with_options(
+        &self,
+        request_json: &Value,
+        request_path: &Path,
+        output_dnam: &Path,
+        output_ckpt: &Path,
+        reports_dir: &Path,
+        opts: &TrainerJobOptions,
         mut on_event: impl FnMut(&TrainingEventMessage),
     ) -> StudioResult<Vec<TrainingEventMessage>> {
         if let Some(parent) = request_path.parent() {
@@ -154,9 +323,46 @@ impl TrainerBridge {
             .arg("--reports-dir")
             .arg(reports_dir)
             .arg("--event-format")
-            .arg("jsonl")
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+            .arg("jsonl");
+
+        if let Some(ckpt_in) = &opts.checkpoint_in
+            && ckpt_in.is_file()
+            && !opts.from_scratch
+            && !opts.audit_only
+        {
+            cmd.arg("--checkpoint-in").arg(ckpt_in);
+        }
+        if opts.from_scratch {
+            cmd.arg("--from-scratch");
+        }
+        if opts.audit_only {
+            cmd.arg("--audit-only");
+        }
+        if opts.force_tier2 {
+            cmd.arg("--force-tier2");
+        }
+        if let Some(epochs) = opts.epochs {
+            cmd.arg("--epochs").arg(epochs.to_string());
+        }
+        if let Some(top) = &opts.topology {
+            cmd.arg("--topology").arg(top);
+        }
+        if let Some(backend) = &opts.backend {
+            cmd.arg("--backend").arg(backend);
+        }
+        if let Some(dev) = &opts.device {
+            cmd.arg("--device").arg(dev);
+        }
+        if let Some(prec) = &opts.precision {
+            cmd.arg("--precision").arg(prec);
+        }
+        if opts.unsigned {
+            cmd.arg("--unsigned");
+        } else if let Some(seed_hex) = &opts.creator_seed_hex {
+            cmd.arg("--creator-seed-hex").arg(seed_hex);
+        }
+
+        cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
 
         let mut child = cmd
             .spawn()
@@ -179,8 +385,14 @@ impl TrainerBridge {
             .wait()
             .map_err(|e| StudioError::Trainer(format!("Failed waiting on dnam-train: {e}")))?;
         if !status.success() {
+            let mut stderr_msg = String::new();
+            if let Some(mut stderr) = child.stderr.take() {
+                use std::io::Read as _;
+                let _ = stderr.read_to_string(&mut stderr_msg);
+            }
             return Err(StudioError::Trainer(format!(
-                "dnam-train exited with status {status}"
+                "dnam-train exited with status {status}: {}",
+                stderr_msg.trim()
             )));
         }
         Ok(collected)

@@ -76,12 +76,16 @@ impl TrainerEnvManager {
             return Some(venv_bin);
         }
         if let Some(root) = &self.monorepo_root {
-            let ws_bin = root
-                .join(".venv")
-                .join(venv_bin_subdir())
-                .join(exe_name("dnam-train"));
-            if ws_bin.is_file() {
-                return Some(ws_bin);
+            let mut cursor: Option<&Path> = Some(root.as_path());
+            while let Some(dir) = cursor {
+                let ws_bin = dir
+                    .join(".venv")
+                    .join(venv_bin_subdir())
+                    .join(exe_name("dnam-train"));
+                if ws_bin.is_file() {
+                    return Some(ws_bin);
+                }
+                cursor = dir.parent();
             }
         }
         None

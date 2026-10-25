@@ -47,3 +47,6 @@ packages/js/coverage/
 # moon
 .moon/cache
 .moon/docker
+
+# scratch files
+scratch/
