@@ -39,10 +39,6 @@ execFileSync(
   ["build", "--package", "dnam-js", "--target", "wasm32-unknown-unknown", "--release"],
   {
     cwd: repoRoot,
-    env: {
-      ...process.env,
-      RUSTFLAGS: `${process.env.RUSTFLAGS ?? ""} -C target-feature=+simd128`.trim(),
-    },
     stdio: "inherit",
   },
 );

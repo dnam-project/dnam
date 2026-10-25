@@ -22,6 +22,9 @@ dev = [
 
 [tool.uv]
 package = false
+required-version = ">=0.11.0"
+exclude-newer = "1 day"
+compile-bytecode = true
 environments = [
     "sys_platform == 'darwin' and platform_machine == 'arm64'",
     "sys_platform == 'win32' and platform_machine == 'AMD64'",
@@ -32,6 +35,16 @@ environments = [
 name = "amd-rocm"
 url = "https://stable.repo.amd.com/rocm/whl-next/"
 explicit = true
+
+[tool.uv.exclude-newer-package]
+torch = false
+amd-torch-device-gfx12-0 = false
+amd-torch-device-gfx1201 = false
+rocm = false
+rocm-sdk-core = false
+rocm-sdk-libraries = false
+rocm-sdk-device-gfx1201 = false
+triton = false
 
 [tool.uv.workspace]
 members = ["packages/python", "packages/trainer"]

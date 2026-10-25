@@ -20,3 +20,15 @@ module-name = "dnam_engine._native"
 bindings = "pyo3"
 editable-profile = "release"
 strip = true
+
+[tool.uv]
+cache-keys = [
+    { file = "pyproject.toml" },
+    { file = "Cargo.toml" },
+    { file = "rust/**/*.rs" },
+    { file = "../engine/Cargo.toml" },
+    { file = "../engine/src/**/*.rs" },
+    { file = "../../.cargo/config.toml" },
+    { file = "../../Cargo.toml" },
+    { file = "../../Cargo.lock" },
+]

@@ -12,6 +12,20 @@ supported-markers = [
     "platform_machine == 'x86_64' and sys_platform == 'linux'",
 ]
 
+[options]
+exclude-newer = "0001-01-01T00:00:00Z" # This has no effect and is included for backwards compatibility when using relative exclude-newer values.
+exclude-newer-span = "P1D"
+
+[options.exclude-newer-package]
+amd-torch-device-gfx12-0 = false
+rocm-sdk-device-gfx1201 = false
+torch = false
+triton = false
+amd-torch-device-gfx1201 = false
+rocm-sdk-core = false
+rocm = false
+rocm-sdk-libraries = false
+
 [manifest]
 members = [
     "dnam-engine",

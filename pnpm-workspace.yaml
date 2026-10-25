@@ -3,6 +3,17 @@ packages:
   - "packages/ui"
   - "packages/studio"
 
+catalogMode: strict
+catalogPrune: true
+blockExoticSubdeps: true
+trustPolicy: no-downgrade
+strictDepBuilds: true
+minimumReleaseAge: 1440
+disallowWorkspaceCycles: true
+strictPeerDependencies: true
+engineStrict: true
+preferWorkspacePackages: true
+
 catalog:
   "@base-ui/react": "^1.3.0"
   "@biomejs/biome": "^2.6.2"

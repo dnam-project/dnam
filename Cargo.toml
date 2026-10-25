@@ -51,12 +51,18 @@ all = { level = "deny", priority = -1 }
 perf = { level = "deny", priority = -1 }
 undocumented_unsafe_blocks = "deny"
 ptr_as_ptr = "deny"
+dbg_macro = "deny"
+todo = "deny"
 needless_range_loop = "allow"
+
+[profile.dev.package."*"]
+opt-level = 2
 
 [profile.release]
 opt-level = 3
 lto = "thin"
 codegen-units = 1
+strip = "symbols"
 
 [profile.bench]
 opt-level = 3
