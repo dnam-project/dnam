@@ -1,0 +1,77 @@
+{
+  "name": "@dnam-project/studio",
+  "version": "0.1.0",
+  "description": "Unified Rust/Node dnam CLI and Tauri v2 Desktop Studio for Dynamic Neural Audio Modeler (DNAM / Tri-Physics)",
+  "type": "module",
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "bin": {
+    "dnam": "./bin/dnam.mjs"
+  },
+  "files": [
+    "dist",
+    "bin",
+    "tauri.conf.json",
+    "capabilities",
+    "isolation",
+    "README.md"
+  ],
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./ui": {
+      "types": "./dist/ui/index.d.ts",
+      "default": "./dist/ui/index.js"
+    }
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build --mode lib && tsc -p tsconfig.build.json --emitDeclarationOnly",
+    "tauri": "tauri",
+    "tauri:dev": "tauri dev",
+    "tauri:build": "tauri build",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "biome check .",
+    "format:check": "biome format .",
+    "test": "vitest run",
+    "test:e2e": "playwright test",
+    "coverage": "vitest run --coverage"
+  },
+  "dependencies": {
+    "@dnam-project/engine": "workspace:*",
+    "@dnam-project/ui": "workspace:*",
+    "@tailwindcss/vite": "^4.1.0",
+    "@tauri-apps/api": "^2.12.4",
+    "@tauri-apps/plugin-dialog": "^2.8.3",
+    "@tauri-apps/plugin-opener": "^2.7.2",
+    "lucide-react": "^1.0.0",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "tailwindcss": "^4.1.0"
+  },
+  "devDependencies": {
+    "@axe-core/playwright": "^4.14.0",
+    "@biomejs/biome": "^2.6.2",
+    "@playwright/test": "^1.64.1",
+    "@tauri-apps/cli": "^2.12.4",
+    "@types/node": "^26.0.0",
+    "@types/react": "^19.1.0",
+    "@types/react-dom": "^19.1.0",
+    "@vitejs/plugin-react": "^6.1.2",
+    "@vitest/browser-playwright": "^5.0.5",
+    "@vitest/coverage-v8": "^5.0.5",
+    "axe-core": "^4.14.0",
+    "playwright": "^1.64.1",
+    "typescript": "^5.8.3",
+    "vite": "^8.3.5",
+    "vitest": "^5.0.5",
+    "vitest-browser-react": "^2.3.0"
+  }
+}

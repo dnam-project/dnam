@@ -16,7 +16,7 @@ from dnam_trainer.control.basis import (
     fit_order_statistic_delay_transport,
     normalize_and_clamp_range,
 )
-from dnam_trainer.project.workspace import parse_compact_range_spec, parse_compact_switch_spec
+from dnam_trainer.schema import parse_compact_range_spec, parse_compact_switch_spec
 
 
 def test_normalize_and_clamp_range_and_lobatto_basis() -> None:

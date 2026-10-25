@@ -70,6 +70,88 @@ def compute_pcm_sha256(audio: ArrayLike) -> str:
     return provenance.sha256_hex(arr.tobytes())
 
 
+def parse_compact_range_spec(spec: str) -> ControlSchemaDef:
+    """Parses a compact range spec `'id=min..max[:default]'` (e.g. `'drive=0..10:5'`)."""
+    if "=" not in spec or ".." not in spec:
+        raise ValueError(
+            f"Invalid compact range spec '{spec}'. Expected 'id=min..max[:default]' "
+            f"(e.g. 'drive=0..10:5')"
+        )
+    ctrl_id, rhs = spec.split("=", 1)
+    ctrl_id = ctrl_id.strip()
+    if not ctrl_id:
+        raise ValueError(f"Empty control id in '{spec}'")
+
+    if ":" in rhs:
+        bounds_part, def_part = rhs.split(":", 1)
+        default_val: float | None = float(def_part.strip())
+    else:
+        bounds_part = rhs
+        default_val = None
+
+    min_str, max_str = bounds_part.split("..", 1)
+    lo = float(min_str.strip())
+    hi = float(max_str.strip())
+    if lo >= hi:
+        raise ValueError(f"Range min ({lo}) must be strictly less than max ({hi}) in '{spec}'")
+
+    resolved_default = 0.5 * (lo + hi) if default_val is None else default_val
+    if resolved_default < lo or resolved_default > hi:
+        raise ValueError(
+            f"Default value {resolved_default} is outside declared range [{lo}, {hi}] in '{spec}'"
+        )
+
+    label = ctrl_id.replace("_", " ").title()
+    return ControlSchemaDef(
+        id=ctrl_id,
+        name=label,
+        kind=ControlKind.RANGE,
+        declared_range=(lo, hi),
+        safe_clamped_range=(lo, hi),
+        default=resolved_default,
+        ui_hints=ControlUiHints(),
+    )
+
+
+def parse_compact_switch_spec(spec: str) -> ControlSchemaDef:
+    """Parses a compact switch spec `'id=opt1,opt2,...[:default]'` (e.g.
+    `'attack=cut,flat,boost:flat'`)."""
+    if "=" not in spec:
+        raise ValueError(f"Invalid compact switch spec '{spec}'. Expected 'id=opt1,opt2[:default]'")
+    ctrl_id, rhs = spec.split("=", 1)
+    ctrl_id = ctrl_id.strip()
+    if not ctrl_id:
+        raise ValueError(f"Empty control id in '{spec}'")
+
+    if ":" in rhs:
+        opts_part, def_part = rhs.split(":", 1)
+        default_opt: str | None = def_part.strip()
+    else:
+        opts_part = rhs
+        default_opt = None
+
+    options = [o.strip() for o in opts_part.split(",") if o.strip()]
+    if len(options) < 2:
+        raise ValueError(f"Switch control '{ctrl_id}' must declare at least 2 options in '{spec}'")
+
+    resolved_default = options[0] if default_opt is None else default_opt
+    if resolved_default not in options:
+        raise ValueError(
+            f"Default option '{resolved_default}' is not in declared options "
+            f"{options} for '{ctrl_id}'"
+        )
+
+    label = ctrl_id.replace("_", " ").title()
+    return ControlSchemaDef(
+        id=ctrl_id,
+        name=label,
+        kind=ControlKind.SWITCH,
+        declared_options=options,
+        active_options=list(options),
+        default=resolved_default,
+    )
+
+
 def coerce_audio_f32(audio: ArrayLike, *, allow_stereo: bool = True) -> NDArray[np.float32]:
     """Coerces a mono `(L,)` or stereo `(2, L)` array into contiguous `float32`."""
     arr = np.ascontiguousarray(audio, dtype=np.float32)
@@ -515,4 +597,6 @@ __all__ = [
     "ZohRescaledParams",
     "coerce_audio_f32",
     "compute_pcm_sha256",
+    "parse_compact_range_spec",
+    "parse_compact_switch_spec",
 ]

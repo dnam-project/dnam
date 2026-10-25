@@ -9,7 +9,7 @@ import torch
 
 from dnam_trainer.control.audit import run_phase1_preflight_audit
 from dnam_trainer.dsp.selective_rglru import DifferentiableSelectiveRgLru
-from dnam_trainer.project.workspace import parse_compact_range_spec, parse_compact_switch_spec
+from dnam_trainer.schema import parse_compact_range_spec, parse_compact_switch_spec
 from dnam_trainer.training.kronecker_head import (
     compute_stem_sufficient_statistics,
     solve_all_tiers_kronecker_head_float64,

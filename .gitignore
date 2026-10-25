@@ -17,10 +17,13 @@ build/
 # Rust / Cargo
 target/
 
-# Node.js / Vite / Vitest
+# Node.js / Vite / Vitest / Playwright
 node_modules/
 coverage/
 .vitest/
+test-results/
+playwright-report/
+cosmos-export/
 docs/.vitepress/dist/
 docs/.vitepress/cache/
 packages/js/dist/
@@ -38,3 +41,6 @@ packages/js/coverage/
 .vscode/
 .DS_Store
 *.swp
+
+# Playwright CLI output (may contain credentials)
+.playwright-cli/

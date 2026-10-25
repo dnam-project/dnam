@@ -45,7 +45,6 @@ from dnam_engine.schema import (
     SlimmableTiersConfig,
     TierProfile,
 )
-from dnam_trainer.capture.excitation import read_wav
 from dnam_trainer.control.audit import (
     compute_phase2_corner_barrier_loss,
     run_phase1_preflight_audit,
@@ -93,6 +92,7 @@ from dnam_trainer.training.kronecker_head import (
     merge_stem_statistics_for_resume,
     solve_all_tiers_kronecker_head_float64,
 )
+from dnam_trainer.training.wav_io import read_wav
 
 
 def compute_esr_db(

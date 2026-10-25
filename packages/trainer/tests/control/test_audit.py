@@ -14,7 +14,7 @@ from dnam_trainer.control.audit import (
     run_phase3_export_certification,
 )
 from dnam_trainer.dsp.poly_adaa import DifferentiablePolyAdaa
-from dnam_trainer.project.workspace import parse_compact_range_spec, parse_compact_switch_spec
+from dnam_trainer.schema import parse_compact_range_spec, parse_compact_switch_spec
 
 
 def test_phase1_preflight_audit_range_switch_and_stability_clamps() -> None:

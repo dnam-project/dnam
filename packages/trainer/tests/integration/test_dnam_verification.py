@@ -22,12 +22,13 @@ from dnam_trainer.control.basis import (
 )
 from dnam_trainer.dsp.modulated_ufdn import dual_pointer_switch_crossfade_torch
 from dnam_trainer.dsp.selective_rglru import log_octave_pole_init
-from dnam_trainer.project.workspace import parse_compact_range_spec, parse_compact_switch_spec
 from dnam_trainer.schema import (
     ResumeJobRequest,
     TrainingConfig,
     TrainingJobRequest,
     TrainingStem,
+    parse_compact_range_spec,
+    parse_compact_switch_spec,
 )
 from dnam_trainer.training.kronecker_head import (
     compute_stem_sufficient_statistics,

@@ -14,12 +14,16 @@
     "url": "https://github.com/dnam-project/dnam.git"
   },
   "scripts": {
-    "build": "pnpm --filter @dnam-project/engine run build",
-    "test": "pnpm --filter @dnam-project/engine run test",
-    "coverage": "pnpm --filter @dnam-project/engine run coverage",
-    "bench": "pnpm --filter @dnam-project/engine run bench",
+    "build": "pnpm -r run build",
+    "test": "pnpm -r run test",
+    "test:e2e": "pnpm --filter @dnam-project/studio run test:e2e",
+    "coverage": "pnpm -r run coverage",
+    "bench": "pnpm -r run bench",
     "lint": "pnpm --filter @dnam-project/engine run lint",
     "format:check": "pnpm --filter @dnam-project/engine run format:check",
-    "typecheck": "pnpm --filter @dnam-project/engine run typecheck"
+    "typecheck": "pnpm -r run typecheck",
+    "ui:dev": "pnpm --filter @dnam-project/ui run dev",
+    "studio:dev": "pnpm --filter @dnam-project/studio run dev",
+    "studio:tauri": "pnpm --filter @dnam-project/studio run tauri:dev"
   }
 }

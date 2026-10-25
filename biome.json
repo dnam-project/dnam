@@ -9,11 +9,36 @@
     "ignoreUnknown": true,
     "includes": [
       "packages/js/src/**/*.ts",
-      "packages/js/test/**/*.ts",
+      "packages/js/tests/**/*.ts",
       "packages/js/scripts/**/*.mjs",
       "packages/js/*.ts",
       "packages/js/*.json",
+      "packages/ui/src/**/*.ts",
+      "packages/ui/src/**/*.tsx",
+      "packages/ui/src/**/*.css",
+      "packages/ui/tests/**/*.ts",
+      "packages/ui/tests/**/*.tsx",
+      "packages/ui/*.ts",
+      "packages/ui/*.json",
+      "packages/studio/src/**/*.ts",
+      "packages/studio/src/**/*.tsx",
+      "packages/studio/src/**/*.css",
+      "packages/studio/tests/**/*.ts",
+      "packages/studio/tests/**/*.tsx",
+      "packages/studio/bin/**/*.mjs",
+      "packages/studio/*.ts",
+      "packages/studio/*.json",
+      "packages/web/src/**/*.ts",
+      "packages/web/src/**/*.tsx",
+      "packages/web/src/**/*.astro",
+      "packages/web/src/**/*.css",
+      "packages/web/tests/**/*.ts",
+      "packages/web/tests/**/*.tsx",
+      "packages/web/*.ts",
+      "packages/web/*.mjs",
+      "packages/web/*.json",
       "package.json",
+      "tsconfig.json",
       "biome.json"
     ]
   },
@@ -32,9 +57,49 @@
       "arrowParentheses": "always"
     }
   },
+  "css": {
+    "parser": {
+      "tailwindDirectives": true
+    },
+    "formatter": {
+      "enabled": true,
+      "quoteStyle": "double"
+    },
+    "linter": {
+      "enabled": true
+    }
+  },
   "linter": {
     "enabled": true,
+    "domains": {
+      "astro": "all",
+      "playwright": "all",
+      "react": "recommended",
+      "tailwind": "all",
+      "test": "recommended"
+    },
     "rules": {
+      "nursery": {
+        "noAstroConflictingSetDirectives": "error",
+        "noAstroSetHtmlDirective": "error",
+        "useAstroClientOnlyDirectiveValue": "error",
+        "useTailwindSortedClasses": "error",
+        "useTailwindShorthandClasses": "error",
+        "useTailwindStaticClassStrings": "error",
+        "noTailwindLegacyUtilities": "error",
+        "noTailwindArbitraryValue": "error",
+        "noReactObjectTypeAsDefaultProp": "error"
+      },
+      "a11y": {
+        "useButtonType": "error",
+        "useValidAriaProps": "error",
+        "useValidAriaValues": "error",
+        "useValidAriaRole": "error",
+        "useAriaPropsForRole": "error",
+        "noSvgWithoutTitle": "error",
+        "noLabelWithoutControl": "error",
+        "useKeyWithClickEvents": "error"
+      },
       "correctness": {
         "noUnusedVariables": "error",
         "noUnusedImports": "error",
@@ -42,7 +107,25 @@
         "noUnusedPrivateClassMembers": "error",
         "noUndeclaredVariables": "error",
         "noUndeclaredDependencies": "error",
-        "useExhaustiveDependencies": "error"
+        "useExhaustiveDependencies": "error",
+        "useHookAtTopLevel": "error",
+        "useJsxKeyInIterable": "error",
+        "noNestedComponentDefinitions": "error",
+        "noChildrenProp": "error",
+        "noVoidElementsWithChildren": "error",
+        "noRenderReturnValue": "error",
+        "noInvalidDirectionInLinearGradient": "error",
+        "noInvalidPositionAtImportRule": "error",
+        "noUnknownFunction": "error",
+        "noUnknownProperty": "error",
+        "noUnknownUnit": "error",
+        "noPlaywrightMissingAwait": "error",
+        "usePlaywrightValidDescribeCallback": "error"
+      },
+      "security": {
+        "noDangerouslySetInnerHtml": "error",
+        "noDangerouslySetInnerHtmlWithChildren": "error",
+        "noBlankTarget": "error"
       },
       "suspicious": {
         "noExplicitAny": "error",
@@ -54,7 +137,19 @@
         "noFallthroughSwitchClause": "error",
         "noAsyncPromiseExecutor": "error",
         "noMisleadingInstantiator": "error",
-        "useNamespaceKeyword": "error"
+        "useNamespaceKeyword": "error",
+        "noArrayIndexKey": "error",
+        "noDuplicateJsxProps": "error",
+        "noCommentText": "error",
+        "noSuspiciousSemicolonInJsx": "error",
+        "noDuplicateCustomProperties": "error",
+        "noDuplicateSelectors": "error",
+        "noShorthandPropertyOverrides": "error",
+        "noPlaywrightForceOption": "error",
+        "noPlaywrightNetworkidle": "error",
+        "noPlaywrightPagePause": "error",
+        "noPlaywrightWaitForNavigation": "error",
+        "noPlaywrightWaitForTimeout": "error"
       },
       "style": {
         "noNonNullAssertion": "error",
@@ -69,7 +164,12 @@
           "options": { "syntax": "shorthand" }
         },
         "useNumberNamespace": "error",
-        "useSingleVarDeclarator": "error"
+        "useSingleVarDeclarator": "error",
+        "useFragmentSyntax": "error",
+        "useSelfClosingElements": "error",
+        "noPlaywrightElementHandle": "error",
+        "noPlaywrightEval": "error",
+        "noPlaywrightWaitForSelector": "error"
       },
       "performance": {
         "noAccumulatingSpread": "error",
@@ -80,8 +180,10 @@
         "noUselessConstructor": "error",
         "noUselessTernary": "error",
         "noUselessTypeConstraint": "error",
+        "noUselessFragments": "error",
         "useOptionalChain": "error",
-        "useLiteralKeys": "off"
+        "useLiteralKeys": "off",
+        "noPlaywrightUselessAwait": "error"
       }
     }
   },
@@ -91,7 +193,11 @@
         "packages/js/src/browser.ts",
         "packages/js/src/drivers/wasm.ts",
         "packages/js/src/schema/**/*.ts",
-        "packages/js/src/worklet/**/*.ts"
+        "packages/js/src/worklet/**/*.ts",
+        "packages/ui/src/**/*.ts",
+        "packages/ui/src/**/*.tsx",
+        "packages/studio/src/ui/**/*.ts",
+        "packages/studio/src/ui/**/*.tsx"
       ],
       "linter": {
         "rules": {
@@ -100,12 +206,12 @@
               "level": "error",
               "options": {
                 "paths": {
-                  "node:fs": "Node.js filesystem imports are forbidden in browser/worklet/schema modules.",
-                  "node:path": "Node.js path imports are forbidden in browser/worklet/schema modules.",
-                  "node:module": "Node.js module imports are forbidden in browser/worklet/schema modules.",
-                  "node:url": "Node.js url imports are forbidden in browser/worklet/schema modules.",
+                  "node:fs": "Node.js filesystem imports are forbidden in browser/worklet/schema/ui modules.",
+                  "node:path": "Node.js path imports are forbidden in browser/worklet/schema/ui modules.",
+                  "node:module": "Node.js module imports are forbidden in browser/worklet/schema/ui modules.",
+                  "node:url": "Node.js url imports are forbidden in browser/worklet/schema/ui modules.",
                   "node:buffer": "Use Web-standard Uint8Array/ArrayBuffer instead of node:buffer.",
-                  "node:child_process": "Node.js child_process is forbidden in browser/worklet/schema modules."
+                  "node:child_process": "Node.js child_process is forbidden in browser/worklet/schema/ui modules."
                 }
               }
             }
@@ -134,7 +240,23 @@
       }
     },
     {
-      "includes": ["packages/js/scripts/**/*.mjs", "packages/js/test/**/*.ts"],
+      "includes": [
+        "packages/js/scripts/**/*.mjs",
+        "packages/js/src/**/*.test.ts",
+        "packages/js/src/**/*.bench.ts",
+        "packages/js/tests/**/*.ts",
+        "packages/ui/src/**/*.test.ts",
+        "packages/ui/src/**/*.test.tsx",
+        "packages/ui/src/**/*.bench.ts",
+        "packages/ui/src/**/*.fixture.tsx",
+        "packages/ui/tests/**/*.ts",
+        "packages/ui/tests/**/*.tsx",
+        "packages/studio/bin/**/*.mjs",
+        "packages/studio/src/**/*.test.ts",
+        "packages/studio/src/**/*.test.tsx",
+        "packages/studio/tests/**/*.ts",
+        "packages/studio/tests/**/*.tsx"
+      ],
       "linter": {
         "rules": {
           "suspicious": {

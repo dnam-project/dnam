@@ -45,7 +45,7 @@
   },
   "scripts": {
     "build:rust": "node ./scripts/build_wasm.mjs",
-    "build:js": "vite build && vite build --mode worklet && tsc -p tsconfig.json --emitDeclarationOnly",
+    "build:js": "vite build && vite build --mode worklet && tsc -p tsconfig.build.json --emitDeclarationOnly",
     "build": "pnpm run build:rust && pnpm run build:js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "biome check ../../",

@@ -47,9 +47,14 @@ def test_progressive_disclosure_agents_md_byte_limits() -> None:
     assert root_agents.is_file()
     assert root_agents.stat().st_size < 5_000
 
-    scoped_agents = list(TRAINER_PKG_ROOT.rglob("AGENTS.md"))
-    assert len(scoped_agents) >= 6
+    scoped_agents = [
+        *list(TRAINER_PKG_ROOT.rglob("AGENTS.md")),
+        MONOREPO_ROOT / "packages" / "ui" / "AGENTS.md",
+        MONOREPO_ROOT / "packages" / "studio" / "AGENTS.md",
+    ]
+    assert len(scoped_agents) >= 8
     for agent_file in scoped_agents:
+        assert agent_file.is_file(), f"Missing scoped AGENTS.md: {agent_file}"
         size = agent_file.stat().st_size
         assert size < 2_500, f"{agent_file} exceeds 2,500 B limit ({size} B)"
 

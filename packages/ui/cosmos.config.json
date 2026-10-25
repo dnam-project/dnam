@@ -1,0 +1,6 @@
+{
+  "plugins": ["react-cosmos-plugin-vite"],
+  "port": 5005,
+  "watchDirs": ["src"],
+  "fixtureFileSuffix": "fixture"
+}

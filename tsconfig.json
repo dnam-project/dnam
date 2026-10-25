@@ -1,0 +1,8 @@
+{
+  "files": [],
+  "references": [
+    { "path": "./packages/js" },
+    { "path": "./packages/ui" },
+    { "path": "./packages/studio" }
+  ]
+}

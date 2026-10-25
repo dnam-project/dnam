@@ -14,9 +14,9 @@ dynamic-neural-audio-modeler/
 ├── CLA.md                           # Contributor License Agreement
 ├── LICENSE                          # DNAM Source-Available & Branding License 1.0.0
 ├── pyproject.toml                   # uv workspace root -> ["packages/python", "packages/trainer"]
-├── Cargo.toml                       # Cargo workspace root -> ["packages/engine", "packages/python", "packages/js"]
-├── pnpm-workspace.yaml              # pnpm workspace root -> ["packages/js", "packages/web"]
-├── package.json                     # JS/TS workspace root -> ["packages/js", "packages/web"]
+├── Cargo.toml                       # Cargo workspace root -> ["packages/engine", "packages/python", "packages/js", "packages/studio"]
+├── pnpm-workspace.yaml              # pnpm workspace root -> ["packages/js", "packages/ui", "packages/studio", "packages/web"]
+├── package.json                     # JS/TS workspace root -> ["packages/js", "packages/ui", "packages/studio", "packages/web"]
 ├── biome.json                       # Strict agentic @biomejs/biome configuration
 ├── docs/                            # 1. Pure Single-Source-of-Truth (SSOT) Markdown Specifications
 │   ├── index.md
@@ -130,28 +130,60 @@ dynamic-neural-audio-modeler/
     │   │   ├── drivers/             # Unified DnamDriver contract (wasm.ts & native.ts)
     │   │   └── worklet/             # Lock-free SharedArrayBuffer Seqlock/Ring, DnamAudioWorkletProcessor & DnamWorkletNode
     │   └── test/                    # Modular Vitest + fast-check Unit, Property, Parity & Benchmark Suite (>= 95% cov)
-    ├── trainer/                     # Layer 3A: PyTorch 4-Stage Differentiable Trainer, Project & Capture CLI (`dnam_trainer`)
+    ├── ui/                          # Layer 2C: Unified Design System & Audio UI Kit (@dnam-project/ui — React 19 + Tailwind v4 + shadcn/ui Base UI + lucide-react)
+    │   ├── AGENTS.md                # Scoped router (< 2,500 B)
+    │   ├── CONTRIBUTING.md          # Tailwind v4, shadcn/ui (Base UI / @base-ui/react), lucide-react, DnamAudioHost & zero-node:* rules
+    │   ├── README.md                # Component & visualizer catalog for Tauri Studio & Astro/Starlight Web
+    │   ├── components.json          # Canonical shadcn/ui config ("style": "base-nova", "ui": "src/components/ui", "utils": "src/lib/utils")
+    │   ├── package.json             # Exports: ., ./tokens, ./host, ./ui, ./controls, ./rack, ./workflows, ./visualizers, ./styles.css
+    │   ├── tsconfig.json            # Strict TS ("jsx": "react-jsx", ES2024, strict, exactOptionalPropertyTypes)
+    │   ├── vite.config.ts           # Vite 8 + @tailwindcss/vite library bundler + Vitest v5 (>= 95% coverage)
+    │   ├── src/
+    │   │   ├── index.ts             # Curated barrel export
+    │   │   ├── styles.css           # Tailwind CSS v4 (`@import "tailwindcss"; @theme { ... }`) + Starlight & shadcn/ui CSS vars
+    │   │   ├── tokens.ts            # Obsidian surfaces, Core1/Core2/ControlBus accents, Lite/Full/Ultra, CL-01..20 & CSS var generator
+    │   │   ├── lib/
+    │   │   │   └── utils.ts         # Canonical shadcn/ui `cn(...inputs)` (`clsx` + `tailwind-merge`) & unit/numeric helpers
+    │   │   ├── host/                # Pluggable Audio & Hardware SIMD Acceleration Host (`DnamAudioHost`, `<DnamAudioHostProvider>`, `WebAudioWorkletHost`)
+    │   │   └── components/
+    │   │       ├── ui/              # Canonical `shadcn/ui` (Base UI `@base-ui/react` + CVA + Tailwind v4) Primitives (`button`, `badge`, `card`, `tabs`, `progress`)
+    │   │       ├── controls/        # Hardware Audio Controls (`geometry.ts`, `RotaryKnob.tsx`, `DiscreteSwitch.tsx`, `StatusBadges.tsx`)
+    │   │       ├── rack/            # Shared `DnamPluginRack.tsx` & `TriPhysicsTelemetry.tsx`
+    │   │       ├── workflows/       # Shared `CapturePlanPanel.tsx` & `TrainingTimelinePanel.tsx`
+    │   │       └── visualizers/     # All 7 Interactive Specification & Studio Visualizers (`PolyAdaaVisualizer` .. `ZohRescalerVisualizer`)
+    │   └── test/                    # 1:1 Mirrored Vitest + `fast-check` Suite (>= 95% coverage)
+    ├── studio/                      # Layer 3A: Unified Rust/Node `dnam` CLI & Tauri v2 Desktop Studio (`dnam-studio` / `@dnam-project/studio`)
+    │   ├── AGENTS.md                # Scoped router (< 2,500 B)
+    │   ├── CONTRIBUTING.md          # Dual Rust/TS layout, Tauri v2 IPC, Native Audio Host & Python trainer bridge guide
+    │   ├── README.md                # `dnam` CLI & Desktop Studio documentation
+    │   ├── Cargo.toml               # `dnam-studio` crate (`[lib] path = "rust/lib.rs"`, `[[bin]] name = "dnam" path = "rust/main.rs"`)
+    │   ├── package.json             # `@dnam-project/studio` (`"bin": { "dnam": "./bin/dnam.mjs" }`, React 19 + `@tailwindcss/vite` + `@dnam-project/ui`)
+    │   ├── tauri.conf.json          # Tauri v2 app configuration, window spec, CSP policy & `"isolation"` IPC pattern
+    │   ├── capabilities/            # Tauri v2 capability permissions (`default.json` for Tier 1 & Tier 2 official plugins)
+    │   ├── isolation/               # Sandboxed Tauri v2 IPC Isolation iframe (`index.html` with `__TAURI_ISOLATION_HOOK__`)
+    │   ├── rust/                    # Modular Safe Rust 2024 Core (`#![forbid(unsafe_code)]`, zero `mod.rs` files)
+    │   │   ├── lib.rs               # Crate root exporting `error`, `project`, `capture`, `runner`, `trainer`, `ipc`, `cli`
+    │   │   ├── main.rs              # Dual-mode `dnam` entrypoint (Tauri GUI on `dnam studio` / bundle launch; CLI help in terminal)
+    │   │   ├── error.rs             # Typed `StudioError` & `StudioResult<T>` error hierarchy
+    │   │   ├── project.rs           # Single Owner of `dnam.toml`, `models/<id>/model.toml` & Capture Planner (`project/{manifest,workspace,planner}.rs`)
+    │   │   ├── capture.rs           # WAV I/O, Excitation, Alignment & Reamp Backends (`capture/{wav,excitation,alignment,backends}.rs`)
+    │   │   ├── runner.rs            # Native SIMD Container Inspector, 24-Bit WAV Renderer & Kernel Host (`dnam-engine`)
+    │   │   ├── trainer.rs           # `uv` Auto-Bootstrap Venv Manager & JSON-Job/JSONL Subprocess Bridge (`trainer/{env_manager,bridge}.rs`)
+    │   │   ├── ipc.rs               # Tauri v2 Command & Native Hardware Acceleration Host Handler
+    │   │   └── cli.rs               # `clap` v4 Subcommand Router (`cli/{workspace_cmd,capture_cmd,train_cmd,format}.rs`)
+    │   ├── tests/                   # Rust Integration Tests (`project_and_capture.rs`, `cli_and_trainer_bridge.rs`)
+    │   ├── src/                     # TypeScript SDK & Tauri v2 React 19 Desktop Studio (`binary.ts`, `ipc.ts`, `host.ts`, `ui/StudioApp.tsx`)
+    │   └── test/                    # 1:1 Mirrored Vitest Suite (>= 95% coverage)
+    ├── trainer/                     # Layer 3B: PyTorch 4-Stage Differentiable Trainer & Headless `dnam-train` Worker (`dnam_trainer`)
     │   ├── AGENTS.md                # Scoped router (< 2,500 B)
     │   ├── CONTRIBUTING.md          # Package contributing & float64/hardware guide
-    │   ├── README.md                # CLI & Python API documentation
-    │   ├── pyproject.toml           # Imports packages/python (dnam-engine) as Reference DSP
+    │   ├── README.md                # Python Trainer API & `dnam-train` headless worker documentation
+    │   ├── pyproject.toml           # Exposes `dnam-train = "dnam_trainer.cli:main"` and imports `packages/python` (`dnam-engine`)
     │   ├── src/
     │   │   └── dnam_trainer/
     │   │       ├── __init__.py
-    │   │       ├── schema.py        # Strict Pydantic v2 workspace, capture, training & wire-protocol schemas
+    │   │       ├── schema.py        # Strict Pydantic v2 training & wire-protocol schemas (`TrainingJobRequest`, `ResumeJobRequest`, `StemAudioRef`)
     │   │       ├── events.py        # UI-agnostic Capture/Training Event & Observer protocols
-    │   │       ├── project/         # Multi-model project workspace (`dnam.toml`, `models/<id>/model.toml`), planner & runner
-    │   │       │   ├── AGENTS.md    # Scoped router (< 2,500 B)
-    │   │       │   ├── __init__.py
-    │   │       │   ├── workspace.py
-    │   │       │   ├── planner.py
-    │   │       │   └── runner.py
-    │   │       ├── capture/         # Pluggable hardware/software capture (`anagram`, `usb`, `software`), excitation & alignment
-    │   │       │   ├── AGENTS.md    # Scoped router (< 2,500 B)
-    │   │       │   ├── __init__.py
-    │   │       │   ├── excitation.py
-    │   │       │   ├── alignment.py
-    │   │       │   └── backends.py
     │   │       ├── dsp/             # Differentiable PyTorch autograd & Reference DSP bridge (CL-01..11)
     │   │       │   ├── AGENTS.md    # Scoped router (< 2,500 B)
     │   │       │   ├── __init__.py
@@ -163,7 +195,7 @@ dynamic-neural-audio-modeler/
     │   │       │   ├── __init__.py
     │   │       │   ├── basis.py
     │   │       │   └── audit.py
-    │   │       ├── training/        # Hardware runtime, Surrogate Delay, Kronecker .dnam-ckpt Solver & TrainingBackend (CL-18)
+    │   │       ├── training/        # Hardware runtime, Surrogate Delay, Kronecker .dnam-ckpt Solver, `wav_io.py` & TrainingBackend (CL-18)
     │   │       │   ├── AGENTS.md    # Scoped router (< 2,500 B)
     │   │       │   ├── __init__.py
     │   │       │   ├── hardware.py
@@ -171,26 +203,25 @@ dynamic-neural-audio-modeler/
     │   │       │   ├── kronecker_head.py
     │   │       │   ├── arena.py
     │   │       │   ├── telemetry.py
+    │   │       │   ├── wav_io.py
     │   │       │   ├── pipeline.py
     │   │       │   └── backends.py
-    │   │       └── cli/             # Modular `cyclopts` + `rich` CLI (`dnam` / `dnam-train`)
+    │   │       └── cli/             # Streamlined Headless `dnam-train` Worker CLI (callable from `packages/studio`)
+    │   │           ├── AGENTS.md    # Scoped router (< 2,500 B)
     │   │           ├── __init__.py
-    │   │           ├── workspace.py
-    │   │           ├── capture.py
-    │   │           ├── train.py
-    │   │           └── console.py
+    │   │           ├── worker.py
+    │   │           └── observers.py
     │   └── tests/                   # 1:1 mirrored unit, property-based, guardrail & verification test suite
     │       ├── AGENTS.md            # Scoped router (< 2,500 B)
     │       ├── conftest.py
     │       ├── strategies.py
     │       ├── test_guardrails.py   # AGENTS.md byte budgets, link checker & CL-01..18 verifier
     │       ├── test_schema_and_events.py
-    │       ├── project/
-    │       ├── capture/
     │       ├── dsp/
     │       ├── control/
     │       ├── training/
     │       ├── cli/
+    │       │   └── test_train_worker_cli.py
     │       ├── integration/
     │       │   └── test_dnam_verification.py  # All 8 empirical verification suites
     │       └── test_benchmarks.py
@@ -224,7 +255,7 @@ dynamic-neural-audio-modeler/
             │   └── api/
             │       └── marketplace/ # 3-Stage Ingestion scanner & < 0.2 ms buyer-watermarked R2 download endpoints
             └── components/
-                ├── ui/              # shadcn/ui (Radix UI) + Tailwind CSS v4 + Lucide primitives
+                ├── ui/              # shadcn/ui (Base UI / @base-ui/react) + Tailwind CSS v4 + Lucide primitives
                 ├── marketplace/     # Faceted search explorer, model cards, comment threads & persistent player bar
                 ├── plugin/          # Live React + WebAssembly (AudioWorklet SIMD128) Modeler Plugin
                 │   ├── DnamPluginRack.tsx       # Dynamic range knobs, switch toggles & clamp badges
@@ -257,7 +288,7 @@ dynamic-neural-audio-modeler/
   - Mounted via `<DnamPluginRack client:only="react" />` and powered by the WASM SIMD128 build of `packages/engine` and `packages/js` (`@dnam-project/engine`).
   - Dynamically renders rotary knobs (`range`) and discrete selectors (`switch`) from any loaded `.dnam` model's `controls_schema`, enforcing `safe_clamped_range`, `active_options`, and `conditional_max` bounds with real-time `clamp_warning` badges, built-in DI guitar/synth test stems, live WebAudio microphone/instrument input, and $60\text{ fps}$ DSP telemetry.
 - **Digital Marketplace, UI Design System & `TiDB Cloud Starter` + Cloudflare R2 Backend ([`digital_marketplace_and_provenance.md` §8](digital_marketplace_and_provenance.md#8-layer-6-cloud-edge-infrastructure-tidb-cloud-starter-schema--r2-storage-topology)):**
-  - **UI & Persistent Auditioning:** Styled with **Tailwind CSS v4** (`@tailwindcss/vite` + `@astrojs/starlight-tailwind`), **`shadcn/ui`** (Radix UI primitives), **`lucide-react`**, and **`nanostores`** (`@nanostores/react`) paired with Astro's `<ClientRouter />` (`transition:persist="dnam-audio-engine"`) so audio/WASM preview playback continues uninterrupted across `/explore`, `/models/[slug]`, and `/u/[handle]` navigations.
+  - **UI & Persistent Auditioning:** Styled with **Tailwind CSS v4** (`@tailwindcss/vite` + `@astrojs/starlight-tailwind`), **`shadcn/ui`** (Base UI / `@base-ui/react` primitives), **`lucide-react`**, and **`nanostores`** (`@nanostores/react`) paired with Astro's `<ClientRouter />` (`transition:persist="dnam-audio-engine"`) so audio/WASM preview playback continues uninterrupted across `/explore`, `/models/[slug]`, and `/u/[handle]` navigations.
   - **Edge Compute, Auth & Database:** Deployed on **Cloudflare Workers** (`@astrojs/cloudflare`) with per-route `COOP`/`COEP` header isolation (`src/middleware.ts`), **`Better Auth`** + Cloudflare KV session caching, **Cloudflare R2** Two-Bucket storage (Public CDN bucket for `.webp`/`.opus`/`Lite` previews at `$0` egress + Private bucket for `Ultra` masters), **Cloudflare Queues** write-behind counter batching, and **`TiDB Cloud Starter`** (`@tidbcloud/serverless` + `drizzle-orm/tidb-serverless` with auto-sharded Rust `TiKV` row storage and `TiFlash` `VECTOR(160)` `VEC_COSINE_DISTANCE` clone detection).
 
 ---

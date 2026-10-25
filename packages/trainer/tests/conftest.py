@@ -1,26 +1,25 @@
-"""Shared pytest fixtures for `dnam_trainer` unit, CLI, and integration tests."""
+"""Shared pytest fixtures for `dnam_trainer` unit, CLI worker, and integration tests."""
 
 from __future__ import annotations
-
-from pathlib import Path
 
 import numpy as np
 import pytest
 from numpy.typing import NDArray
 
-from dnam_trainer.capture.excitation import generate_dry_excitation
-from dnam_trainer.project.workspace import (
-    DnamProject,
-    parse_compact_range_spec,
-    parse_compact_switch_spec,
-)
-from dnam_trainer.schema import PresetDef, TrainingStem
+from dnam_trainer.schema import TrainingStem
 
 
 @pytest.fixture
 def short_dry_signal() -> NDArray[np.float32]:
     """Generates a deterministic 1.5-second 48 kHz dry excitation signal (`72,000` samples)."""
-    return generate_dry_excitation(duration_sec=1.5, sample_rate_hz=48_000, seed=42)
+    rng = np.random.default_rng(42)
+    t = np.linspace(0.0, 1.5, 72_000, dtype=np.float64)
+    sig = (
+        0.55 * np.sin(2.0 * np.pi * 220.0 * t)
+        + 0.25 * np.sin(2.0 * np.pi * 440.0 * t)
+        + 0.05 * rng.standard_normal(72_000)
+    )
+    return np.ascontiguousarray(sig, dtype=np.float32)
 
 
 @pytest.fixture
@@ -52,29 +51,3 @@ def synthetic_training_stems(short_dry_signal: NDArray[np.float32]) -> list[Trai
             )
         )
     return stems
-
-
-@pytest.fixture
-def initialized_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> DnamProject:
-    """Creates an isolated `DnamProject` in `tmp_path` with a range and switch control."""
-    monkeypatch.setenv("DNAM_CONFIG_DIR", str(tmp_path / "user_config"))
-    proj_dir = tmp_path / "studio_proj"
-    proj = DnamProject.init(
-        proj_dir,
-        project_name="Test Pedal Pack",
-        author="Pytest Creator",
-        sample_rate_hz=48_000,
-        dry_duration_sec=1.5,
-        initial_model_id="b7k_drive",
-    )
-    proj.add_control("b7k_drive", parse_compact_range_spec("drive=0..10:5"))
-    proj.add_control("b7k_drive", parse_compact_switch_spec("attack=cut,flat,boost:flat"))
-    proj.add_preset(
-        "b7k_drive",
-        PresetDef(
-            id="default_noon",
-            name="Default Noon",
-            controls={"drive": 5.0, "attack": "flat"},
-        ),
-    )
-    return proj

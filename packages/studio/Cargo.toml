@@ -1,0 +1,57 @@
+[package]
+name = "dnam-studio"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Unified Rust/Node dnam CLI, Capture Engine, Python Trainer Bridge, and Tauri v2 Desktop Studio for Dynamic Neural Audio Modeler (DNAM)"
+
+[lib]
+name = "dnam_studio"
+path = "rust/lib.rs"
+bench = false
+
+[[bin]]
+name = "dnam"
+path = "rust/main.rs"
+bench = false
+
+[features]
+default = ["desktop"]
+desktop = [
+    "dep:tauri",
+    "dep:tauri-build",
+    "dep:tauri-plugin-dialog",
+    "dep:tauri-plugin-opener",
+    "dep:tauri-plugin-window-state",
+    "dep:tauri-plugin-single-instance",
+    "dep:tauri-plugin-deep-link",
+    "dep:tauri-plugin-notification",
+    "dep:tauri-plugin-updater",
+    "dep:tauri-plugin-process",
+]
+
+[dependencies]
+dnam-engine = { path = "../engine" }
+serde = { workspace = true, features = ["std", "derive"] }
+serde_json = { workspace = true, features = ["std"] }
+toml = { workspace = true }
+clap = { workspace = true }
+sha2 = { workspace = true }
+ed25519-dalek = { workspace = true }
+tauri = { version = "2", features = ["isolation"], optional = true }
+tauri-plugin-dialog = { version = "2", optional = true }
+tauri-plugin-opener = { version = "2", optional = true }
+tauri-plugin-window-state = { version = "2", optional = true }
+tauri-plugin-single-instance = { version = "2", features = ["deep-link"], optional = true }
+tauri-plugin-deep-link = { version = "2", optional = true }
+tauri-plugin-notification = { version = "2", optional = true }
+tauri-plugin-updater = { version = "2", optional = true }
+tauri-plugin-process = { version = "2", optional = true }
+
+[build-dependencies]
+tauri-build = { version = "2", features = ["isolation"], optional = true }
+
+[lints]
+workspace = true

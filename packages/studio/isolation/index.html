@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>DNAM Studio — Tauri v2 IPC Isolation Sandbox</title>
+  </head>
+  <body>
+    <script>
+      const ALLOWED_COMMANDS = new Set([
+        "studio_ipc",
+        "prepare_studio_export",
+        "prepare_studio_report",
+        "notify_studio_event",
+        "check_studio_update",
+        "get_telemetry",
+        "set_parameter",
+        "set_switch",
+        "list_backends",
+        "get_workspace",
+        "get_capture_plan",
+        "get_plugins",
+        "parse_deep_link",
+        "save_window_state",
+        "get_window_state",
+        "send_notification",
+      ]);
+
+      const ALLOWED_PLUGIN_PREFIXES = [
+        "plugin:core|",
+        "plugin:event|",
+        "plugin:window|",
+        "plugin:webview|",
+        "plugin:dialog|",
+        "plugin:opener|",
+        "plugin:window-state|",
+        "plugin:deep-link|",
+        "plugin:notification|",
+        "plugin:updater|",
+        "plugin:process|restart",
+      ];
+
+      function containsUnsafeString(value) {
+        if (typeof value === "string") {
+          return value.includes("..") || value.includes("\0");
+        }
+        if (Array.isArray(value)) {
+          return value.some(containsUnsafeString);
+        }
+        if (value !== null && typeof value === "object") {
+          return Object.values(value).some(containsUnsafeString);
+        }
+        return false;
+      }
+
+      window.__TAURI_ISOLATION_HOOK__ = (payload) => {
+        if (!payload || typeof payload !== "object") {
+          throw new Error("Tauri Isolation blocked non-object IPC payload");
+        }
+        const cmd = typeof payload.cmd === "string" ? payload.cmd : payload.command;
+        if (typeof cmd !== "string" || cmd.length === 0) {
+          throw new Error("Tauri Isolation blocked IPC payload missing command");
+        }
+        const isAllowedPlugin = ALLOWED_PLUGIN_PREFIXES.some((prefix) => cmd.startsWith(prefix));
+        if (!ALLOWED_COMMANDS.has(cmd) && !isAllowedPlugin) {
+          throw new Error(`Tauri Isolation blocked unauthorized IPC command: ${cmd}`);
+        }
+        if (containsUnsafeString(payload)) {
+          throw new Error("Tauri Isolation blocked path traversal or null byte in IPC payload");
+        }
+        return payload;
+      };
+    </script>
+  </body>
+</html>

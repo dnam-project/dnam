@@ -1,0 +1,27 @@
+{
+  "$schema": "https://schema.tauri.app/config/2/capability",
+  "identifier": "default",
+  "description": "Least-privilege Tauri v2 desktop capabilities for DNAM Studio",
+  "local": true,
+  "windows": ["main"],
+  "platforms": ["macOS", "windows", "linux"],
+  "permissions": [
+    "core:default",
+    "dialog:allow-open",
+    "dialog:allow-save",
+    "opener:allow-reveal-item-in-dir",
+    {
+      "identifier": "opener:allow-open-url",
+      "allow": [
+        {
+          "url": "https://*.dnam-project.org/*"
+        }
+      ]
+    },
+    "window-state:default",
+    "deep-link:default",
+    "notification:default",
+    "updater:default",
+    "process:allow-restart"
+  ]
+}

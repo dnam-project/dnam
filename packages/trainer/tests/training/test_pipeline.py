@@ -6,13 +6,14 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from dnam_trainer.project.workspace import parse_compact_range_spec, parse_compact_switch_spec
 from dnam_trainer.schema import (
     PresetDef,
     ResumeJobRequest,
     TrainingConfig,
     TrainingJobRequest,
     TrainingStem,
+    parse_compact_range_spec,
+    parse_compact_switch_spec,
 )
 from dnam_trainer.training.pipeline import (
     DnamTrainer,
@@ -111,7 +112,6 @@ def test_dnam_trainer_4stage_fit_and_two_tier_ckpt_resume(
     # descriptors
     from pathlib import Path
 
-    from dnam_trainer.capture.excitation import write_wav_24bit
     from dnam_trainer.schema import (
         InMemoryPcmRef,
         LocalWavPathRef,
@@ -119,6 +119,7 @@ def test_dnam_trainer_4stage_fit_and_two_tier_ckpt_resume(
         WireStemDescriptor,
     )
     from dnam_trainer.training.pipeline import resolve_stem_audio_pcm
+    from dnam_trainer.training.wav_io import write_wav_24bit
 
     m_full = DnamTriPhysicsModel(sample_rate_hz=48_000, core2_active=True)
     assert m_full.core2_ufdn is not None

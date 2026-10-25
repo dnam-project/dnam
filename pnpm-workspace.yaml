@@ -1,3 +1,5 @@
 packages:
   - "packages/js"
+  - "packages/ui"
+  - "packages/studio"
   - "packages/web"

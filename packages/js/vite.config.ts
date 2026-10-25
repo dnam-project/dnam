@@ -1,5 +1,5 @@
 import { resolve } from "node:path";
-import { defineConfig } from "vite";
+import { defineConfig } from "vitest/config";
 
 export default defineConfig(({ mode }) => {
   if (mode === "worklet") {
@@ -48,9 +48,9 @@ export default defineConfig(({ mode }) => {
       },
     },
     test: {
-      include: ["test/**/*.test.ts"],
+      include: ["src/**/*.test.ts", "tests/integration/**/*.test.ts"],
       benchmark: {
-        include: ["test/**/*.bench.ts"],
+        include: ["src/**/*.bench.ts", "tests/integration/**/*.bench.ts"],
       },
       coverage: {
         provider: "v8",
@@ -61,6 +61,8 @@ export default defineConfig(({ mode }) => {
           "src/browser.ts",
           "src/node.ts",
           "src/drivers/types.ts",
+          "src/**/*.test.ts",
+          "src/**/*.bench.ts",
         ],
         thresholds: {
           lines: 95,

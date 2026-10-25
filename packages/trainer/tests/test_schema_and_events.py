@@ -33,6 +33,8 @@ from dnam_trainer.schema import (
     TrainingTelemetryRow,
     coerce_audio_f32,
     compute_pcm_sha256,
+    parse_compact_range_spec,
+    parse_compact_switch_spec,
 )
 
 
@@ -201,3 +203,36 @@ def test_events_json_and_sse_roundtrip() -> None:
     obs = NullObserver()
     obs.on_capture_event(e_cal)
     obs.on_training_event(TrainingStageEvent(stage=1, stage_name="S1", message="ok"))
+
+
+def test_compact_range_and_switch_parsers() -> None:
+    r1 = parse_compact_range_spec("drive=0..10:6.5")
+    assert r1.id == "drive"
+    assert r1.declared_range == (0.0, 10.0)
+    assert r1.default == 6.5
+
+    r2 = parse_compact_range_spec("blend=-12..12")
+    assert r2.default == 0.0
+
+    with pytest.raises(ValueError, match="Invalid compact range"):
+        parse_compact_range_spec("drive")
+    with pytest.raises(ValueError, match="Empty control id"):
+        parse_compact_range_spec("=0..10")
+    with pytest.raises(ValueError, match="strictly less"):
+        parse_compact_range_spec("drive=10..0")
+    with pytest.raises(ValueError, match="outside declared range"):
+        parse_compact_range_spec("drive=0..10:15")
+
+    s1 = parse_compact_switch_spec("attack=cut,flat,boost:boost")
+    assert s1.id == "attack"
+    assert s1.declared_options == ["cut", "flat", "boost"]
+    assert s1.default == "boost"
+
+    with pytest.raises(ValueError, match="Invalid compact switch"):
+        parse_compact_switch_spec("attack")
+    with pytest.raises(ValueError, match="Empty control id"):
+        parse_compact_switch_spec("=a,b")
+    with pytest.raises(ValueError, match="at least 2 options"):
+        parse_compact_switch_spec("attack=only_one")
+    with pytest.raises(ValueError, match="not in declared options"):
+        parse_compact_switch_spec("attack=cut,boost:invalid")
