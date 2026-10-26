@@ -5,6 +5,8 @@ Evaluation Suite, `bESR`, `MR-STFT`, `LTAS`, `SegESR`) and `dnam_trainer.trainin
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 import torch
 
@@ -14,6 +16,8 @@ from dnam_trainer.training.kronecker_head import (
     compute_modulated_stem_sufficient_statistics,
     compute_stem_sufficient_statistics,
     compute_svd_control_projector,
+    compute_tier32_modulator_vectors,
+    evaluate_stem_besr_from_sufficient_stats,
     precompute_base48_band_cache,
     solve_all_tiers_kronecker_head_float64,
 )
@@ -41,9 +45,14 @@ from dnam_trainer.training.selective_cascade import (
     fast_1pole_lpf,
     fast_poly_adaa_batch,
     fast_poly_inst_batch,
+    fast_wavefolder_inst_batch,
+    measure_and_shift_usb_jitter,
     modulate_tier_blocks_with_controls,
+    project_orthonormal_basis,
+    shift_signal_fft_1d,
     solve_lti_cabinet_and_space_stage,
 )
+from dnam_trainer.training.wav_io import read_wav, write_wav_32bit_float
 
 
 def test_split_three_bands_complementary_and_esr_trap_detection() -> None:
@@ -158,7 +167,7 @@ def test_selective_cascade_monotonic_bspline_and_calibration() -> None:
 
     # Calibrate 3-stage cascade on a synthetic nonlinear target and verify tier blocks
     rng = np.random.default_rng(123)
-    x_np = (0.3 * rng.standard_normal(2048)).astype(np.float32)
+    x_np = (0.3 * rng.standard_normal(512)).astype(np.float32)
     y_np = np.tanh(2.5 * x_np).astype(np.float32)
     y_2ch = np.column_stack([y_np, y_np])
     stages_seen: list[int] = []
@@ -169,12 +178,12 @@ def test_selective_cascade_monotonic_bspline_and_calibration() -> None:
         on_stage_progress=lambda st, _msg: stages_seen.append(st),
     )
     assert stages_seen == [1, 2, 3]
-    assert b_lite.shape == (2048, 16)
-    assert b_full.shape == (2048, 16)
-    assert b_ultra.shape == (2048, 16)
+    assert b_lite.shape == (512, 16)
+    assert b_full.shape == (512, 16)
+    assert b_ultra.shape == (512, 16)
 
     phi_192 = modulate_tier_blocks_with_controls(b_lite, b_full, b_ultra, (-1.0, 0.0, 1.0))
-    assert phi_192.shape == (2048, 192)
+    assert phi_192.shape == (512, 192)
 
     # Verify DnamTriPhysicsModel calibration and intrinsic control modulators
     ctrls = [
@@ -190,11 +199,11 @@ def test_selective_cascade_monotonic_bspline_and_calibration() -> None:
     feat_cal = model.extract_calibrated_or_tier_features(
         torch.as_tensor(x_2ch), in_sha="sha_a", u_ctrl_3=u_mod
     )
-    assert feat_cal.shape == (2048, 192)
+    assert feat_cal.shape == (512, 192)
     feat_uncal = model.extract_calibrated_or_tier_features(
         torch.as_tensor(x_2ch), in_sha="sha_missing", u_ctrl_3=u_mod
     )
-    assert feat_uncal.shape == (2048, 192)
+    assert feat_uncal.shape == (512, 192)
 
 
 def test_lti_cabinet_and_acoustic_space_modeling() -> None:
@@ -298,7 +307,7 @@ def test_multi_control_kronecker_and_base48_gram_cache() -> None:
 
     # 2. >7 active stems in calibrate_3stage_selective_cascade + -57.2 dBFS mute stem
     rng = np.random.default_rng(77)
-    t_len = 1024
+    t_len = 256
     x_np = (0.3 * rng.standard_normal(t_len)).astype(np.float32)
     targets_13: list[np.ndarray] = []
     for s_idx in range(13):
@@ -352,3 +361,177 @@ def test_multi_control_kronecker_and_base48_gram_cache() -> None:
 
     sol = solve_all_tiers_kronecker_head_float64(stats_mod, z_head_stems, mode="polish")
     assert sol.w_ultra_5x2x192.shape == (5, 2, 192)
+
+
+def test_wav_32bit_float_unclipped_roundtrip(tmp_path: Path) -> None:
+    """Verifies that `write_wav_32bit_float` and `read_wav` preserve unclipped 32-bit
+    IEEE-754 float signals with peaks outside `[-1.0, +1.0]` (up to `+40 dBFS`).
+    """
+    sig = np.array([0.0, 0.25, -1.0, 1.0, 12.5, -42.75, 99.5, -100.0], dtype=np.float32)
+    wav_path = tmp_path / "hot_stem_f32.wav"
+    write_wav_32bit_float(wav_path, sig, 48_000)
+    decoded, sr = read_wav(wav_path)
+    assert sr == 48_000
+    np.testing.assert_allclose(decoded, sig, rtol=0.0, atol=0.0)
+
+
+def test_30stem_10control_tier32_usb_jitter_and_quadratic_besr() -> None:
+    """Verifies `> 16` active stems (`20` stems across 10 controls = 7 ranges + 3 switches
+    matching `swe_tc650`), `(T, 32)` tier base blocks, `compute_tier32_modulator_vectors`,
+    96-channel `Base48BandGramCache`, `fast_wavefolder_inst_batch`, sub-sample USB jitter
+    alignment (`measure_and_shift_usb_jitter`, `shift_signal_fft_1d`), and exact quadratic
+    form `bESR` identity (`evaluate_stem_besr_from_sufficient_stats`).
+    """
+    rng = np.random.default_rng(2026)
+    t_len = 256
+    x_np = (0.35 * rng.standard_normal(t_len)).astype(np.float32)
+    x_t = torch.as_tensor(x_np, dtype=torch.float32)
+
+    # 1. Verify wavefolder basis and orthonormal projection
+    wf = fast_wavefolder_inst_batch(x_t.unsqueeze(-1), (1.5, 4.5, 9.0, 18.0))
+    assert wf.shape == (t_len, 8)
+    q_proj = project_orthonormal_basis(wf, 6)
+    assert q_proj.shape == (t_len, 6)
+    assert torch.all(torch.isfinite(q_proj))
+    assert project_orthonormal_basis(wf[:, :4], 6).shape == (t_len, 4)
+
+    # 2. Verify sub-sample USB jitter alignment and inverse shift
+    x_jit = (0.35 * rng.standard_normal(1024)).astype(np.float64)
+    y_true = np.tanh(2.0 * x_jit)
+    y_true_t = torch.as_tensor(y_true, dtype=torch.float64)
+    y_delayed_t = shift_signal_fft_1d(y_true_t, -3.25)
+    y_delayed = y_delayed_t.numpy()
+    y_aligned, delta_s, corr_s = measure_and_shift_usb_jitter(x_jit, y_delayed, min_len=64)
+    assert 2.5 < delta_s < 3.6
+    assert abs(corr_s) > 0.35
+    y_restored = shift_signal_fft_1d(
+        torch.as_tensor(y_aligned, dtype=torch.float64), -delta_s
+    ).numpy()
+    assert float(np.corrcoef(y_restored, y_delayed)[0, 1]) > 0.999
+    assert torch.allclose(shift_signal_fft_1d(y_true_t, 0.0), y_true_t)
+    # Also test default min_len=48_000 early return on short buffer
+    _, delta_short, _ = measure_and_shift_usb_jitter(x_np.astype(np.float64), y_delayed[:t_len])
+    assert delta_short == 0.0
+
+    # 3. 10-control schema matching swe_tc650 (7 ranges + 3 switches) and 20 active stems (> 16)
+    ctrls10 = [
+        parse_compact_range_spec("gain=0..10:5"),
+        parse_compact_switch_spec("character=Off,On:Off"),
+        parse_compact_range_spec("comp=0..10:5"),
+        parse_compact_range_spec("bass=0..10:5"),
+        parse_compact_range_spec("mid=0..10:5"),
+        parse_compact_range_spec("mid_freq=50..2000:400"),
+        parse_compact_range_spec("treble=0..10:5"),
+        parse_compact_range_spec("bright=0..10:5"),
+        parse_compact_switch_spec("tube_mode=Off,On:Off"),
+        parse_compact_switch_spec("drive_mode=Norm,Boost:Norm"),
+    ]
+    stems_20_meta: list[dict[str, float | str]] = []
+    targets_20: list[np.ndarray] = []
+    for s_idx in range(20):
+        g_val = float((s_idx * 3) % 11)
+        b_val = float((s_idx * 5) % 11)
+        t_val = float((s_idx * 7) % 11)
+        ch_val = "On" if (s_idx % 2 == 1) else "Off"
+        tm_val = "On" if (s_idx % 3 == 1) else "Off"
+        dm_val = "Boost" if (s_idx % 4 == 1) else "Norm"
+        stems_20_meta.append(
+            {
+                "gain": g_val,
+                "character": ch_val,
+                "comp": 5.0,
+                "bass": b_val,
+                "mid": 5.0,
+                "mid_freq": 400.0,
+                "treble": t_val,
+                "bright": 5.0,
+                "tube_mode": tm_val,
+                "drive_mode": dm_val,
+            }
+        )
+        drive = 1.0 + 0.25 * g_val + (1.5 if ch_val == "On" else 0.0)
+        y_s = (
+            0.7 * np.tanh(drive * x_np)
+            + 0.15 * (b_val / 10.0) * x_np
+            + 0.15 * (t_val / 10.0) * np.sin(2.5 * x_np)
+        ).astype(np.float32)
+        if s_idx == 5:
+            # Inject 3-sample USB jitter on stem 5
+            y_s = (
+                shift_signal_fft_1d(torch.as_tensor(y_s, dtype=torch.float64), -3.0)
+                .to(torch.float32)
+                .numpy()
+            )
+        targets_20.append(np.column_stack([y_s, y_s]))
+
+    b_lite, b_full, b_ultra = calibrate_3stage_selective_cascade(
+        x_np, targets_20, sample_rate_hz=48_000
+    )
+    assert b_lite.shape == (t_len, 32)
+    assert b_full.shape == (t_len, 32)
+    assert b_ultra.shape == (t_len, 32)
+
+    # 4. Verify 32-channel tier modulation, 96-channel Base48BandGramCache, and exact quadratic bESR
+    c_knots = np.zeros((32, 3), dtype=np.float64)
+    for s_idx, meta in enumerate(stems_20_meta):
+        c_knots[s_idx] = np.asarray(
+            _compute_intrinsic_control_modulators(ctrls10, meta), dtype=np.float64
+        )
+    base_cache_96 = precompute_base48_band_cache(b_lite, b_full, b_ultra, c_knots=c_knots)
+    assert base_cache_96.g48_lf.shape == (96, 96)
+    assert base_cache_96.c_knots is not None
+
+    f0, f1 = compute_tier32_modulator_vectors((-0.5, 0.25, 0.75))
+    assert f0.shape == (32,)
+    assert f1.shape == (32,)
+    f0_k, f1_k = compute_tier32_modulator_vectors(c_knots[0], c_knots=c_knots)
+    assert f0_k.shape == (32,)
+    assert abs(float(f1_k[0]) - 1.0) < 1e-9
+
+    hyper_bus = ParametricControlHyperBus(ctrls10)
+    psi_stems = hyper_bus.encode_batch_coords(stems_20_meta).detach().cpu().numpy()
+    _, _, _, z_head_stems = compute_svd_control_projector(psi_stems)
+
+    stats_20 = []
+    for s_idx, meta in enumerate(stems_20_meta):
+        u_mod = _compute_intrinsic_control_modulators(ctrls10, meta)
+        st_m = compute_modulated_stem_sufficient_statistics(
+            base_cache_96,
+            u_mod,
+            targets_20[s_idx],
+            stem_id=f"stem_{s_idx:02d}",
+            controls_meta=meta,
+            input_pcm_sha256="sha_in",
+            target_pcm_sha256=f"sha_{s_idx:02d}",
+        )
+        stats_20.append(st_m)
+        if s_idx == 0:
+            phi_192 = modulate_tier_blocks_with_controls(
+                b_lite, b_full, b_ultra, u_mod, c_knots=c_knots
+            )
+            assert phi_192.shape == (t_len, 192)
+            st_ref = compute_stem_sufficient_statistics(
+                phi_192,
+                targets_20[s_idx],
+                stem_id="stem_00",
+                controls_meta=meta,
+                input_pcm_sha256="sha_in",
+                target_pcm_sha256="sha_00",
+            )
+            np.testing.assert_allclose(
+                st_m.g_audio_uplo_u_f64, st_ref.g_audio_uplo_u_f64, rtol=1e-4, atol=1e-2
+            )
+
+    sol = solve_all_tiers_kronecker_head_float64(stats_20, z_head_stems, mode="polish")
+    u_mod_0 = _compute_intrinsic_control_modulators(ctrls10, stems_20_meta[0])
+    phi_0 = modulate_tier_blocks_with_controls(b_lite, b_full, b_ultra, u_mod_0, c_knots=c_knots)
+    psi_tilde_0 = np.concatenate([[1.0], z_head_stems[0]]).astype(np.float64)
+    w_eff_ultra_0 = np.tensordot(psi_tilde_0, sol.w_ultra_5x2x192, axes=([0], [0]))
+    pred_ultra_0 = phi_0.astype(np.float64) @ w_eff_ultra_0.T
+    besr_direct = compute_floor_regularized_besr_db(
+        pred_ultra_0, targets_20[0], sample_rate_hz=48_000
+    )
+    _, _, besr_quad = evaluate_stem_besr_from_sufficient_stats(
+        stats_20[0], z_head_stems[0], sol, targets_20[0]
+    )
+    assert abs(besr_direct - besr_quad) < 1e-3

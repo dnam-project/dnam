@@ -22,4 +22,4 @@ pub use excitation::{
     generate_calibration_probe, generate_excitation_signal,
     generate_excitation_signal_with_profile, synth_alignment_pulses,
 };
-pub use wav::{WavData, compute_pcm_sha256, read_wav, write_wav_24bit};
+pub use wav::{WavData, compute_pcm_sha256, read_wav, write_wav_24bit, write_wav_32bit_float};

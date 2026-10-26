@@ -11,7 +11,7 @@ use crate::capture::{
     compute_pcm_sha256, create_capture_backend_with_gain, estimate_subsample_lag_and_snr,
     generate_calibration_probe, generate_excitation_signal,
     generate_excitation_signal_with_profile, list_backend_devices, list_capture_backends,
-    measure_silent_window_noise_floor, query_cpal_devices, write_wav_24bit,
+    measure_silent_window_noise_floor, query_cpal_devices, write_wav_24bit, write_wav_32bit_float,
 };
 use crate::cli::format::{self, StemPromptAction};
 use crate::error::{StudioError, StudioResult};
@@ -60,6 +60,9 @@ pub enum CaptureAction {
         /// Optional initial output send gain in dB (Step 1 auto-pads if bypass clips).
         #[arg(long)]
         send_gain_db: Option<f32>,
+        /// Optional Clean Level pad in dB applied on the device for Step-2 Hot Corner (e.g. `-40.0`).
+        #[arg(long, default_value_t = 0.0, allow_hyphen_values = true)]
+        clean_pad_db: f32,
         /// Optional individual calibration step (`1` = Bypass Unity, `2` = Engaged Hot-Corner).
         #[arg(long)]
         step: Option<u8>,
@@ -93,6 +96,9 @@ pub enum CaptureAction {
         /// Optional maximum number of pending stems to record in this invocation.
         #[arg(long)]
         max_stems: Option<usize>,
+        /// Optional Clean Level pad in dB applied on the device (`-40.0` restores `+40.0 dB` in 32-bit float).
+        #[arg(long, default_value_t = 0.0, allow_hyphen_values = true)]
+        clean_pad_db: f32,
         /// Automatically confirm interactive stem prompts.
         #[arg(long, short = 'y')]
         yes: bool,
@@ -201,6 +207,7 @@ pub fn run_capture(workspace: &Path, action: &CaptureAction) -> StudioResult<Str
             backend,
             device,
             send_gain_db,
+            clean_pad_db,
             step,
             yes,
         } => {
@@ -293,6 +300,7 @@ pub fn run_capture(workspace: &Path, action: &CaptureAction) -> StudioResult<Str
                     noise_floor_dbfs: model_manifest.capture.noise_floor_dbfs,
                     snr_db: 60.0,
                 };
+                let makeup_db = clean_pad_db.abs();
                 let cal = loop {
                     format::prompt_calibration_step2(&s1, auto_yes)?;
                     let scaled_dry = generate_calibration_probe(sr, probe_len);
@@ -320,6 +328,7 @@ pub fn run_capture(workspace: &Path, action: &CaptureAction) -> StudioResult<Str
                         s1.unity_ref_dbfs,
                     );
                     let profile = analyze_probe_for_excitation(&scaled_dry, &aligned_wet2, sr);
+                    let raw_peak_dbfs = hot_analysis.measured_return_peak_dbfs;
                     let candidate = CalibrationResult {
                         backend: backend.clone(),
                         device_id: resolved_dev.clone(),
@@ -328,18 +337,17 @@ pub fn run_capture(workspace: &Path, action: &CaptureAction) -> StudioResult<Str
                         noise_floor_dbfs: s1.noise_floor_dbfs,
                         snr_db: report.snr_db,
                         unity_ref_dbfs: s1.unity_ref_dbfs,
-                        hot_corner_peak_dbfs: hot_analysis.measured_return_peak_dbfs,
+                        hot_corner_peak_dbfs: raw_peak_dbfs + makeup_db,
                         hot_corner_clipped_fraction: hot_analysis.clipped_sample_fraction,
                         excitation_profile: profile,
                     };
-                    if is_step2_return_clipped(
-                        candidate.hot_corner_peak_dbfs,
-                        candidate.hot_corner_clipped_fraction,
-                    ) && format::prompt_repeat_calibration_on_clipping(
-                        candidate.hot_corner_peak_dbfs,
-                        candidate.hot_corner_clipped_fraction,
-                        auto_yes,
-                    )? {
+                    if is_step2_return_clipped(raw_peak_dbfs, candidate.hot_corner_clipped_fraction)
+                        && format::prompt_repeat_calibration_on_clipping(
+                            raw_peak_dbfs,
+                            candidate.hot_corner_clipped_fraction,
+                            auto_yes,
+                        )?
+                    {
                         continue;
                     }
                     break candidate;
@@ -364,12 +372,13 @@ pub fn run_capture(workspace: &Path, action: &CaptureAction) -> StudioResult<Str
                 return Ok(serde_json::to_string_pretty(&cal)?);
             }
 
-            let cal = calibrate_two_step_with_clipping_prompt(
+            let mut cal = calibrate_two_step_with_clipping_prompt(
                 cap_backend.as_ref(),
                 &resolved_dev,
                 sr,
                 auto_yes,
             )?;
+            cal.hot_corner_peak_dbfs += clean_pad_db.abs();
             let tailored =
                 generate_excitation_signal_with_profile(sr, dry_len, Some(&cal.excitation_profile));
             let dry_path = proj.model_dry_input_wav_path(&model_id);
@@ -405,6 +414,7 @@ pub fn run_capture(workspace: &Path, action: &CaptureAction) -> StudioResult<Str
             samples,
             stem,
             max_stems,
+            clean_pad_db,
             yes,
             countdown_sec,
             all_stems,
@@ -492,21 +502,29 @@ pub fn run_capture(workspace: &Path, action: &CaptureAction) -> StudioResult<Str
             let total = max_stems
                 .map(|m| pending.len().min(m))
                 .unwrap_or(pending.len());
-            let mut prev_ranges: Option<BTreeMap<String, f32>> = None;
-            let mut prev_switches: Option<BTreeMap<String, usize>> = None;
+            let mut prev_ranges: Option<BTreeMap<String, f32>> =
+                manifest.stems.last().map(|s| s.normalized_ranges.clone());
+            let mut prev_switches: Option<BTreeMap<String, usize>> =
+                manifest.stems.last().map(|s| s.switches.clone());
+            let mut prev_clean_pad_db: Option<f32> = manifest.stems.last().map(|s| s.clean_pad_db);
+            let mut active_clean_pad_db = *clean_pad_db;
             let mut recorded = 0_usize;
             let mut idx = 0_usize;
             let max_lag = (dry.len() / 4).max(32);
+            let clip_lin = 10.0_f32.powf(-0.05 / 20.0);
+            let mut stem_summaries = Vec::new();
 
             while idx < total {
                 let step = pending[idx];
-                let action = format::prompt_next_stem_action(
+                let action = format::prompt_next_stem_action_with_pad(
                     &manifest,
                     step,
                     idx + 1,
                     total,
                     prev_ranges.as_ref(),
                     prev_switches.as_ref(),
+                    prev_clean_pad_db,
+                    Some(active_clean_pad_db),
                     auto_yes,
                     *countdown_sec,
                 )?;
@@ -522,15 +540,64 @@ pub fn run_capture(workspace: &Path, action: &CaptureAction) -> StudioResult<Str
                     StemPromptAction::Record => {}
                 }
 
-                let wet =
-                    cap_backend.capture_stem(&dry, &step.normalized_ranges, &step.switches)?;
-                let align =
-                    align_hardware_latency(&dry, &wet, max_lag, locked_lag, sr, baseline_noise)?;
-                let aligned_wet = apply_subsample_shift_fft(&wet, align.subsample_lag_samples);
+                let (aligned_wet, align, raw_peak_dbfs, raw_clipped_fraction) = loop {
+                    let wet =
+                        cap_backend.capture_stem(&dry, &step.normalized_ranges, &step.switches)?;
+                    let align = align_hardware_latency(
+                        &dry,
+                        &wet,
+                        max_lag,
+                        locked_lag,
+                        sr,
+                        baseline_noise,
+                    )?;
+                    let aligned_wet = apply_subsample_shift_fft(&wet, align.subsample_lag_samples);
+                    let raw_peak = aligned_wet
+                        .iter()
+                        .fold(1e-9_f32, |acc, &x| acc.max(x.abs()));
+                    let raw_peak_dbfs = 20.0 * raw_peak.log10();
+                    let raw_clipped_count =
+                        aligned_wet.iter().filter(|&&x| x.abs() >= clip_lin).count();
+                    let raw_clipped_fraction =
+                        (raw_clipped_count as f32) / (aligned_wet.len().max(1) as f32);
+                    if is_step2_return_clipped(raw_peak_dbfs, raw_clipped_fraction)
+                        && let Some(new_pad_db) = format::prompt_stem_clean_pad_on_clipping(
+                            &step.stem_id,
+                            raw_peak_dbfs,
+                            raw_clipped_fraction,
+                            active_clean_pad_db,
+                            auto_yes,
+                        )?
+                    {
+                        active_clean_pad_db = new_pad_db;
+                        continue;
+                    }
+                    if format::is_clean_pad_excessive(raw_peak_dbfs, active_clean_pad_db)
+                        && let Some(new_pad_db) = format::prompt_stem_excessive_clean_pad(
+                            &step.stem_id,
+                            raw_peak_dbfs,
+                            active_clean_pad_db,
+                            auto_yes,
+                        )?
+                    {
+                        active_clean_pad_db = new_pad_db;
+                        continue;
+                    }
+                    break (aligned_wet, align, raw_peak_dbfs, raw_clipped_fraction);
+                };
+
+                let makeup_db = active_clean_pad_db.abs();
+                let makeup_lin = if makeup_db > 1e-4 {
+                    10.0_f32.powf(makeup_db / 20.0)
+                } else {
+                    1.0
+                };
+                let restored_wet: Vec<f32> = aligned_wet.iter().map(|&s| s * makeup_lin).collect();
+                let restored_peak_dbfs = raw_peak_dbfs + makeup_db;
                 let wet_rel = format!("models/{model_id}/stems/{}.wav", step.stem_id);
                 let wet_abs = stems_dir.join(format!("{}.wav", step.stem_id));
-                write_wav_24bit(&wet_abs, &aligned_wet, sr, 1)?;
-                let sha = compute_pcm_sha256(&aligned_wet);
+                write_wav_32bit_float(&wet_abs, &restored_wet, sr, 1)?;
+                let sha = compute_pcm_sha256(&restored_wet);
                 proj.register_stem(
                     &model_id,
                     StemRecord {
@@ -544,15 +611,39 @@ pub fn run_capture(workspace: &Path, action: &CaptureAction) -> StudioResult<Str
                         aligned_lag_samples: align.subsample_lag_samples,
                         snr_db: align.snr_db,
                         noise_floor_dbfs: align.noise_floor_dbfs,
+                        clean_pad_db: active_clean_pad_db,
+                        peak_dbfs: restored_peak_dbfs,
                     },
                 )?;
+                let clip_tag = if is_step2_return_clipped(raw_peak_dbfs, raw_clipped_fraction) {
+                    let rec_pad =
+                        format::recommend_clean_pad_db(raw_peak_dbfs, active_clean_pad_db);
+                    format!(
+                        " [CLIPPED {:.2}% -> rec_clean_level={rec_pad:+.1} dB]",
+                        raw_clipped_fraction * 100.0
+                    )
+                } else if format::is_clean_pad_excessive(raw_peak_dbfs, active_clean_pad_db) {
+                    let rec_pad =
+                        format::recommend_clean_pad_db(raw_peak_dbfs, active_clean_pad_db);
+                    format!(" [EXCESSIVE PAD -> rec_clean_level={rec_pad:+.1} dB]")
+                } else {
+                    String::new()
+                };
+                let line = format!(
+                    "  - {}: usb_peak={raw_peak_dbfs:+.2} dBFS{clip_tag} | clean_pad={active_clean_pad_db:+.1} dB | f32_peak={restored_peak_dbfs:+.2} dBFS | lag={:.2} samp | snr={:.1} dB",
+                    step.stem_id, align.subsample_lag_samples, align.snr_db
+                );
+                eprintln!("{line}");
+                stem_summaries.push(line);
                 prev_ranges = Some(step.normalized_ranges.clone());
                 prev_switches = Some(step.switches.clone());
+                prev_clean_pad_db = Some(active_clean_pad_db);
                 recorded += 1;
                 idx += 1;
             }
             Ok(format!(
-                "Recorded and aligned {recorded} stems for model '{model_id}'"
+                "Recorded and aligned {recorded} stems for model '{model_id}'\n{}",
+                stem_summaries.join("\n")
             ))
         }
     }
@@ -634,6 +725,7 @@ mod tests {
                 samples: 1024,
                 stem: None,
                 max_stems: None,
+                clean_pad_db: 0.0,
                 yes: true,
                 countdown_sec: 0.0,
                 all_stems: false,
@@ -650,6 +742,7 @@ mod tests {
                 backend: "software".to_string(),
                 device: "loopback_default".to_string(),
                 send_gain_db: Some(0.0),
+                clean_pad_db: 0.0,
                 step: None,
                 yes: true,
             },
@@ -664,6 +757,7 @@ mod tests {
                 backend: "software".to_string(),
                 device: "loopback_default".to_string(),
                 send_gain_db: Some(0.0),
+                clean_pad_db: 0.0,
                 step: Some(1),
                 yes: true,
             },
@@ -678,6 +772,7 @@ mod tests {
                 backend: "software".to_string(),
                 device: "loopback_default".to_string(),
                 send_gain_db: Some(0.0),
+                clean_pad_db: -40.0,
                 step: Some(2),
                 yes: true,
             },
@@ -696,7 +791,7 @@ mod tests {
         .expect("plan");
         assert!(plan_out.contains("[CAPTURED]"));
 
-        // Record again with all_stems = true and max_stems = Some(1)
+        // Record again with all_stems = true, max_stems = Some(1), and clean_pad_db = -40.0
         let rec2 = run_capture(
             &dir,
             &CaptureAction::Record {
@@ -705,13 +800,30 @@ mod tests {
                 samples: 1024,
                 stem: None,
                 max_stems: Some(1),
+                clean_pad_db: -40.0,
                 yes: true,
                 countdown_sec: 0.0,
                 all_stems: true,
             },
         )
-        .expect("record max_stems=1");
+        .expect("record max_stems=1 with -40 dB pad");
         assert!(rec2.contains("Recorded and aligned 1 stems"));
+        assert!(rec2.contains("clean_pad=-40.0 dB"));
+        let padded_wav = crate::capture::read_wav(
+            dir.join("models")
+                .join("m1")
+                .join("stems")
+                .join("stem_00_star_center.wav"),
+        )
+        .expect("read 32-bit float padded stem");
+        let max_abs = padded_wav
+            .samples
+            .iter()
+            .fold(0.0_f32, |acc, &x| acc.max(x.abs()));
+        assert!(
+            max_abs > 5.0,
+            "Expected +40 dB 32-bit float rescaled stem peak > 5.0, got {max_abs}"
+        );
 
         // Verify Step-2 clipping detection & high-gain software calibration warning path
         assert!(!is_step2_return_clipped(-3.0, 0.0));
@@ -724,6 +836,7 @@ mod tests {
                 backend: "software".to_string(),
                 device: "loopback_default".to_string(),
                 send_gain_db: Some(48.0),
+                clean_pad_db: 0.0,
                 step: Some(2),
                 yes: true,
             },

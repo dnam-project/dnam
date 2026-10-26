@@ -20,6 +20,7 @@ from numpy.typing import NDArray
 from dnam_engine.container import GramMatrix, crc32c
 from dnam_engine.schema import ExtractedPhysics, StemProvenance, StemRegistryEntry, TensorSliceEntry
 from dnam_trainer.training.metrics import split_three_bands_np
+from dnam_trainer.training.selective_cascade import compute_tier32_modulator_vectors
 
 ARENA012_BYTE_LEN: int = 36_224
 ARENA3_G_AUDIO_FLOATS: int = 18_528  # 192 * 193 // 2
@@ -349,40 +350,65 @@ def compute_stem_sufficient_statistics(
 
 @dataclass(frozen=True, slots=True)
 class Base48BandGramCache:
-    """Pre-filtered 48-channel base cascade blocks `(b_lite_16, b_full_16, b_ultra_16)` and their
-    exact full-length 3-band Bezout Gram matrices `(48, 48)` for $O(1)$ per-stem `Arena 3`
+    """Pre-filtered base cascade blocks `(b_lite, b_full, b_ultra)` (`48` or `96` channels) and
+    their exact full-length 3-band Bezout Gram matrices for $O(1)$ per-stem `Arena 3`
     sufficient-statistics assembly (`60x` faster Stage 4 with zero window-boundary truncation).
     """
 
-    b48_lf: NDArray[np.float64]  # (T, 48)
-    b48_mf: NDArray[np.float64]  # (T, 48)
-    b48_hf: NDArray[np.float64]  # (T, 48)
-    g48_lf: NDArray[np.float64]  # (48, 48)
-    g48_mf: NDArray[np.float64]  # (48, 48)
-    g48_hf: NDArray[np.float64]  # (48, 48)
+    b48_lf: NDArray[np.floating[Any]]  # (T, 3 * B_cols)
+    b48_mf: NDArray[np.floating[Any]]  # (T, 3 * B_cols)
+    b48_hf: NDArray[np.floating[Any]]  # (T, 3 * B_cols)
+    g48_lf: NDArray[np.float64]  # (3 * B_cols, 3 * B_cols)
+    g48_mf: NDArray[np.float64]  # (3 * B_cols, 3 * B_cols)
+    g48_hf: NDArray[np.float64]  # (3 * B_cols, 3 * B_cols)
+    c_knots: NDArray[np.float64] | None = None
 
 
 def precompute_base48_band_cache(
     b_lite_16: NDArray[np.float32],
     b_full_16: NDArray[np.float32],
     b_ultra_16: NDArray[np.float32],
+    *,
+    c_knots: NDArray[np.float64] | None = None,
 ) -> Base48BandGramCache:
-    """Filters the 48 base cascade channels `[b_lite_16, b_full_16, b_ultra_16]` once over the full
-    signal length via [`split_three_bands_np`] and caches their $48 \\times 48$ `float64` band
-    Gram matrices.
+    """Filters the base cascade channels `[b_lite, b_full, b_ultra]` once over the full
+    signal length via [`split_three_bands_np`] and caches their `float64` band Gram matrices.
     """
-    b48 = np.ascontiguousarray(
-        np.concatenate([b_lite_16, b_full_16, b_ultra_16], axis=-1),
-        dtype=np.float64,
-    )
-    b48_lf, b48_mf, b48_hf = split_three_bands_np(b48)
+    b_all = np.concatenate([b_lite_16, b_full_16, b_ultra_16], axis=-1)
+    t_len, n_ch = b_all.shape
+    store_dtype = np.float32 if n_ch > 48 else np.float64
+    b_lf = np.empty((t_len, n_ch), dtype=store_dtype)
+    b_mf = np.empty((t_len, n_ch), dtype=store_dtype)
+    b_hf = np.empty((t_len, n_ch), dtype=store_dtype)
+    for c0 in range(0, n_ch, 16):
+        c1 = min(n_ch, c0 + 16)
+        lf_c, mf_c, hf_c = split_three_bands_np(
+            np.ascontiguousarray(b_all[:, c0:c1], dtype=np.float64)
+        )
+        b_lf[:, c0:c1] = lf_c.astype(store_dtype)
+        b_mf[:, c0:c1] = mf_c.astype(store_dtype)
+        b_hf[:, c0:c1] = hf_c.astype(store_dtype)
+
+    g_lf = np.zeros((n_ch, n_ch), dtype=np.float64)
+    g_mf = np.zeros((n_ch, n_ch), dtype=np.float64)
+    g_hf = np.zeros((n_ch, n_ch), dtype=np.float64)
+    for r0 in range(0, t_len, 32_768):
+        r1 = min(t_len, r0 + 32_768)
+        sl_lf = b_lf[r0:r1].astype(np.float64)
+        sl_mf = b_mf[r0:r1].astype(np.float64)
+        sl_hf = b_hf[r0:r1].astype(np.float64)
+        g_lf += sl_lf.T @ sl_lf
+        g_mf += sl_mf.T @ sl_mf
+        g_hf += sl_hf.T @ sl_hf
+
     return Base48BandGramCache(
-        b48_lf=b48_lf,
-        b48_mf=b48_mf,
-        b48_hf=b48_hf,
-        g48_lf=b48_lf.T @ b48_lf,
-        g48_mf=b48_mf.T @ b48_mf,
-        g48_hf=b48_hf.T @ b48_hf,
+        b48_lf=b_lf,
+        b48_mf=b_mf,
+        b48_hf=b_hf,
+        g48_lf=g_lf,
+        g48_mf=g_mf,
+        g48_hf=g_hf,
+        c_knots=c_knots.copy() if c_knots is not None else None,
     )
 
 
@@ -421,35 +447,58 @@ def compute_modulated_stem_sufficient_statistics(
     w_mf = (float(num_frames) / 3.0) / (float(np.sum(y_mf * y_mf)) + mute_floor)
     w_hf = (float(num_frames) / 3.0) / (float(np.sum(y_hf * y_hf)) + mute_floor)
 
-    g48 = w_lf * base_cache.g48_lf + w_mf * base_cache.g48_mf + w_hf * base_cache.g48_hf
-    c48 = (
-        w_lf * (base_cache.b48_lf.T @ y_lf)
-        + w_mf * (base_cache.b48_mf.T @ y_mf)
-        + w_hf * (base_cache.b48_hf.T @ y_hf)
+    g_base = w_lf * base_cache.g48_lf + w_mf * base_cache.g48_mf + w_hf * base_cache.g48_hf
+    c_base = (
+        w_lf * np.asarray(base_cache.b48_lf.T @ y_lf, dtype=np.float64)
+        + w_mf * np.asarray(base_cache.b48_mf.T @ y_mf, dtype=np.float64)
+        + w_hf * np.asarray(base_cache.b48_hf.T @ y_hf, dtype=np.float64)
     )
-
-    u0 = float(u_ctrl_3[0]) if len(u_ctrl_3) > 0 else 0.0
-    u1 = float(u_ctrl_3[1]) if len(u_ctrl_3) > 1 else 0.0
-    u2 = float(u_ctrl_3[2]) if len(u_ctrl_3) > 2 else 0.0
-    m_vec = np.array([1.0, u0, u1, u2], dtype=np.float64)
-    m_outer = np.outer(m_vec, m_vec)  # (4, 4)
 
     g_dense = np.zeros((192, 192), dtype=np.float64)
     c_dense = np.zeros((192, 2), dtype=np.float64)
-    for t1 in range(3):
-        b1_s, b1_e = 16 * t1, 16 * (t1 + 1)
-        c48_t1 = c48[b1_s:b1_e, :]
-        for k1 in range(4):
-            r_s = 64 * t1 + 16 * k1
-            r_e = r_s + 16
-            c_dense[r_s:r_e, :] = m_vec[k1] * c48_t1
+
+    if g_base.shape[0] == 96:
+        f0, f1 = compute_tier32_modulator_vectors(u_ctrl_3, base_cache.c_knots)
+        f00 = np.outer(f0, f0)
+        f01 = np.outer(f0, f1)
+        f10 = np.outer(f1, f0)
+        f11 = np.outer(f1, f1)
+        for t1 in range(3):
+            b1_s, b1_e = 32 * t1, 32 * (t1 + 1)
+            c_t1 = c_base[b1_s:b1_e, :]
+            r0 = 64 * t1
+            r1 = r0 + 32
+            c_dense[r0 : r0 + 32, :] = f0[:, None] * c_t1
+            c_dense[r1 : r1 + 32, :] = f1[:, None] * c_t1
             for t2 in range(3):
-                b2_s, b2_e = 16 * t2, 16 * (t2 + 1)
-                g48_sub = g48[b1_s:b1_e, b2_s:b2_e]
-                for k2 in range(4):
-                    c_s = 64 * t2 + 16 * k2
-                    c_e = c_s + 16
-                    g_dense[r_s:r_e, c_s:c_e] = m_outer[k1, k2] * g48_sub
+                b2_s, b2_e = 32 * t2, 32 * (t2 + 1)
+                g_sub = g_base[b1_s:b1_e, b2_s:b2_e]
+                c0 = 64 * t2
+                c1 = c0 + 32
+                g_dense[r0 : r0 + 32, c0 : c0 + 32] = g_sub * f00
+                g_dense[r0 : r0 + 32, c1 : c1 + 32] = g_sub * f01
+                g_dense[r1 : r1 + 32, c0 : c0 + 32] = g_sub * f10
+                g_dense[r1 : r1 + 32, c1 : c1 + 32] = g_sub * f11
+    else:
+        u0 = float(u_ctrl_3[0]) if len(u_ctrl_3) > 0 else 0.0
+        u1 = float(u_ctrl_3[1]) if len(u_ctrl_3) > 1 else 0.0
+        u2 = float(u_ctrl_3[2]) if len(u_ctrl_3) > 2 else 0.0
+        m_vec = np.array([1.0, u0, u1, u2], dtype=np.float64)
+        m_outer = np.outer(m_vec, m_vec)  # (4, 4)
+        for t1 in range(3):
+            b1_s, b1_e = 16 * t1, 16 * (t1 + 1)
+            c48_t1 = c_base[b1_s:b1_e, :]
+            for k1 in range(4):
+                r_s = 64 * t1 + 16 * k1
+                r_e = r_s + 16
+                c_dense[r_s:r_e, :] = m_vec[k1] * c48_t1
+                for t2 in range(3):
+                    b2_s, b2_e = 16 * t2, 16 * (t2 + 1)
+                    g48_sub = g_base[b1_s:b1_e, b2_s:b2_e]
+                    for k2 in range(4):
+                        c_s = 64 * t2 + 16 * k2
+                        c_e = c_s + 16
+                        g_dense[r_s:r_e, c_s:c_e] = m_outer[k1, k2] * g48_sub
 
     g_dense = 0.5 * (g_dense + g_dense.T)
     g_packed = GramMatrix.pack(g_dense)
@@ -599,6 +648,63 @@ def evaluate_kronecker_head_features(
     w_eff = np.tensordot(psi_tilde, np.asarray(w_head_5x2x_tier, dtype=np.float64), axes=(0, 0))
     # w_eff has shape (2, tier_dim) -> phi @ w_eff.T has shape (T, 2)
     return phi @ w_eff.T
+
+
+def evaluate_stem_besr_from_sufficient_stats(
+    stat: StemSufficientStatistics,
+    z_head_4: NDArray[np.floating[Any]],
+    head_sol: MultiTierKroneckerHeadSolution,
+    target_t_x_2: NDArray[np.floating[Any]],
+    *,
+    floor_dbfs: float = -60.0,
+) -> tuple[float, float, float]:
+    """Evaluates exact `Lite` ($N=64$), `Full` ($N=128$), and `Ultra` ($N=192$) `bESR` in dB
+    directly from a stem's cached `Arena 3` [`StemSufficientStatistics`] via the quadratic form
+    identity without re-evaluating the 4-stage cascade.
+    """
+    y = np.asarray(target_t_x_2, dtype=np.float64)
+    if y.ndim == 1:
+        y = np.column_stack([y, y])
+    elif y.shape[1] == 1:
+        y = np.repeat(y, 2, axis=1)
+    num_frames = stat.num_frames
+    y = y[:num_frames]
+
+    eps_floor_sq = 10.0 ** (float(floor_dbfs) / 10.0)
+    e_bb = float(np.sum(y * y))
+    floor_e = float(max(1, y.size)) * eps_floor_sq
+    mute_thresh_e = float(max(1, y.size)) * (10.0 ** (-55.0 / 10.0))
+    mute_floor = float(max(1, y.size)) * 1e-3 if e_bb <= max(floor_e, mute_thresh_e) else floor_e
+
+    y_lf, y_mf, y_hf = split_three_bands_np(y)
+    w_lf = (float(num_frames) / 3.0) / (float(np.sum(y_lf * y_lf)) + mute_floor)
+    w_mf = (float(num_frames) / 3.0) / (float(np.sum(y_mf * y_mf)) + mute_floor)
+    w_hf = (float(num_frames) / 3.0) / (float(np.sum(y_hf * y_hf)) + mute_floor)
+    target_quad = (
+        w_lf * float(np.sum(y_lf * y_lf))
+        + w_mf * float(np.sum(y_mf * y_mf))
+        + w_hf * float(np.sum(y_hf * y_hf))
+    )
+
+    z = np.asarray(z_head_4, dtype=np.float64).ravel()
+    psi_tilde = np.array([1.0, z[0], z[1], z[2], z[3]], dtype=np.float64)
+
+    tier_besrs: list[float] = []
+    for tier_dim, w_head in (
+        (64, head_sol.w_lite_5x2x64),
+        (128, head_sol.w_full_5x2x128),
+        (192, head_sol.w_ultra_5x2x192),
+    ):
+        w_eff = np.tensordot(psi_tilde, np.asarray(w_head, dtype=np.float64), axes=(0, 0))
+        g_sub = GramMatrix.unpack(stat.g_audio_uplo_u_f64, dim=tier_dim)
+        c_sub = stat.c_audio_tier_f64[:tier_dim, :]
+        quad_err = float(
+            np.sum(w_eff * (w_eff @ g_sub)) - 2.0 * np.sum(w_eff * c_sub.T) + target_quad
+        )
+        besr_lin = max(quad_err / float(max(1, num_frames)), 1e-18)
+        tier_besrs.append(float(10.0 * np.log10(besr_lin)))
+
+    return tier_besrs[0], tier_besrs[1], tier_besrs[2]
 
 
 def merge_stem_statistics_for_resume(

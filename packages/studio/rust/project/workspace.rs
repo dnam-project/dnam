@@ -13,7 +13,7 @@ use sha2::{Digest, Sha256};
 
 use crate::capture::{
     TargetExcitationProfile, align_hardware_latency, apply_subsample_shift_fft, compute_pcm_sha256,
-    generate_excitation_signal_with_profile, read_wav, write_wav_24bit,
+    generate_excitation_signal_with_profile, read_wav, write_wav_24bit, write_wav_32bit_float,
 };
 use crate::error::{StudioError, StudioResult};
 use crate::project::manifest::{
@@ -848,12 +848,16 @@ impl DnamProject {
             apply_subsample_shift_fft(&wet_wav.samples[..min_len], align.subsample_lag_samples);
         let wet_rel = format!("models/{model_id}/stems/{stem_id}.wav");
         let wet_dest = self.root_dir.join(&wet_rel);
-        write_wav_24bit(
+        write_wav_32bit_float(
             &wet_dest,
             &aligned_wet,
             wet_wav.sample_rate_hz,
             wet_wav.channels,
         )?;
+        let peak_lin = aligned_wet
+            .iter()
+            .fold(1e-9_f32, |acc, &x| acc.max(x.abs()));
+        let peak_dbfs = 20.0 * peak_lin.log10();
         let rec = StemRecord {
             stem_id: stem_id.to_string(),
             dry_wav_path: dry_rel,
@@ -865,6 +869,8 @@ impl DnamProject {
             aligned_lag_samples: align.subsample_lag_samples,
             snr_db: align.snr_db,
             noise_floor_dbfs: align.noise_floor_dbfs,
+            clean_pad_db: 0.0,
+            peak_dbfs,
         };
         self.register_stem(model_id, rec.clone())?;
         Ok(rec)

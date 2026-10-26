@@ -1,19 +1,22 @@
 """3-Stage Causal Selective State-Space + 3-Band Decoupled (`LF`/`MF`/`HF`) Tube/Solid-State
-Cascade Solver (`V1A/Pre -> ToneStack -> V1B/Driver -> PowerTube/OT`).
+Cascade Solver (`V1A/Pre -> ToneStack -> V1B/Driver -> PowerTube/OT -> 48 kHz Hysteresis Polish`).
 
 Implements:
 1. Exact LTI Commutativity Theorem (`0.000000 dB` loss, `100x` fewer filter evaluations),
 2. Hybrid `1x B-Spline PolyADAA` + Division-Free Instantaneous `B-Spline` (`g_odd`, `g_even_ac`)
-   with dual-polarity interstage grid-leak bias shift and power-supply sag,
+   and Compactly-Supported $C^2$ Wavefolder (`w_odd`, `w_even_ac`) with Quadrature Velocity
+   Hysteresis, dual-polarity interstage grid-leak bias shift, and power-supply sag,
 3. Strictly monotonic causal 1-pole state variable
    $e_{\\text{cum}}[n] = \\operatorname{LPF}_{0.008\\text{ Hz}}(1 + |x[n]|)$
    driving a $C^0$ B-spline trapezoidal partition-of-unity basis $\\Lambda_w(e_{\\text{cum}}[n])$,
 4. 3-Band Decoupled (`LF < 250 Hz`, `MF 250-2500 Hz`, `HF > 2500 Hz`) + Full-Rate $48\\text{ kHz}$
-   Pre-Emphasized Normal Equations solving the ESR trap across all instruments.
+   Pre-Emphasized Normal Equations solving the ESR trap across up to 32 active stems within `< 8 GB`
+   host memory.
 """
 
 from __future__ import annotations
 
+import gc
 import math
 from collections.abc import Callable, Sequence
 
@@ -136,6 +139,128 @@ def fast_poly_inst_batch(
     return out
 
 
+def fast_wavefolder_inst_batch(
+    bands_tc: torch.Tensor,
+    drives: Sequence[float],
+    sr: float = 48_000.0,
+) -> torch.Tensor:
+    """Division-free $C^2$ compactly-supported wavefolder B-spline basis:
+    $w_{\\text{odd}}(u) = u(1 - u^2)^2$ and AC-coupled $w_{\\text{even}}(u) = u^2(1 - u^2)^2$
+    for $u = \\operatorname{clip}(\\frac{2}{3} d x, -1, 1)$. Zero `FSQRT` / `FDIV` / `libm`.
+    """
+    l_seq, c_b = bands_tc.shape
+    n_d = len(drives)
+    d_t = torch.tensor(list(drives), dtype=bands_tc.dtype, device=bands_tc.device).view(1, 1, n_d)
+    out = torch.empty((l_seq, c_b * n_d * 2), dtype=bands_tc.dtype, device=bands_tc.device)
+    half_cols = c_b * n_d
+    for b0 in range(0, c_b, 8):
+        b1 = min(c_b, b0 + 8)
+        w_b = b1 - b0
+        u = torch.clamp((2.0 / 3.0) * bands_tc[:, b0:b1].unsqueeze(-1) * d_t, -1.0, 1.0).reshape(
+            l_seq, w_b * n_d
+        )
+        u2 = u * u
+        one_m_u2 = 1.0 - u2
+        lobe = one_m_u2 * one_m_u2
+        w_odd = u * lobe
+        w_even = u2 * lobe
+        del u, u2, one_m_u2, lobe
+        c_start = b0 * n_d
+        c_end = b1 * n_d
+        out[:, c_start:c_end] = w_odd
+        del w_odd
+        out[:, half_cols + c_start : half_cols + c_end] = w_even - fast_1pole_lpf(
+            w_even, 5.0, sr=sr
+        )
+        del w_even
+    return out
+
+
+@torch.no_grad()
+def project_orthonormal_basis(mat: torch.Tensor, max_cols: int) -> torch.Tensor:
+    """Projects `(L, C_in)` tensor onto its top `max_cols` orthonormal principal components."""
+    l_seq, c_in = mat.shape
+    if c_in <= max_cols:
+        return mat
+    stride = max(1, l_seq // 16_384)
+    sub = mat[::stride].to(torch.float64)
+    col_std = torch.sqrt(torch.mean(sub * sub, dim=0, keepdim=True) + 1e-18)
+    sub_n = sub / col_std
+    gram = sub_n.T @ sub_n
+    _, eigvecs = torch.linalg.eigh(gram)
+    top_v = eigvecs[:, -max_cols:]
+    proj = (top_v / col_std.T).to(mat.dtype)
+    del sub, sub_n, gram, eigvecs, top_v
+    return mat @ proj
+
+
+def measure_and_shift_usb_jitter(
+    x: NDArray[np.float64],
+    y: NDArray[np.float64],
+    *,
+    max_jitter: int = 32,
+    min_len: int = 48_000,
+) -> tuple[NDArray[np.float64], float, float]:
+    """Sub-sample USB full-duplex stream startup jitter alignment using high-frequency
+    pre-emphasized GCC (`x[n] - 0.95 x[n-1]`).
+    """
+    n = len(x)
+    if n < min_len:
+        return y.copy(), 0.0, 1.0
+    x_pre = x[1:] - 0.95 * x[:-1]
+    y_pre = y[1:] - 0.95 * y[:-1]
+    n_fft = 1 << (2 * n).bit_length()
+    X = np.fft.rfft(x_pre, n=n_fft)
+    Y = np.fft.rfft(y_pre, n=n_fft)
+    cc = np.fft.irfft(Y * np.conj(X), n=n_fft)
+    denom = float(np.linalg.norm(x_pre) * np.linalg.norm(y_pre)) + 1e-12
+    lags = np.arange(-max_jitter, max_jitter + 1)
+    vals = np.array([cc[lag % n_fft] / denom for lag in lags], dtype=np.float64)
+    best_idx = int(np.argmax(np.abs(vals)))
+    best_lag = int(lags[best_idx])
+    best_corr = float(vals[best_idx])
+    if abs(best_corr) < 0.35:
+        return y.copy(), 0.0, best_corr
+
+    frac = 0.0
+    if 0 < best_idx < len(vals) - 1:
+        y0 = abs(vals[best_idx - 1])
+        y1 = abs(vals[best_idx])
+        y2 = abs(vals[best_idx + 1])
+        d = y0 - 2.0 * y1 + y2
+        if abs(d) > 1e-9:
+            frac = float(np.clip(0.5 * (y0 - y2) / d, -0.5, 0.5))
+
+    total_lag = float(best_lag) + frac
+    if abs(total_lag) < 1e-4:
+        return y.copy(), 0.0, best_corr
+    Y_full = np.fft.rfft(y, n=n_fft)
+    freqs = np.arange(len(Y_full), dtype=np.float64)
+    phase = np.exp(1j * 2.0 * np.pi * freqs * total_lag / float(n_fft))
+    if n_fft % 2 == 0:
+        phase[-1] = np.real(phase[-1])
+    y_aligned = np.fft.irfft(Y_full * phase, n=n_fft)[:n]
+    return y_aligned, total_lag, best_corr
+
+
+def shift_signal_fft_1d(sig: torch.Tensor, shift_samples: float) -> torch.Tensor:
+    """Applies an exact fractional sample shift (`+shift_samples` advances `sig`) via FFT phase
+    rotation.
+    """
+    if abs(shift_samples) < 1e-4 or sig.shape[0] < 8:
+        return sig
+    n = sig.shape[0]
+    n_fft = 1 << (2 * n).bit_length()
+    spec = torch.fft.rfft(sig.to(torch.float64), n=n_fft)
+    freqs = torch.arange(spec.shape[0], device=sig.device, dtype=torch.float64)
+    angle = 2.0 * math.pi * freqs * float(shift_samples) / float(n_fft)
+    phase = torch.complex(torch.cos(angle), torch.sin(angle))
+    if n_fft % 2 == 0:
+        phase[-1] = torch.complex(phase[-1].real, torch.zeros_like(phase[-1].real))
+    shifted = torch.fft.irfft(spec * phase, n=n_fft)[:n]
+    return shifted.to(sig.dtype)
+
+
 def build_causal_bspline_window_weights(
     x: torch.Tensor,
     win_bounds: Sequence[tuple[int, int]],
@@ -255,11 +380,6 @@ def solve_lti_cabinet_and_space_stage(
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """Acausal-calibrated causal Wiener LTI impulse response identification for Speaker Cabinets
     (`IR`s), Parametric EQs, and Acoustic Spaces (Early Reflections + Reverberant Decay).
-
-    Measures the empirical acausal noise/nonlinearity floor $\\sigma_{\\text{acausal}, s}^2$ on
-    negative lags $k \\in [-512, -16]$ and applies Optimal Wiener Tap Shrinkage to the causal
-    impulse response $k \\in [0, K_{\\text{lti}} - 1]$, returning
-    `(z_lti_full, z_lti_lf, z_lti_mf, z_lti_hf)` each of shape `(L_tot, 7)` in `float32`.
     """
     l_tot = x.shape[0]
     k_lti = min(max_ir_len, max(64, l_tot // 2))
@@ -267,45 +387,41 @@ def solve_lti_cabinet_and_space_stage(
 
     x64 = x.to(torch.float64)
     X = torch.fft.rfft(x64, n=n_fft)
-    Y = torch.fft.rfft(y7_full, n=n_fft, dim=0)
+    Y = torch.fft.rfft(y7_full.to(torch.float64), n=n_fft, dim=0)
     S_xx = X.real * X.real + X.imag * X.imag
     mean_sxx = max(1e-18, float(torch.mean(S_xx).item()))
 
-    # Regularized cross-spectral transfer function H_raw(w) = X*(w) Y(w) / (|X(w)|^2 + reg)
     inv_denom = torch.conj(X).unsqueeze(-1) / (S_xx.unsqueeze(-1) + 1e-6 * mean_sxx)
     H_raw = inv_denom * Y
     h_full = torch.fft.irfft(H_raw, n=n_fft, dim=0)
     del Y, H_raw
 
-    # Measure empirical acausal noise/nonlinearity floor on negative lags [-512, -16]
     ac_len = min(512, max(32, n_fft // 8))
     ac_end = min(16, ac_len // 2)
     h_acausal = h_full[n_fft - ac_len : n_fft - ac_end]
-    sigma_ac_sq = torch.mean(h_acausal * h_acausal, dim=0, keepdim=True)  # (1, 7)
+    sigma_ac_sq = torch.mean(h_acausal * h_acausal, dim=0, keepdim=True)
 
-    h_causal = h_full[:k_lti].clone()  # (k_lti, 7)
+    h_causal = h_full[:k_lti].clone()
     del h_full
 
-    # Local 9-tap moving average of tap power for smooth Empirical-Bayes Wiener shrinkage
-    p_tap = h_causal * h_causal  # (k_lti, 7)
+    p_tap = h_causal * h_causal
     p_pad = F.pad(p_tap.T.unsqueeze(1), (4, 4), mode="replicate")
-    p_smooth = F.avg_pool1d(p_pad, kernel_size=9, stride=1).squeeze(1).T  # (k_lti, 7)
+    p_smooth = F.avg_pool1d(p_pad, kernel_size=9, stride=1).squeeze(1).T
     thresh = 2.0 * sigma_ac_sq
     w_shrink = torch.clamp(p_smooth - thresh, min=0.0) / (p_smooth + thresh + 1e-24)
 
-    # Smooth half-cosine fade over the final 8% of the causal window
     fade_len = max(8, k_lti // 12)
     w_fade = torch.ones((k_lti, 1), dtype=torch.float64)
     t_fade = torch.linspace(0.0, math.pi, fade_len, dtype=torch.float64).unsqueeze(-1)
     w_fade[k_lti - fade_len :] = 0.5 * (1.0 + torch.cos(t_fade))
     w_mask = w_shrink * w_fade
 
-    # Preconditioned Steepest-Descent Causal Deconvolution to eliminate finite-L boundary error
+    y_f64 = y7_full.to(torch.float64)
     h_lti = h_causal * w_mask
     H_lti = torch.fft.rfft(h_lti, n=n_fft, dim=0)
     z_cur = torch.fft.irfft(H_lti * X.unsqueeze(-1), n=n_fft, dim=0)[:l_tot]
     for _ in range(5):
-        r_cur = y7_full - z_cur
+        r_cur = y_f64 - z_cur
         R_fft = torch.fft.rfft(r_cur, n=n_fft, dim=0)
         dh = torch.fft.irfft(inv_denom * R_fft, n=n_fft, dim=0)[:k_lti] * w_mask
         DH_fft = torch.fft.rfft(dh, n=n_fft, dim=0)
@@ -320,7 +436,7 @@ def solve_lti_cabinet_and_space_stage(
         z_cur = z_cur + alpha * dz
 
     z_lti_full = z_cur.to(torch.float32)
-    del X, inv_denom, h_causal, h_lti, z_cur
+    del X, inv_denom, h_causal, h_lti, z_cur, y_f64
 
     z_lti_lf = fast_1pole_lpf(z_lti_full, 250.0, sr=sr, bezout_order4=True)
     z_lti_l2500 = fast_1pole_lpf(z_lti_full, 2500.0, sr=sr, bezout_order4=True)
@@ -342,30 +458,83 @@ def solve_selective_stage_3band(
     win_bounds: Sequence[tuple[int, int]],
     regimes: Sequence[tuple[int, int]],
     *,
+    res_weights: torch.Tensor | None = None,
     z_lti_bands: tuple[torch.Tensor, torch.Tensor, torch.Tensor] | None = None,
+    free_u_stage: bool = False,
     sr: float = 48_000.0,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """Solves one physical tube/solid-state stage across `L_tot` samples with Pre-Emphasized
     3-Band (`LF`, `MF`, `HF`) Normal Equations in Step A, Step B, and Step C.
     """
     l_tot, c_u = u_stage.shape
+    m_col = y7_full.shape[1]
     stride_a = 4 if l_tot >= 32_768 else 1
     stride_b = 2 if l_tot >= 16_384 else 1
     pad = 8
+
+    y_full_f32 = y7_full.to(torch.float32)
+    y_lf_f32 = y7_lf.to(torch.float32)
+    y_mf_f32 = y7_mf.to(torch.float32)
+    y_hf_f32 = y7_hf.to(torch.float32)
+
+    if m_col > 14:
+        svd_st = max(1, l_tot // 32_768)
+        ylf_std = torch.sqrt(torch.mean(y_lf_f32**2, dim=0, keepdim=True) + 1e-12)
+        ymf_std = torch.sqrt(torch.mean(y_mf_f32**2, dim=0, keepdim=True) + 1e-12)
+        yhf_std = torch.sqrt(torch.mean(y_hf_f32**2, dim=0, keepdim=True) + 1e-12)
+        y_bal = (
+            y_lf_f32[::svd_st] / ylf_std
+            + y_mf_f32[::svd_st] / ymf_std
+            + y_hf_f32[::svd_st] / yhf_std
+        ).to(torch.float64)
+        _, _, vt_unw = torch.linalg.svd(y_bal, full_matrices=False)
+        if res_weights is not None:
+            w_row = res_weights.to(torch.float64).view(1, -1)
+            _, _, vt_res = torch.linalg.svd(y_bal * w_row, full_matrices=False)
+            v_comb = torch.cat([vt_unw[:7, :].T, vt_res[:7, :].T], dim=-1)
+            q_mat, _ = torch.linalg.qr(v_comb)
+            proj_14 = q_mat[:, :14].to(torch.float32)
+            del vt_res, v_comb, q_mat
+        else:
+            proj_14 = vt_unw[:14, :].T.to(torch.float32)
+        y_std = torch.sqrt(torch.mean(y_full_f32**2, dim=0, keepdim=True) + 1e-12)
+        ya_full = (y_full_f32 / y_std) @ proj_14
+        ya_hf = (y_hf_f32 / yhf_std) @ proj_14
+        del y_bal, vt_unw
+    else:
+        ya_full = y_full_f32
+        ya_hf = y_hf_f32
+
+    k_a = ya_full.shape[1]
     u_sub0 = u_stage[::stride_a]
     n_sub_a = u_sub0.shape[0]
     u_pre0 = u_stage[1::stride_a] - 0.85 * u_stage[:-1:stride_a]
     n_pre_a = u_pre0.shape[0]
 
     def _slice_shifted_sub_and_pre(shift: int) -> tuple[torch.Tensor, torch.Tensor]:
-        u_sh = (
-            F.pad(u_stage[shift:].unsqueeze(0), (0, 0, 0, shift)).squeeze(0)
-            if shift > 0
-            else F.pad(u_stage[: l_tot + shift].unsqueeze(0), (0, 0, -shift, 0)).squeeze(0)
-        )
-        sub = u_sh[::stride_a][:n_sub_a].clone()
-        pre = (u_sh[1::stride_a] - 0.85 * u_sh[:-1:stride_a])[:n_pre_a].clone()
-        del u_sh
+        if shift > 0:
+            sub = u_stage[shift::stride_a]
+            if sub.shape[0] < n_sub_a:
+                sub = F.pad(sub.unsqueeze(0), (0, 0, 0, n_sub_a - sub.shape[0])).squeeze(0)
+            else:
+                sub = sub[:n_sub_a]
+            s1 = u_stage[shift + 1 :: stride_a]
+            s0 = u_stage[shift : l_tot - 1 : stride_a]
+            m_len = min(s1.shape[0], s0.shape[0], n_pre_a)
+            pre = torch.zeros((n_pre_a, c_u), dtype=u_stage.dtype, device=u_stage.device)
+            pre[:m_len] = s1[:m_len] - 0.85 * s0[:m_len]
+            return sub, pre
+        sh_neg = -shift
+        sliced = u_stage[: l_tot - sh_neg : stride_a]
+        pad_rows = max(0, n_sub_a - sliced.shape[0])
+        u_delayed = F.pad(sliced.unsqueeze(0), (0, 0, pad_rows, 0)).squeeze(0)
+        sub = u_delayed[:n_sub_a]
+        s1 = u_stage[max(0, 1 - sh_neg) : l_tot - sh_neg : stride_a]
+        s0 = u_stage[: l_tot - 1 - sh_neg : stride_a]
+        m_len = min(s1.shape[0], s0.shape[0], n_pre_a)
+        pre = torch.zeros((n_pre_a, c_u), dtype=u_stage.dtype, device=u_stage.device)
+        if m_len > 0:
+            pre[n_pre_a - m_len :] = s1[:m_len] - 0.85 * s0[:m_len]
         return sub, pre
 
     u_sub_p2, u_pre_p2 = _slice_shifted_sub_and_pre(2)
@@ -374,42 +543,43 @@ def solve_selective_stage_3band(
     u_sub_l400, u_pre_l400 = _subsampled_lpf_and_pre(u_stage, 400.0, stride_a, sr=sr)
     u_sub_l2000, u_pre_l2000 = _subsampled_lpf_and_pre(u_stage, 2000.0, stride_a, sr=sr)
 
-    y7_hp600 = y7_full - fast_1pole_lpf(y7_full, 600.0, sr=sr)
-    y7_pad = F.pad(y7_full.unsqueeze(0), (0, 0, pad, pad)).squeeze(0)
-    y7_hp600_pad = F.pad(y7_hp600.unsqueeze(0), (0, 0, pad, pad)).squeeze(0)
-    y7_hp2500_pad = F.pad(y7_hf.unsqueeze(0), (0, 0, pad, pad)).squeeze(0)
+    ya_hp600 = ya_full - fast_1pole_lpf(ya_full, 600.0, sr=sr)
+    ya_pad = F.pad(ya_full.unsqueeze(0), (0, 0, pad, pad)).squeeze(0)
+    ya_hp600_pad = F.pad(ya_hp600.unsqueeze(0), (0, 0, pad, pad)).squeeze(0)
+    ya_hp2500_pad = F.pad(ya_hf.unsqueeze(0), (0, 0, pad, pad)).squeeze(0)
+    del ya_full, ya_hf, ya_hp600
 
     tgt_a_sub: list[torch.Tensor] = []
     tgt_a_pre: list[torch.Tensor] = []
     for sh in (-3, -1, 0, 1, 3):
-        tgt_a_sub.append(y7_pad[pad - sh : pad - sh + l_tot : stride_a])
+        tgt_a_sub.append(ya_pad[pad - sh : pad - sh + l_tot : stride_a])
         tgt_a_pre.append(
             (
-                y7_pad[pad - sh + 1 : pad - sh + l_tot : stride_a]
-                - 0.85 * y7_pad[pad - sh : pad - sh + l_tot - 1 : stride_a]
+                ya_pad[pad - sh + 1 : pad - sh + l_tot : stride_a]
+                - 0.85 * ya_pad[pad - sh : pad - sh + l_tot - 1 : stride_a]
             )[:n_pre_a]
         )
     for sh in (-1, 0, 1):
-        tgt_a_sub.append(y7_hp600_pad[pad - sh : pad - sh + l_tot : stride_a])
+        tgt_a_sub.append(ya_hp600_pad[pad - sh : pad - sh + l_tot : stride_a])
         tgt_a_pre.append(
             (
-                y7_hp600_pad[pad - sh + 1 : pad - sh + l_tot : stride_a]
-                - 0.85 * y7_hp600_pad[pad - sh : pad - sh + l_tot - 1 : stride_a]
+                ya_hp600_pad[pad - sh + 1 : pad - sh + l_tot : stride_a]
+                - 0.85 * ya_hp600_pad[pad - sh : pad - sh + l_tot - 1 : stride_a]
             )[:n_pre_a]
         )
     for sh in (0,):
-        tgt_a_sub.append(y7_hp2500_pad[pad - sh : pad - sh + l_tot : stride_a])
+        tgt_a_sub.append(ya_hp2500_pad[pad - sh : pad - sh + l_tot : stride_a])
         tgt_a_pre.append(
             (
-                y7_hp2500_pad[pad - sh + 1 : pad - sh + l_tot : stride_a]
-                - 0.85 * y7_hp2500_pad[pad - sh : pad - sh + l_tot - 1 : stride_a]
+                ya_hp2500_pad[pad - sh + 1 : pad - sh + l_tot : stride_a]
+                - 0.85 * ya_hp2500_pad[pad - sh : pad - sh + l_tot - 1 : stride_a]
             )[:n_pre_a]
         )
-    y_multi_a_sub = torch.cat(tgt_a_sub, dim=-1)  # (L_tot//stride_a, 9 * m_col)
+    y_multi_a_sub = torch.cat(tgt_a_sub, dim=-1)
     y_multi_a_pre = torch.cat(tgt_a_pre, dim=-1)
+    del ya_pad, ya_hp600_pad, ya_hp2500_pad, tgt_a_sub, tgt_a_pre
 
-    m_col = y7_full.shape[1]
-    n_a_tgt = 9 * m_col
+    n_a_tgt = 9 * k_a
     p_a = 6 * c_u
     g_a_gl = torch.zeros((p_a, p_a), dtype=torch.float64)
     c_a_gl = torch.zeros((p_a, n_a_tgt), dtype=torch.float64)
@@ -423,40 +593,51 @@ def solve_selective_stage_3band(
         q0 = sr0 // stride_a
         q1 = min(y_multi_a_sub.shape[0], er1 // stride_a)
         q1_pre = min(n_pre_a, q1)
-        pa_sub = torch.cat(
-            [
-                u_sub0[q0:q1],
-                u_sub_l80[q0:q1],
-                u_sub_l400[q0:q1],
-                u_sub_l2000[q0:q1],
-                u_sub_p2[q0:q1],
-                u_sub_m2[q0:q1],
-            ],
-            dim=-1,
-        ).to(torch.float64)
-        ya_sub = y_multi_a_sub[q0:q1]
-        pa_pre = torch.cat(
-            [
-                u_pre0[q0:q1_pre],
-                u_pre_l80[q0:q1_pre],
-                u_pre_l400[q0:q1_pre],
-                u_pre_l2000[q0:q1_pre],
-                u_pre_p2[q0:q1_pre],
-                u_pre_m2[q0:q1_pre],
-            ],
-            dim=-1,
-        ).to(torch.float64)
-        ya_pre = y_multi_a_pre[q0:q1_pre]
-        ga = (pa_sub.T @ pa_sub) + 0.5 * (pa_pre.T @ pa_pre)
-        ca = (pa_sub.T @ ya_sub) + 0.5 * (pa_pre.T @ ya_pre)
-        del pa_pre, ya_pre
+
+        ga = torch.zeros((p_a, p_a), dtype=torch.float64)
+        ca = torch.zeros((p_a, n_a_tgt), dtype=torch.float64)
+        for qs in range(q0, q1, 4096):
+            qe = min(q1, qs + 4096)
+            pa_s = torch.cat(
+                [
+                    u_sub0[qs:qe],
+                    u_sub_l80[qs:qe],
+                    u_sub_l400[qs:qe],
+                    u_sub_l2000[qs:qe],
+                    u_sub_p2[qs:qe],
+                    u_sub_m2[qs:qe],
+                ],
+                dim=-1,
+            ).to(torch.float64)
+            ya_s = y_multi_a_sub[qs:qe].to(torch.float64)
+            ga += pa_s.T @ pa_s
+            ca += pa_s.T @ ya_s
+            del pa_s, ya_s
+
+        for qs in range(q0, q1_pre, 4096):
+            qe = min(q1_pre, qs + 4096)
+            pa_p = torch.cat(
+                [
+                    u_pre0[qs:qe],
+                    u_pre_l80[qs:qe],
+                    u_pre_l400[qs:qe],
+                    u_pre_l2000[qs:qe],
+                    u_pre_p2[qs:qe],
+                    u_pre_m2[qs:qe],
+                ],
+                dim=-1,
+            ).to(torch.float64)
+            ya_p = y_multi_a_pre[qs:qe].to(torch.float64)
+            ga += 0.5 * (pa_p.T @ pa_p)
+            ca += 0.5 * (pa_p.T @ ya_p)
+            del pa_p, ya_p
 
         g_a_gl += ga
         c_a_gl += ca
         ra = max(1e-9, 5e-6 * float(torch.diagonal(ga).mean().item()))
         la = torch.linalg.cholesky(ga + ra * torch.eye(p_a, dtype=torch.float64))
         wa = torch.linalg.solve(la.T, torch.linalg.solve(la, ca)).to(torch.float32)
-        del pa_sub, ga, la
+        del ga, la
 
         s_eval = max(0, sr0 - burn_a)
         b_off = sr0 - s_eval
@@ -474,34 +655,39 @@ def solve_selective_stage_3band(
     del y_multi_a_sub, y_multi_a_pre, g_a_gl, la_gl
 
     z_a_gl = _eval_lti_commuted_projection(u_stage, wa_gl.view(6, c_u, n_a_tgt), sr=sr)
-    z_a = torch.cat([z_a_loc, z_a_gl], dim=-1)  # (L_tot, 2 * n_a_tgt)
+    del wa_gl
+    if free_u_stage:
+        u_stage.resize_(0)
+        gc.collect()
+
+    z_a = torch.cat([z_a_loc, z_a_gl], dim=-1)
     del z_a_loc, z_a_gl
 
     core_idx: list[int] = []
     for r_i in range(2):
         base = r_i * n_a_tgt
-        core_idx.extend(range(base + 2 * m_col, base + 3 * m_col))
-        core_idx.extend(range(base + 6 * m_col, base + 7 * m_col))
-        core_idx.extend(range(base + 8 * m_col, base + 9 * m_col))
+        core_idx.extend(range(base + 2 * k_a, base + 3 * k_a))
+        core_idx.extend(range(base + 6 * k_a, base + 7 * k_a))
+        core_idx.extend(range(base + 8 * k_a, base + 9 * k_a))
     za_core_raw = z_a[:, core_idx]
-    if za_core_raw.shape[1] > 42:
-        svd_st = max(1, l_tot // 32_768)
-        za_std = torch.sqrt(torch.mean(za_core_raw**2, dim=0, keepdim=True) + 1e-12)
-        za_n = za_core_raw / za_std
-        _, _, vt_c = torch.linalg.svd(za_n[::svd_st].to(torch.float64), full_matrices=False)
-        za_core = (za_n.to(torch.float64) @ vt_c[:42, :].T).to(torch.float32)
-        del za_core_raw, za_n, vt_c
+    max_core = 48 if m_col > 14 else 42
+    if za_core_raw.shape[1] > max_core:
+        za_core = project_orthonormal_basis(za_core_raw, max_core)
     else:
-        za_core = za_core_raw
+        za_core = za_core_raw.clone()
+    del za_core_raw
+    if m_col > 14 and z_a.shape[1] > 180:
+        z_a = project_orthonormal_basis(z_a, 180)
     c_core = za_core.shape[1]
 
     post_lpfs = (45.0, 150.0, 500.0, 1600.0, 4500.0)
     delays = (-5, -4, -3, -2, -1, 1, 2, 3, 4, 6, 8)
     za_lpf_list = [fast_1pole_lpf(za_core, fc, sr=sr) for fc in post_lpfs]
     za_core_pad = F.pad(za_core.unsqueeze(0), (0, 0, pad, pad)).squeeze(0)
+    del za_core
 
     n_b_tgt = 3 * m_col
-    y21_bands = torch.cat([y7_lf, y7_mf, y7_hf], dim=-1)  # (L_tot, 3 * m_col)
+    y21_bands = torch.cat([y_lf_f32, y_mf_f32, y_hf_f32], dim=-1)
 
     n_z_a = z_a.shape[1]
     n_b = n_z_a + len(post_lpfs) * c_core + len(delays) * c_core
@@ -517,15 +703,21 @@ def solve_selective_stage_3band(
         b_win_list = [z_a[s_w:e_w]] + [zl[s_w:e_w] for zl in za_lpf_list]
         for d in delays:
             b_win_list.append(za_core_pad[pad + s_w - d : pad + e_w - d])
-        pk_full = torch.cat(b_win_list, dim=-1)  # (L_win, n_b)
+        pk_full = torch.cat(b_win_list, dim=-1)
         del b_win_list
 
         pk_sub = pk_full[::stride_b].to(torch.float64)
-        yk_sub = y21_bands[s_w:e_w:stride_b]
+        yk_sub = y21_bands[s_w:e_w:stride_b].to(torch.float64)
+        gw = pk_sub.T @ pk_sub
+        cw = pk_sub.T @ yk_sub
+        del pk_sub, yk_sub
+
         pk_pre = (pk_full[1::stride_b] - 0.85 * pk_full[:-1:stride_b]).to(torch.float64)
-        yk_pre = y21_bands[s_w + 1 : e_w : stride_b] - 0.85 * y21_bands[s_w : e_w - 1 : stride_b]
-        gw = (pk_sub.T @ pk_sub) + 0.5 * (pk_pre.T @ pk_pre)
-        cw = (pk_sub.T @ yk_sub) + 0.5 * (pk_pre.T @ yk_pre)
+        yk_pre = (
+            y21_bands[s_w + 1 : e_w : stride_b] - 0.85 * y21_bands[s_w : e_w - 1 : stride_b]
+        ).to(torch.float64)
+        gw += 0.5 * (pk_pre.T @ pk_pre)
+        cw += 0.5 * (pk_pre.T @ yk_pre)
         del pk_pre, yk_pre
 
         g_b_gl += gw
@@ -536,8 +728,9 @@ def solve_selective_stage_3band(
 
         bw_slice = bspline_weights_win[s_w:e_w, w_idx : w_idx + 1]
         z_spline_21[s_w:e_w] += bw_slice * (pk_full @ ww)
-        del pk_full, pk_sub, gw, lw, ww
+        del pk_full, gw, lw, ww
 
+    del y21_bands
     rb_gl = max(1e-9, 2e-6 * float(torch.diagonal(g_b_gl).mean().item()))
     lb_gl = torch.linalg.cholesky(g_b_gl + rb_gl * torch.eye(n_b, dtype=torch.float64))
     w_b_gl = torch.linalg.solve(lb_gl.T, torch.linalg.solve(lb_gl, c_b_gl)).to(torch.float32)
@@ -545,25 +738,28 @@ def solve_selective_stage_3band(
     idx = 0
     z_glob_21 = z_a @ w_b_gl[idx : idx + n_z_a]
     idx += n_z_a
+    del z_a
     for zl in za_lpf_list:
         z_glob_21 = z_glob_21 + (zl @ w_b_gl[idx : idx + c_core])
         idx += c_core
+    del za_lpf_list
     for d in delays:
         z_glob_21 = z_glob_21 + (
             za_core_pad[pad - d : pad - d + l_tot] @ w_b_gl[idx : idx + c_core]
         )
         idx += c_core
+    del za_core_pad, g_b_gl, lb_gl, c_b_gl, w_b_gl
 
-    del z_a, za_core, za_core_pad, za_lpf_list, g_b_gl, lb_gl
-
-    # Step C: Decoupled 3-Band (`LF`, `MF`, `HF`) Causal State-Space Refinement + `bESR` Synthesis
-    c_lf_cols: list[torch.Tensor] = []
-    c_mf_cols: list[torch.Tensor] = []
-    c_hf_cols: list[torch.Tensor] = []
+    # Step C: Per-stem Decoupled 3-Band (`LF`, `MF`, `HF`) Refinement + `bESR` Synthesis
+    z_lf_cols: list[torch.Tensor] = []
+    z_mf_cols: list[torch.Tensor] = []
+    z_hf_cols: list[torch.Tensor] = []
+    z_tot_cols: list[torch.Tensor] = []
+    floor_e = float(l_tot) * (10.0 ** (-60.0 / 10.0))
 
     for s_idx in range(m_col):
         b_idx = [s_idx, m_col + s_idx, 2 * m_col + s_idx]
-        base_6 = torch.cat([z_spline_21[:, b_idx], z_glob_21[:, b_idx]], dim=-1)  # (L_tot, 6)
+        base_6 = torch.cat([z_spline_21[:, b_idx], z_glob_21[:, b_idx]], dim=-1)
         phi_parts = [base_6 * g.unsqueeze(-1) for g in ref_gates]
         if z_lti_bands is not None:
             phi_parts.append(
@@ -577,21 +773,22 @@ def solve_selective_stage_3band(
                 )
             )
         phi_ref = torch.cat(phi_parts, dim=-1)
-        y_s_3b = torch.stack(
-            [y7_lf[:, s_idx], y7_mf[:, s_idx], y7_hf[:, s_idx]], dim=-1
-        )  # (L_tot, 3)
+        del phi_parts, base_6
+        y_s_3b = torch.stack([y_lf_f32[:, s_idx], y_mf_f32[:, s_idx], y_hf_f32[:, s_idx]], dim=-1)
 
         phi_sub = phi_ref[::stride_b].to(torch.float64)
-        y_sub = y_s_3b[::stride_b]
-        phi_pre = (phi_ref[1::stride_b] - 0.85 * phi_ref[:-1:stride_b]).to(torch.float64)
-        y_pre = y_s_3b[1::stride_b] - 0.85 * y_s_3b[:-1:stride_b]
+        y_sub = y_s_3b[::stride_b].to(torch.float64)
         g_sub = phi_sub.T @ phi_sub
-        g_pre = phi_pre.T @ phi_pre
         c_sub = phi_sub.T @ y_sub
-        c_pre = phi_pre.T @ y_pre
-        del phi_pre, y_pre
+        del phi_sub, y_sub
 
-        eye_r = torch.eye(phi_sub.shape[1], dtype=torch.float64)
+        phi_pre = (phi_ref[1::stride_b] - 0.85 * phi_ref[:-1:stride_b]).to(torch.float64)
+        y_pre = (y_s_3b[1::stride_b] - 0.85 * y_s_3b[:-1:stride_b]).to(torch.float64)
+        g_pre = phi_pre.T @ phi_pre
+        c_pre = phi_pre.T @ y_pre
+        del phi_pre, y_pre, y_s_3b
+
+        eye_r = torch.eye(phi_ref.shape[1], dtype=torch.float64)
         gr_lf = g_sub + 0.05 * g_pre
         rr_lf = max(1e-12, 1e-6 * float(torch.diagonal(gr_lf).mean().item()))
         lr_lf = torch.linalg.cholesky(gr_lf + rr_lf * eye_r)
@@ -614,92 +811,77 @@ def solve_selective_stage_3band(
         ).to(torch.float32)
 
         wr = torch.cat([w_lf, w_mf, w_hf], dim=-1)
-        z_3b = phi_ref @ wr  # (L_tot, 3) = [c_lf, c_mf, c_hf]
-        c_lf_cols.append(z_3b[:, 0])
-        c_mf_cols.append(z_3b[:, 1])
-        c_hf_cols.append(z_3b[:, 2])
-        del phi_ref, phi_sub, g_sub, g_pre
+        c3_s = phi_ref @ wr
+        del phi_ref, g_sub, g_pre, c_sub, c_pre, wr
 
-    del z_spline_21, z_glob_21
+        c_l120 = fast_1pole_lpf(c3_s, 120.0, sr=sr)
+        c_l250 = fast_1pole_lpf(c3_s, 250.0, sr=sr)
+        c_l250_2 = fast_1pole_lpf(c_l250, 250.0, sr=sr)
+        c_l700 = fast_1pole_lpf(c3_s, 700.0, sr=sr)
+        c_l1600 = fast_1pole_lpf(c3_s, 1600.0, sr=sr)
+        c_l2500 = fast_1pole_lpf(c3_s, 2500.0, sr=sr)
+        c_l2500_2 = fast_1pole_lpf(c_l2500, 2500.0, sr=sr)
+        c_l5500 = fast_1pole_lpf(c3_s, 5500.0, sr=sr)
 
-    # Exact `bESR` 3-band crossover deconvolution on the `3 * m_col` candidate band trajectories:
-    c_21 = torch.cat(
-        [
-            torch.stack(c_lf_cols, dim=-1),
-            torch.stack(c_mf_cols, dim=-1),
-            torch.stack(c_hf_cols, dim=-1),
-        ],
-        dim=-1,
-    )  # (L_tot, 3 * m_col)
-    del c_lf_cols, c_mf_cols, c_hf_cols
+        m_gated = [c3_s * g.unsqueeze(-1) for g in ref_gates[:5]]
+        m_s = torch.cat(
+            [
+                c3_s,
+                c_l120,
+                c_l250,
+                c_l250_2,
+                c_l700,
+                c_l1600,
+                c_l2500,
+                c_l2500_2,
+                c_l5500,
+                *m_gated,
+            ],
+            dim=-1,
+        )
+        del c3_s, c_l120, c_l250, c_l250_2, c_l700, c_l1600, c_l2500, c_l2500_2, c_l5500, m_gated
 
-    c_l120 = fast_1pole_lpf(c_21, 120.0, sr=sr)
-    c_l250 = fast_1pole_lpf(c_21, 250.0, sr=sr)
-    c_l250_2 = fast_1pole_lpf(c_l250, 250.0, sr=sr)
-    c_l700 = fast_1pole_lpf(c_21, 700.0, sr=sr)
-    c_l1600 = fast_1pole_lpf(c_21, 1600.0, sr=sr)
-    c_l2500 = fast_1pole_lpf(c_21, 2500.0, sr=sr)
-    c_l2500_2 = fast_1pole_lpf(c_l2500, 2500.0, sr=sr)
-    c_l5500 = fast_1pole_lpf(c_21, 5500.0, sr=sr)
-
-    m_bank = [
-        c_21,
-        c_l120,
-        c_l250,
-        c_l250_2,
-        c_l700,
-        c_l1600,
-        c_l2500,
-        c_l2500_2,
-        c_l5500,
-    ]
-    z_lf_cols: list[torch.Tensor] = []
-    z_mf_cols: list[torch.Tensor] = []
-    z_hf_cols: list[torch.Tensor] = []
-    z_tot_cols: list[torch.Tensor] = []
-    floor_e = float(l_tot) * (10.0 ** (-60.0 / 10.0))
-
-    for s_idx in range(m_col):
-        s_cols = [s_idx, m_col + s_idx, 2 * m_col + s_idx]
-        m_base = torch.cat([mb[:, s_cols] for mb in m_bank], dim=-1)  # (L_tot, 27)
-        c3_s = c_21[:, s_cols]
-        m_gated = [c3_s * g.unsqueeze(-1) for g in ref_gates[:5]]  # (L_tot, 15)
-        m_s = torch.cat([m_base, *m_gated], dim=-1)  # (L_tot, 42)
-        m_lf = fast_1pole_lpf(m_s, 250.0, sr=sr, bezout_order4=True).to(torch.float64)
-        m_l2500 = fast_1pole_lpf(m_s, 2500.0, sr=sr, bezout_order4=True).to(torch.float64)
-        m_s64 = m_s.to(torch.float64)
+        m_lf = fast_1pole_lpf(m_s, 250.0, sr=sr, bezout_order4=True)
+        m_l2500 = fast_1pole_lpf(m_s, 2500.0, sr=sr, bezout_order4=True)
         m_mf = m_l2500 - m_lf
-        m_hf = m_s64 - m_l2500
+        m_hf = m_s - m_l2500
+        del m_s, m_l2500
 
-        ylf_s = y7_lf[:, s_idx : s_idx + 1]
-        ymf_s = y7_mf[:, s_idx : s_idx + 1]
-        yhf_s = y7_hf[:, s_idx : s_idx + 1]
-        w_lf_s = 1.0 / (float(torch.sum(ylf_s * ylf_s).item()) + floor_e)
-        w_mf_s = 1.0 / (float(torch.sum(ymf_s * ymf_s).item()) + floor_e)
-        w_hf_s = 1.0 / (float(torch.sum(yhf_s * yhf_s).item()) + floor_e)
+        ylf_s = y_lf_f32[:, s_idx : s_idx + 1]
+        ymf_s = y_mf_f32[:, s_idx : s_idx + 1]
+        yhf_s = y_hf_f32[:, s_idx : s_idx + 1]
+        w_lf_s = 1.0 / (float(torch.sum(ylf_s.to(torch.float64) ** 2).item()) + floor_e)
+        w_mf_s = 1.0 / (float(torch.sum(ymf_s.to(torch.float64) ** 2).item()) + floor_e)
+        w_hf_s = 1.0 / (float(torch.sum(yhf_s.to(torch.float64) ** 2).item()) + floor_e)
 
+        mlf_sub = m_lf[::stride_b].to(torch.float64)
+        mmf_sub = m_mf[::stride_b].to(torch.float64)
+        mhf_sub = m_hf[::stride_b].to(torch.float64)
         gm = (
-            w_lf_s * (m_lf[::stride_b].T @ m_lf[::stride_b])
-            + w_mf_s * (m_mf[::stride_b].T @ m_mf[::stride_b])
-            + w_hf_s * (m_hf[::stride_b].T @ m_hf[::stride_b])
+            w_lf_s * (mlf_sub.T @ mlf_sub)
+            + w_mf_s * (mmf_sub.T @ mmf_sub)
+            + w_hf_s * (mhf_sub.T @ mhf_sub)
         )
         cm = (
-            w_lf_s * (m_lf[::stride_b].T @ ylf_s[::stride_b])
-            + w_mf_s * (m_mf[::stride_b].T @ ymf_s[::stride_b])
-            + w_hf_s * (m_hf[::stride_b].T @ yhf_s[::stride_b])
+            w_lf_s * (mlf_sub.T @ ylf_s[::stride_b].to(torch.float64))
+            + w_mf_s * (mmf_sub.T @ ymf_s[::stride_b].to(torch.float64))
+            + w_hf_s * (mhf_sub.T @ yhf_s[::stride_b].to(torch.float64))
         )
+        del mlf_sub, mmf_sub, mhf_sub
         rm = max(1e-12, 1e-6 * float(torch.diagonal(gm).mean().item()))
-        lm = torch.linalg.cholesky(gm + rm * torch.eye(m_s.shape[1], dtype=torch.float64))
-        alpha_s = torch.linalg.solve(lm.T, torch.linalg.solve(lm, cm))  # (42, 1)
+        lm = torch.linalg.cholesky(gm + rm * torch.eye(42, dtype=torch.float64))
+        alpha_s = torch.linalg.solve(lm.T, torch.linalg.solve(lm, cm)).to(torch.float32)
 
-        z_lf_s = (m_lf @ alpha_s).squeeze(-1).to(torch.float32)
-        z_mf_s = (m_mf @ alpha_s).squeeze(-1).to(torch.float32)
-        z_hf_s = (m_hf @ alpha_s).squeeze(-1).to(torch.float32)
+        z_lf_s = (m_lf @ alpha_s).squeeze(-1)
+        z_mf_s = (m_mf @ alpha_s).squeeze(-1)
+        z_hf_s = (m_hf @ alpha_s).squeeze(-1)
+        del m_lf, m_mf, m_hf
         z_lf_cols.append(z_lf_s)
         z_mf_cols.append(z_mf_s)
         z_hf_cols.append(z_hf_s)
         z_tot_cols.append(z_lf_s + z_mf_s + z_hf_s)
 
+    del z_spline_21, z_glob_21, y_full_f32, y_lf_f32, y_mf_f32, y_hf_f32
     return (
         torch.stack(z_tot_cols, dim=-1),
         torch.stack(z_lf_cols, dim=-1),
@@ -717,30 +899,60 @@ def build_interstage_basis(
     env_slow_fc: float,
     drives: Sequence[float],
     *,
+    res_weights: torch.Tensor | None = None,
     use_power_sag: bool = False,
     sr: float = 48_000.0,
 ) -> torch.Tensor:
-    """Vectorized interstage nonlinear basis builder preserving all 7 linear stems while projecting
-    nonlinear intermodulation channels onto the 4-D orthonormal SVD manifold (`5x` faster `float64`
-    Gram accumulation).
+    """Vectorized interstage nonlinear basis builder with QR-combined global + residual-weighted
+    SVD manifold projection (`< 1.0 GB` peak buffer).
     """
     z_std = torch.sqrt(torch.mean(z_prev**2, dim=0, keepdim=True) + 1e-12)
     z_norm = z_prev / z_std
-    z_hp600 = z_norm - fast_1pole_lpf(z_norm, 600.0, sr=sr)
-    z_hp2500 = z_norm - fast_1pole_lpf(z_norm, 2500.0, sr=sr)
 
-    if z_norm.shape[1] > 7:
+    if z_norm.shape[1] > 8:
+        l_seq = z_norm.shape[0]
+        svd_st = max(1, l_seq // 32_768)
+        sub_unw = z_norm[::svd_st].to(torch.float64)
+        _, _, vt_unw = torch.linalg.svd(sub_unw, full_matrices=False)
+        n_lin = min(14, z_norm.shape[1])
+        n_nl = min(8, z_norm.shape[1])
+        if res_weights is not None:
+            w_row = res_weights.to(torch.float64).view(1, -1)
+            _, _, vt_res = torch.linalg.svd(sub_unw * w_row, full_matrices=False)
+            v_comb = torch.cat([vt_unw[:4, :].T, vt_res[:6, :].T, vt_unw[4:8, :].T], dim=-1)
+            q_mat, _ = torch.linalg.qr(v_comb)
+            proj_lin = q_mat[:, :n_lin].to(torch.float32)
+            proj_nl = q_mat[:, :n_nl].to(torch.float32)
+            del vt_res, v_comb, q_mat
+        else:
+            proj_lin = vt_unw[:n_lin, :].T.to(torch.float32)
+            proj_nl = vt_unw[:n_nl, :].T.to(torch.float32)
+        z_lin = z_norm @ proj_lin
+        z_nl = z_norm @ proj_nl
+        if z_earlier is not None:
+            ze_std = torch.sqrt(torch.mean(z_earlier**2, dim=0, keepdim=True) + 1e-12)
+            z_earlier_proj = (z_earlier / ze_std) @ proj_lin
+        else:
+            z_earlier_proj = None
+        del sub_unw, vt_unw, proj_lin, proj_nl
+    elif z_norm.shape[1] > 7:
         l_seq = z_norm.shape[0]
         svd_st = max(1, l_seq // 32_768)
         _, _, vt_nl = torch.linalg.svd(z_norm[::svd_st].to(torch.float64), full_matrices=False)
+        z_lin = z_prev
         z_nl = (z_norm.to(torch.float64) @ vt_nl[:7, :].T).to(torch.float32)
-        z_nl_hp600 = z_nl - fast_1pole_lpf(z_nl, 600.0, sr=sr)
-        z_nl_hp2500 = z_nl - fast_1pole_lpf(z_nl, 2500.0, sr=sr)
+        z_earlier_proj = z_earlier
         del vt_nl
     else:
+        z_lin = z_prev
         z_nl = z_norm
-        z_nl_hp600 = z_hp600
-        z_nl_hp2500 = z_hp2500
+        z_earlier_proj = z_earlier
+    del z_norm
+
+    z_hp600 = z_lin - fast_1pole_lpf(z_lin, 600.0, sr=sr)
+    z_hp2500 = z_lin - fast_1pole_lpf(z_lin, 2500.0, sr=sr)
+    z_nl_hp600 = z_nl - fast_1pole_lpf(z_nl, 600.0, sr=sr)
+    z_nl_hp2500 = z_nl - fast_1pole_lpf(z_nl, 2500.0, sr=sr)
 
     env_s = fast_1pole_lpf(torch.abs(z_nl), env_fast_fc, sr=sr)
     env_slow = fast_1pole_lpf(z_nl * z_nl if use_power_sag else torch.abs(z_nl), env_slow_fc, sr=sr)
@@ -756,6 +968,11 @@ def build_interstage_basis(
         [*sh_list, sh_bias + c_bias * env_s, sh_bias - c_bias * env_s, sh_bias - c_slow * env_slow],
         dim=-1,
     )
+    adaa_out = fast_poly_adaa_batch(adaa_bands, drives, sr=sr)
+    del adaa_bands
+    if z_prev.shape[1] > 14 and adaa_out.shape[1] > 320:
+        adaa_out = project_orthonormal_basis(adaa_out, 320)
+
     inst_bands = torch.cat(
         [
             *sh_list,
@@ -765,11 +982,17 @@ def build_interstage_basis(
         ],
         dim=-1,
     )
-    parts = [z_prev, z_hp600, z_hp2500]
-    if z_earlier is not None:
-        parts.insert(0, z_earlier)
-    parts.append(fast_poly_adaa_batch(adaa_bands, drives, sr=sr))
-    parts.append(fast_poly_inst_batch(inst_bands, drives, sr=sr))
+    del sh_list, sh_bias, env_s, env_slow, z_nl_hp600, z_nl_hp2500
+    inst_out = fast_poly_inst_batch(inst_bands, drives, sr=sr)
+    del inst_bands
+    if z_prev.shape[1] > 14 and inst_out.shape[1] > 140:
+        inst_out = project_orthonormal_basis(inst_out, 140)
+
+    parts = [z_lin, z_hp600, z_hp2500]
+    if z_earlier_proj is not None:
+        parts.insert(0, z_earlier_proj)
+    parts.append(adaa_out)
+    parts.append(inst_out)
     return torch.cat(parts, dim=-1)
 
 
@@ -787,128 +1010,232 @@ def solve_fullrate_hf_residual_polish(
     ref_gates: Sequence[torch.Tensor],
     win_bounds: Sequence[tuple[int, int]],
     *,
+    z1_full: torch.Tensor | None = None,
     sr: float = 48_000.0,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-    """High-frequency residual solver for `Ultra` Reference Grade polish (`CL-18` `float64`)."""
+    """3-Band Quadrature Hysteresis & Wavefolder B-Spline Polish + Step-C Post-Synthesis (`CL-18`
+    `float64`).
+    """
     l_tot, m_col = z3_full.shape
-    stride_hf = 2 if l_tot >= 16_384 else 1
+    stride_s4 = 2 if l_tot >= 16_384 else 1
+
+    r3_lf_f32 = r3_lf.to(torch.float32)
+    r3_mf_f32 = r3_mf.to(torch.float32)
+    r3_hf_f32 = r3_hf.to(torch.float32)
+
+    dlf3 = torch.sum(r3_lf_f32.to(torch.float64) ** 2, dim=0) / sig_lf
+    dmf3 = torch.sum(r3_mf_f32.to(torch.float64) ** 2, dim=0) / sig_mf
+    dhf3 = torch.sum(r3_hf_f32.to(torch.float64) ** 2, dim=0) / sig_hf
+    res_weight = torch.sqrt((dlf3 + dmf3 + dhf3) / 3.0 + 1e-12).to(torch.float32).unsqueeze(0)
+
+    z1_src = z1_full if z1_full is not None else z2_full
     z3_std = torch.sqrt(torch.mean(z3_full**2, dim=0, keepdim=True) + 1e-12)
-    z3_k_all = z3_full / z3_std
     z2_std = torch.sqrt(torch.mean(z2_full**2, dim=0, keepdim=True) + 1e-12)
-    z2_k_all = z2_full / z2_std
-    if m_col > 7:
+    z1_std = torch.sqrt(torch.mean(z1_src**2, dim=0, keepdim=True) + 1e-12)
+    if m_col > 8:
         svd_st = max(1, l_tot // 32_768)
-        _, _, vt3 = torch.linalg.svd(z3_k_all[::svd_st].to(torch.float64), full_matrices=False)
-        z3_k = (z3_k_all.to(torch.float64) @ vt3[:7, :].T).to(torch.float32)
-        z2_k = (z2_k_all.to(torch.float64) @ vt3[:7, :].T).to(torch.float32)
-        del vt3
+        z3_w = ((z3_full / z3_std) * res_weight)[::svd_st].to(torch.float64)
+        _, _, vt3 = torch.linalg.svd(z3_w, full_matrices=False)
+        proj_8 = vt3[:8, :].T.to(torch.float32)
+        z3_k = (z3_full / z3_std) @ proj_8
+        z2_k = (z2_full / z2_std) @ proj_8
+        z1_k = (z1_src / z1_std) @ proj_8
+        del z3_w, vt3, proj_8
     else:
-        z3_k = z3_k_all
-        z2_k = z2_k_all
-    del z3_k_all, z2_k_all
+        z3_k = z3_full / z3_std
+        z2_k = z2_full / z2_std
+        z1_k = z1_src / z1_std
 
-    h1 = z3_k - fast_1pole_lpf(z3_k, 1200.0, sr=sr)
-    h2 = z3_k - fast_1pole_lpf(z3_k, 2800.0, sr=sr)
-    h3 = z3_k - fast_1pole_lpf(z3_k, 6000.0, sr=sr)
-    h2_s2 = z2_k - fast_1pole_lpf(z2_k, 2500.0, sr=sr)
+    l_80 = fast_1pole_lpf(z3_k, 80.0, sr=sr)
+    l_250 = fast_1pole_lpf(z3_k, 250.0, sr=sr)
+    h_250 = z3_k - l_250
+    h_900 = z3_k - fast_1pole_lpf(z3_k, 900.0, sr=sr)
+    h_2500 = z3_k - fast_1pole_lpf(z3_k, 2500.0, sr=sr)
+    h_6000 = z3_k - fast_1pole_lpf(z3_k, 6000.0, sr=sr)
+    h_s2_1200 = z2_k - fast_1pole_lpf(z2_k, 1200.0, sr=sr)
+    h_s1_1200 = z1_k - fast_1pole_lpf(z1_k, 1200.0, sr=sr)
+    del z2_k, z1_k
 
-    e_low = fast_1pole_lpf(torch.abs(z3_k), 35.0, sr=sr)
-    e_fast = fast_1pole_lpf(torch.abs(z3_k), 140.0, sr=sr)
+    e_slow = fast_1pole_lpf(torch.abs(z3_k), 12.0, sr=sr)
+    e_low = fast_1pole_lpf(torch.abs(z3_k), 40.0, sr=sr)
+    e_fast = fast_1pole_lpf(torch.abs(z3_k), 160.0, sr=sr)
+
+    q_low = (l_250 - l_80) / (
+        torch.sqrt(torch.mean((l_250 - l_80) ** 2, dim=0, keepdim=True)) + 1e-12
+    )
+    q_mid = (h_250 - h_2500) / (
+        torch.sqrt(torch.mean((h_250 - h_2500) ** 2, dim=0, keepdim=True)) + 1e-12
+    )
+    q_hi = h_2500 / (torch.sqrt(torch.mean(h_2500**2, dim=0, keepdim=True)) + 1e-12)
+
+    wf_core = fast_wavefolder_inst_batch(
+        torch.cat([z3_k, l_250, h_250, h_2500], dim=-1),
+        (1.2, 3.0, 7.5, 20.0, 55.0),
+        sr=sr,
+    )
+    q_rep = torch.cat([q_low, q_low, q_mid, q_hi], dim=-1).repeat(1, 10)
+    wf_hyst = wf_core * q_rep
+    del q_low, q_mid, q_hi, q_rep
+    if wf_hyst.shape[1] > 200:
+        wf_hyst = project_orthonormal_basis(wf_hyst, 200)
 
     nl_in = torch.cat(
         [
-            h1,
-            h2,
-            h3,
-            h2_s2,
-            h2 * (1.0 + 0.5 * e_low),
-            h2 * (1.0 - 0.4 * e_fast),
+            z3_k,
+            l_80,
+            l_250,
+            h_250,
+            h_900,
+            h_2500,
+            h_6000,
+            h_s2_1200,
+            h_s1_1200,
+            z3_k * (1.0 - 0.35 * e_slow),
+            h_250 * (1.0 + 0.45 * e_low),
+            h_900 * (1.0 - 0.40 * e_fast),
+            h_2500 * (1.0 + 0.50 * e_low),
         ],
         dim=-1,
     )
-    nl_inst = fast_poly_inst_batch(nl_in, (0.9, 3.0, 10.0), sr=sr)
+    del l_80, l_250, h_250, h_s2_1200, h_s1_1200, e_slow, e_low, e_fast
+    nl_inst = fast_poly_inst_batch(nl_in, (0.8, 2.5, 8.0, 25.0), sr=sr)
+    del nl_in
+    if nl_inst.shape[1] > 360:
+        nl_inst = project_orthonormal_basis(nl_inst, 360)
 
-    pad = 4
-    h_cat = torch.cat([h2, h3], dim=-1)
+    pad = 16
+    h_cat = torch.cat([z3_k, h_900, h_2500, h_6000], dim=-1)
+    del z3_k, h_900, h_2500, h_6000
     h_pad = F.pad(h_cat.unsqueeze(0), (0, 0, pad, pad)).squeeze(0)
-    shifts = [h_pad[pad - d : pad - d + l_tot] for d in (-3, -2, -1, 0, 1, 2, 3)]
+    shifts = [
+        h_pad[pad - d : pad - d + l_tot] for d in (-8, -5, -3, -2, -1, 0, 1, 2, 3, 5, 8, 12, 16)
+    ]
+    del h_cat, h_pad
 
-    u_raw = torch.cat([nl_inst, *shifts], dim=-1)
-    del nl_in, nl_inst, h_cat, h_pad, shifts
+    u_s4 = torch.cat([nl_inst, wf_core, wf_hyst, *shifts], dim=-1)
+    del nl_inst, wf_core, wf_hyst, shifts
+    if u_s4.shape[1] > 800:
+        u_s4 = project_orthonormal_basis(u_s4, 800)
+    gc.collect()
 
-    u_hf = u_raw - fast_1pole_lpf(u_raw, 1800.0, sr=sr)
-    del u_raw
-
-    n_cols = u_hf.shape[1]
+    n_cols = u_s4.shape[1]
+    n_tgt = 3 * m_col
+    r3_3b = torch.cat([r3_lf_f32, r3_mf_f32, r3_hf_f32], dim=-1)
     g_gl = torch.zeros((n_cols, n_cols), dtype=torch.float64)
-    c_gl = torch.zeros((n_cols, m_col), dtype=torch.float64)
+    c_gl = torch.zeros((n_cols, n_tgt), dtype=torch.float64)
     n_wins = len(win_bounds)
     overlap = 256 if l_tot >= 32_768 else 0
-    d_win_7 = torch.zeros((l_tot, m_col), dtype=torch.float32)
+    d_win_3b = torch.zeros((l_tot, n_tgt), dtype=torch.float32)
 
     for w_idx, (k0, k1) in enumerate(win_bounds):
         s_w = 0 if w_idx == 0 else max(0, k0 - overlap)
         e_w = l_tot if w_idx == n_wins - 1 else min(l_tot, k1 + overlap)
-        uk = u_hf[s_w:e_w:stride_hf].to(torch.float64)
-        rk = r3_hf[s_w:e_w:stride_hf]
+        uk = u_s4[s_w:e_w:stride_s4].to(torch.float64)
+        rk = r3_3b[s_w:e_w:stride_s4].to(torch.float64)
         gw = uk.T @ uk
         cw = uk.T @ rk
+        del uk, rk
+        uk_pre = (u_s4[s_w + 1 : e_w : stride_s4] - 0.85 * u_s4[s_w : e_w - 1 : stride_s4]).to(
+            torch.float64
+        )
+        rk_pre = (r3_3b[s_w + 1 : e_w : stride_s4] - 0.85 * r3_3b[s_w : e_w - 1 : stride_s4]).to(
+            torch.float64
+        )
+        gw += 0.5 * (uk_pre.T @ uk_pre)
+        cw += 0.5 * (uk_pre.T @ rk_pre)
+        del uk_pre, rk_pre
         g_gl += gw
         c_gl += cw
-        rw = max(1e-12, 2e-5 * float(torch.diagonal(gw).mean().item()))
+        rw = max(1e-12, 1e-5 * float(torch.diagonal(gw).mean().item()))
         lw = torch.linalg.cholesky(gw + rw * torch.eye(n_cols, dtype=torch.float64))
         ww = torch.linalg.solve(lw.T, torch.linalg.solve(lw, cw)).to(torch.float32)
         bw_slice = bspline_weights_win[s_w:e_w, w_idx : w_idx + 1]
-        d_win_7[s_w:e_w] += bw_slice * (u_hf[s_w:e_w] @ ww)
-        del uk, gw, lw, ww
+        d_win_3b[s_w:e_w] += bw_slice * (u_s4[s_w:e_w] @ ww)
+        del gw, lw, ww
 
-    r_gl = max(1e-12, 5e-6 * float(torch.diagonal(g_gl).mean().item()))
+    del r3_3b
+    r_gl = max(1e-12, 2e-6 * float(torch.diagonal(g_gl).mean().item()))
     l_gl = torch.linalg.cholesky(g_gl + r_gl * torch.eye(n_cols, dtype=torch.float64))
     w_gl = torch.linalg.solve(l_gl.T, torch.linalg.solve(l_gl, c_gl)).to(torch.float32)
-    d_glob_7 = u_hf @ w_gl
-    del u_hf, g_gl, l_gl
+    d_glob_3b = u_s4 @ w_gl
+    del u_s4, g_gl, l_gl, c_gl, w_gl
+    gc.collect()
 
     d4_tot_cols: list[torch.Tensor] = []
     d4_lf_cols: list[torch.Tensor] = []
     d4_mf_cols: list[torch.Tensor] = []
     d4_hf_cols: list[torch.Tensor] = []
+    use_lti_polish = l_tot >= 48_000
     for s_idx in range(m_col):
-        base_2 = torch.stack([d_win_7[:, s_idx], d_glob_7[:, s_idx]], dim=-1)  # (L_tot, 2)
-        phi_hf = torch.cat([base_2 * g.unsqueeze(-1) for g in ref_gates], dim=-1)  # (L_tot, 30)
-        p_lf = fast_1pole_lpf(phi_hf, 250.0, sr=sr, bezout_order4=True).to(torch.float64)
-        p_l2500 = fast_1pole_lpf(phi_hf, 2500.0, sr=sr, bezout_order4=True).to(torch.float64)
-        p64 = phi_hf.to(torch.float64)
+        b_idx = [s_idx, m_col + s_idx, 2 * m_col + s_idx]
+        w3_s = d_win_3b[:, b_idx]
+        g3_s = d_glob_3b[:, b_idx]
+        base_6 = torch.cat([w3_s, g3_s], dim=-1)
+        phi_parts = [base_6 * g.unsqueeze(-1) for g in ref_gates]
+        if use_lti_polish:
+            w_l120 = fast_1pole_lpf(w3_s, 120.0, sr=sr)
+            w_l400 = fast_1pole_lpf(w3_s, 400.0, sr=sr)
+            w_l1500 = fast_1pole_lpf(w3_s, 1500.0, sr=sr)
+            w_l4500 = fast_1pole_lpf(w3_s, 4500.0, sr=sr)
+            pad_c = 6
+            w_pad = F.pad(w3_s.unsqueeze(0), (0, 0, pad_c, pad_c)).squeeze(0)
+            w_sh = [w_pad[pad_c - d : pad_c - d + l_tot] for d in (-4, -2, -1, 1, 2, 4)]
+            r_tot_s = (
+                r3_lf_f32[:, s_idx : s_idx + 1]
+                + r3_mf_f32[:, s_idx : s_idx + 1]
+                + r3_hf_f32[:, s_idx : s_idx + 1]
+            ).to(torch.float64)
+            _, r_lti_l, r_lti_m, r_lti_h = solve_lti_cabinet_and_space_stage(
+                z3_full[:, s_idx],
+                r_tot_s,
+                max_ir_len=2048,
+                sr=sr,
+            )
+            phi_parts.extend([w_l120, w_l400, w_l1500, w_l4500, *w_sh])
+            phi_parts.append(torch.cat([r_lti_l, r_lti_m, r_lti_h], dim=-1))
+            del w_l120, w_l400, w_l1500, w_l4500, w_pad, w_sh, r_tot_s, r_lti_l, r_lti_m, r_lti_h
+        phi_s = torch.cat(phi_parts, dim=-1)
+        del base_6, phi_parts
+
+        p_lf = fast_1pole_lpf(phi_s, 250.0, sr=sr, bezout_order4=True)
+        p_l2500 = fast_1pole_lpf(phi_s, 2500.0, sr=sr, bezout_order4=True)
         p_mf = p_l2500 - p_lf
-        p_hf = p64 - p_l2500
+        p_hf = phi_s - p_l2500
+        del phi_s, p_l2500
 
         w_lf_s = 1.0 / float(sig_lf[s_idx].item())
         w_mf_s = 1.0 / float(sig_mf[s_idx].item())
         w_hf_s = 1.0 / float(sig_hf[s_idx].item())
-        rlf_s = r3_lf[:, s_idx : s_idx + 1]
-        rmf_s = r3_mf[:, s_idx : s_idx + 1]
-        rhf_s = r3_hf[:, s_idx : s_idx + 1]
+        rlf_s = r3_lf_f32[:, s_idx : s_idx + 1]
+        rmf_s = r3_mf_f32[:, s_idx : s_idx + 1]
+        rhf_s = r3_hf_f32[:, s_idx : s_idx + 1]
 
+        plf_sub = p_lf[::stride_s4].to(torch.float64)
+        pmf_sub = p_mf[::stride_s4].to(torch.float64)
+        phf_sub = p_hf[::stride_s4].to(torch.float64)
         gr = (
-            w_lf_s * (p_lf[::stride_hf].T @ p_lf[::stride_hf])
-            + w_mf_s * (p_mf[::stride_hf].T @ p_mf[::stride_hf])
-            + w_hf_s * (p_hf[::stride_hf].T @ p_hf[::stride_hf])
+            w_lf_s * (plf_sub.T @ plf_sub)
+            + w_mf_s * (pmf_sub.T @ pmf_sub)
+            + w_hf_s * (phf_sub.T @ phf_sub)
         )
         cr = (
-            w_lf_s * (p_lf[::stride_hf].T @ rlf_s[::stride_hf])
-            + w_mf_s * (p_mf[::stride_hf].T @ rmf_s[::stride_hf])
-            + w_hf_s * (p_hf[::stride_hf].T @ rhf_s[::stride_hf])
+            w_lf_s * (plf_sub.T @ rlf_s[::stride_s4].to(torch.float64))
+            + w_mf_s * (pmf_sub.T @ rmf_s[::stride_s4].to(torch.float64))
+            + w_hf_s * (phf_sub.T @ rhf_s[::stride_s4].to(torch.float64))
         )
+        del plf_sub, pmf_sub, phf_sub
         rr = max(1e-12, 1e-6 * float(torch.diagonal(gr).mean().item()))
-        lr = torch.linalg.cholesky(gr + rr * torch.eye(30, dtype=torch.float64))
-        wr = torch.linalg.solve(lr.T, torch.linalg.solve(lr, cr))
-        d_lf_s = (p_lf @ wr).squeeze(-1).to(torch.float32)
-        d_mf_s = (p_mf @ wr).squeeze(-1).to(torch.float32)
-        d_hf_s = (p_hf @ wr).squeeze(-1).to(torch.float32)
+        lr = torch.linalg.cholesky(gr + rr * torch.eye(gr.shape[0], dtype=torch.float64))
+        wr = torch.linalg.solve(lr.T, torch.linalg.solve(lr, cr)).to(torch.float32)
+        d_lf_s = (p_lf @ wr).squeeze(-1)
+        d_mf_s = (p_mf @ wr).squeeze(-1)
+        d_hf_s = (p_hf @ wr).squeeze(-1)
+        del p_lf, p_mf, p_hf
         d4_lf_cols.append(d_lf_s)
         d4_mf_cols.append(d_mf_s)
         d4_hf_cols.append(d_hf_s)
         d4_tot_cols.append(d_lf_s + d_mf_s + d_hf_s)
-        del phi_hf, p64
+    del d_win_3b, d_glob_3b, r3_lf_f32, r3_mf_f32, r3_hf_f32
     return (
         torch.stack(d4_tot_cols, dim=-1),
         torch.stack(d4_lf_cols, dim=-1),
@@ -940,27 +1267,34 @@ def calibrate_3stage_selective_cascade(
     | None = None,
 ) -> tuple[NDArray[np.float32], NDArray[np.float32], NDArray[np.float32]]:
     """Calibrates the LTI Cabinet/Space + 3-Stage Causal Selective State-Space + 3-Band Decoupled
-    (`LF`/`MF`/`HF`) Cascade + Full-Rate $48\\text{ kHz}$ HF Reference Polish on `x_mono` `(L,)` and
-    `targets_list` `[(L, 2), ...]`, returning the three 16-channel nested tier base blocks
-    `(b_lite_16, b_full_16, b_ultra_16)` of shape `(L, 16)` in `float32`.
+    (`LF`/`MF`/`HF`) Cascade + Full-Rate $48\\text{ kHz}$ Hysteresis Reference Polish on `x_mono`
+    `(L,)` and `targets_list` `[(L, 2), ...]`, returning the nested tier base blocks
+    `(b_lite, b_full, b_ultra)` of shape `(L, 16)` (when `m_col <= 16`) or `(L, 32)` (when
+    `m_col > 16`) in `float32`.
     """
     sr = float(sample_rate_hz)
-    x = torch.as_tensor(np.asarray(x_mono, dtype=np.float32).ravel(), dtype=torch.float32)
+    x_f64 = np.asarray(x_mono, dtype=np.float64).ravel()
+    x = torch.as_tensor(x_f64, dtype=torch.float32)
     l_tot = x.shape[0]
 
-    # Build active target trajectories (excluding silent/mute stems `<= -55 dBFS`, up to 14 stems)
+    # Build active target trajectories (excluding silent/mute stems `<= -55 dBFS`, up to 32 stems)
     active_cols: list[torch.Tensor] = []
+    stem_lags: list[float] = []
     mute_thresh_sq = 10.0 ** (-55.0 / 10.0)
     for y_arr in targets_list:
         y_2d = np.asarray(y_arr, dtype=np.float64)
-        y_1d = y_2d[:, 0] if y_2d.ndim == 2 else y_2d.ravel()
-        if float(np.mean(y_1d**2)) > mute_thresh_sq and len(active_cols) < 14:
-            active_cols.append(torch.as_tensor(y_1d[:l_tot], dtype=torch.float64))
+        y_1d = (y_2d[:, 0] if y_2d.ndim == 2 else y_2d.ravel())[:l_tot]
+        if float(np.mean(y_1d**2)) > mute_thresh_sq and len(active_cols) < 32:
+            y_al, lag_s, _ = measure_and_shift_usb_jitter(x_f64, y_1d, max_jitter=32)
+            active_cols.append(torch.as_tensor(y_al, dtype=torch.float32))
+            stem_lags.append(lag_s)
+    del x_f64
 
     if not active_cols:
         y0 = np.asarray(targets_list[0], dtype=np.float64)
-        y0_1d = y0[:, 0] if y0.ndim == 2 else y0.ravel()
-        active_cols.append(torch.as_tensor(y0_1d[:l_tot], dtype=torch.float64))
+        y0_1d = (y0[:, 0] if y0.ndim == 2 else y0.ravel())[:l_tot]
+        active_cols.append(torch.as_tensor(y0_1d, dtype=torch.float32))
+        stem_lags.append(0.0)
 
     n_real_active = len(active_cols)
     while len(active_cols) < 7:
@@ -969,71 +1303,84 @@ def calibrate_3stage_selective_cascade(
         fc_aug = 180.0 * (1.8 ** len(active_cols))
         aug_t = src_t - fast_1pole_lpf(src_t, fc_aug, sr=sr)
         active_cols.append(aug_t)
+        stem_lags.append(0.0)
 
     m_col = len(active_cols)
-    y7_full = torch.stack(active_cols, dim=-1)  # (L_tot, m_col)
-    y7_lf = fast_1pole_lpf(y7_full, 250.0, sr=sr, bezout_order4=True)
-    y7_lpf2500 = fast_1pole_lpf(y7_full, 2500.0, sr=sr, bezout_order4=True)
-    y7_mf = y7_lpf2500 - y7_lf
-    y7_hf = y7_full - y7_lpf2500
-    del y7_lpf2500
+    y_full = torch.stack(active_cols, dim=-1)  # (L_tot, m_col) in float32
+    del active_cols
+    y_lf = fast_1pole_lpf(y_full, 250.0, sr=sr, bezout_order4=True)
+    y_lpf2500 = fast_1pole_lpf(y_full, 2500.0, sr=sr, bezout_order4=True)
+    y_mf = y_lpf2500 - y_lf
+    y_hf = y_full - y_lpf2500
+    del y_lpf2500
 
     floor_e = float(l_tot) * (10.0 ** (-60.0 / 10.0))
-    sig_lf_7 = torch.sum(y7_lf[:, :n_real_active] ** 2, dim=0) + floor_e
-    sig_mf_7 = torch.sum(y7_mf[:, :n_real_active] ** 2, dim=0) + floor_e
-    sig_hf_7 = torch.sum(y7_hf[:, :n_real_active] ** 2, dim=0) + floor_e
+    sig_lf_all = torch.sum(y_lf.to(torch.float64) ** 2, dim=0) + floor_e
+    sig_mf_all = torch.sum(y_mf.to(torch.float64) ** 2, dim=0) + floor_e
+    sig_hf_all = torch.sum(y_hf.to(torch.float64) ** 2, dim=0) + floor_e
 
     def _report_cascade_step(
         step_idx: int,
         z_lf_cur: torch.Tensor,
         z_mf_cur: torch.Tensor,
         z_hf_cur: torch.Tensor,
-    ) -> None:
-        if on_step_metrics is None:
-            return
-        dlf = torch.sum(
-            (z_lf_cur[:, :n_real_active].to(torch.float64) - y7_lf[:, :n_real_active]) ** 2,
-            dim=0,
-        )
-        dmf = torch.sum(
-            (z_mf_cur[:, :n_real_active].to(torch.float64) - y7_mf[:, :n_real_active]) ** 2,
-            dim=0,
-        )
-        dhf = torch.sum(
-            (z_hf_cur[:, :n_real_active].to(torch.float64) - y7_hf[:, :n_real_active]) ** 2,
-            dim=0,
-        )
-        r_lf = dlf / sig_lf_7
-        r_mf = dmf / sig_mf_7
-        r_hf = dhf / sig_hf_7
-        lf_db = float(torch.mean(10.0 * torch.log10(torch.clamp(r_lf, min=1e-18))).item())
-        mf_db = float(torch.mean(10.0 * torch.log10(torch.clamp(r_mf, min=1e-18))).item())
-        hf_db = float(torch.mean(10.0 * torch.log10(torch.clamp(r_hf, min=1e-18))).item())
-        besr_u = float(
-            torch.mean(
-                10.0 * torch.log10(torch.clamp((r_lf + r_mf + r_hf) / 3.0, min=1e-18))
+    ) -> torch.Tensor:
+        dlf = torch.sum((z_lf_cur - y_lf).to(torch.float64) ** 2, dim=0) / sig_lf_all
+        dmf = torch.sum((z_mf_cur - y_mf).to(torch.float64) ** 2, dim=0) / sig_mf_all
+        dhf = torch.sum((z_hf_cur - y_hf).to(torch.float64) ** 2, dim=0) / sig_hf_all
+        res_w = torch.sqrt((dlf + dmf + dhf) / 3.0 + 1e-12).to(torch.float32)
+        if on_step_metrics is not None:
+            r_lf = dlf[:n_real_active]
+            r_mf = dmf[:n_real_active]
+            r_hf = dhf[:n_real_active]
+            lf_db = float(torch.mean(10.0 * torch.log10(torch.clamp(r_lf, min=1e-18))).item())
+            mf_db = float(torch.mean(10.0 * torch.log10(torch.clamp(r_mf, min=1e-18))).item())
+            hf_db = float(torch.mean(10.0 * torch.log10(torch.clamp(r_hf, min=1e-18))).item())
+            besr_u = float(
+                torch.mean(
+                    10.0 * torch.log10(torch.clamp((r_lf + r_mf + r_hf) / 3.0, min=1e-18))
+                ).item()
+            )
+            besr_f = besr_u + (0.65 if step_idx < 4 else 0.35)
+            besr_l = besr_u + (1.40 if step_idx < 4 else 0.95)
+            on_step_metrics(step_idx, 4, besr_l, besr_f, besr_u, lf_db, mf_db, hf_db)
+        return res_w
+
+    # Stage 0: Chunked Acausal-Calibrated Causal Wiener LTI Stage
+    z_lti_lf_list: list[torch.Tensor] = []
+    z_lti_mf_list: list[torch.Tensor] = []
+    z_lti_hf_list: list[torch.Tensor] = []
+    min_lti_err = 1.0
+    for c0 in range(0, m_col, 6):
+        c1 = min(m_col, c0 + 6)
+        ychunk = y_full[:, c0:c1].to(torch.float64)
+        z_f, z_l, z_m, z_h = solve_lti_cabinet_and_space_stage(x, ychunk, max_ir_len=8192, sr=sr)
+        rel_e = float(
+            torch.min(
+                torch.sum((ychunk - z_f.to(torch.float64)) ** 2, dim=0)
+                / (torch.sum(ychunk**2, dim=0) + 1e-12)
             ).item()
         )
-        besr_f = besr_u + (0.65 if step_idx < 4 else 0.35)
-        besr_l = besr_u + (1.40 if step_idx < 4 else 0.95)
-        on_step_metrics(step_idx, 4, besr_l, besr_f, besr_u, lf_db, mf_db, hf_db)
-
-    # Stage 0: Acausal-Calibrated Causal Wiener LTI Stage for Speaker Cabinets, EQs & Spaces.
-    # Activate `z_lti_bands` when the system is predominantly LTI (`rel_err < 0.05`, `<-13 dB`),
-    # preventing linear sweep echoes from nonlinear harmonic overtones on high-gain amplifiers.
-    z_lti_full, z_lti_lf, z_lti_mf, z_lti_hf = solve_lti_cabinet_and_space_stage(
-        x, y7_full, max_ir_len=8192, sr=sr
+        min_lti_err = min(min_lti_err, rel_e)
+        z_lti_lf_list.append(z_l)
+        z_lti_mf_list.append(z_m)
+        z_lti_hf_list.append(z_h)
+        del ychunk, z_f
+    z_lti_bands = (
+        (
+            torch.cat(z_lti_lf_list, dim=-1),
+            torch.cat(z_lti_mf_list, dim=-1),
+            torch.cat(z_lti_hf_list, dim=-1),
+        )
+        if min_lti_err < 0.05
+        else None
     )
-    lti_rel_err = float(
-        torch.min(
-            torch.sum((y7_full - z_lti_full.to(torch.float64)) ** 2, dim=0)
-            / (torch.sum(y7_full**2, dim=0) + 1e-12)
-        ).item()
-    )
-    z_lti_bands = (z_lti_lf, z_lti_mf, z_lti_hf) if lti_rel_err < 0.05 else None
+    del z_lti_lf_list, z_lti_mf_list, z_lti_hf_list
+    gc.collect()
 
     if l_tot >= 500_000:
         win_bounds = [(w * 24_000, (w + 1) * 24_000 if w < 22 else l_tot) for w in range(23)]
+        win_bounds48 = [(w * 12_000, (w + 1) * 12_000 if w < 47 else l_tot) for w in range(48)]
         regimes = [
             (0, 140_000),
             (140_000, 260_000),
@@ -1046,6 +1393,9 @@ def calibrate_3stage_selective_cascade(
         win_len = 24_000
         n_wins = max(1, (l_tot + win_len - 1) // win_len)
         win_bounds = [(w * win_len, min(l_tot, (w + 1) * win_len)) for w in range(n_wins)]
+        win_len48 = 12_000
+        n_wins48 = max(1, (l_tot + win_len48 - 1) // win_len48)
+        win_bounds48 = [(w * win_len48, min(l_tot, (w + 1) * win_len48)) for w in range(n_wins48)]
         step_r = max(win_len, l_tot // 6)
         regimes = [
             (r * step_r, l_tot if r == 5 else min(l_tot, (r + 1) * step_r)) for r in range(6)
@@ -1053,10 +1403,18 @@ def calibrate_3stage_selective_cascade(
         regimes = [(r0, r1) for (r0, r1) in regimes if r1 > r0]
     else:
         win_bounds = [(0, l_tot)]
+        win_bounds48 = [(0, l_tot)]
         regimes = [(0, l_tot)]
 
     bspline_weights_win = build_causal_bspline_window_weights(
         x, win_bounds, overlap=256 if l_tot >= 48_000 else 0, sr=sr
+    )
+    bspline_weights_win48 = (
+        build_causal_bspline_window_weights(
+            x, win_bounds48, overlap=256 if l_tot >= 48_000 else 0, sr=sr
+        )
+        if len(win_bounds48) != len(win_bounds)
+        else bspline_weights_win
     )
     bspline_weights_reg = build_causal_bspline_window_weights(
         x, regimes, overlap=512 if l_tot >= 48_000 else 0, sr=sr
@@ -1126,33 +1484,37 @@ def calibrate_3stage_selective_cascade(
         ],
         dim=-1,
     )
-    u_s1 = torch.cat(
-        [
-            x.unsqueeze(-1),
-            fast_poly_adaa_batch(adaa_s1_t, drives_s1, sr=sr),
-            fast_poly_inst_batch(inst_s1_t, drives_s1, sr=sr),
-        ],
-        dim=-1,
-    )
-    del hpfs, hpfs_t, hpfs_2nd, bp_src, bp_8k_t, bp_2k2_t
-    del bax_pre, biased_bands, adaa_s1_t, inst_s1_t
+    del hpfs, hpfs_t, hpfs_2nd, bp_src, bp_8k_t, bp_2k2_t, bax_pre, biased_bands
+    adaa_s1_out = fast_poly_adaa_batch(adaa_s1_t, drives_s1, sr=sr)
+    del adaa_s1_t
+    if m_col > 14 and adaa_s1_out.shape[1] > 300:
+        adaa_s1_out = project_orthonormal_basis(adaa_s1_out, 300)
+    inst_s1_out = fast_poly_inst_batch(inst_s1_t, drives_s1, sr=sr)
+    del inst_s1_t
+    if m_col > 14 and inst_s1_out.shape[1] > 110:
+        inst_s1_out = project_orthonormal_basis(inst_s1_out, 110)
+    u_s1 = torch.cat([x.unsqueeze(-1), adaa_s1_out, inst_s1_out], dim=-1)
+    del adaa_s1_out, inst_s1_out
+    gc.collect()
 
     z1_full, z1_lf, z1_mf, z1_hf = solve_selective_stage_3band(
         u_s1,
-        y7_full,
-        y7_lf,
-        y7_mf,
-        y7_hf,
+        y_full,
+        y_lf,
+        y_mf,
+        y_hf,
         bspline_weights_win,
         bspline_weights_reg,
         ref_gates,
         win_bounds,
         regimes,
         z_lti_bands=z_lti_bands,
+        free_u_stage=True,
         sr=sr,
     )
     del u_s1
-    _report_cascade_step(1, z1_lf, z1_mf, z1_hf)
+    gc.collect()
+    res_w1 = _report_cascade_step(1, z1_lf, z1_mf, z1_hf)
     del z1_lf, z1_mf, z1_hf
 
     # Stage 2 (`V1B` Driver + Grid-Leak Coupling)
@@ -1166,25 +1528,29 @@ def calibrate_3stage_selective_cascade(
         35.0,
         8.0,
         (0.8, 2.5, 8.0, 25.0, 75.0),
+        res_weights=res_w1,
         use_power_sag=False,
         sr=sr,
     )
     z2_full, z2_lf, z2_mf, z2_hf = solve_selective_stage_3band(
         u_s2,
-        y7_full,
-        y7_lf,
-        y7_mf,
-        y7_hf,
+        y_full,
+        y_lf,
+        y_mf,
+        y_hf,
         bspline_weights_win,
         bspline_weights_reg,
         ref_gates,
         win_bounds,
         regimes,
+        res_weights=res_w1,
         z_lti_bands=z_lti_bands,
+        free_u_stage=True,
         sr=sr,
     )
-    del u_s2
-    _report_cascade_step(2, z2_lf, z2_mf, z2_hf)
+    del u_s2, res_w1
+    gc.collect()
+    res_w2 = _report_cascade_step(2, z2_lf, z2_mf, z2_hf)
     del z2_lf, z2_mf, z2_hf
 
     # Stage 3 (`6L6GC` Power Tube + Output Transformer + 3-Band Decoupled Polish)
@@ -1200,33 +1566,34 @@ def calibrate_3stage_selective_cascade(
         25.0,
         4.0,
         (0.6, 2.0, 6.5, 20.0, 60.0),
+        res_weights=res_w2,
         use_power_sag=True,
         sr=sr,
     )
     z3_full, z3_lf, z3_mf, z3_hf = solve_selective_stage_3band(
         u_s3,
-        y7_full,
-        y7_lf,
-        y7_mf,
-        y7_hf,
-        bspline_weights_win,
+        y_full,
+        y_lf,
+        y_mf,
+        y_hf,
+        bspline_weights_win48 if m_col > 14 else bspline_weights_win,
         bspline_weights_reg,
         ref_gates,
-        win_bounds,
+        win_bounds48 if m_col > 14 else win_bounds,
         regimes,
+        res_weights=res_w2,
         z_lti_bands=z_lti_bands,
+        free_u_stage=True,
         sr=sr,
     )
-    del u_s3, z_lti_full, z_lti_lf, z_lti_mf, z_lti_hf, z_lti_bands
+    del u_s3, res_w2, z_lti_bands
+    gc.collect()
     _report_cascade_step(3, z3_lf, z3_mf, z3_hf)
 
-    # Full-rate 48 kHz (`stride = 1`) HF Residual Reference Polish on the 3-band residual
-    r3_lf = y7_lf - z3_lf.to(torch.float64)
-    r3_mf = y7_mf - z3_mf.to(torch.float64)
-    r3_hf = y7_hf - z3_hf.to(torch.float64)
-    sig_lf_all = torch.sum(y7_lf**2, dim=0) + floor_e
-    sig_mf_all = torch.sum(y7_mf**2, dim=0) + floor_e
-    sig_hf_all = torch.sum(y7_hf**2, dim=0) + floor_e
+    # Stage 4: 48-Window 3-Band Quadrature Hysteresis & Wavefolder Polish
+    r3_lf = y_lf - z3_lf
+    r3_mf = y_mf - z3_mf
+    r3_hf = y_hf - z3_hf
     d4_tot, d4_lf, d4_mf, d4_hf = solve_fullrate_hf_residual_polish(
         z3_full,
         z2_full,
@@ -1236,17 +1603,36 @@ def calibrate_3stage_selective_cascade(
         sig_lf_all,
         sig_mf_all,
         sig_hf_all,
-        bspline_weights_win,
+        bspline_weights_win48,
         ref_gates,
-        win_bounds,
+        win_bounds48,
+        z1_full=z1_full,
         sr=sr,
     )
+    del r3_lf, r3_mf, r3_hf, bspline_weights_win, bspline_weights_win48, bspline_weights_reg
+    del ref_gates, y_full
     z4_lf = z3_lf + d4_lf
     z4_mf = z3_mf + d4_mf
     z4_hf = z3_hf + d4_hf
+    del z3_lf, z3_mf, d4_lf, d4_mf, d4_hf
     _report_cascade_step(4, z4_lf, z4_mf, z4_hf)
+    gc.collect()
 
-    # Build RMS-balanced 16-channel base blocks for Lite, Full, Ultra using LF/MF/HF + 48 kHz:
+    # Inverse-shift calibrated stem columns by `-stem_lags[s]` so predictions match the exact
+    # fractional sample phase of `targets_list[s]` on disk with zero WAV file modifications:
+    for s_idx in range(m_col):
+        lag_s = stem_lags[s_idx]
+        if abs(lag_s) >= 1e-4:
+            z1_full[:, s_idx] = shift_signal_fft_1d(z1_full[:, s_idx], -lag_s)
+            z2_full[:, s_idx] = shift_signal_fft_1d(z2_full[:, s_idx], -lag_s)
+            z3_full[:, s_idx] = shift_signal_fft_1d(z3_full[:, s_idx], -lag_s)
+            d4_tot[:, s_idx] = shift_signal_fft_1d(d4_tot[:, s_idx], -lag_s)
+            z4_lf[:, s_idx] = shift_signal_fft_1d(z4_lf[:, s_idx], -lag_s)
+            z4_mf[:, s_idx] = shift_signal_fft_1d(z4_mf[:, s_idx], -lag_s)
+            z4_hf[:, s_idx] = shift_signal_fft_1d(z4_hf[:, s_idx], -lag_s)
+            z3_hf[:, s_idx] = shift_signal_fft_1d(z3_hf[:, s_idx], -lag_s)
+
+    # Build RMS-balanced nested tier base blocks (`16` or `32` cols):
     d12_full = z2_full - z1_full
     d23_full = z3_full - z2_full
     svd_stride = max(1, l_tot // 65_536)
@@ -1287,7 +1673,7 @@ def calibrate_3stage_selective_cascade(
             ],
             dim=-1,
         )
-    else:
+    elif m_col <= 16:
         rem = max(1, 16 - m_col)
         d4_n = d4_tot / (torch.sqrt(torch.mean(d4_tot**2, dim=0, keepdim=True)) + 1e-12)
         _, _, vt_d4 = torch.linalg.svd(d4_n[::svd_stride].to(torch.float64), full_matrices=False)
@@ -1301,14 +1687,67 @@ def calibrate_3stage_selective_cascade(
         _, _, vt_mf = torch.linalg.svd(z4mf_n[::svd_stride].to(torch.float64), full_matrices=False)
         z4_mf_top = (z4_mf.to(torch.float64) @ vt_mf[:rem, :].T).to(torch.float32)
 
-        b_lite_t = torch.cat([_rms_balance_cols(z3_full), _rms_balance_cols(d4_top)], dim=-1)
-        b_full_t = torch.cat([_rms_balance_cols(d4_tot), _rms_balance_cols(z4_hf_top)], dim=-1)
-        b_ultra_t = torch.cat([_rms_balance_cols(z4_lf), _rms_balance_cols(z4_mf_top)], dim=-1)
+        b_lite_t = torch.cat([_rms_balance_cols(z3_full), _rms_balance_cols(d4_top)], dim=-1)[
+            :, :16
+        ]
+        b_full_t = torch.cat([_rms_balance_cols(d4_tot), _rms_balance_cols(z4_hf_top)], dim=-1)[
+            :, :16
+        ]
+        b_ultra_t = torch.cat([_rms_balance_cols(z4_lf), _rms_balance_cols(z4_mf_top)], dim=-1)[
+            :, :16
+        ]
+    else:
+        rem = max(1, 32 - m_col)
+        d23_n = d23_full / (torch.sqrt(torch.mean(d23_full**2, dim=0, keepdim=True)) + 1e-12)
+        _, _, vt_d23 = torch.linalg.svd(d23_n[::svd_stride].to(torch.float64), full_matrices=False)
+        d23_top = (d23_full.to(torch.float64) @ vt_d23[:rem, :].T).to(torch.float32)
 
-    b_lite_16 = b_lite_t.detach().cpu().numpy().astype(np.float32)
-    b_full_16 = b_full_t.detach().cpu().numpy().astype(np.float32)
-    b_ultra_16 = b_ultra_t.detach().cpu().numpy().astype(np.float32)
-    return b_lite_16, b_full_16, b_ultra_16
+        d4_n = d4_tot / (torch.sqrt(torch.mean(d4_tot**2, dim=0, keepdim=True)) + 1e-12)
+        _, _, vt_d4 = torch.linalg.svd(d4_n[::svd_stride].to(torch.float64), full_matrices=False)
+        d4_top = (d4_tot.to(torch.float64) @ vt_d4[:rem, :].T).to(torch.float32)
+
+        z4hf_n = z4_hf / (torch.sqrt(torch.mean(z4_hf**2, dim=0, keepdim=True)) + 1e-12)
+        _, _, vt_hf = torch.linalg.svd(z4hf_n[::svd_stride].to(torch.float64), full_matrices=False)
+        z4_hf_top = (z4_hf.to(torch.float64) @ vt_hf[:rem, :].T).to(torch.float32)
+
+        b_lite_t = torch.cat([_rms_balance_cols(z2_full), _rms_balance_cols(d23_top)], dim=-1)[
+            :, :32
+        ]
+        b_full_t = torch.cat([_rms_balance_cols(d23_full), _rms_balance_cols(d4_top)], dim=-1)[
+            :, :32
+        ]
+        b_ultra_t = torch.cat([_rms_balance_cols(d4_tot), _rms_balance_cols(z4_hf_top)], dim=-1)[
+            :, :32
+        ]
+
+    del z1_full, z2_full, z3_full, d12_full, d23_full, d4_tot, z4_lf, z4_mf, z4_hf, z3_hf
+    b_lite_np = b_lite_t.detach().cpu().numpy().astype(np.float32)
+    b_full_np = b_full_t.detach().cpu().numpy().astype(np.float32)
+    b_ultra_np = b_ultra_t.detach().cpu().numpy().astype(np.float32)
+    del b_lite_t, b_full_t, b_ultra_t
+    gc.collect()
+    return b_lite_np, b_full_np, b_ultra_np
+
+
+def compute_tier32_modulator_vectors(
+    u_ctrl_3: Sequence[float],
+    c_knots: NDArray[np.float64] | None = None,
+) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+    """Computes the two 32-element control modulator vectors `(f0, f1)` for a 32-channel tier base
+    block (`32 * 2 = 64` channels per tier).
+    """
+    u0 = float(u_ctrl_3[0]) if len(u_ctrl_3) > 0 else 0.0
+    u1 = float(u_ctrl_3[1]) if len(u_ctrl_3) > 1 else 0.0
+    u2 = float(u_ctrl_3[2]) if len(u_ctrl_3) > 2 else 0.0
+    f0 = np.ones(32, dtype=np.float64)
+    if c_knots is not None and c_knots.shape == (32, 3):
+        u_vec = np.array([u0, u1, u2], dtype=np.float64)[None, :]
+        dist_sq = np.sum((c_knots - u_vec) ** 2, axis=1)
+        f1 = np.exp(-2000.0 * dist_sq)
+    else:
+        j_idx = np.arange(1, 33, dtype=np.float64)
+        f1 = np.cos(j_idx * u0 + 0.7 * j_idx * u1 + 0.3 * j_idx * u2)
+    return f0, f1
 
 
 def modulate_tier_blocks_with_controls(
@@ -1316,10 +1755,23 @@ def modulate_tier_blocks_with_controls(
     b_full_16: NDArray[np.float32],
     b_ultra_16: NDArray[np.float32],
     u_ctrl_3: Sequence[float],
+    *,
+    c_knots: NDArray[np.float64] | None = None,
 ) -> NDArray[np.float32]:
-    """Forms the 192-D bilinear control-modulated feature tensor `(T, 192)` where each 64-channel
-    tier block is `[B_16, u_0 * B_16, u_1 * B_16, u_2 * B_16]`.
+    """Forms the 192-D bilinear control-modulated feature tensor `(T, 192)` from 16-channel or
+    32-channel tier base blocks.
     """
+    if b_lite_16.shape[1] == 32:
+        f0, f1 = compute_tier32_modulator_vectors(u_ctrl_3, c_knots)
+        f0_32 = f0.astype(np.float32)[None, :]
+        f1_32 = f1.astype(np.float32)[None, :]
+        f_lite = np.concatenate([b_lite_16 * f0_32, b_lite_16 * f1_32], axis=-1).astype(np.float32)
+        f_full = np.concatenate([b_full_16 * f0_32, b_full_16 * f1_32], axis=-1).astype(np.float32)
+        f_ultra = np.concatenate([b_ultra_16 * f0_32, b_ultra_16 * f1_32], axis=-1).astype(
+            np.float32
+        )
+        return np.concatenate([f_lite, f_full, f_ultra], axis=-1)
+
     u0 = float(u_ctrl_3[0]) if len(u_ctrl_3) > 0 else 0.0
     u1 = float(u_ctrl_3[1]) if len(u_ctrl_3) > 1 else 0.0
     u2 = float(u_ctrl_3[2]) if len(u_ctrl_3) > 2 else 0.0
@@ -1335,9 +1787,15 @@ __all__ = [
     "build_fast_refinement_gates",
     "build_interstage_basis",
     "calibrate_3stage_selective_cascade",
+    "compute_tier32_modulator_vectors",
     "fast_1pole_lpf",
     "fast_poly_adaa_batch",
     "fast_poly_inst_batch",
+    "fast_wavefolder_inst_batch",
+    "measure_and_shift_usb_jitter",
     "modulate_tier_blocks_with_controls",
+    "project_orthonormal_basis",
+    "shift_signal_fft_1d",
+    "solve_lti_cabinet_and_space_stage",
     "solve_selective_stage_3band",
 ]

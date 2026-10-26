@@ -136,9 +136,154 @@ pub fn format_step2_clipping_warning(peak_dbfs: f32, clipped_fraction: f32) -> S
          • Measured Hot-Corner Return Peak: {peak_dbfs:+.2} dBFS ({pct:.2}% clipped samples).\n\
          • Input send gain remains locked to preserve target drive headroom.\n\
          • If your signal chain has a clean output level adjustment (or audio interface\n\
-           return input trim/pad), lower it slightly and repeat calibration.\n\
+           return input trim/pad), lower it (e.g. -40 dB with `--clean-pad-db -40`)\n\
+           and repeat calibration.\n\
          ╰──────────────────────────────────────────────────────────────────────────────╯"
     )
+}
+
+/// Formats a warning panel when a recorded stem clips the raw USB return (`>= -0.05 dBFS`).
+pub fn format_stem_clipping_warning(
+    stem_id: &str,
+    peak_dbfs: f32,
+    clipped_fraction: f32,
+    clean_pad_db: f32,
+) -> String {
+    let pct = (clipped_fraction * 100.0).clamp(0.0, 100.0);
+    format!(
+        "╭─── ⚠ Stem Return Clipping Detected: {stem_id} ──────────────────────────────╮\n\
+         • Raw USB Return Peak: {peak_dbfs:+.2} dBFS ({pct:.2}% clipped samples, pad={clean_pad_db:+.1} dB).\n\
+         • Lower your device's Clean Level (e.g. -40 dB) for this hot stem and pass\n\
+           `--clean-pad-db -40`: `dnam capture` will automatically restore +40.0 dB\n\
+           into an unclipped 32-bit IEEE-754 float WAV without lowering star_center SNR.\n\
+         ╰──────────────────────────────────────────────────────────────────────────────╯"
+    )
+}
+
+/// Prompts the user to re-record a clipped stem with a Clean Level pad (`Some(pad_db)`) or keep it (`None`).
+pub fn prompt_stem_clean_pad_on_clipping(
+    stem_id: &str,
+    peak_dbfs: f32,
+    clipped_fraction: f32,
+    clean_pad_db: f32,
+    auto_yes: bool,
+) -> StudioResult<Option<f32>> {
+    let warning = format_stem_clipping_warning(stem_id, peak_dbfs, clipped_fraction, clean_pad_db);
+    eprintln!("{warning}");
+    if auto_yes {
+        return Ok(None);
+    }
+    if FORCE_NONINTERACTIVE.load(Ordering::Relaxed)
+        || std::env::var_os("DNAM_NONINTERACTIVE").is_some()
+    {
+        return Err(StudioError::Audio(
+            "Stem clipping pad prompt requires interactive terminal or --yes".to_string(),
+        ));
+    }
+    let items = &[
+        "Re-record with -40.0 dB Clean Level pad (+40.0 dB 32-bit float restore)",
+        "Re-record with -20.0 dB Clean Level pad (+20.0 dB 32-bit float restore)",
+        "Re-record with -12.0 dB Clean Level pad (+12.0 dB 32-bit float restore)",
+        "Keep current recording as-is",
+    ];
+    let selection = Select::with_theme(&ColorfulTheme::default())
+        .with_prompt(format!(
+            "Stem '{stem_id}' clipped USB return — select Clean Level pad action"
+        ))
+        .items(items)
+        .default(0)
+        .interact()
+        .map_err(|e| StudioError::Audio(format!("Stem clipping pad prompt cancelled: {e}")))?;
+    Ok(match selection {
+        0 => Some(-40.0),
+        1 => Some(-20.0),
+        2 => Some(-12.0),
+        _ => None,
+    })
+}
+
+/// Computes the recommended Clean Level pad in dB (`<= 0.0`) so the raw USB return peaks near
+/// `-3.0 dBFS` (maximizing unclipped dynamic range and SNR).
+pub fn recommend_clean_pad_db(raw_peak_dbfs: f32, active_clean_pad_db: f32) -> f32 {
+    let restored_peak_dbfs = raw_peak_dbfs + active_clean_pad_db.abs();
+    if restored_peak_dbfs <= -3.0 {
+        0.0
+    } else {
+        -(restored_peak_dbfs + 3.0).ceil()
+    }
+}
+
+/// Returns `true` when an active Clean Level pad leaves more than `12.0 dB` of unused USB headroom
+/// (`raw_peak_dbfs < -12.0 dBFS`) and raising Clean Level to [`recommend_clean_pad_db`] improves
+/// dynamic range by at least `6.0 dB`.
+pub fn is_clean_pad_excessive(raw_peak_dbfs: f32, active_clean_pad_db: f32) -> bool {
+    if active_clean_pad_db.abs() <= 1e-4 || raw_peak_dbfs >= -12.0 {
+        return false;
+    }
+    let rec = recommend_clean_pad_db(raw_peak_dbfs, active_clean_pad_db);
+    (rec - (-active_clean_pad_db.abs())) >= 6.0
+}
+
+/// Formats an advisory panel when `clean_pad_db` is excessive (`raw_peak_dbfs < -12.0 dBFS`),
+/// showing the exact recommended Clean Level in dB to maximize USB dynamic range.
+pub fn format_excessive_clean_pad_warning(
+    stem_id: &str,
+    raw_peak_dbfs: f32,
+    active_clean_pad_db: f32,
+) -> String {
+    let restored_peak_dbfs = raw_peak_dbfs + active_clean_pad_db.abs();
+    let rec_pad_db = recommend_clean_pad_db(raw_peak_dbfs, active_clean_pad_db);
+    let expected_usb_peak_dbfs = restored_peak_dbfs + rec_pad_db;
+    let snr_gain_db = rec_pad_db - (-active_clean_pad_db.abs());
+    format!(
+        "╭─── 💡 Excessive Clean Level Pad Detected: {stem_id} ─────────────────────────╮\n\
+         • Raw USB Peak: {raw_peak_dbfs:+.2} dBFS at Clean Level = {active_clean_pad_db:+.1} dB (f32 Peak: {restored_peak_dbfs:+.2} dBFS).\n\
+         • Recommended Clean Level: {rec_pad_db:+.1} dB (`--clean-pad-db {rec_pad_db:.1}`)\n\
+           -> Places USB return peak at {expected_usb_peak_dbfs:+.2} dBFS (+{snr_gain_db:.1} dB higher dynamic range/SNR).\n\
+         ╰──────────────────────────────────────────────────────────────────────────────╯"
+    )
+}
+
+/// Displays the excessive Clean Level pad advisory panel and, when running interactively (`!auto_yes`),
+/// offers to re-record the stem at the recommended Clean Level (`Some(rec_pad_db)`) or keep it (`None`).
+pub fn prompt_stem_excessive_clean_pad(
+    stem_id: &str,
+    raw_peak_dbfs: f32,
+    active_clean_pad_db: f32,
+    auto_yes: bool,
+) -> StudioResult<Option<f32>> {
+    let rec_pad_db = recommend_clean_pad_db(raw_peak_dbfs, active_clean_pad_db);
+    let warning = format_excessive_clean_pad_warning(stem_id, raw_peak_dbfs, active_clean_pad_db);
+    eprintln!("{warning}");
+    if auto_yes {
+        return Ok(None);
+    }
+    if FORCE_NONINTERACTIVE.load(Ordering::Relaxed)
+        || std::env::var_os("DNAM_NONINTERACTIVE").is_some()
+    {
+        return Err(StudioError::Audio(
+            "Excessive clean pad prompt requires interactive terminal or --yes".to_string(),
+        ));
+    }
+    let re_record_label = format!(
+        "Re-record with recommended {rec_pad_db:+.1} dB Clean Level pad (+{:.1} dB dynamic range)",
+        rec_pad_db - (-active_clean_pad_db.abs())
+    );
+    let items = [re_record_label.as_str(), "Keep current recording as-is"];
+    let selection = Select::with_theme(&ColorfulTheme::default())
+        .with_prompt(format!(
+            "Stem '{stem_id}' has {:.1} dB unused headroom — adjust Clean Level to {rec_pad_db:+.1} dB?",
+            -3.0 - raw_peak_dbfs
+        ))
+        .items(items)
+        .default(0)
+        .interact()
+        .map_err(|e| StudioError::Audio(format!("Excessive clean pad prompt cancelled: {e}")))?;
+    Ok(if selection == 0 {
+        Some(rec_pad_db)
+    } else {
+        None
+    })
 }
 
 /// Formats the per-stem knob/switch delta panel (`Control | Previous | Target Setting | Action`).
@@ -149,6 +294,30 @@ pub fn format_stem_prompt_panel(
     total_stems: usize,
     prev_ranges: Option<&BTreeMap<String, f32>>,
     prev_switches: Option<&BTreeMap<String, usize>>,
+) -> String {
+    format_stem_prompt_panel_with_pad(
+        model,
+        step,
+        stem_index,
+        total_stems,
+        prev_ranges,
+        prev_switches,
+        None,
+        None,
+    )
+}
+
+/// Formats the per-stem knob/switch delta panel including an optional `Clean Level` hardware pad row.
+#[allow(clippy::too_many_arguments)]
+pub fn format_stem_prompt_panel_with_pad(
+    model: &ModelManifest,
+    step: &CapturePlanStep,
+    stem_index: usize,
+    total_stems: usize,
+    prev_ranges: Option<&BTreeMap<String, f32>>,
+    prev_switches: Option<&BTreeMap<String, usize>>,
+    prev_clean_pad_db: Option<f32>,
+    target_clean_pad_db: Option<f32>,
 ) -> String {
     let deltas = compute_control_deltas(
         model,
@@ -168,6 +337,22 @@ pub fn format_stem_prompt_panel(
         "Control", "Previous", "Target Setting", "Action"
     ));
     lines.push("│ ────────────────────────────────────────────────────────────".to_string());
+    if let Some(target_pad) = target_clean_pad_db {
+        let prev_pad_s = prev_clean_pad_db
+            .map(|p| format!("{p:+.1} dB"))
+            .unwrap_or_else(|| "—".to_string());
+        let target_pad_s = format!("{target_pad:+.1} dB");
+        let pad_changed = prev_clean_pad_db.is_none_or(|p| (p - target_pad).abs() > 1e-3);
+        let pad_action = if pad_changed {
+            "TURN / FLIP"
+        } else {
+            "Unchanged"
+        };
+        lines.push(format!(
+            "│ {:<16} {:<12} {:<16} {}",
+            "Clean Level", prev_pad_s, target_pad_s, pad_action
+        ));
+    }
     if deltas.is_empty() {
         lines.push(format!(
             "│ {:<16} {:<12} {:<16} {}",
@@ -304,13 +489,43 @@ pub fn prompt_next_stem_action(
     auto_yes: bool,
     countdown_sec: f32,
 ) -> StudioResult<StemPromptAction> {
-    let panel = format_stem_prompt_panel(
+    prompt_next_stem_action_with_pad(
         model,
         step,
         stem_index,
         total_stems,
         prev_ranges,
         prev_switches,
+        None,
+        None,
+        auto_yes,
+        countdown_sec,
+    )
+}
+
+/// Displays the control-delta panel (including `Clean Level` pad delta) and prompts for [`StemPromptAction`].
+#[allow(clippy::too_many_arguments)]
+pub fn prompt_next_stem_action_with_pad(
+    model: &ModelManifest,
+    step: &CapturePlanStep,
+    stem_index: usize,
+    total_stems: usize,
+    prev_ranges: Option<&BTreeMap<String, f32>>,
+    prev_switches: Option<&BTreeMap<String, usize>>,
+    prev_clean_pad_db: Option<f32>,
+    target_clean_pad_db: Option<f32>,
+    auto_yes: bool,
+    countdown_sec: f32,
+) -> StudioResult<StemPromptAction> {
+    let panel = format_stem_prompt_panel_with_pad(
+        model,
+        step,
+        stem_index,
+        total_stems,
+        prev_ranges,
+        prev_switches,
+        prev_clean_pad_db,
+        target_clean_pad_db,
     );
     eprintln!("{panel}");
 
@@ -480,6 +695,30 @@ mod tests {
         assert!(clip_warn.contains("clean output level adjustment"));
         assert!(!prompt_repeat_calibration_on_clipping(0.0, 0.025, true).expect("clip auto_yes"));
         assert!(prompt_repeat_calibration_on_clipping(0.0, 0.025, false).is_err());
+
+        let stem_warn = format_stem_clipping_warning("stem_hot", 0.0, 0.03, 0.0);
+        assert!(stem_warn.contains("Stem Return Clipping Detected: stem_hot"));
+        assert!(stem_warn.contains("--clean-pad-db -40"));
+        assert_eq!(
+            prompt_stem_clean_pad_on_clipping("stem_hot", 0.0, 0.03, 0.0, true)
+                .expect("stem clip auto_yes"),
+            None
+        );
+        assert!(prompt_stem_clean_pad_on_clipping("stem_hot", 0.0, 0.03, 0.0, false).is_err());
+
+        assert_eq!(recommend_clean_pad_db(-23.35, -40.0), -20.0);
+        assert_eq!(recommend_clean_pad_db(-45.0, -40.0), 0.0);
+        assert!(is_clean_pad_excessive(-23.35, -40.0));
+        assert!(!is_clean_pad_excessive(-3.35, -20.0));
+        assert!(!is_clean_pad_excessive(-20.0, 0.0));
+        let exc_warn = format_excessive_clean_pad_warning("stem_hot", -23.35, -40.0);
+        assert!(exc_warn.contains("Recommended Clean Level: -20.0 dB"));
+        assert_eq!(
+            prompt_stem_excessive_clean_pad("stem_hot", -23.35, -40.0, true)
+                .expect("excessive pad auto_yes"),
+            None
+        );
+        assert!(prompt_stem_excessive_clean_pad("stem_hot", -23.35, -40.0, false).is_err());
 
         // prompt_next_stem_action with countdown, auto_yes, non-TTY, and map_stem_prompt_selection
         let act_cd = prompt_next_stem_action(&model, &step1, 1, 2, None, None, false, 0.001)

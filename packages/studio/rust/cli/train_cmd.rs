@@ -333,6 +333,8 @@ mod tests {
                 aligned_lag_samples: 0.0,
                 snr_db: 40.0,
                 noise_floor_dbfs: -90.0,
+                clean_pad_db: 0.0,
+                peak_dbfs: -3.0,
             },
         )
         .expect("reg stem");

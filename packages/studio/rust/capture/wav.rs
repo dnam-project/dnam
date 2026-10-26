@@ -87,15 +87,65 @@ pub fn write_wav_24bit(
     Ok(())
 }
 
-/// Reads a 16-bit, 24-bit, or 32-bit PCM RIFF/WAVE file from `path`.
+/// Writes `samples` to an unclipped 32-bit IEEE-754 float (`WAVE_FORMAT_IEEE_FLOAT`, `format_tag = 3`)
+/// RIFF/WAVE file at `path`, preserving full 32-bit float headroom beyond `[-1.0, 1.0]`.
+pub fn write_wav_32bit_float(
+    path: impl AsRef<Path>,
+    samples: &[f32],
+    sample_rate_hz: u32,
+    channels: u16,
+) -> StudioResult<()> {
+    if channels == 0 {
+        return Err(StudioError::Audio("channels must be >= 1".to_string()));
+    }
+    let bytes_per_sample: u16 = 4;
+    let block_align = channels * bytes_per_sample;
+    let byte_rate = sample_rate_hz * u32::from(block_align);
+    let data_bytes_len = u32::try_from(samples.len() * 4)
+        .map_err(|_| StudioError::Audio("WAV payload exceeds 4 GiB limit".to_string()))?;
+    let riff_size = 36 + data_bytes_len;
+
+    let mut buf = Vec::with_capacity(44 + samples.len() * 4);
+    buf.extend_from_slice(b"RIFF");
+    buf.extend_from_slice(&riff_size.to_le_bytes());
+    buf.extend_from_slice(b"WAVE");
+    buf.extend_from_slice(b"fmt ");
+    buf.extend_from_slice(&16_u32.to_le_bytes());
+    buf.extend_from_slice(&3_u16.to_le_bytes()); // WAVE_FORMAT_IEEE_FLOAT
+    buf.extend_from_slice(&channels.to_le_bytes());
+    buf.extend_from_slice(&sample_rate_hz.to_le_bytes());
+    buf.extend_from_slice(&byte_rate.to_le_bytes());
+    buf.extend_from_slice(&block_align.to_le_bytes());
+    buf.extend_from_slice(&32_u16.to_le_bytes());
+    buf.extend_from_slice(b"data");
+    buf.extend_from_slice(&data_bytes_len.to_le_bytes());
+
+    for &s in samples {
+        let safe_s = if s.is_finite() { s } else { 0.0_f32 };
+        buf.extend_from_slice(&safe_s.to_le_bytes());
+    }
+
+    if let Some(parent) = path.as_ref().parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(path, buf)?;
+    Ok(())
+}
+
+/// Reads a 16-bit, 24-bit, or 32-bit (signed PCM or IEEE-754 float) RIFF/WAVE file from `path`.
 pub fn read_wav(path: impl AsRef<Path>) -> StudioResult<WavData> {
     let bytes = fs::read(path)?;
     if bytes.len() < 44 || &bytes[0..4] != b"RIFF" || &bytes[8..12] != b"WAVE" {
         return Err(StudioError::Audio("Invalid RIFF/WAVE header".to_string()));
     }
+    let audio_format = u16::from_le_bytes([bytes[20], bytes[21]]);
     let channels = u16::from_le_bytes([bytes[22], bytes[23]]);
     let sample_rate_hz = u32::from_le_bytes([bytes[24], bytes[25], bytes[26], bytes[27]]);
     let bits_per_sample = u16::from_le_bytes([bytes[34], bytes[35]]);
+    let is_float = audio_format == 3
+        || (audio_format == 0xFFFE
+            && bytes.len() >= 46
+            && u16::from_le_bytes([bytes[44], bytes[45]]) == 3);
 
     let mut offset = 12_usize;
     while offset + 8 <= bytes.len() {
@@ -110,7 +160,7 @@ pub fn read_wav(path: impl AsRef<Path>) -> StudioResult<WavData> {
         if chunk_id == b"data" {
             let end = (offset + chunk_len).min(bytes.len());
             let payload = &bytes[offset..end];
-            let samples = decode_pcm_payload(payload, bits_per_sample)?;
+            let samples = decode_pcm_payload_with_format(payload, bits_per_sample, is_float)?;
             return Ok(WavData {
                 sample_rate_hz,
                 channels,
@@ -125,7 +175,16 @@ pub fn read_wav(path: impl AsRef<Path>) -> StudioResult<WavData> {
     ))
 }
 
+#[cfg(test)]
 fn decode_pcm_payload(payload: &[u8], bits_per_sample: u16) -> StudioResult<Vec<f32>> {
+    decode_pcm_payload_with_format(payload, bits_per_sample, false)
+}
+
+fn decode_pcm_payload_with_format(
+    payload: &[u8],
+    bits_per_sample: u16,
+    is_float: bool,
+) -> StudioResult<Vec<f32>> {
     match bits_per_sample {
         16 => {
             let mut out = Vec::with_capacity(payload.len() / 2);
@@ -141,6 +200,14 @@ fn decode_pcm_payload(payload: &[u8], bits_per_sample: u16) -> StudioResult<Vec<
                 let sign_ext = if (chunk[2] & 0x80) != 0 { 0xFF } else { 0x00 };
                 let v = i32::from_le_bytes([chunk[0], chunk[1], chunk[2], sign_ext]);
                 out.push((v as f32) / 8_388_608.0);
+            }
+            Ok(out)
+        }
+        32 if is_float => {
+            let mut out = Vec::with_capacity(payload.len() / 4);
+            for &chunk in payload.as_chunks::<4>().0 {
+                let v = f32::from_le_bytes(chunk);
+                out.push(if v.is_finite() { v } else { 0.0 });
             }
             Ok(out)
         }
@@ -230,6 +297,16 @@ mod tests {
         assert_eq!(r24.sample_rate_hz, 48_000);
         assert_eq!(r24.channels, 1);
         assert_eq!(r24.samples.len(), 5);
+
+        // 32-bit IEEE-754 float write & read (unclipped beyond [-1.0, 1.0])
+        assert!(write_wav_32bit_float(dir.join("bad32.wav"), &[0.0], 48_000, 0).is_err());
+        let pf32 = dir.join("mf32.wav");
+        let sig_f32 = vec![-3.5_f32, -1.25, 0.0, 1.5, 4.25];
+        write_wav_32bit_float(&pf32, &sig_f32, 48_000, 1).expect("write 32-bit float");
+        let rf32 = read_wav(&pf32).expect("read 32-bit float");
+        assert_eq!(rf32.sample_rate_hz, 48_000);
+        assert_eq!(rf32.channels, 1);
+        assert_eq!(rf32.samples, sig_f32);
 
         // 16-bit decode
         let decoded_16 = decode_pcm_payload(&0x4000_i16.to_le_bytes(), 16).expect("decode 16");

@@ -250,8 +250,31 @@ pub fn align_hardware_latency(
     }
 
     let (resolved_lag, frac_offset, resolved_corr) = if let Some(locked) = fixed_latency_samples {
-        if (best_lag - locked).abs() <= 2 && best_corr > 0.70 {
-            (best_lag, best_frac, best_corr.clamp(0.0, 1.0))
+        let mut local_best_lag = locked;
+        let mut local_best_corr = f32::NEG_INFINITY;
+        for lag in (locked - 24)..=(locked + 24) {
+            let idx_i32 = lag + (max_lag as i32);
+            if idx_i32 >= 0 && (idx_i32 as usize) < corr_map.len() {
+                let abs_c = corr_map[idx_i32 as usize].abs();
+                if abs_c > local_best_corr {
+                    local_best_corr = abs_c;
+                    local_best_lag = lag;
+                }
+            }
+        }
+        if local_best_corr > 0.35 {
+            let local_idx = (local_best_lag + (max_lag as i32)) as usize;
+            let mut local_frac = 0.0_f32;
+            if local_idx > 0 && local_idx + 1 < corr_map.len() {
+                let y_prev = corr_map[local_idx - 1].abs();
+                let y_curr = corr_map[local_idx].abs();
+                let y_next = corr_map[local_idx + 1].abs();
+                let denom = y_prev - 2.0 * y_curr + y_next;
+                if denom.abs() > 1e-9 {
+                    local_frac = (0.5 * (y_prev - y_next) / denom).clamp(-0.5, 0.5);
+                }
+            }
+            (local_best_lag, local_frac, local_best_corr.clamp(0.0, 1.0))
         } else {
             let clamped_idx =
                 (locked + (max_lag as i32)).clamp(0, (corr_map.len() as i32) - 1) as usize;
@@ -389,6 +412,18 @@ mod tests {
         let locked = align_hardware_latency(&dry, &wet_delay, 64, Some(hw_lag), 48_000, None)
             .expect("locked align");
         assert_eq!(locked.coarse_lag_samples, hw_lag);
+
+        // USB stream startup jitter (+/- 20 samples) around locked latency is recovered even under clipping
+        let jittered_lag = 21_usize; // +9 samples jitter relative to hw_lag = 12
+        let mut wet_jittered = vec![0.0_f32; dry.len()];
+        for i in jittered_lag..dry.len() {
+            wet_jittered[i] = (6.0 * dry[i - jittered_lag]).tanh();
+        }
+        let jitter_res =
+            align_hardware_latency(&dry, &wet_jittered, 64, Some(hw_lag), 48_000, None)
+                .expect("jittered align");
+        assert_eq!(jitter_res.coarse_lag_samples, jittered_lag as i32);
+        assert!(jitter_res.peak_correlation > 0.35);
 
         // Error on empty or mismatched lengths
         assert!(align_hardware_latency(&[], &[], 16, None, 48_000, None).is_err());

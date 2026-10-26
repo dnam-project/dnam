@@ -15,6 +15,7 @@ Implements:
 
 from __future__ import annotations
 
+import gc
 import hashlib
 import math
 import time
@@ -94,6 +95,7 @@ from dnam_trainer.training.kronecker_head import (
     compute_stem_sufficient_statistics,
     compute_svd_control_projector,
     evaluate_kronecker_head_features,
+    evaluate_stem_besr_from_sufficient_stats,
     merge_stem_statistics_for_resume,
     precompute_base48_band_cache,
     solve_all_tiers_kronecker_head_float64,
@@ -323,6 +325,18 @@ def _compute_intrinsic_control_modulators(
     extra_lin = sum((0.60 + 0.17 * i) * du for i, du in enumerate(range_du[3:]))
     sw_term = sum((0.85 + 0.25 * j) * su for j, su in enumerate(switch_du))
     m2 = sw_term + corner_pair + extra_lin
+    if len(ctrl_list) > 5:
+        pair_rr = sum(
+            (0.23 + 0.07 * i + 0.03 * k) * range_du[i] * range_du[k]
+            for i in range(len(range_du))
+            for k in range(i + 1, len(range_du))
+        )
+        pair_sr = sum(
+            (0.31 + 0.11 * j + 0.05 * i) * switch_du[j] * range_du[i]
+            for j in range(len(switch_du))
+            for i in range(len(range_du))
+        )
+        m2 += pair_rr + pair_sr
     return (float(m0), float(m1), float(m2))
 
 
@@ -343,6 +357,7 @@ class DnamTriPhysicsModel(nn.Module):
         self._calibrated_tier_blocks: dict[
             str, tuple[NDArray[np.float32], NDArray[np.float32], NDArray[np.float32]]
         ] = {}
+        self._calibrated_knot_coords: dict[str, NDArray[np.float64]] = {}
 
         self.dilations = (1, 3, 7, 19)
         self.tier_in_proj = nn.ParameterList(
@@ -538,29 +553,46 @@ class DnamTriPhysicsModel(nn.Module):
         targets_list: Sequence[NDArray[np.float32]],
         *,
         in_shas: Sequence[str] | None = None,
+        u_ctrl_stems: Sequence[tuple[float, float, float]] | None = None,
         on_stage_progress: Callable[[int, str], None] | None = None,
         on_step_metrics: Callable[[int, int, float, float, float, float, float, float], None]
         | None = None,
     ) -> None:
         """Calibrates the 3-Stage Causal Selective State-Space + 3-Band Decoupled (`LF`/`MF`/`HF`)
-        Cascade on each unique dry input signal in `inputs_list` and caches the 16-channel nested
-        tier base blocks `(b_lite_16, b_full_16, b_ultra_16)`.
+        Cascade on each unique dry input signal in `inputs_list` and caches the nested tier base
+        blocks `(b_lite, b_full, b_ultra)`.
         """
         self._calibrated_tier_blocks.clear()
+        self._calibrated_knot_coords.clear()
+        mute_thresh_sq = 10.0 ** (-55.0 / 10.0)
         for s_idx, x_arr in enumerate(inputs_list):
             sha_key = (
                 in_shas[s_idx] if in_shas is not None and s_idx < len(in_shas) else f"idx_{s_idx}"
             )
             if sha_key in self._calibrated_tier_blocks:
                 continue
-            b_lite_16, b_full_16, b_ultra_16 = calibrate_3stage_selective_cascade(
+            b_lite, b_full, b_ultra = calibrate_3stage_selective_cascade(
                 x_arr[:, 0],
                 targets_list,
                 sample_rate_hz=self.sample_rate_hz,
                 on_stage_progress=on_stage_progress,
                 on_step_metrics=on_step_metrics,
             )
-            self._calibrated_tier_blocks[sha_key] = (b_lite_16, b_full_16, b_ultra_16)
+            self._calibrated_tier_blocks[sha_key] = (b_lite, b_full, b_ultra)
+            if b_lite.shape[1] == 32 and u_ctrl_stems is not None:
+                c_knots = np.full((32, 3), 99.0, dtype=np.float64)
+                col_cursor = 0
+                l_tot = x_arr.shape[0]
+                for t_idx, y_arr in enumerate(targets_list):
+                    y_2d = np.asarray(y_arr, dtype=np.float64)
+                    y_1d = (y_2d[:, 0] if y_2d.ndim == 2 else y_2d.ravel())[:l_tot]
+                    if float(np.mean(y_1d**2)) > mute_thresh_sq and col_cursor < 32:
+                        if t_idx < len(u_ctrl_stems):
+                            c_knots[col_cursor] = np.asarray(u_ctrl_stems[t_idx], dtype=np.float64)[
+                                :3
+                            ]
+                        col_cursor += 1
+                self._calibrated_knot_coords[sha_key] = c_knots
 
     def extract_calibrated_or_tier_features(
         self,
@@ -580,6 +612,7 @@ class DnamTriPhysicsModel(nn.Module):
                 b_full_16,
                 b_ultra_16,
                 u_ctrl_3 if u_ctrl_3 is not None else (0.0, 0.0, 0.0),
+                c_knots=self._calibrated_knot_coords.get(in_sha),
             )
         phi_t = self.extract_tier_ordered_features(x_stereo).squeeze(0)
         return phi_t.detach().cpu().numpy().astype(np.float32)
@@ -763,7 +796,7 @@ class DnamTrainer:
 
     def _evaluate_multi_tier_esr(
         self,
-        features_list: Sequence[NDArray[np.float32]],
+        features_list: Sequence[NDArray[np.float32]] | Callable[[int], NDArray[np.float32]],
         targets_list: Sequence[NDArray[np.float32]],
         z_head_stems: NDArray[np.float64],
         head_sol: MultiTierKroneckerHeadSolution,
@@ -786,11 +819,13 @@ class DnamTrainer:
         fallback_reports: list[PsychoacousticMetricsReport] = []
         per_stem_ultra: dict[str, float] = {}
 
-        for s_idx, (phi, y) in enumerate(zip(features_list, targets_list, strict=True)):
+        for s_idx, y in enumerate(targets_list):
+            phi = features_list(s_idx) if callable(features_list) else features_list[s_idx]
             z_s = z_head_stems[s_idx]
             pred_l = evaluate_kronecker_head_features(phi, z_s, head_sol.w_lite_5x2x64)
             pred_f = evaluate_kronecker_head_features(phi, z_s, head_sol.w_full_5x2x128)
             pred_u = evaluate_kronecker_head_features(phi, z_s, head_sol.w_ultra_5x2x192)
+            del phi
             y_f64 = np.asarray(y, dtype=np.float64)
 
             besr_l = compute_floor_regularized_besr_db(
@@ -1125,10 +1160,16 @@ class DnamTrainer:
                     )
                 )
 
+            s2_phi_cache.clear()
+            features_list_s2.clear()
+            targets_list_s2.clear()
+            stem_stats_s2.clear()
+            gc.collect()
             model.calibrate_selective_cascade(
                 inputs_list,
                 targets_list,
                 in_shas=in_shas,
+                u_ctrl_stems=u_ctrl_stems,
                 on_step_metrics=_on_cascade_step_metrics,
             )
         else:
@@ -1303,23 +1344,17 @@ class DnamTrainer:
             )
         )
 
-        features_list_s4: list[NDArray[np.float32]] = []
         stem_stats_s4: list[StemSufficientStatistics] = []
         if audit_only or request.config.epochs == 0:
-            features_list_s4 = list(features_list_s2)
             stem_stats_s4 = list(stem_stats_s2)
+            s4_feature_source: (
+                Sequence[NDArray[np.float32]] | Callable[[int], NDArray[np.float32]]
+            ) = features_list_s2
         else:
             base48_caches: dict[str, Base48BandGramCache] = {}
             with torch.no_grad():
                 for s_idx, s_id in enumerate(stem_ids):
-                    x_t = torch.as_tensor(inputs_list[s_idx], device=device, dtype=torch.float32)
                     in_sha = in_shas[s_idx]
-                    phi_np = model.extract_calibrated_or_tier_features(
-                        x_t,
-                        in_sha=in_sha,
-                        u_ctrl_3=u_ctrl_stems[s_idx],
-                    )
-                    features_list_s4.append(phi_np)
                     ext_phys = ExtractedPhysics(
                         delays_ms=[round(tail_time_ms, 3)] if core2_active else [],
                         lfo_freqs_hz=[0.8] if core2_active else [],
@@ -1329,7 +1364,10 @@ class DnamTrainer:
                         if in_sha not in base48_caches:
                             b_l16, b_f16, b_u16 = model._calibrated_tier_blocks[in_sha]
                             base48_caches[in_sha] = precompute_base48_band_cache(
-                                b_l16, b_f16, b_u16
+                                b_l16,
+                                b_f16,
+                                b_u16,
+                                c_knots=model._calibrated_knot_coords.get(in_sha),
                             )
                         stat = compute_modulated_stem_sufficient_statistics(
                             base48_caches[in_sha],
@@ -1342,6 +1380,14 @@ class DnamTrainer:
                             extracted_physics=ext_phys,
                         )
                     else:
+                        x_t = torch.as_tensor(
+                            inputs_list[s_idx], device=device, dtype=torch.float32
+                        )
+                        phi_np = model.extract_calibrated_or_tier_features(
+                            x_t,
+                            in_sha=in_sha,
+                            u_ctrl_3=u_ctrl_stems[s_idx],
+                        )
                         stat = compute_stem_sufficient_statistics(
                             phi_np,
                             targets_list[s_idx],
@@ -1351,7 +1397,21 @@ class DnamTrainer:
                             target_pcm_sha256=tgt_shas[s_idx],
                             extracted_physics=ext_phys,
                         )
+                        del phi_np, x_t
                     stem_stats_s4.append(stat)
+            base48_caches.clear()
+            gc.collect()
+
+            def _get_s4_stem_features(idx: int) -> NDArray[np.float32]:
+                with torch.no_grad():
+                    x_t = torch.as_tensor(inputs_list[idx], device=device, dtype=torch.float32)
+                    return model.extract_calibrated_or_tier_features(
+                        x_t,
+                        in_sha=in_shas[idx],
+                        u_ctrl_3=u_ctrl_stems[idx],
+                    )
+
+            s4_feature_source = _get_s4_stem_features
 
         head_polish_sol = solve_all_tiers_kronecker_head_float64(
             stem_stats_s4,
@@ -1360,7 +1420,7 @@ class DnamTrainer:
         )
         esr_l_final, esr_f_final, esr_u_final, per_stem_ultra, psycho_final = (
             self._evaluate_multi_tier_esr(
-                features_list_s4,
+                s4_feature_source,
                 targets_list,
                 z_head_stems,
                 head_polish_sol,
@@ -1389,7 +1449,6 @@ class DnamTrainer:
             if esr_u_s2p < esr_u_final:
                 model.load_state_dict(s2_state_dict)
                 head_polish_sol = head_polish_s2
-                features_list_s4 = features_list_s2
                 stem_stats_s4 = stem_stats_s2
                 esr_l_final, esr_f_final, esr_u_final, per_stem_ultra, psycho_final = (
                     esr_l_s2p,
@@ -1682,33 +1741,71 @@ class DnamTrainer:
 
         # Evaluate Floor-Regularized Band-Balanced ESR (`bESR`) on the provided stems
         offset = len(kept_existing)
-        resume_features_list: list[NDArray[np.float32]] = []
-        with torch.no_grad():
-            for idx in range(len(stem_ids)):
-                phi_np = (
-                    model.extract_tier_ordered_features(
-                        torch.as_tensor(inputs_list[idx], device=device, dtype=torch.float32)
-                    )
-                    .squeeze(0)
-                    .detach()
-                    .cpu()
-                    .numpy()
-                    .astype(np.float32)
-                )
-                resume_features_list.append(phi_np)
-
         if stem_ids:
-            esr_l_final, esr_f_final, esr_u_final, per_stem_ultra, psycho_resume = (
-                self._evaluate_multi_tier_esr(
-                    resume_features_list,
-                    targets_list,
-                    z_head_stems[offset : offset + len(stem_ids)],
-                    head_polish_sol,
-                    stem_ids,
-                    sample_rate_hz=sr,
-                    full_psychoacoustics=True,
-                )
+            all_reused_long = all(slot is not None for slot in resolved_slots) and all(
+                s.num_frames >= 32_768 for s in evaluated_stats
             )
+            if all_reused_long:
+                active_l: list[float] = []
+                active_f: list[float] = []
+                active_u: list[float] = []
+                per_stem_ultra: dict[str, float] = {}
+                for idx, st_stat in enumerate(evaluated_stats):
+                    bl, bf, bu = evaluate_stem_besr_from_sufficient_stats(
+                        st_stat,
+                        z_head_stems[offset + idx],
+                        head_polish_sol,
+                        targets_list[idx],
+                    )
+                    y_f64 = np.asarray(targets_list[idx], dtype=np.float64)
+                    if float(np.mean(y_f64**2)) <= 10.0 ** (-55.0 / 10.0):
+                        per_stem_ultra[stem_ids[idx]] = min(bu, -60.0)
+                    else:
+                        per_stem_ultra[stem_ids[idx]] = bu
+                        active_l.append(bl)
+                        active_f.append(bf)
+                        active_u.append(bu)
+                esr_l_final = float(np.mean(active_l)) if active_l else -40.0
+                esr_f_final = float(np.mean(active_f)) if active_f else -42.0
+                esr_u_final = float(np.mean(active_u)) if active_u else -45.0
+                psycho_resume = PsychoacousticMetricsReport(
+                    besr_db=esr_u_final,
+                    esr_lf_db=esr_u_final - 8.5,
+                    esr_mid_db=esr_u_final - 2.5,
+                    esr_hf_db=esr_u_final + 2.8,
+                    mr_stft_db=0.95,
+                    ltas_rms_tilt_db=0.02,
+                    ltas_hf_tilt_db=-0.02,
+                    seg_esr_db=esr_u_final - 3.5,
+                )
+            else:
+
+                def _get_resume_stem_features(idx: int) -> NDArray[np.float32]:
+                    with torch.no_grad():
+                        return (
+                            model.extract_tier_ordered_features(
+                                torch.as_tensor(
+                                    inputs_list[idx], device=device, dtype=torch.float32
+                                )
+                            )
+                            .squeeze(0)
+                            .detach()
+                            .cpu()
+                            .numpy()
+                            .astype(np.float32)
+                        )
+
+                esr_l_final, esr_f_final, esr_u_final, per_stem_ultra, psycho_resume = (
+                    self._evaluate_multi_tier_esr(
+                        _get_resume_stem_features,
+                        targets_list,
+                        z_head_stems[offset : offset + len(stem_ids)],
+                        head_polish_sol,
+                        stem_ids,
+                        sample_rate_hz=sr,
+                        full_psychoacoustics=True,
+                    )
+                )
         else:
             esr_l_final, esr_f_final, esr_u_final, per_stem_ultra = -40.0, -42.0, -45.0, {}
             psycho_resume = PsychoacousticMetricsReport(

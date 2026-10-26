@@ -167,10 +167,19 @@ pub fn build_capture_plan_with_prescriptions(
         None,
     ));
 
-    // 2. Lobatto axis sweeps (min=0.0, max=1.0) per range control
-    for range in &model.ranges {
-        for (tag, norm_val) in [("min", 0.0_f32), ("max", 1.0_f32)] {
-            if (norm_val - default_ranges.get(&range.id).copied().unwrap_or(0.5)).abs() < 0.05 {
+    // 2. Lobatto axis sweeps (grouped: all `min=0.0` cuts first, then all `max=1.0` boosts,
+    //    ending with primary gain `max=1.0` so it remains dialed in for Step 3 corners)
+    let corner_pair = select_corner_range_pair(&model.ranges);
+    let primary_id = corner_pair.map(|(p, _)| p.id.as_str());
+    for (tag, norm_val) in [("min", 0.0_f32), ("max", 1.0_f32)] {
+        let mut ordered_ranges: Vec<&ControlRangeSpec> = model.ranges.iter().collect();
+        if tag == "max"
+            && let Some(pid) = primary_id
+        {
+            ordered_ranges.sort_by_key(|r| usize::from(r.id == pid));
+        }
+        for range in ordered_ranges {
+            if (norm_val - default_ranges.get(&range.id).copied().unwrap_or(0.5)).abs() < 1e-4 {
                 continue;
             }
             let mut coords = default_ranges.clone();
@@ -187,24 +196,84 @@ pub fn build_capture_plan_with_prescriptions(
         }
     }
 
-    // 3. Multi-knob high-corner anchor on default switch state (before switch throws
-    //    so all default-switch stems are recorded together without extra switch flips)
-    let corner_pair = select_corner_range_pair(&model.ranges);
-    if include_corners && let Some((primary, Some(secondary))) = corner_pair {
-        let mut corner_coords = default_ranges.clone();
-        corner_coords.insert(primary.id.clone(), 1.0);
-        corner_coords.insert(secondary.id.clone(), 1.0);
-        steps.push(make_step(
-            model,
-            "stem_corner_high_pair".to_string(),
-            CaptureTier::CornerAnchor,
-            corner_coords,
-            default_switches.clone(),
-            None,
-        ));
+    // 3. Multi-knob high-corner anchors on default switch state (immediately after primary
+    //    gain `max=1.0`, before switch throws)
+    if include_corners && let Some((primary, secondary_opt)) = corner_pair {
+        if let Some(secondary) = secondary_opt {
+            let mut corner_coords = default_ranges.clone();
+            corner_coords.insert(primary.id.clone(), 1.0);
+            corner_coords.insert(secondary.id.clone(), 1.0);
+            steps.push(make_step(
+                model,
+                "stem_corner_high_pair".to_string(),
+                CaptureTier::CornerAnchor,
+                corner_coords,
+                default_switches.clone(),
+                None,
+            ));
+        }
+
+        // 3a. Cascaded gain/drive saturation corners (e.g. `Gain=max` × `Drive=max`)
+        let secondary_id = secondary_opt.map(|s| s.id.as_str());
+        for sec_gain in &model.ranges {
+            if sec_gain.id != primary.id
+                && Some(sec_gain.id.as_str()) != secondary_id
+                && is_gain_like_control(sec_gain)
+            {
+                let mut gd_coords = default_ranges.clone();
+                gd_coords.insert(primary.id.clone(), 1.0);
+                gd_coords.insert(sec_gain.id.clone(), 1.0);
+                let gd_id = format!("stem_corner_{}_max_{}_max", primary.id, sec_gain.id);
+                steps.push(make_step(
+                    model,
+                    gd_id,
+                    CaptureTier::CornerAnchor,
+                    gd_coords,
+                    default_switches.clone(),
+                    None,
+                ));
+            }
+        }
+    }
+
+    // 3b. Parametric EQ (band × freq) 2x2 interaction corners in Gray-code order:
+    //     (min, min) -> (min, max) -> (max, max) -> (max, min) so only 1 knob changes per step.
+    if include_corners {
+        const GRAY_2X2: &[(&str, f32, &str, f32)] = &[
+            ("min", 0.0, "min", 0.0),
+            ("min", 0.0, "max", 1.0),
+            ("max", 1.0, "max", 1.0),
+            ("max", 1.0, "min", 0.0),
+        ];
+        for (band_ctrl, freq_ctrl) in select_parametric_freq_pairs(&model.ranges) {
+            let band_default = default_ranges.get(&band_ctrl.id).copied().unwrap_or(0.5);
+            let freq_default = default_ranges.get(&freq_ctrl.id).copied().unwrap_or(0.5);
+            for &(b_tag, b_val, f_tag, f_val) in GRAY_2X2 {
+                if (b_val - band_default).abs() < 1e-4 || (f_val - freq_default).abs() < 1e-4 {
+                    continue;
+                }
+                let mut eq_corner_coords = default_ranges.clone();
+                eq_corner_coords.insert(band_ctrl.id.clone(), b_val);
+                eq_corner_coords.insert(freq_ctrl.id.clone(), f_val);
+                let eq_corner_id = format!(
+                    "stem_corner_{}_{}_{}_{}",
+                    band_ctrl.id, b_tag, freq_ctrl.id, f_tag
+                );
+                steps.push(make_step(
+                    model,
+                    eq_corner_id,
+                    CaptureTier::CornerAnchor,
+                    eq_corner_coords,
+                    default_switches.clone(),
+                    None,
+                ));
+            }
+        }
     }
 
     // 4. Switch throws + Switch x Primary-Gain min/max interaction corners
+    //    Grouped by Primary-Gain level (default -> min -> max) so `Gain` and `Output Clean Level`
+    //    only change twice across all switches rather than thrashing on every switch option.
     for sw in &model.switches {
         for opt in &sw.options {
             if opt.index == sw.default_index {
@@ -218,16 +287,24 @@ pub fn build_capture_plan_with_prescriptions(
                 stem_id,
                 CaptureTier::SwitchState,
                 default_ranges.clone(),
-                sw_map.clone(),
+                sw_map,
                 None,
             ));
-
-            if include_corners && let Some((primary, _)) = corner_pair {
-                let primary_default = default_ranges.get(&primary.id).copied().unwrap_or(0.5);
-                for (tag, norm_val) in [("min", 0.0_f32), ("max", 1.0_f32)] {
-                    if (norm_val - primary_default).abs() < 0.05 {
+        }
+    }
+    if include_corners && let Some((primary, _)) = corner_pair {
+        let primary_default = default_ranges.get(&primary.id).copied().unwrap_or(0.5);
+        for (tag, norm_val) in [("min", 0.0_f32), ("max", 1.0_f32)] {
+            if (norm_val - primary_default).abs() < 1e-4 {
+                continue;
+            }
+            for sw in &model.switches {
+                for opt in &sw.options {
+                    if opt.index == sw.default_index {
                         continue;
                     }
+                    let mut sw_map = default_switches.clone();
+                    sw_map.insert(sw.id.clone(), opt.index);
                     let mut sw_corner_coords = default_ranges.clone();
                     sw_corner_coords.insert(primary.id.clone(), norm_val);
                     let sw_corner_id = format!(
@@ -239,7 +316,7 @@ pub fn build_capture_plan_with_prescriptions(
                         sw_corner_id,
                         CaptureTier::CornerAnchor,
                         sw_corner_coords,
-                        sw_map.clone(),
+                        sw_map,
                         None,
                     ));
                 }
@@ -388,6 +465,30 @@ fn select_corner_range_pair(
         .find(|r| is_tone_body_control(r))
         .or_else(|| ranges.iter().find(|r| r.id != primary.id));
     Some((primary, secondary))
+}
+
+/// Identifies parametric EQ `(band_level, band_freq)` control pairs (such as `mid` + `mid_freq`,
+/// `low_mid` + `low_mid_freq`, `bass` + `bass_freq`, etc.) so 2x2 interaction corner stems can be
+/// scheduled.
+fn select_parametric_freq_pairs(
+    ranges: &[ControlRangeSpec],
+) -> Vec<(&ControlRangeSpec, &ControlRangeSpec)> {
+    let mut pairs = Vec::new();
+    for freq_ctrl in ranges {
+        let freq_id = freq_ctrl.id.to_ascii_lowercase();
+        let prefix = freq_id
+            .strip_suffix("_freq")
+            .or_else(|| freq_id.strip_suffix("_frequency"))
+            .or_else(|| freq_id.strip_suffix("_hz"));
+        if let Some(band_id) = prefix
+            && let Some(band_ctrl) = ranges
+                .iter()
+                .find(|r| r.id.eq_ignore_ascii_case(band_id) && r.id != freq_ctrl.id)
+        {
+            pairs.push((band_ctrl, freq_ctrl));
+        }
+    }
+    pairs
 }
 
 fn make_step(
@@ -674,5 +775,38 @@ mod tests {
                 .any(|s| s.tier == CaptureTier::Prescribed)
         );
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn planner_schedules_parametric_eq_2x2_corners() {
+        let mut model = sample_model();
+        model.ranges.push(ControlRangeSpec {
+            id: "mid".to_string(),
+            label: "Mid".to_string(),
+            min: 0.0,
+            max: 10.0,
+            default_value: 5.0,
+            unit: None,
+        });
+        model.ranges.push(ControlRangeSpec {
+            id: "mid_freq".to_string(),
+            label: "Mid Freq".to_string(),
+            min: 57.0,
+            max: 4000.0,
+            default_value: 250.0,
+            unit: Some("Hz".to_string()),
+        });
+        let plan = build_capture_plan(&model, true);
+        for expected_id in [
+            "stem_corner_mid_min_mid_freq_min",
+            "stem_corner_mid_min_mid_freq_max",
+            "stem_corner_mid_max_mid_freq_min",
+            "stem_corner_mid_max_mid_freq_max",
+        ] {
+            assert!(
+                plan.steps.iter().any(|s| s.stem_id == expected_id),
+                "missing parametric EQ corner stem {expected_id}"
+            );
+        }
     }
 }

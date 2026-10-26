@@ -158,6 +158,12 @@ pub struct StemRecord {
     /// Measured silent-window noise floor in dBFS.
     #[serde(default = "default_noise_floor_dbfs")]
     pub noise_floor_dbfs: f32,
+    /// Active hardware output Clean Level pad in dB (`<= 0.0`) compensated in 32-bit float.
+    #[serde(default)]
+    pub clean_pad_db: f32,
+    /// Restored 32-bit IEEE-754 float (`f32`) peak amplitude in dBFS (`raw_usb_peak_dbfs + |clean_pad_db|`).
+    #[serde(default)]
+    pub peak_dbfs: f32,
 }
 
 /// Per-model manifest stored at `models/<id>/model.toml`.

@@ -10,7 +10,7 @@ use dnam_engine::provenance::DefaultCryptoProvider;
 use dnam_engine::{DynamicDnamEngine, Tier};
 use serde::{Deserialize, Serialize};
 
-use crate::capture::{read_wav, write_wav_24bit};
+use crate::capture::{read_wav, write_wav_32bit_float};
 use crate::error::{StudioError, StudioResult};
 
 /// Summary returned when inspecting a `.dnam` or `.dnam-ckpt` container.
@@ -200,7 +200,7 @@ pub fn render_wav_with_options(
         stereo_interleaved.push(out_l[i]);
         stereo_interleaved.push(out_r[i]);
     }
-    write_wav_24bit(
+    write_wav_32bit_float(
         output_wav_path,
         &stereo_interleaved,
         input.sample_rate_hz,
@@ -248,7 +248,7 @@ pub fn render_wav_with_container(
         stereo_interleaved.push(out_l[i]);
         stereo_interleaved.push(out_r[i]);
     }
-    write_wav_24bit(
+    write_wav_32bit_float(
         output_wav_path,
         &stereo_interleaved,
         input.sample_rate_hz,
@@ -340,13 +340,13 @@ mod tests {
 
         let mono_in: Vec<f32> = (0..512).map(|i| ((i as f32) * 0.05).sin() * 0.25).collect();
         let in_mono_path = dir.join("in_mono.wav");
-        write_wav_24bit(&in_mono_path, &mono_in, 48_000, 1).expect("write mono wav");
+        write_wav_32bit_float(&in_mono_path, &mono_in, 48_000, 1).expect("write mono wav");
 
         let stereo_in: Vec<f32> = (0..1024)
             .map(|i| ((i as f32) * 0.03).sin() * 0.25)
             .collect();
         let in_stereo_path = dir.join("in_stereo.wav");
-        write_wav_24bit(&in_stereo_path, &stereo_in, 48_000, 2).expect("write stereo wav");
+        write_wav_32bit_float(&in_stereo_path, &stereo_in, 48_000, 2).expect("write stereo wav");
 
         let out_wav = dir.join("out.wav");
         let crypto = DefaultCryptoProvider::default();

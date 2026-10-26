@@ -76,7 +76,8 @@ impl TrainerEnvManager {
             return Some(venv_bin);
         }
         if let Some(root) = &self.monorepo_root {
-            let mut cursor: Option<&Path> = Some(root.as_path());
+            let resolved_root = root.canonicalize().unwrap_or_else(|_| root.clone());
+            let mut cursor: Option<&Path> = Some(resolved_root.as_path());
             while let Some(dir) = cursor {
                 let ws_bin = dir
                     .join(".venv")
