@@ -48,11 +48,9 @@ def test_progressive_disclosure_agents_md_byte_limits() -> None:
     assert root_agents.stat().st_size < 5_000
 
     scoped_agents = [
-        *list(TRAINER_PKG_ROOT.rglob("AGENTS.md")),
-        MONOREPO_ROOT / "packages" / "ui" / "AGENTS.md",
-        MONOREPO_ROOT / "packages" / "studio" / "AGENTS.md",
+        p for p in (MONOREPO_ROOT / "packages").rglob("AGENTS.md") if "node_modules" not in p.parts
     ]
-    assert len(scoped_agents) >= 8
+    assert len(scoped_agents) >= 18
     for agent_file in scoped_agents:
         assert agent_file.is_file(), f"Missing scoped AGENTS.md: {agent_file}"
         size = agent_file.stat().st_size

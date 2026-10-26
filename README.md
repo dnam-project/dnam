@@ -2,7 +2,7 @@
 
 **Dynamic Neural Audio Modeler (DNAM)** is a real-time true-stereo neural audio modeling, differentiable DSP, and parametric system-identification platform co-designed for embedded ARMv8.2-A NEON processors (**Rockchip RK3582 / Darkglass Anagram**), desktop **VST3/CLAP/AU** audio plugins, and browser/Node.js **WebAssembly (`AudioWorklet`)** runtimes.
 
-It unifies **nonlinear amplifier/preamp drive**, **selective state-space filters (Wah, Phaser, Uni-Vibe, power-amp sag)**, **modulated delay-line effects (Through-Zero Flanger, Stereo Chorus, Tape Echo, Spring Reverb Drip, Lush Hall Reverb, Leslie Rotary)**, and **user-definable continuous (`range`) and discrete (`switch`) controls** trained from multi-stem captures—running **2.6× faster than NAM A2** in `Full` (`C=8`, ~4,625 MACs/sample vs. 12,146 MACs/sample) and **1.22× faster with 50% more channels** in `Ultra` (`C=12`, ~9,950 MACs/sample), with **0 extra MACs/sample at 48 kHz when user knobs are static**.
+It unifies **nonlinear amplifier/preamp drive**, **linear, time-invariant (LTI) systems (speaker cabinet `IR`s, parametric EQs, and acoustic spaces)**, **selective state-space filters (Wah, Phaser, Uni-Vibe, power-amp sag)**, **modulated delay-line effects (Through-Zero Flanger, Stereo Chorus, Tape Echo, Spring Reverb Drip, Lush Hall Reverb, Leslie Rotary)**, and **user-definable continuous (`range`) and discrete (`switch`) controls** trained from multi-stem captures—running **2.6× faster than NAM A2** in `Full` (`C=8`, ~4,625 MACs/sample vs. 12,146 MACs/sample) and **1.22× faster with 50% more channels** in `Ultra` (`C=12`, ~9,950 MACs/sample), with **0 extra MACs/sample at 48 kHz when user knobs are static**.
 
 ---
 
@@ -14,9 +14,23 @@ It unifies **nonlinear amplifier/preamp drive**, **selective state-space filters
 | **Rust SIMD Engine Core** | `packages/engine/` | Zero-allocation, 16-byte SIMD-aligned (`C=4` Lite / `C=8` Full / `C=12` Ultra), `FTZ`/`DAZ`-enabled pure Rust engine (`dnam-engine`) with zero `FSQRT` or `FDIV` instructions at 48 kHz and 3 kHz. |
 | **Packaged Python Engine Library** | `packages/python/` | Standalone `PyO3` / `maturin` Python wheel wrapping `packages/engine` for zero-copy NumPy audio inference, `.dnam` validation, 3-Phase control clamping, and canonical Reference DSP primitives. |
 | **Packaged Node.js / WebAudio Library** | `packages/js/` | Standalone TypeScript / npm package (`@dnam-project/engine`) wrapping `packages/engine` via WebAssembly SIMD128 & N-API bindings + WebAudio `DnamAudioWorkletProcessor`. |
-| **PyTorch Differentiable Trainer** | `packages/trainer/` | PyTorch 4-stage deterministic trainer, `.dnam-ckpt` factorized Kronecker iterative stem expansion, Non-Stop 3-Phase Control-Space Clamping Audit, and 8-suite verification tests (imports `packages/python` as Reference DSP). |
+| **Unified Design System** | `packages/ui/` | Shared React 19, Tailwind CSS v4, `shadcn/ui` (Base UI), and `lucide-react` component & DSP visualizer library (`@dnam-project/ui`) with `DnamAudioHost` abstraction. |
+| **CLI & Tauri v2 Desktop Studio** | `packages/studio/` | Unified Rust/Node `dnam` CLI (`dnam-studio`) and Tauri v2 Desktop Studio (`@dnam-project/studio`) for workspace management, 2-step Reference Unity re-amp capture/alignment, and trainer orchestration. |
+| **PyTorch Differentiable Trainer** | `packages/trainer/` | PyTorch 4-stage deterministic trainer, LTI + 3-stage selective cascade solver, psychoacoustic `bESR` evaluation suite, `.dnam-ckpt` Kronecker stem expansion, and 3-Phase Control Audit (`dnam-train`). |
 | **Real-Time Audio Plugin** | `packages/plugin/` | VST3/CLAP/Standalone audio plugin wrapping `packages/engine` with lock-free atomic parameter binding for dynamic `.dnam` `controls_schema` (`range` & `switch`) and ZOH sample-rate rescaling (44.1–96 kHz). |
 | **Web Docs & React WASM Studio** | `packages/web/` | Astro + Starlight documentation website mounting `docs/*.md` as a comprehensive Specification section with interactive React/Canvas DSP visualizers + live React WASM (`AudioWorklet` SIMD128) Modeler Plugin. |
+
+---
+
+## Psychoacoustic `bESR` Quality Tiers (`Lite` / `Full` / `Ultra`)
+
+DNAM evaluates models using **Floor-Regularized Band-Balanced ESR (`bESR`)** across **Low ($20\text{--}250\text{ Hz}$)**, **Mid ($250\text{ Hz--}2.5\text{ kHz}$)**, and **High ($2.5\text{--}18\text{ kHz}$)** bands (see [`docs/training_and_iterative_resume.md`](docs/training_and_iterative_resume.md)):
+
+| DNAM Tier | Target Grade | Composite `bESR` | Per-Band Requirement ($\text{LF}$ / $\text{MF}$ / $\text{HF}$) | Max Spectral Tilt ($\Delta\text{EQ}_{\text{dB}}$) |
+| :--- | :--- | :---: | :---: | :---: |
+| **`Lite` (`C=4`)** | **Mix-Ready / Live Grade** | **$-18\text{ to }-23\text{ dB}$** ($\le -18\text{ dB}$) | $\text{LF} \le -23\text{ dB}$, $\text{MF} \le -20\text{ dB}$, $\text{HF} \le -15\text{ dB}$ | **$\le 0.75\text{ dB}$** |
+| **`Full` (`C=8`)** | **True Studio Quality** | **$-23\text{ to }-30\text{ dB}$** ($\le -23\text{ dB}$) | $\text{LF} \le -27\text{ dB}$, $\text{MF} \le -25\text{ dB}$, **$\text{HF} \le -20\text{ dB}$** | **$\le 0.35\text{ dB}$** |
+| **`Ultra` (`C=12`)** | **Mastering / Reference Grade** | **$\le -30\text{ dB}$** (clean/mid-gain/LTI) / **$\le -25\text{ dB}$** (high-gain tube) | $\text{LF} \le -34\text{ dB}$, $\text{MF} \le -31\text{ dB}$, $\text{HF} \le -26\text{ dB}$ | **$\le 0.15\text{ dB}$** |
 
 ---
 

@@ -116,12 +116,18 @@ DNAM enforces a **Progressive-Disclosure Documentation Architecture** and a **Si
 
 ### 5.1 Two-Tier `AGENTS.md` Hierarchy & Byte Budgets
 
-1. **Root [`AGENTS.md`](AGENTS.md) (`< 5,000` bytes):**
+1. **Tier 1 — Root [`AGENTS.md`](AGENTS.md) (`< 5,000` bytes):**
    - Loaded into the agent context window on every turn.
-   - Contains **only** the project summary, monorepo deliverable rules, core cross-cutting invariants, and the Progressive Disclosure & Documentation Discovery Map.
-2. **Scoped `AGENTS.md` Files (`< 2,500` bytes each):**
-   - Located in package and subsystem directories (e.g., [`packages/engine/AGENTS.md`](packages/engine/AGENTS.md), [`packages/engine/src/*/AGENTS.md`](packages/engine/AGENTS.md), [`packages/python/AGENTS.md`](packages/python/AGENTS.md)).
-   - Act strictly as routing tables linking source files and tests to canonical `docs/*.md` specifications and package `CONTRIBUTING.md` guides.
+   - Contains **only** the project summary, global `moon` + `mise` tooling rules, core cross-cutting invariants, and the top-level Progressive Disclosure & Codebase Discovery Map.
+2. **Tier 2 — Scoped Package & Subsystem `AGENTS.md` Files (`< 2,500` bytes each):**
+   - Located in package roots (e.g., [`packages/engine/AGENTS.md`](packages/engine/AGENTS.md), [`packages/trainer/AGENTS.md`](packages/trainer/AGENTS.md), [`packages/studio/AGENTS.md`](packages/studio/AGENTS.md)) and multi-module subsystem directories (e.g., [`packages/engine/src/core1/AGENTS.md`](packages/engine/src/core1/AGENTS.md), [`packages/trainer/src/dnam_trainer/training/AGENTS.md`](packages/trainer/src/dnam_trainer/training/AGENTS.md)).
+   - Act **strictly as routing tables** (`Module / File` $\to$ `Responsibility` $\to$ `Canonical Spec / Contributing Guide`).
+3. **Offloading Rule (Never Wordsmith `AGENTS.md` to Fit Byte Budgets):**
+   - When an `AGENTS.md` file approaches its byte budget as new modules are added, **do not** try to compress or reword implementation details inside `AGENTS.md`. Instead, offload non-routing information to its canonical destination:
+     - **Equations, DSP derivations, psychoacoustic metrics (`bESR`), and stability clamps (`CL-01`–`CL-20`)** $\to$ Offload to [`docs/*.md`](docs/index.md) (see [§5.2](#52-single-source-of-truth-ssot-documentation-map)).
+     - **Package architecture invariants, compiler/runtime flags (`#[forbid(unsafe_code)]`, `zerocopy`, `torch.autocast`, `pyrefly`), workbench setup, and verification commands (`moon check <pkg>`)** $\to$ Offload to `packages/<pkg>/CONTRIBUTING.md`.
+     - **Public API examples and CLI command/flag references** $\to$ Offload to `packages/<pkg>/README.md`.
+     - **Directory-level module growth** $\to$ Delegate file-level routing rows to a subsystem `AGENTS.md` (e.g., `src/<subsystem>/AGENTS.md`) and link the subsystem from the parent `packages/<pkg>/AGENTS.md`.
 
 ### 5.2 Single-Source-of-Truth (SSOT) Documentation Map
 

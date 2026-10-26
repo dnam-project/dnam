@@ -12,6 +12,4 @@ Implements the 5-Layer Digital Marketplace & Provenance architecture (`#[forbid(
 | [`sha256.rs`](sha256.rs) | `#![no_std]` FIPS 180-4 `SHA-256` & constant-time hex encoding/decoding + `proptest` | [`digital_marketplace_and_provenance.md`](../../../../docs/digital_marketplace_and_provenance.md) |
 | [`watermark.rs`](watermark.rs) | Isometric Gauge Watermark, 4,608-chip Tardos code, 160-D structural hash + `proptest` | [`digital_marketplace_and_provenance.md`](../../../../docs/digital_marketplace_and_provenance.md) |
 
-## 2. Invariants
-
-- Never include mutable `presets` or `user_metadata` in `immutable_header_sha256` so user preset edits never invalidate `creator_signature`.
+See [`packages/engine/CONTRIBUTING.md`](../../CONTRIBUTING.md) for JCS canonicalization and preset-invariance rules.

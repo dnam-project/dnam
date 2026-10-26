@@ -1,15 +1,19 @@
-# DNAM 4-Stage Training Pipeline, Hardware Runtime & `.dnam-ckpt` Resume (`dnam_trainer/training/`)
+# `dnam_trainer/training/` — 4-Stage Pipeline, Cascade Solver & `.dnam-ckpt` Resume
 
-This directory implements the 4-stage PyTorch optimization pipeline, hardware runtime profiler, multi-scale Gaussian derivative delay surrogate (`Test 6`), `float64` Dual-Ridge Kronecker head solver (`CL-18`), 64B-aligned `Arena 0..3` packer, Polars + Altair telemetry reporter, and local/remote training backends.
+## 1. Module Routing Map
 
-## 1. Module Discovery Map
+- [`hardware.py`](hardware.py): Accelerator runtime profile & environment setup (`ROCm`/`CUDA`/`MPS`/`TPU`/`CPU`).
+- [`metrics.py`](metrics.py): Psychoacoustic evaluation suite (`bESR`, 4th-order Bezout 3-band `ESR`, `MR-STFT`, `LTAS` tilt, `SegESR`).
+- [`selective_cascade.py`](selective_cascade.py): Causal Wiener LTI (`IR`/space) + 3-stage selective state-space & 3-band cascade + $48\text{ kHz}$ HF polish.
+- [`surrogate_delay.py`](surrogate_delay.py): Multi-scale Gaussian derivative envelope surrogate delay readout (`Test 6`).
+- [`kronecker_head.py`](kronecker_head.py): Partitioned SVD control projector, 3-band `bESR` Gram stats, Dual-Ridge `float64` Kronecker solver (`CL-18`), and `.dnam-ckpt` resume.
+- [`arena.py`](arena.py): 64B-aligned `Arena 0..3` weight layout (`36,224 B` + `151,296 B/stem`) & `Ed25519` container builder.
+- [`telemetry.py`](telemetry.py): Polars + Altair `bESR` convergence Parquet & HTML reports.
+- [`pipeline.py`](pipeline.py): `DnamTriPhysicsModel` and 4-Stage `DnamTrainer` orchestrator.
+- [`backends.py`](backends.py): `TrainingBackend`, `LocalTrainingBackend`, and `RemoteTrainingBackend`.
 
-| Module | Responsibilities & Canonical Docs |
-| :--- | :--- |
-| [`hardware.py`](hardware.py) | `HardwareRuntimeProfile`, `setup_accelerator_environment` (ROCm MIOpen `MIOPEN_FIND_MODE="FAST"`, `cudnn.benchmark = False` on HIP, MPS fast math, CUDA TF32), and `resolve_hardware_profile` (`tpu` $\to$ `cuda`/`rocm` $\to$ `mps` $\to$ `cpu`). |
-| [`surrogate_delay.py`](surrogate_delay.py) | `SurrogateDelayReadout` (`torch.autograd.Function`) and `optimize_delay_with_surrogate` (`Test 6` Multi-Scale Gaussian Derivative Envelope Surrogate $\sigma_{\text{grad}}: 35.0 \to 0.0\text{ samples}$). See [`training_and_iterative_resume.md`](../../../../../docs/training_and_iterative_resume.md). |
-| [`kronecker_head.py`](kronecker_head.py) | `compute_svd_control_projector`, `compute_stem_sufficient_statistics`, `solve_kronecker_head_float64` (`CL-18` Dual-Ridge $\lambda_{\text{init}} = 10^{-3}\bar{\tau}$, $\lambda_{\text{polish}} = 10^{-6}\bar{\tau}$), and `resume_from_checkpoint` (`< 1e-8` full-retrain parity). See [`clamp_and_audit_registry.md`](../../../../../docs/clamp_and_audit_registry.md). |
-| [`arena.py`](arena.py) | `ArenaWeightLayout` (`Arena 0..2` `36,224 B` + `Arena 3` `151,296 B/stem`) and `build_signed_dnam_containers`. See [`dnam_container_schema.md`](../../../../../docs/dnam_container_schema.md). |
-| [`telemetry.py`](telemetry.py) | Polars + Altair convergence and ESR telemetry (`build_training_telemetry_df`, `save_telemetry_parquet`, `save_telemetry_html_report`). |
-| [`pipeline.py`](pipeline.py) | `DnamTriPhysicsModel` and 4-Stage `DnamTrainer` (Step-0 tail detection for `topology="auto"|"core1_only"|"full"`, Per-Stem State-Carry TBPTT, `torch._foreach_mul_` 3-tier block-diagonal masking, zero-sync inner loop). |
-| [`backends.py`](backends.py) | `TrainingBackend`, `LocalTrainingBackend`, and `RemoteTrainingBackend`. |
+## 2. Canonical Specifications & Guides
+
+1. [`training_and_iterative_resume.md`](../../../../../docs/training_and_iterative_resume.md) — 4-Stage pipeline, psychoacoustic `bESR` tiers, and `.dnam-ckpt` resume.
+2. [`clamp_and_audit_registry.md`](../../../../../docs/clamp_and_audit_registry.md) & [`dnam_container_schema.md`](../../../../../docs/dnam_container_schema.md) — `CL-18` Dual-Ridge & `Arena 0..3` `uplo='U'` packing.
+3. [`packages/trainer/CONTRIBUTING.md`](../../../CONTRIBUTING.md) — Mixed-precision, hardware accelerator, and runtime invariants.

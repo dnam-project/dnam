@@ -10,7 +10,7 @@ dnam trainer install --accelerator auto
 dnam trainer status
 
 # 2. Run 4-Stage training or Two-Tier .dnam-ckpt resume via `dnam`
-dnam train b7k_ultra
+dnam train --model b7k_ultra
 
 # 3. Direct headless worker invocation (used by `packages/studio` & cloud GPU workers)
 dnam-train --status-json

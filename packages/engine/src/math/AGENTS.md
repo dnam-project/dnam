@@ -13,7 +13,4 @@ Implements the two-level hardware math abstraction ([`SimdVec4`](backend.rs) & [
 | [`scalar.rs`](scalar.rs), [`wasm_simd128.rs`](wasm_simd128.rs) | `#[forbid(unsafe_code)]` `ScalarBackend` & WebAssembly `v128` SIMD128 backend | [`monorepo_implementation_guide.md`](../../../../docs/monorepo_implementation_guide.md) |
 | [`neon.rs`](neon.rs), [`arm_sme.rs`](arm_sme.rs), [`x86_simd.rs`](x86_simd.rs) | ARM64 NEON, ARMv9.2-A `FEAT_SME`, and `x86_64` AVX2+FMA+F16C+SSE4.2 backends | [`monorepo_implementation_guide.md`](../../../../docs/monorepo_implementation_guide.md) |
 
-## 2. Invariants
-
-- Use `zerocopy::transmute!` for `[f32; 4]` $\leftrightarrow$ SIMD register conversions instead of raw pointer loads/stores.
-- Never emit `FDIV`, `FSQRT`, or `libm` calls in real-time `MathBackend` methods.
+See [`packages/engine/CONTRIBUTING.md`](../../CONTRIBUTING.md) for `zerocopy::transmute!` and SIMD safety rules.

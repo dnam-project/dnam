@@ -12,11 +12,6 @@
 - [`src/components/rack/`](src/components/rack/index.ts) & [`src/components/workflows/`](src/components/workflows/index.ts): `DnamPluginRack`, `TriPhysicsTelemetry`, `CapturePlanPanel`, and `TrainingTimelinePanel`.
 - [`src/components/visualizers/`](src/components/visualizers/index.ts): All 7 interactive Tri-Physics visualizers (`PolyAdaaVisualizer`, `RgLruPoleVisualizer`, `ModulatedUfdnVisualizer`, `ControlBusVisualizer`, `KroneckerResumeVisualizer`, `ClampAuditVisualizer`, `ZohRescalerVisualizer`).
 
-## 2. Workbench & Verification
+## 2. Guides & Verification
 
-- **React Cosmos Workbench:** [`cosmos.config.json`](cosmos.config.json), [`src/cosmos.decorator.tsx`](src/cosmos.decorator.tsx), and co-located `src/components/**/*.fixture.tsx` (`pnpm ui:dev` on `http://localhost:5005`).
-- **Vitest Browser Mode (`@vitest/browser-playwright` + `vitest-browser-react`):** Co-located unit/component tests (`src/**/*.test.ts(x)`), benchmarks (`src/**/*.bench.ts`), and integration tests (`tests/integration/*.test.tsx`) in headless Chromium with ARIA snapshots, `axe-core` ([`tests/setup.ts`](tests/setup.ts)), and V8 coverage.
-
-```bash
-pnpm --filter @dnam-project/ui lint && pnpm --filter @dnam-project/ui typecheck && pnpm --filter @dnam-project/ui coverage && pnpm --filter @dnam-project/ui bench
-```
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) for Tailwind CSS v4 tokens, `shadcn/ui` Base UI conventions, React Cosmos workbench (`cosmos.config.json`), Vitest Browser Mode + `axe-core` accessibility verification, and `moon check ui` commands.

@@ -11,6 +11,4 @@ Implements the hybrid binary container parser/builder (`#[forbid(unsafe_code)]`)
 | [`zoh.rs`](zoh.rs) | `ZohRescaledParams` ($44.1\text{--}96\text{ kHz}$ poles, delays, and LFO invariance) + `proptest` | [`dnam_container_schema.md`](../../../../docs/dnam_container_schema.md) |
 | [`ckpt.rs`](ckpt.rs) | `pack_uplo_u_f64`, `unpack_uplo_u_f64`, prefix submatrix extraction + `proptest` | [`training_and_iterative_resume.md`](../../../../docs/training_and_iterative_resume.md) |
 
-## 2. Invariants
-
-- Verify cumulative tier prefix `CRC32C`s (`Lite=10,752 B`, `Full=22,336 B`, `Ultra=36,224 B`) in a single incremental pass.
+See [`packages/engine/CONTRIBUTING.md`](../../CONTRIBUTING.md) for incremental `CRC32C` verification rules.

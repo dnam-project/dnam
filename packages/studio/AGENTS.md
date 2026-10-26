@@ -11,8 +11,6 @@
 - [`rust/ipc.rs`](rust/ipc.rs) & [`rust/cli.rs`](rust/cli.rs): Tauri v2 `StudioIpcHandler` and `clap` v4 `dnam` CLI router.
 - [`src/`](src/index.ts) & [`tests/`](tests/): TypeScript SDK ([`binary.ts`](src/binary.ts), [`ipc.ts`](src/ipc.ts), [`host.ts`](src/host.ts) `TauriNativeAudioHost`), Tauri v2 React 19 UI ([`src/ui/StudioApp.tsx`](src/ui/StudioApp.tsx), [`src/ui/studio_store.ts`](src/ui/studio_store.ts)), co-located `src/**/*.test.ts(x)` unit tests, [`tests/integration/`](tests/integration/) Vitest Browser integration tests, and [`tests/e2e/studio_desktop.spec.ts`](tests/e2e/studio_desktop.spec.ts) (`@playwright/test`).
 
-## 2. Verification
+## 2. Guides & Verification
 
-```bash
-cargo test --package dnam-studio && pnpm --filter @dnam-project/studio lint && pnpm --filter @dnam-project/studio typecheck && pnpm --filter @dnam-project/studio coverage
-```
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) and [`README.md`](README.md) for Rust 2024 module layout, Tauri v2 IPC isolation rules, and `moon check studio` / `moon run studio:test-e2e` verification commands.

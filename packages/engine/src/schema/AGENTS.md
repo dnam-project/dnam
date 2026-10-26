@@ -11,6 +11,4 @@ Implements `#![no_std]` + `alloc` `serde` / `serde_json` parsing and validation 
 | [`signatures.rs`](signatures.rs) | `ModelSignatures`, `CreatorSignature`, `MarketplaceReceipt`, `AuthorizedDevice`, `RoyaltySplit` | [`digital_marketplace_and_provenance.md`](../../../../docs/digital_marketplace_and_provenance.md) |
 | [`error.rs`](error.rs) | `DnamError` (`core::error::Error`) and cold-path `f64` math wrappers | [`dnam_container_schema.md`](../../../../docs/dnam_container_schema.md) |
 
-## 2. Invariants
-
-- Always use `serde` (`default-features = false, features = ["alloc", "derive"]`) and `serde_json` (`default-features = false, features = ["alloc"]`).
+See [`packages/engine/CONTRIBUTING.md`](../../CONTRIBUTING.md) for `#![no_std]` + `alloc` `serde` rules.

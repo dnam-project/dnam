@@ -12,13 +12,7 @@
 - [`provenance.py`](src/dnam_engine/provenance.py), [`schema/`](src/dnam_engine/schema/__init__.py) & [`exceptions.py`](src/dnam_engine/exceptions.py): Cryptographic provenance/watermarking, `StrictModel` Pydantic v2 schemas, and `DnamError` hierarchy.
 - [`tests/`](tests/): Unit, Hypothesis property, and `pytest-benchmark` suites (`test_*.py`, [`test_benchmarks.py`](tests/test_benchmarks.py)).
 
-## 2. Required Reading
+## 2. Guides & Verification
 
-1. [`CONTRIBUTING.md`](CONTRIBUTING.md) — Dual-layer FFI architecture, strict `pyrefly` typing, Pydantic `_construct_trusted` hot-path rules, and benchmark workflow.
+1. [`CONTRIBUTING.md`](CONTRIBUTING.md) — Dual-layer FFI architecture, strict `pyrefly` typing, Pydantic `_construct_trusted` hot-path rules, and `moon check python` verification workflow.
 2. [`README.md`](README.md) & [`monorepo_implementation_guide.md`](../../docs/monorepo_implementation_guide.md) — Python API reference and specification.
-
-## 3. Verification
-
-```bash
-uv run ruff check packages/python && uv run pyrefly check && uv run pytest packages/python/tests --cov=dnam_engine
-```

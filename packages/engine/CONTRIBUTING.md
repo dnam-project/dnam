@@ -41,7 +41,13 @@ Consult [`AGENTS.md`](AGENTS.md) and the submodule `AGENTS.md` files for progres
 2. **Zero Audio-Thread Heap Allocations:**
    - `process_block`, `process_block_in_place`, `process_mono_to_stereo`, `process_mono`, `set_tier`, `set_sample_rate`, `set_control_value`, `reset_to_dc_equilibrium`, `telemetry_snapshot`, `from_bytes_with_scratch`, and `reload_model_in_place` must never allocate or deallocate heap memory.
 3. **Zero `FSQRT`, `FDIV`, or `libm` in $48\text{ kHz}$ / $3\text{ kHz}$ Paths:**
-   - Keep `arena_tiles` resolution and `finalize_block_telemetry` horizontal reductions outside the per-sample loop, and specialize block loops via compile-time tier monomorphization (`step_frame_const::<GROUPS, FDN_GROUPS>`).
+   - Keep `arena_tiles` resolution and `finalize_block_telemetry` horizontal reductions outside the per-sample loop, and specialize block loops via compile-time tier monomorphization (`step_frame_const::<GROUPS, FDN_GROUPS>` and `process_sample_const::<GROUPS>` for `GROUPS = 1, 2, 3`).
+4. **Submodule Implementation Invariants:**
+   - **`src/math` & `src/core1`:** Use `zerocopy::transmute!` for `[f32; 4]` $\leftrightarrow$ SIMD register conversions and `zerocopy::FromBytes::ref_from_bytes` to reinterpret `Arena 0..2` `4x4` weight tiles safely without raw pointer casts.
+   - **`src/core2`:** Store `M-UFDN` delay lines as 64-byte aligned `AlignedFp16Block` blocks converted via `B::f32x4_to_fp16x4` / `B::fp16x4_to_f32x4`.
+   - **`src/control`:** Anchor the first Lobatto node at the default preset (`u = 0`) so default control positions produce `0.0` delta with `0` extra MACs.
+   - **`src/container` & `src/schema`:** Verify cumulative tier prefix `CRC32C`s (`Lite=10,752 B`, `Full=22,336 B`, `Ultra=36,224 B`) in a single incremental pass, and keep `serde` / `serde_json` configured with `default-features = false, features = ["alloc"]`.
+   - **`src/provenance`:** Never include mutable `presets` or `user_metadata` in `immutable_header_sha256` so user preset edits never invalidate `creator_signature`.
 
 ---
 

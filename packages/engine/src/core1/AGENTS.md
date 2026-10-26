@@ -10,7 +10,4 @@ Implements Core 1 (`#[forbid(unsafe_code)]`): 4 macro-blocks $\times$ (2 Dilated
 | [`stack.rs`](stack.rs) | `Core1Stack<B>`, const-specialized `process_sample_const::<GROUPS>`, 3-state DC equilibrium | [`core1_hybrid_ssm_and_polyadaa.md`](../../../../docs/core1_hybrid_ssm_and_polyadaa.md) |
 | [`reference.rs`](reference.rs) | Reference `f64` `PolyADAA` & `SelectiveRgLru` kernels + `Test 1` & `Test 2` unit tests | [`verification_and_guardrails.md`](../../../../docs/verification_and_guardrails.md) |
 
-## 2. Invariants
-
-- Keep `process_sample_const::<GROUPS>` (`GROUPS = 1, 2, 3`) register-resident with zero stack spills and zero `FDIV`/`FSQRT`.
-- Reinterpret `Arena 0..2` `4x4` weight tiles exclusively via safe `zerocopy::FromBytes::ref_from_bytes`.
+See [`packages/engine/CONTRIBUTING.md`](../../CONTRIBUTING.md) for `zerocopy` and register-residency invariants.

@@ -15,13 +15,7 @@
 | **Marketplace & Provenance** (`src/provenance.rs`, `src/provenance/*`) | [`src/provenance/AGENTS.md`](src/provenance/AGENTS.md) | [`digital_marketplace_and_provenance.md`](../../docs/digital_marketplace_and_provenance.md) |
 | **JSON Schema & Controls** (`src/schema.rs`, `src/schema/*`) | [`src/schema/AGENTS.md`](src/schema/AGENTS.md) | [`dnam_container_schema.md`](../../docs/dnam_container_schema.md) |
 
-## 2. Required Reading
+## 2. Guides & Verification
 
-1. [`CONTRIBUTING.md`](CONTRIBUTING.md) — Crate layout, `#[forbid(unsafe_code)]` isolation, zero-allocation rules, and pre-commit checklist.
+1. [`CONTRIBUTING.md`](CONTRIBUTING.md) — Crate layout, `#[forbid(unsafe_code)]` isolation, submodule invariants, zero-allocation rules, and `moon check engine` verification commands.
 2. [`README.md`](README.md) — Public Rust API, I/O topologies, and embedded scratch usage.
-
-## 3. Verification
-
-```bash
-cargo clippy --package dnam-engine --all-targets -- -D warnings && cargo test --package dnam-engine
-```
