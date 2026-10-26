@@ -92,11 +92,12 @@ pub fn generate_calibration_probe(sample_rate_hz: u32, num_samples: usize) -> Ve
     }
     let fs = sample_rate_hz.max(1) as f32;
 
-    // Leading 1/16 silent lead-in + 3-pulse asymmetric burst in first 3/8 of buffer
-    let lead_silence = (num_samples / 16).max(1);
-    let header_end = ((num_samples * 7) / 16)
-        .max(lead_silence + 1)
-        .min(num_samples);
+    // Leading silent lead-in (capped at 100 ms) + 3-pulse asymmetric burst (capped at 0.45s)
+    let max_lead = ((0.10 * fs).round() as usize).max(1);
+    let max_header = ((ALIGNMENT_HEADER_TOTAL_SEC * fs).round() as usize).max(16);
+    let lead_silence = (num_samples / 16).min(max_lead).max(1);
+    let raw_header_len = ((num_samples * 6) / 16).min(max_header).max(1);
+    let header_end = (lead_silence + raw_header_len).min(num_samples);
     let header_len = header_end - lead_silence;
     let pulses = synth_alignment_pulses(sample_rate_hz, header_len);
     out[lead_silence..header_end].copy_from_slice(&pulses);
@@ -109,33 +110,43 @@ pub fn generate_calibration_probe(sample_rate_hz: u32, num_samples: usize) -> Ve
         return out;
     }
 
-    // Part A (0..40% of body): Log-amplitude nonlinearity ramp (-40 dBFS -> 0 dBFS) on 220+440 Hz dyad
-    let a_end = (body_len * 4) / 10;
+    // Part A (0..35% of body): Log-amplitude nonlinearity ramp (-40 dBFS -> 0 dBFS) on 3-decade triad (40 Hz + 330 Hz + 2640 Hz)
+    let a_end = (body_len * 35) / 100;
     for i in 0..a_end {
         let frac = (i as f32) / (a_end.max(1) as f32);
         let amp = 10.0_f32.powf(-2.0 + 2.0 * frac);
         let t = (i as f32) / fs;
-        let dyad = 0.70 * (TAU * 220.0 * t).sin() + 0.30 * (TAU * 440.0 * t).sin();
-        out[body_start + i] = amp * dyad;
+        let triad = 0.45 * (TAU * 40.0 * t).sin()
+            + 0.35 * (TAU * 330.0 * t).sin()
+            + 0.20 * (TAU * 2_640.0 * t).sin();
+        out[body_start + i] = amp * triad;
     }
 
-    // Part B (40..80% of body): Steady harmonic carrier + fast log sweep
-    let b_end = (body_len * 8) / 10;
+    // Part B (35..70% of body): Steady harmonic carrier + full-spectrum log sweep (20 Hz -> 20 kHz)
+    let b_end = ((body_len * 70) / 100).min(
+        ((num_samples * 78) / 100)
+            .saturating_sub(body_start)
+            .max(a_end),
+    );
     let nb = b_end.saturating_sub(a_end).max(1);
     let dur_b = ((nb as f32) / fs).max(1e-4);
-    let f0 = 60.0_f32;
-    let f1 = (0.42 * fs).min(10_000.0);
+    let f0 = 20.0_f32;
+    let f1 = (0.45 * fs).min(20_000.0);
     let k_b = (f1 / f0).ln() / dur_b;
     for j in 0..(b_end.saturating_sub(a_end)) {
         let t = (j as f32) / fs;
         let phi = TAU * f0 * (((k_b * t).exp() - 1.0) / k_b);
-        let carrier = 0.35 * ((TAU * 330.0 * t).sin() + 0.5 * (TAU * 660.0 * t).sin());
+        let carrier = 0.35 * ((TAU * 220.0 * t).sin() + 0.5 * (TAU * 880.0 * t).sin());
         out[body_start + a_end + j] = carrier + 0.35 * phi.sin();
     }
 
-    // Part C (80..100% of body): Plosive transient burst + silent echo listening gap
+    // Part C (70..100% of body): Plosive transient burst before 80% + silent echo listening gap (82..95%)
     let nc = body_len.saturating_sub(b_end);
-    let burst_samples = ((0.015 * fs).round() as usize).max(8).min(nc / 2);
+    let max_burst_before_gap = ((num_samples * 80) / 100).saturating_sub(body_start + b_end);
+    let burst_samples = ((0.015 * fs).round() as usize)
+        .max(8)
+        .min(nc / 2)
+        .min(max_burst_before_gap);
     for j in 0..burst_samples {
         let t = (j as f32) / fs;
         let win = 0.5 * (1.0 - (TAU * (j as f32) / (burst_samples.max(1) as f32)).cos());
@@ -278,7 +289,7 @@ pub fn analyze_probe_for_excitation(
         let mut best_gain = 0.0_f32;
         for (k, (w_bin, d_bin)) in w_spec.iter().zip(d_spec.iter()).enumerate() {
             let freq = (k as f32) * bin_hz;
-            if (60.0..=6_000.0).contains(&freq) {
+            if (25.0..=16_000.0).contains(&freq) {
                 let gain = w_bin.norm() / (d_bin.norm() + eps);
                 if gain > best_gain {
                     best_gain = gain;
@@ -364,10 +375,13 @@ pub fn generate_excitation_signal_with_profile(
     let default_prof = TargetExcitationProfile::default();
     let prof = profile.unwrap_or(&default_prof);
 
-    let lead_silence = (num_samples / 16).max(1);
-    let header_end = ((num_samples * 7) / 16)
-        .max(lead_silence + 1)
-        .min(num_samples);
+    let max_lead = ((0.10 * fs).round() as usize).max(1);
+    let max_header = ((ALIGNMENT_HEADER_TOTAL_SEC * fs).round() as usize).max(16);
+    let max_base_tail = ((TRAILING_NOISE_WINDOW_SEC * fs).round() as usize).max(1);
+
+    let lead_silence = (num_samples / 16).min(max_lead).max(1);
+    let raw_header_len = ((num_samples * 6) / 16).min(max_header).max(1);
+    let header_end = (lead_silence + raw_header_len).min(num_samples);
     let header_len = header_end - lead_silence;
     let pulses = synth_alignment_pulses(sample_rate_hz, header_len);
     out[lead_silence..header_end].copy_from_slice(&pulses);
@@ -377,7 +391,7 @@ pub fn generate_excitation_signal_with_profile(
     } else {
         0
     };
-    let tail_silence = ((num_samples / 16) + extra_tail)
+    let tail_silence = ((num_samples / 16).min(max_base_tail) + extra_tail)
         .max(1)
         .min((num_samples / 4).max(1));
     let body_start = header_end;
@@ -397,11 +411,11 @@ pub fn generate_excitation_signal_with_profile(
     let s1_end = (n_body * 35) / 100;
     let s2_end = (n_body * 70) / 100;
 
-    // Section 1 (0..35%): Logarithmic sweeps across Zone A (knee..sat) and Zone B (sat..0.98)
+    // Section 1 (0..35%): Full-spectrum logarithmic sweeps (20 Hz -> 20 kHz) across Zone A (knee..sat) and Zone B (sat..0.98)
     if s1_end > 0 {
         let d1 = ((s1_end as f32) / fs).max(1e-4);
-        let f_start = 25.0_f32;
-        let f_stop = (0.42 * fs).min(14_000.0);
+        let f_start = 20.0_f32;
+        let f_stop = (0.45 * fs).min(20_000.0);
         let k_sw = (f_stop / f_start).ln() / d1;
         let half_s1 = s1_end / 2;
         for i in 0..s1_end {
@@ -419,7 +433,7 @@ pub fn generate_excitation_signal_with_profile(
             body[i] = env_sw * phi_sw.sin();
         }
         if prof.detected_lfo_hz > 0.15 && half_s1 > 8 {
-            let f_res = res_hz.clamp(110.0, 1_200.0);
+            let f_res = res_hz.clamp(80.0, 2_400.0);
             for (i, sample) in body.iter_mut().enumerate().take(s1_end).skip(half_s1) {
                 let tl = (i as f32) / fs;
                 let lfo_carrier = knee
@@ -429,10 +443,13 @@ pub fn generate_excitation_signal_with_profile(
         }
     }
 
-    // Section 2 (35..70%): Transient velocity ladder across Zone A (0.45*knee..sat) & Zone B (sat..0.98)
+    // Section 2 (35..70%): Universal 7-Octave (27.5 Hz A0 .. 3520 Hz A7) & Multi-Articulation Velocity Ladder
     let n2 = s2_end.saturating_sub(s1_end);
     if n2 > 0 {
-        let notes_hz: [f32; 8] = [55.0, 82.41, 110.0, 146.83, 196.0, 246.94, 329.63, 440.0];
+        let notes_hz: [f32; 16] = [
+            27.50, 36.71, 48.99, 65.41, 87.31, 110.00, 146.83, 196.00, 261.63, 349.23, 440.00,
+            587.33, 783.99, 1_046.50, 1_760.00, 3_520.00,
+        ];
         let burst_len = ((0.18 * fs).round() as usize).max(16).min((n2 / 4).max(16));
         let stride = if prof.has_delay_or_reverb_tail {
             (burst_len * 2).max(1)
@@ -440,32 +457,46 @@ pub fn generate_excitation_signal_with_profile(
             burst_len.max(1)
         };
         let vel_lo = (0.45 * knee).max(0.04);
+        let nyq_guard = 0.45 * fs;
         let mut b_idx = 0_usize;
         let mut start_idx = 0_usize;
         while start_idx < n2 {
             let end_idx = (start_idx + burst_len).min(n2);
-            let f_root = notes_hz[b_idx % notes_hz.len()];
-            let f_fifth = f_root * 1.498_307_1;
-            let step_pos = b_idx % 8;
+            let f_root = notes_hz[b_idx % notes_hz.len()].min(nyq_guard * 0.45);
+            let f_third = (f_root * 1.259_921).min(nyq_guard);
+            let f_fifth = (f_root * 1.498_307_1).min(nyq_guard);
+            let f_oct = (f_root * 2.0).min(nyq_guard);
+            // Coprime velocity stride (gcd(5, 8) = 1) decouples 7-octave pitch register from velocity level
+            let step_pos = (b_idx * 5 + (b_idx / notes_hz.len())) % 8;
             // First 5 steps densely resolve Zone A [vel_lo, sat]; steps 5..7 drive Zone B [sat, 0.98]
             let vel = if step_pos < 5 {
                 vel_lo + (sat - vel_lo) * ((step_pos as f32) / 4.0)
             } else {
                 sat + (0.98 - sat) * (((step_pos - 4) as f32) / 3.0)
             };
-            let decay_tau = if prof.has_delay_or_reverb_tail {
-                0.030
-            } else if b_idx.is_multiple_of(3) {
-                0.035
+            let is_sag_sustain = !prof.has_delay_or_reverb_tail && b_idx.is_multiple_of(4);
+            let is_percussive = !is_sag_sustain && b_idx.is_multiple_of(3);
+            let (atk_tau, decay_tau) = if prof.has_delay_or_reverb_tail {
+                (0.0008, 0.030)
+            } else if is_sag_sustain {
+                (0.0100, 0.250)
+            } else if is_percussive {
+                (0.0003, 0.035)
             } else {
-                0.120
+                (0.0020, 0.120)
             };
-            for k in 0..(end_idx - start_idx) {
+            let active_len = if is_sag_sustain {
+                ((end_idx - start_idx) * 2 / 3).max(1)
+            } else {
+                end_idx - start_idx
+            };
+            for k in 0..active_len {
                 let tb = (k as f32) / fs;
-                let env_b = (1.0 - (-tb / 0.002).exp()) * (-tb / decay_tau).exp();
-                let wave_b = 0.60 * (TAU * f_root * tb).sin()
-                    + 0.30 * (TAU * f_fifth * tb + 0.3).sin()
-                    + 0.10 * (TAU * (2.0 * f_root) * tb + 0.7).sin();
+                let env_b = (1.0 - (-tb / atk_tau).exp()) * (-tb / decay_tau).exp();
+                let wave_b = 0.50 * (TAU * f_root * tb).sin()
+                    + 0.20 * (TAU * f_third * tb + 0.2).sin()
+                    + 0.20 * (TAU * f_fifth * tb + 0.5).sin()
+                    + 0.10 * (TAU * f_oct * tb + 0.9).sin();
                 body[s1_end + start_idx + k] = vel * env_b * wave_b;
             }
             b_idx += 1;
@@ -473,19 +504,23 @@ pub fn generate_excitation_signal_with_profile(
         }
     }
 
-    // Section 3 (70..100%): Dynamic sin^2 swell + resonance-centered CCIF two-tone + 16-tone Schroeder multitone
+    // Section 3 (70..100%): Dynamic sin^2 swell + Dual CCIF/SMPTE IMD + 24-tone 20 Hz..20 kHz Schroeder multitone
     let n3 = n_body.saturating_sub(s2_end);
     if n3 > 0 {
         let d3 = ((n3 as f32) / fs).max(1e-4);
-        let f_ccif = res_hz.clamp(250.0, 3_500.0);
-        let n_tones = 16_usize;
+        let f_max_mt = (0.45 * fs).clamp(40.0, 20_000.0);
+        let f_ccif = res_hz.clamp(120.0, (0.40 * fs).min(8_000.0));
+        let f_air = (0.30 * fs).min(11_000.0);
+        let n_tones = 24_usize;
+        let log_ratio = (f_max_mt / 20.0_f32).ln();
         let mut multitone = vec![0.0_f32; n3];
         let mut max_mt = 1e-6_f32;
         for (j, mt_val) in multitone.iter_mut().enumerate() {
             let t3 = (j as f32) / fs;
             let mut sum_t = 0.0_f32;
             for k_tone in 1..=n_tones {
-                let fk = 40.0 * 1.38_f32.powi((k_tone as i32) - 1);
+                let frac_k = ((k_tone - 1) as f32) / ((n_tones - 1) as f32);
+                let fk = 20.0 * (frac_k * log_ratio).exp();
                 if fk >= 0.45 * fs {
                     break;
                 }
@@ -500,9 +535,10 @@ pub fn generate_excitation_signal_with_profile(
             let t3 = (j as f32) / fs;
             let s_val = (PI * t3 / d3).sin();
             let swell_env = s_val * s_val;
-            let ccif = 0.45 * ((TAU * f_ccif * t3).sin() + (TAU * (f_ccif + 80.0) * t3).sin());
+            let ccif_res = 0.30 * ((TAU * f_ccif * t3).sin() + (TAU * (f_ccif + 80.0) * t3).sin());
+            let ccif_wide = 0.15 * ((TAU * 60.0 * t3).sin() + (TAU * f_air * t3).sin());
             let mt_norm = mt_raw / max_mt;
-            body[s2_end + j] = 0.98 * swell_env * (0.55 * mt_norm + 0.45 * ccif);
+            body[s2_end + j] = 0.98 * swell_env * (0.55 * mt_norm + ccif_res + ccif_wide);
         }
     }
 

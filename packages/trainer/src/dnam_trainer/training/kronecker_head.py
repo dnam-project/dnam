@@ -19,6 +19,7 @@ from numpy.typing import NDArray
 
 from dnam_engine.container import GramMatrix, crc32c
 from dnam_engine.schema import ExtractedPhysics, StemProvenance, StemRegistryEntry, TensorSliceEntry
+from dnam_trainer.training.metrics import split_three_bands_np
 
 ARENA012_BYTE_LEN: int = 36_224
 ARENA3_G_AUDIO_FLOATS: int = 18_528  # 192 * 193 // 2
@@ -177,18 +178,72 @@ def compute_svd_control_projector(
     if d_basis == 0 or num_stems == 0:
         return p_svd, p_svd_16x4, 1, np.zeros((num_stems, 4), dtype=np.float64)
 
-    _, sigmas, vt = np.linalg.svd(arr, full_matrices=False)
-    valid_indices = [k for k in range(min(len(sigmas), max_rank, 4)) if float(sigmas[k]) > svd_tol]
-    for col_idx, k in enumerate(valid_indices):
-        v_col = vt[k, :]
-        # Canonical sign convention: largest-magnitude entry is positive for deterministic
-        # reproducibility
-        max_idx = int(np.argmax(np.abs(v_col)))
-        if v_col[max_idx] < 0.0:
-            v_col = -v_col
-        p_svd[:, col_idx] = v_col
+    max_cols = min(max_rank, 4)
+    primary_cols: list[int] = []
+    secondary_cols: list[int] = []
+    b = 0
+    while b < d_basis:
+        if (
+            b + 2 < d_basis
+            and float(np.min(arr[:, b])) < -1e-4
+            and float(np.max(arr[:, b])) > 1e-4
+            and float(np.min(arr[:, b + 1])) >= -1e-6
+            and float(np.max(np.abs(arr[:, b + 2]))) <= float(np.max(np.abs(arr[:, b + 1]))) + 1e-6
+        ):
+            primary_cols.append(b)
+            secondary_cols.extend([b + 1, b + 2])
+            b += 3
+        else:
+            primary_cols.append(b)
+            b += 1
 
-    active_rank = max(1, len(valid_indices))
+    col_idx = 0
+    if secondary_cols and primary_cols:
+        arr_p = arr[:, primary_cols]
+        u_p, sigmas_p, vt_p = np.linalg.svd(arr_p, full_matrices=False)
+        valid_p = [k for k in range(min(len(sigmas_p), max_cols)) if float(sigmas_p[k]) > svd_tol]
+        for k in valid_p:
+            v_sub = vt_p[k, :]
+            v_full = np.zeros(d_basis, dtype=np.float64)
+            v_full[primary_cols] = v_sub
+            max_i = int(np.argmax(np.abs(v_full)))
+            if v_full[max_i] < 0.0:
+                v_full = -v_full
+            p_svd[:, col_idx] = v_full
+            col_idx += 1
+
+        rem_slots = max_cols - col_idx
+        if rem_slots > 0:
+            arr_s = arr[:, secondary_cols]
+            if valid_p:
+                u_act = u_p[:, valid_p]
+                arr_s = arr_s - u_act @ (u_act.T @ arr_s)
+            col_norms = [float(np.linalg.norm(arr_s[:, j])) for j in range(len(secondary_cols))]
+            ranked_sec = [
+                j
+                for j in sorted(
+                    range(len(secondary_cols)),
+                    key=lambda j: (-round(col_norms[j], 4), j),
+                )
+                if col_norms[j] > svd_tol
+            ]
+            for j in ranked_sec[:rem_slots]:
+                v_full = np.zeros(d_basis, dtype=np.float64)
+                v_full[secondary_cols[j]] = 1.0
+                p_svd[:, col_idx] = v_full
+                col_idx += 1
+    else:
+        _, sigmas, vt = np.linalg.svd(arr, full_matrices=False)
+        valid_indices = [k for k in range(min(len(sigmas), max_cols)) if float(sigmas[k]) > svd_tol]
+        for k in valid_indices:
+            v_col = vt[k, :]
+            max_idx = int(np.argmax(np.abs(v_col)))
+            if v_col[max_idx] < 0.0:
+                v_col = -v_col
+            p_svd[:, col_idx] = v_col
+            col_idx += 1
+
+    active_rank = max(1, col_idx)
     rows_16 = min(d_basis, 16)
     p_svd_16x4[:rows_16, :] = p_svd[:rows_16, :].astype(np.float32)
 
@@ -208,12 +263,18 @@ def compute_stem_sufficient_statistics(
     target_pcm_sha256: str,
     extracted_physics: ExtractedPhysics | None = None,
     window_size: int = 32_768,
+    band_balance_weight: float = 0.25,
+    floor_dbfs: float = -60.0,
 ) -> StemSufficientStatistics:
     """Computes a stem's tier-ordered `float64` audio Gram matrix
     $\\mathbf{G}_{\\text{audio}}^{(s)} \\in \\mathbb{R}^{192 \\times 192}$
     and cross-correlation $\\mathbf{C}_{\\text{audio}}^{(s)} \\in \\mathbb{R}^{192 \\times 2}$ via
-    window-streamed host accumulation, then packs $\\mathbf{G}_{\\text{audio}}^{(s)}$ into
-    `LAPACK uplo='U'` format (`18,528` `f64`).
+    window-streamed host accumulation with **Floor-Regularized Target-Adaptive Band Balancing**
+    across Low (`< 250 Hz`), Mid (`250-2500 Hz`), and High (`> 2500 Hz`) bands, where
+    $H_{\\text{LF}}(z) + H_{\\text{MF}}(z) + H_{\\text{HF}}(z) \\equiv 1$ is a complementary
+    3-band partition of unity and $\\tilde{\\gamma}_b^{(s)}$ normalizes each band by its
+    floor-clamped target energy ($\\epsilon_{\\text{floor}} = -60\\text{ dBFS}$), then packs
+    $\\mathbf{G}_{\\text{audio}}^{(s)}$ into `LAPACK uplo='U'` format (`18,528` `f64`).
     """
     phi = np.asarray(features_t_x_192)
     y = np.asarray(target_t_x_2)
@@ -231,12 +292,41 @@ def compute_stem_sufficient_statistics(
     c_dense = np.zeros((192, 2), dtype=np.float64)
 
     step = max(1, window_size)
-    for start in range(0, num_frames, step):
-        end = min(start + step, num_frames)
-        phi_win = np.ascontiguousarray(phi[start:end], dtype=np.float64)
-        y_win = np.ascontiguousarray(y[start:end], dtype=np.float64)
-        g_dense += phi_win.T @ phi_win
-        c_dense += phi_win.T @ y_win
+    use_bands = band_balance_weight > 0.0 and num_frames >= 8
+    eps_floor_sq = 10.0 ** (float(floor_dbfs) / 10.0)
+    y_f64_all = np.asarray(y, dtype=np.float64)
+    e_bb = float(np.sum(y_f64_all * y_f64_all))
+    floor_e = float(max(1, y_f64_all.size)) * eps_floor_sq
+
+    if use_bands:
+        y_lf_all, y_mf_all, y_hf_all = split_three_bands_np(y_f64_all)
+        mute_floor = float(max(1, y_f64_all.size)) * 1e-3 if e_bb <= floor_e else floor_e
+        w_lf = (float(num_frames) / 3.0) / (float(np.sum(y_lf_all * y_lf_all)) + mute_floor)
+        w_mf = (float(num_frames) / 3.0) / (float(np.sum(y_mf_all * y_mf_all)) + mute_floor)
+        w_hf = (float(num_frames) / 3.0) / (float(np.sum(y_hf_all * y_hf_all)) + mute_floor)
+
+        for start in range(0, num_frames, step):
+            end = min(start + step, num_frames)
+            pad_h = min(start, 2048)
+            phi_ext = np.ascontiguousarray(phi[start - pad_h : end], dtype=np.float64)
+            p_lf_ext, p_mf_ext, p_hf_ext = split_three_bands_np(phi_ext)
+            p_lf = p_lf_ext[pad_h:]
+            p_mf = p_mf_ext[pad_h:]
+            p_hf = p_hf_ext[pad_h:]
+            ylf_win = y_lf_all[start:end]
+            ymf_win = y_mf_all[start:end]
+            yhf_win = y_hf_all[start:end]
+            g_dense += w_lf * (p_lf.T @ p_lf) + w_mf * (p_mf.T @ p_mf) + w_hf * (p_hf.T @ p_hf)
+            c_dense += (
+                w_lf * (p_lf.T @ ylf_win) + w_mf * (p_mf.T @ ymf_win) + w_hf * (p_hf.T @ yhf_win)
+            )
+    else:
+        for start in range(0, num_frames, step):
+            end = min(start + step, num_frames)
+            phi_win = np.ascontiguousarray(phi[start:end], dtype=np.float64)
+            y_win = np.ascontiguousarray(y_f64_all[start:end], dtype=np.float64)
+            g_dense += phi_win.T @ phi_win
+            c_dense += phi_win.T @ y_win
 
     # Symmetrize numerical rounding before packing upper triangle
     g_dense = 0.5 * (g_dense + g_dense.T)

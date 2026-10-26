@@ -237,23 +237,28 @@ pub fn align_hardware_latency(
         }
     }
 
-    let (resolved_lag, frac_offset, resolved_corr) = if let Some(locked) = fixed_latency_samples {
-        let clamped_idx =
-            (locked + (max_lag as i32)).clamp(0, (corr_map.len() as i32) - 1) as usize;
-        (locked, 0.0_f32, corr_map[clamped_idx].abs().clamp(0.0, 1.0))
-    } else {
-        let best_idx = (best_lag + (max_lag as i32)) as usize;
-        let mut frac = 0.0_f32;
-        if best_idx > 0 && best_idx + 1 < corr_map.len() {
-            let y_prev = corr_map[best_idx - 1].abs();
-            let y_curr = corr_map[best_idx].abs();
-            let y_next = corr_map[best_idx + 1].abs();
-            let denom = y_prev - 2.0 * y_curr + y_next;
-            if denom.abs() > 1e-9 {
-                frac = (0.5 * (y_prev - y_next) / denom).clamp(-0.5, 0.5);
-            }
+    let best_idx = (best_lag + (max_lag as i32)) as usize;
+    let mut best_frac = 0.0_f32;
+    if best_idx > 0 && best_idx + 1 < corr_map.len() {
+        let y_prev = corr_map[best_idx - 1].abs();
+        let y_curr = corr_map[best_idx].abs();
+        let y_next = corr_map[best_idx + 1].abs();
+        let denom = y_prev - 2.0 * y_curr + y_next;
+        if denom.abs() > 1e-9 {
+            best_frac = (0.5 * (y_prev - y_next) / denom).clamp(-0.5, 0.5);
         }
-        (best_lag, frac, best_corr.clamp(0.0, 1.0))
+    }
+
+    let (resolved_lag, frac_offset, resolved_corr) = if let Some(locked) = fixed_latency_samples {
+        if (best_lag - locked).abs() <= 2 && best_corr > 0.70 {
+            (best_lag, best_frac, best_corr.clamp(0.0, 1.0))
+        } else {
+            let clamped_idx =
+                (locked + (max_lag as i32)).clamp(0, (corr_map.len() as i32) - 1) as usize;
+            (locked, 0.0_f32, corr_map[clamped_idx].abs().clamp(0.0, 1.0))
+        }
+    } else {
+        (best_lag, best_frac, best_corr.clamp(0.0, 1.0))
     };
 
     let noise_floor_dbfs =

@@ -424,6 +424,13 @@ class TrainingJobResult(StrictModel):
     audit_report: AuditReport
     telemetry: list[TrainingTelemetryRow] = Field(default_factory=list)
     stem_esr_ultra_db: dict[str, float] = Field(default_factory=dict)
+    esr_lf_db: float | None = None
+    esr_mid_db: float | None = None
+    esr_hf_db: float | None = None
+    mr_stft_db: float | None = None
+    ltas_rms_tilt_db: float | None = None
+    ltas_hf_tilt_db: float | None = None
+    seg_esr_db: float | None = None
     resume_tier_executed: Literal[0, 1, 2] = 0
     core2_active: bool = False
     lfo_env_active: bool = False

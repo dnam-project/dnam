@@ -1,6 +1,7 @@
 //! `dnam train` and `dnam trainer {status,install,uninstall}` subcommand handlers.
 
 use std::fs;
+use std::io::{self, Write as _};
 use std::path::Path;
 
 use clap::Subcommand;
@@ -8,7 +9,8 @@ use clap::Subcommand;
 use crate::error::{StudioError, StudioResult};
 use crate::project::{DnamProject, default_user_config_dir, ensure_creator_ed25519_keypair};
 use crate::trainer::{
-    TrainerBridge, TrainerEnvManager, TrainerJobOptions, build_training_request_json,
+    TrainerBridge, TrainerEnvManager, TrainerJobOptions, TrainingEventMessage,
+    build_training_request_json,
 };
 
 /// Subcommands under `dnam trainer`.
@@ -141,7 +143,12 @@ pub fn run_train(workspace: &Path, args: TrainCommandArgs) -> StudioResult<Strin
                 &output_ckpt,
                 &reports_dir,
                 &opts,
-                |_ev| {},
+                |ev| {
+                    if let Some(line) = format_training_event_line(ev) {
+                        println!("{line}");
+                        let _ = io::stdout().flush();
+                    }
+                },
             )?;
             summary_lines.push(format!(
                 "Trained model '{}' -> {} ({} events, ckpt={})",
@@ -159,6 +166,111 @@ pub fn run_train(workspace: &Path, args: TrainCommandArgs) -> StudioResult<Strin
     }
 
     Ok(summary_lines.join("\n"))
+}
+
+/// Formats a live [`TrainingEventMessage`] into a human-readable progress line for CLI output.
+pub fn format_training_event_line(ev: &TrainingEventMessage) -> Option<String> {
+    let p = &ev.payload;
+    match ev.event.as_str() {
+        "training_stage" => {
+            let stage = p.get("stage").and_then(|v| v.as_u64()).unwrap_or(0);
+            let name = p
+                .get("stage_name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("Stage");
+            let msg = p.get("message").and_then(|v| v.as_str()).unwrap_or("");
+            Some(format!("  [Stage {stage}/4 — {name}] {msg}"))
+        }
+        "training_step" => {
+            let stage = p.get("stage").and_then(|v| v.as_u64()).unwrap_or(0);
+            let epoch = p.get("epoch").and_then(|v| v.as_u64()).unwrap_or(0);
+            let total = p.get("total_epochs").and_then(|v| v.as_u64()).unwrap_or(0);
+            let lite = p.get("esr_lite_db").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            let full = p.get("esr_full_db").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            let ultra = p
+                .get("esr_ultra_db")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0);
+            let elapsed = p.get("elapsed_sec").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            let bands_suffix = match (
+                p.get("esr_lf_db").and_then(|v| v.as_f64()),
+                p.get("esr_mid_db").and_then(|v| v.as_f64()),
+                p.get("esr_hf_db").and_then(|v| v.as_f64()),
+            ) {
+                (Some(lf), Some(mf), Some(hf)) => {
+                    format!(" | Bands(LF/MF/HF)={lf:+.2}/{mf:+.2}/{hf:+.2} dB")
+                }
+                _ => String::new(),
+            };
+            Some(format!(
+                "    • Stage {stage} Step {epoch:>2}/{total:<2} | bESR: Lite={lite:+.2} dB, Full={full:+.2} dB, Ultra={ultra:+.2} dB{bands_suffix} ({elapsed:.1}s)"
+            ))
+        }
+        "audit_phase" => {
+            let phase = p.get("phase").and_then(|v| v.as_u64()).unwrap_or(0);
+            let clamps_count = p
+                .get("audit_report")
+                .and_then(|r| {
+                    let k = match phase {
+                        1 => "phase1_clamps",
+                        2 => "phase2_rail_warnings",
+                        _ => "phase3_clamps",
+                    };
+                    r.get(k).and_then(|arr| arr.as_array()).map(Vec::len)
+                })
+                .unwrap_or(0);
+            Some(format!(
+                "    ✓ Control Audit Phase {phase}/3 complete ({clamps_count} clamps/warnings)"
+            ))
+        }
+        "training_complete" => {
+            let mid = p
+                .get("model_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("model");
+            let lite = p.get("esr_lite_db").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            let full = p.get("esr_full_db").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            let ultra = p
+                .get("esr_ultra_db")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0);
+            let mut psycho_suffix = String::new();
+            if let (Some(lf), Some(mf), Some(hf)) = (
+                p.get("esr_lf_db").and_then(|v| v.as_f64()),
+                p.get("esr_mid_db").and_then(|v| v.as_f64()),
+                p.get("esr_hf_db").and_then(|v| v.as_f64()),
+            ) {
+                psycho_suffix
+                    .push_str(&format!(" | Bands(LF/MF/HF)={lf:+.2}/{mf:+.2}/{hf:+.2} dB"));
+            }
+            if let Some(mr_stft) = p.get("mr_stft_db").and_then(|v| v.as_f64()) {
+                psycho_suffix.push_str(&format!(" | MR-STFT={mr_stft:.2} dB"));
+            }
+            if let (Some(rms_tilt), Some(hf_tilt)) = (
+                p.get("ltas_rms_tilt_db").and_then(|v| v.as_f64()),
+                p.get("ltas_hf_tilt_db").and_then(|v| v.as_f64()),
+            ) {
+                psycho_suffix.push_str(&format!(" | Tilt(RMS/HF)={rms_tilt:.2}/{hf_tilt:+.2} dB"));
+            }
+            if let Some(seg_esr) = p.get("seg_esr_db").and_then(|v| v.as_f64()) {
+                psycho_suffix.push_str(&format!(" | SegESR={seg_esr:+.2} dB"));
+            }
+            let c2 = if p
+                .get("core2_active")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+            {
+                "ON"
+            } else {
+                "BYPASS"
+            };
+            let elapsed = p.get("elapsed_sec").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            Some(format!(
+                "  ✓ Training Complete ({mid}) | Final bESR: Lite={lite:+.2} dB, Full={full:+.2} dB, Ultra={ultra:+.2} dB{psycho_suffix} | Core2={c2} ({elapsed:.1}s)"
+            ))
+        }
+        _ => None,
+    }
 }
 
 /// Executes `dnam trainer {status,install,uninstall}`.

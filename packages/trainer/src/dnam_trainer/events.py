@@ -77,6 +77,9 @@ class TrainingStepEvent(StrictModel):
     esr_lite_db: float
     esr_full_db: float
     esr_ultra_db: float
+    esr_lf_db: float | None = None
+    esr_mid_db: float | None = None
+    esr_hf_db: float | None = None
     barrier_loss: float = 0.0
     group_lasso_loss: float = 0.0
     surrogate_sigma_samples: float = 0.0
@@ -100,6 +103,13 @@ class TrainingCompleteEvent(StrictModel):
     esr_lite_db: float
     esr_full_db: float
     esr_ultra_db: float
+    esr_lf_db: float | None = None
+    esr_mid_db: float | None = None
+    esr_hf_db: float | None = None
+    mr_stft_db: float | None = None
+    ltas_rms_tilt_db: float | None = None
+    ltas_hf_tilt_db: float | None = None
+    seg_esr_db: float | None = None
     core2_active: bool
     lfo_env_active: bool
     resume_tier_executed: Literal[0, 1, 2] = 0

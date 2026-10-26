@@ -15,10 +15,10 @@ from dnam_trainer.schema import (
     parse_compact_range_spec,
     parse_compact_switch_spec,
 )
+from dnam_trainer.training.metrics import compute_floor_regularized_besr_db
 from dnam_trainer.training.pipeline import (
     DnamTrainer,
     DnamTriPhysicsModel,
-    compute_esr_db,
     detect_core2_activity,
 )
 
@@ -123,7 +123,7 @@ def test_dnam_trainer_4stage_fit_and_two_tier_ckpt_resume(
 
     m_full = DnamTriPhysicsModel(sample_rate_hz=48_000, core2_active=True)
     assert m_full.core2_ufdn is not None
-    assert compute_esr_db(np.ones((16, 2)), np.ones((16, 2))) < -100.0
+    assert compute_floor_regularized_besr_db(np.ones((16, 2)), np.ones((16, 2))) < -100.0
 
     # Test fit_job with topology="full" (`core2_active=True`)
     req_full_c2 = TrainingJobRequest(

@@ -44,7 +44,6 @@ from dnam_trainer.training.pipeline import (
     DnamTrainer,
     DnamTriPhysicsModel,
     ResumeExecutionResult,
-    compute_esr_db,
     detect_core2_activity,
     resolve_stem_audio_pcm,
 )
@@ -80,7 +79,6 @@ __all__ = [
     "TrainingStepRecord",
     "build_signed_dnam_containers",
     "build_training_telemetry_df",
-    "compute_esr_db",
     "compute_stem_sufficient_statistics",
     "compute_svd_control_projector",
     "default_tensor_directory",

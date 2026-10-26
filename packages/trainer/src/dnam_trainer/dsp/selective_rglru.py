@@ -273,6 +273,42 @@ class DifferentiableSelectiveRgLru(nn.Module):
         out = y_out.to(dtype=inp.dtype)
         return (out.squeeze(0) if squeeze_batch else out), z_final.detach()
 
+    def forward_complex_features(self, x: Tensor) -> tuple[Tensor, Tensor]:
+        """Processes `x` of shape `(B, C, L)` and returns `(z_real, z_imag)` of shape `(B, C, L)`
+        under `CL-03`..`CL-05` radial-polar selectivity and $\\mathcal{H}_2$ input scaling.
+        """
+        inp = x.unsqueeze(0) if x.ndim == 2 else x
+        work_dtype = torch.float64 if inp.dtype == torch.float64 else torch.float32
+        complex_dtype = torch.complex128 if work_dtype == torch.float64 else torch.complex64
+        dev_type = inp.device.type if inp.device.type in ("cuda", "cpu", "mps") else "cpu"
+
+        with torch.autocast(device_type=dev_type, enabled=False):
+            x_f = inp.to(dtype=work_dtype)
+            r_low_base, dr_span_base = self.clamped_radii()
+            r_low = r_low_base.to(dtype=work_dtype).view(1, self.num_channels, 1)
+            dr_span = dr_span_base.to(dtype=work_dtype).view(1, self.num_channels, 1)
+            theta = torch.clamp(
+                self.theta_rad.to(dtype=work_dtype).view(1, self.num_channels, 1),
+                1.0e-4,
+                math.pi - 1.0e-4,
+            )
+            u_cos, u_sin = algebraic_unit_rotor_torch(theta)
+            w_s = torch.clamp(self.w_sel.to(dtype=work_dtype), 0.0, 4.0).view(
+                1, self.num_channels, 1
+            )
+            q = torch.clamp(w_s * x_f.abs(), 0.0, 1.0)
+            g_sel = q * q * (3.0 - 2.0 * q)
+
+            r_n = torch.clamp(r_low + dr_span * (1.0 - g_sel), 0.25, 0.9995)
+            r_bar = torch.clamp(r_low + 0.5 * dr_span, 0.25, 0.9995)
+            gamma_norm = h2_input_norm_gain(r_bar)
+            b_gamma = self.b_in_gain.to(dtype=work_dtype).view(1, self.num_channels, 1) * gamma_norm
+
+            a_cplx = torch.complex(r_n * u_cos, r_n * u_sin).to(dtype=complex_dtype)
+            b_x_cplx = torch.complex(b_gamma * x_f, torch.zeros_like(x_f)).to(dtype=complex_dtype)
+            z_seq, _ = parallel_associative_scan_complex(a_cplx, b_x_cplx)
+            return z_seq.real.to(dtype=inp.dtype), z_seq.imag.to(dtype=inp.dtype)
+
     def to_reference_dsp(self, channel: int = 0) -> SelectiveRgLru:
         """Exports `channel` into a validated `dnam_engine.dsp.SelectiveRgLru` processor."""
         if not (0 <= channel < self.num_channels):

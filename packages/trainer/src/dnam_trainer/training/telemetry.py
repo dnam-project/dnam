@@ -73,11 +73,11 @@ def plot_esr_convergence_chart(
             .mark_line(point=True)
             .encode(
                 x=alt.X("epoch:Q", title="Training Epoch"),
-                y=alt.Y("esr_db:Q", title="Validation ESR (dB)"),
+                y=alt.Y("esr_db:Q", title="Validation bESR (dB)"),
                 color=alt.Color("tier:N", title="Slimmable Tier"),
             )
             .properties(
-                title=f"DNAM 4-Stage Convergence — {model_id}",
+                title=f"DNAM 4-Stage bESR Convergence — {model_id}",
                 width=680,
                 height=340,
             )
@@ -103,18 +103,18 @@ def plot_esr_convergence_chart(
         .mark_line(point=True)
         .encode(
             x=alt.X("epoch:Q", title="Training Epoch"),
-            y=alt.Y("esr_db:Q", title="Validation ESR (dB)"),
+            y=alt.Y("esr_db:Q", title="Validation bESR (dB)"),
             color=alt.Color("tier:N", title="Slimmable Tier"),
             tooltip=[
                 alt.Tooltip("stage:Q", title="Stage"),
                 alt.Tooltip("epoch:Q", title="Epoch"),
                 alt.Tooltip("tier:N", title="Tier"),
-                alt.Tooltip("esr_db:Q", title="ESR (dB)", format=".2f"),
+                alt.Tooltip("esr_db:Q", title="bESR (dB)", format=".2f"),
                 alt.Tooltip("elapsed_sec:Q", title="Elapsed (s)", format=".3f"),
             ],
         )
         .properties(
-            title=f"DNAM 4-Stage Convergence — {model_id}",
+            title=f"DNAM 4-Stage bESR Convergence — {model_id}",
             width=680,
             height=340,
         )

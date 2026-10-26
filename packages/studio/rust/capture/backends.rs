@@ -12,7 +12,7 @@ use ndarray::ArrayView1;
 use serde::{Deserialize, Serialize};
 
 use crate::capture::alignment::{
-    analyze_hot_corner_nonlinearity, estimate_subsample_lag_and_snr,
+    analyze_hot_corner_nonlinearity, apply_subsample_shift_fft, estimate_subsample_lag_and_snr,
     measure_silent_window_noise_floor,
 };
 use crate::capture::excitation::{
@@ -370,6 +370,9 @@ pub fn cpal_play_and_record(
     send_gain_db: f32,
     dry_samples: &[f32],
 ) -> StudioResult<Vec<f32>> {
+    if dry_samples.is_empty() {
+        return Ok(Vec::new());
+    }
     let out_dev = resolve_cpal_device(device_query, false)?;
     let in_dev = resolve_cpal_device(device_query, true)?;
 
@@ -500,7 +503,13 @@ fn run_two_step_calibration_with_prompts<B: CaptureBackend + ?Sized>(
     step1_prompt: &mut dyn FnMut(&str) -> StudioResult<()>,
     step2_prompt: &mut dyn FnMut(&Step1CalibrationMetrics) -> StudioResult<()>,
 ) -> StudioResult<CalibrationResult> {
-    let base_dry = generate_calibration_probe(sample_rate_hz, 2_048);
+    let is_hw = backend.backend_name() != "software" && !is_virtual_fallback_device(device_id);
+    let probe_len = if is_hw {
+        ((sample_rate_hz as usize) * 4).max(2_048)
+    } else {
+        2_048
+    };
+    let base_dry = generate_calibration_probe(sample_rate_hz, probe_len);
     step1_prompt(&backend.setup_instructions(sample_rate_hz))?;
 
     // Step 1: Reference Unity / Bypass probe with automatic gain/pad attenuation if return clips
@@ -523,7 +532,8 @@ fn run_two_step_calibration_with_prompts<B: CaptureBackend + ?Sized>(
         locked_send_gain_db -= 6.0;
     }
 
-    let report = estimate_subsample_lag_and_snr(&scaled_dry, &wet_step1, 32)?;
+    let max_lag = (scaled_dry.len() / 4).max(32);
+    let report = estimate_subsample_lag_and_snr(&scaled_dry, &wet_step1, max_lag)?;
     let noise_1 = measure_silent_window_noise_floor(&wet_step1, sample_rate_hz, None);
 
     let dry_view = ArrayView1::from(&scaled_dry);
@@ -551,8 +561,9 @@ fn run_two_step_calibration_with_prompts<B: CaptureBackend + ?Sized>(
     let mut hot_ranges = BTreeMap::new();
     hot_ranges.insert("drive".to_string(), 1.0_f32);
     let wet_step2 = backend.capture_stem(&scaled_dry, &hot_ranges, &BTreeMap::new())?;
-    let hot_analysis = analyze_hot_corner_nonlinearity(&scaled_dry, &wet_step2, unity_ref_dbfs);
-    let profile = analyze_probe_for_excitation(&scaled_dry, &wet_step2, sample_rate_hz);
+    let aligned_wet2 = apply_subsample_shift_fft(&wet_step2, report.subsample_lag_samples);
+    let hot_analysis = analyze_hot_corner_nonlinearity(&scaled_dry, &aligned_wet2, unity_ref_dbfs);
+    let profile = analyze_probe_for_excitation(&scaled_dry, &aligned_wet2, sample_rate_hz);
 
     Ok(CalibrationResult {
         backend: backend.backend_name().to_string(),

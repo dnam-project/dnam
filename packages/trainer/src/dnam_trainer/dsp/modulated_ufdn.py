@@ -299,8 +299,8 @@ class DifferentiableModulatedUfdn(nn.Module):
             b_causal = max(2, min(256, min_tau_int - 2))
 
             hist_pad = max_tau_int
-            buf = torch.zeros(
-                (bsz, self.num_lines, hist_pad + seq_len),
+            hist_win = torch.zeros(
+                (bsz, self.num_lines, hist_pad),
                 dtype=work_dtype,
                 device=x_st.device,
             )
@@ -314,20 +314,21 @@ class DifferentiableModulatedUfdn(nn.Module):
             vc_v = v_ceil.view(1, self.num_lines, 1)
             alpha_dc = 0.5 * (1.0 + self.r_dc)
 
+            out_blocks: list[Tensor] = []
             for t0 in range(0, seq_len, b_causal):
                 t1 = min(seq_len, t0 + b_causal)
                 blk_len = t1 - t0
                 t_offsets = torch.arange(blk_len, device=x_st.device, dtype=torch.long).view(
                     1, 1, blk_len
                 )
-                base_pos = (hist_pad + t0 + t_offsets - d_int.view(1, self.num_lines, 1)).expand(
+                base_pos = (hist_pad + t_offsets - d_int.view(1, self.num_lines, 1)).expand(
                     bsz, self.num_lines, blk_len
                 )
 
-                s_m1 = torch.gather(buf, -1, base_pos + 1)
-                s_0 = torch.gather(buf, -1, base_pos)
-                s_p1 = torch.gather(buf, -1, base_pos - 1)
-                s_p2 = torch.gather(buf, -1, base_pos - 2)
+                s_m1 = torch.gather(hist_win, -1, base_pos + 1)
+                s_0 = torch.gather(hist_win, -1, base_pos)
+                s_p1 = torch.gather(hist_win, -1, base_pos - 1)
+                s_p2 = torch.gather(hist_win, -1, base_pos - 2)
                 delayed_blk = w_m1 * s_m1 + w_0 * s_0 + w_p1 * s_p1 + w_p2 * s_p2
 
                 # Orthogonal stereo mixing U(psi, v) across M lines
@@ -342,13 +343,14 @@ class DifferentiableModulatedUfdn(nn.Module):
                 v_norm = torch.clamp(s_pre * (2.0 / (3.0 * vc_v)), -1.0, 1.0)
                 s_blk = vc_v * v_norm * (1.5 - 0.5 * v_norm * v_norm)
 
-                # In-free-graph causal block write
-                buf = torch.cat(
-                    [buf[:, :, : hist_pad + t0], s_blk, buf[:, :, hist_pad + t1 :]],
-                    dim=-1,
-                )
+                out_blocks.append(s_blk)
+                hist_win = torch.cat([hist_win[:, :, blk_len:], s_blk], dim=-1)
 
-            fdn_lines = buf[:, :, hist_pad:]
+            fdn_lines = (
+                torch.cat(out_blocks, dim=-1)
+                if out_blocks
+                else torch.zeros((bsz, self.num_lines, 0), dtype=work_dtype, device=x_st.device)
+            )
             even_sum = fdn_lines[:, 0::2, :].mean(dim=1)
             odd_sum = fdn_lines[:, 1::2, :].mean(dim=1)
             wet_stereo = torch.stack([even_sum, odd_sum], dim=1)

@@ -18,7 +18,7 @@ from __future__ import annotations
 import hashlib
 import math
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -54,7 +54,10 @@ from dnam_trainer.control.audit import (
 from dnam_trainer.control.basis import ParametricControlHyperBus
 from dnam_trainer.dsp.modulated_ufdn import DifferentiableModulatedUfdn
 from dnam_trainer.dsp.poly_adaa import DifferentiablePolyAdaa
-from dnam_trainer.dsp.selective_rglru import DifferentiableSelectiveRgLru
+from dnam_trainer.dsp.selective_rglru import (
+    DifferentiableSelectiveRgLru,
+    parallel_associative_scan_complex,
+)
 from dnam_trainer.events import (
     AuditPhaseEvent,
     NullObserver,
@@ -92,21 +95,19 @@ from dnam_trainer.training.kronecker_head import (
     merge_stem_statistics_for_resume,
     solve_all_tiers_kronecker_head_float64,
 )
+from dnam_trainer.training.metrics import (
+    DEFAULT_NOISE_FLOOR_DBFS,
+    PsychoacousticMetricsReport,
+    compute_band_split_esr_db,
+    compute_floor_regularized_besr_db,
+    evaluate_psychoacoustic_metrics,
+    torch_floor_regularized_besr_loss,
+)
+from dnam_trainer.training.selective_cascade import (
+    calibrate_3stage_selective_cascade,
+    modulate_tier_blocks_with_controls,
+)
 from dnam_trainer.training.wav_io import read_wav
-
-
-def compute_esr_db(
-    pred: NDArray[np.floating[Any]],
-    target: NDArray[np.floating[Any]],
-) -> float:
-    """Computes Error-to-Signal Ratio (ESR) in dB: $10 \\log_{10}(\\|\\hat{y} - y\\|_2^2 /
-    \\|y\\|_2^2)$."""
-    p = np.asarray(pred, dtype=np.float64)
-    y = np.asarray(target, dtype=np.float64)
-    err_energy = float(np.sum((p - y) ** 2))
-    sig_energy = max(float(np.sum(y**2)), 1e-18)
-    ratio = max(err_energy / sig_energy, 1e-18)
-    return float(10.0 * math.log10(ratio))
 
 
 def _to_frames_2ch(audio: NDArray[np.float32]) -> NDArray[np.float32]:
@@ -212,9 +213,30 @@ def detect_core2_activity(
     for x_arr, y_arr in zip(inputs_list, targets_list, strict=True):
         x_mono = np.mean(x_arr, axis=1, dtype=np.float64)
         y_mono = np.mean(y_arr, axis=1, dtype=np.float64)
-        n = min(len(x_mono), len(y_mono), sample_rate_hz * 2)
-        if n < 2048:
+        total_len = min(len(x_mono), len(y_mono))
+        if total_len < 2048:
             continue
+
+        # If the excitation stem includes a trailing silent listening tail (>= 100 ms),
+        # measure true post-excitation ringdown (> 35 ms after dry signal stops) so
+        # nonlinear harmonic distortion products do not masquerade as delay/reverb echoes.
+        active_idx = np.flatnonzero(np.abs(x_mono[:total_len]) > 1e-4)
+        min_tail_samples = int(0.100 * sample_rate_hz)
+        if active_idx.size > 0 and (total_len - 1 - int(active_idx[-1])) >= min_tail_samples:
+            t_first = int(active_idx[0])
+            t_stop = int(active_idx[-1]) + 1
+            active_ms = float(np.mean(y_mono[t_first:t_stop] ** 2)) + 1e-12
+            noise_win = max(64, min(t_first, int(0.050 * sample_rate_hz)))
+            noise_ms = float(np.mean(y_mono[:noise_win] ** 2))
+            late_start = t_stop + int(0.035 * sample_rate_hz)
+            late_end = min(total_len, t_stop + int(0.350 * sample_rate_hz))
+            if late_end > late_start + 16:
+                late_ms = float(np.mean(y_mono[late_start:late_end] ** 2))
+                excess_late = max(0.0, late_ms - 4.0 * noise_ms)
+                late_ratios.append(excess_late / active_ms)
+            continue
+
+        n = min(total_len, sample_rate_hz * 2)
         n_fft = 1 << math.ceil(math.log2(2 * n))
         X = np.fft.rfft(x_mono[:n], n=n_fft)
         Y = np.fft.rfft(y_mono[:n], n=n_fft)
@@ -237,6 +259,37 @@ def detect_core2_activity(
     return False, 0.0
 
 
+def _compute_intrinsic_control_modulators(
+    controls_schema: Sequence[Any],
+    controls_meta: dict[str, float | str],
+) -> tuple[float, float, float]:
+    """Computes stem-intrinsic normalized control coordinates `(u_0, u_1, u_2)` in `[-1.0, 1.0]`
+    strictly from `declared_range` / `declared_options` and `controls_meta` (`Test 8E` / `Test 8G`
+    invariant).
+    """
+    coords: list[float] = []
+    for ctrl in list(controls_schema)[:3]:
+        kind = getattr(ctrl, "kind", None)
+        ctrl_id = getattr(ctrl, "id", "")
+        default_v = getattr(ctrl, "default", 0.0)
+        if kind == "range":
+            dec_range = getattr(ctrl, "declared_range", (0.0, 1.0))
+            lo, hi = float(dec_range[0]), float(dec_range[1])
+            raw_v = float(controls_meta.get(ctrl_id, default_v))
+            span = max(hi - lo, 1e-12)
+            u_val = float(np.clip(2.0 * (raw_v - lo) / span - 1.0, -1.0, 1.0))
+            coords.append(u_val)
+        elif kind == "switch":
+            opts = list(getattr(ctrl, "declared_options", []))
+            raw_s = str(controls_meta.get(ctrl_id, default_v))
+            idx = opts.index(raw_s) if raw_s in opts else 0
+            u_val = 0.0 if len(opts) <= 1 else float(2.0 * idx / (len(opts) - 1) - 1.0)
+            coords.append(u_val)
+    while len(coords) < 3:
+        coords.append(0.0)
+    return (coords[0], coords[1], coords[2])
+
+
 class DnamTriPhysicsModel(nn.Module):
     """Differentiable Tri-Physics PyTorch model producing 3-tier nested 192-D features (`64` Lite,
     `128` Full, `192` Ultra) and stereo Kronecker output predictions.
@@ -251,6 +304,9 @@ class DnamTriPhysicsModel(nn.Module):
         super().__init__()
         self.sample_rate_hz = sample_rate_hz
         self.core2_active = core2_active
+        self._calibrated_tier_blocks: dict[
+            str, tuple[NDArray[np.float32], NDArray[np.float32], NDArray[np.float32]]
+        ] = {}
 
         self.dilations = (1, 3, 7, 19)
         self.tier_in_proj = nn.ParameterList(
@@ -274,6 +330,8 @@ class DnamTriPhysicsModel(nn.Module):
         self.w_head_tiers = nn.ParameterList(
             [nn.Parameter(torch.zeros(5, 2, 64, dtype=torch.float32)) for _ in range(3)]
         )
+        self.w_head_full = nn.Parameter(torch.zeros(5, 2, 128, dtype=torch.float32))
+        self.w_head_ultra = nn.Parameter(torch.zeros(5, 2, 192, dtype=torch.float32))
         self.b_head = nn.Parameter(torch.zeros(5, 2, dtype=torch.float32))
         self.register_buffer("p_svd_16x4", torch.zeros(16, 4, dtype=torch.float32))
 
@@ -284,23 +342,61 @@ class DnamTriPhysicsModel(nn.Module):
         basis."""
         gen = torch.Generator(device="cpu")
         gen.manual_seed(20261023)
+        tier_drives = (
+            (0.8, 3.0, 11.0, 40.0),
+            (1.4, 5.0, 18.0, 60.0),
+            (0.5, 1.8, 6.5, 25.0),
+        )
+        tier_freqs = (
+            (35.0, 160.0, 750.0, 3500.0),
+            (65.0, 300.0, 1400.0, 6500.0),
+            (25.0, 105.0, 480.0, 2200.0),
+        )
+        sr = float(self.sample_rate_hz)
         with torch.no_grad():
             for tier_idx in range(3):
-                in_w = torch.tensor(
-                    [
-                        [1.0, 0.0],
-                        [0.0, 1.0],
-                        [0.70710678, 0.70710678],
-                        [0.70710678, -0.70710678],
-                    ],
-                    dtype=torch.float32,
-                ) * (1.0 / (1.0 + 0.15 * tier_idx))
+                drives = torch.tensor(tier_drives[tier_idx], dtype=torch.float32)
+                in_w = (
+                    torch.tensor(
+                        [
+                            [0.55, 0.45],
+                            [0.45, 0.55],
+                            [0.60, 0.40],
+                            [0.40, 0.60],
+                        ],
+                        dtype=torch.float32,
+                    )
+                    * drives[:, None]
+                )
                 self.tier_in_proj[tier_idx].copy_(in_w)
 
+                freqs = torch.tensor(tier_freqs[tier_idx], dtype=torch.float32)
+                thetas = (2.0 * math.pi * freqs / sr).clamp(1e-4, math.pi - 1e-4)
+                r_target = torch.clamp(torch.exp(-2.0 * math.pi * 0.65 * freqs / sr), 0.28, 0.996)
+                r_norm = torch.clamp((r_target - 0.25) / (0.9995 - 0.25), 1e-3, 1.0 - 1e-3)
+                rglru = self.rglru_tiers[tier_idx]
+                assert isinstance(rglru, DifferentiableSelectiveRgLru)
+                rglru.theta_rad.copy_(thetas)
+                rglru.r_low_raw.copy_(torch.log(r_norm / (1.0 - r_norm)))
+                rglru.dr_span_raw.fill_(-3.0)
+                rglru.c_imag.copy_(torch.tensor([0.35, -0.35, 0.35, -0.35], dtype=torch.float32))
+
+                poly = self.poly_adaa_tiers[tier_idx]
+                assert isinstance(poly, DifferentiablePolyAdaa)
+                poly.b_conv.copy_(
+                    torch.tensor([-0.05, 0.04, -0.08, 0.06], dtype=torch.float32)
+                    * (1.0 / (1.0 + 0.2 * tier_idx))
+                )
+                poly.alpha.copy_(torch.tensor([0.65, 0.50, 0.35, 0.20], dtype=torch.float32))
+                poly.beta.copy_(torch.tensor([0.55, 0.65, 0.75, 0.85], dtype=torch.float32))
+                poly.delta.copy_(torch.tensor([-0.14, 0.12, -0.16, 0.18], dtype=torch.float32))
+
                 conv_w = torch.zeros(4, 4, 6, dtype=torch.float32)
-                conv_w[:, :, 0] = 0.85
-                conv_w[:, :, 1] = -0.15 * (tier_idx + 1) * 0.5
-                conv_w += 0.05 * torch.randn((4, 4, 6), generator=gen, dtype=torch.float32)
+                for blk_idx in range(4):
+                    tap_main = 5 - blk_idx
+                    conv_w[blk_idx, :, tap_main] = 0.80
+                    conv_w[blk_idx, :, max(0, tap_main - 1)] = -0.25 * (tier_idx + 1) * 0.4
+                conv_w += 0.04 * torch.randn((4, 4, 6), generator=gen, dtype=torch.float32)
                 self.tier_conv_weights[tier_idx].copy_(conv_w)
 
     def extract_tier_ordered_features(self, x_stereo: torch.Tensor) -> torch.Tensor:
@@ -315,6 +411,7 @@ class DnamTriPhysicsModel(nn.Module):
         if ch_in == 1:
             x_stereo = x_stereo.expand(bsz, num_frames, 2)
 
+        sr = float(self.sample_rate_hz)
         tier_features: list[torch.Tensor] = []
         for tier_idx in range(3):
             in_proj = self.tier_in_proj[tier_idx]  # (4, 2)
@@ -328,41 +425,67 @@ class DnamTriPhysicsModel(nn.Module):
 
             rglru = self.rglru_tiers[tier_idx]
             assert isinstance(rglru, DifferentiableSelectiveRgLru)
-            u_ssm_bcl, _ = rglru(u_nl_bcl)  # (B, 4, T)
-            u_ssm = u_ssm_bcl.transpose(1, 2)  # (B, T, 4)
+            u_iir_re_bcl, u_iir_im_bcl = rglru.forward_complex_features(u_base_bcl)
+            u_iir_re = u_iir_re_bcl.transpose(1, 2)  # (B, T, 4)
+            u_iir_im = u_iir_im_bcl.transpose(1, 2)  # (B, T, 4)
+
+            # Multi-scale envelope detector for tube cathode bias shift & B+ power-supply sag
+            tau_ms = torch.tensor(
+                [3.0, 12.0, 45.0, 150.0], device=x_stereo.device, dtype=torch.float32
+            ) * (1.0 + 0.2 * tier_idx)
+            r_env = torch.exp(-1000.0 / (tau_ms * sr)).view(1, 4, 1)
+            a_env = torch.complex(r_env, torch.zeros_like(r_env)).expand(bsz, 4, num_frames)
+            bx_env = torch.complex((1.0 - r_env) * u_base_bcl.abs(), torch.zeros_like(u_base_bcl))
+            z_env, _ = parallel_associative_scan_complex(a_env, bx_env)
+            env_4 = z_env.real.transpose(1, 2).to(dtype=x_stereo.dtype)  # (B, T, 4)
+
+            # Pre-filtered & envelope-sagged nonlinear tube stages
+            u_nl_raw = torch.tanh(u_base)
+            u_nl_even = u_nl_raw * u_nl_raw - 0.15
+            u_pre_drive = u_base + 0.8 * u_iir_re - 0.4 * u_iir_im
+            u_pre_nl = torch.tanh(u_pre_drive)
+            u_pre_sag = u_pre_drive * torch.rsqrt(1.0 + 2.25 * env_4 * env_4)
+            u_sag_nl = torch.tanh(u_base * torch.rsqrt(1.0 + 4.0 * env_4 * env_4))
+
+            # Post-clipping speaker cabinet & tone-stack complex resonators
+            u_post1_re_bcl, u_post1_im_bcl = rglru.forward_complex_features(
+                u_pre_nl.transpose(1, 2)
+            )
+            u_post1_re = u_post1_re_bcl.transpose(1, 2)
+            u_post1_im = u_post1_im_bcl.transpose(1, 2)
+
+            u_post2_re_bcl, u_post2_im_bcl = rglru.forward_complex_features(u_nl_bcl)
+            u_post2_re = u_post2_re_bcl.transpose(1, 2)
+            u_post2_im = u_post2_im_bcl.transpose(1, 2)
 
             # 4 dilated causal shifts `(1, 3, 7, 19)` across the 4 channels -> 16 basis signals
             conv_w = self.tier_conv_weights[tier_idx]  # (4, 4, 6)
+            dil_sources = (u_nl_bcl, u_pre_nl.transpose(1, 2), u_post1_re_bcl, u_post1_im_bcl)
             dil_feats: list[torch.Tensor] = []
             for blk_idx, dil in enumerate(self.dilations):
                 pad_len = 5 * dil
-                padded = F.pad(u_nl_bcl, (pad_len, 0))
+                padded = F.pad(dil_sources[blk_idx], (pad_len, 0))
                 w_blk = conv_w[blk_idx].unsqueeze(1)  # (4, 1, 6)
                 c_out = F.conv1d(padded, w_blk, dilation=dil, groups=4).transpose(1, 2)  # (B, T, 4)
                 dil_feats.append(c_out)
 
-            x_lin_pad1 = F.pad(u_base_bcl, (1, 0))[:, :, :-1].transpose(1, 2)
-            x_lin_pad2 = F.pad(u_base_bcl, (2, 0))[:, :, :-2].transpose(1, 2)
-            u_cubic = u_base * torch.tanh(u_base)
-            u_quartic = u_base * u_base * torch.rsqrt(1.0 + u_base * u_base)
-
             raw_16 = [
                 u_base,
-                x_lin_pad1,
-                x_lin_pad2,
+                u_iir_re,
+                u_iir_im,
                 u_nl,
-                u_cubic,
-                u_quartic,
-                u_ssm,
+                u_nl_raw,
+                u_nl_even,
+                u_pre_nl,
+                u_pre_sag,
+                u_sag_nl,
+                u_post1_re,
+                u_post1_im,
+                u_post2_re,
+                u_post2_im,
                 dil_feats[0],
                 dil_feats[1],
-                dil_feats[2],
-                dil_feats[3],
-                u_nl - u_base,
-                dil_feats[0] * u_cubic,
-                dil_feats[1] * u_cubic,
-                u_ssm * u_cubic,
-                0.5 * (dil_feats[2] + dil_feats[3]),
+                dil_feats[2] + 0.5 * dil_feats[3],
             ]
             feat_64 = torch.cat(raw_16, dim=-1)  # (B, T, 64)
             if self.core2_ufdn is not None and tier_idx < 2:
@@ -372,6 +495,58 @@ class DnamTriPhysicsModel(nn.Module):
             tier_features.append(feat_64)
 
         return torch.cat(tier_features, dim=-1)  # (B, T, 192)
+
+    def calibrate_selective_cascade(
+        self,
+        inputs_list: Sequence[NDArray[np.float32]],
+        targets_list: Sequence[NDArray[np.float32]],
+        *,
+        in_shas: Sequence[str] | None = None,
+        on_stage_progress: Callable[[int, str], None] | None = None,
+        on_step_metrics: Callable[[int, int, float, float, float, float, float, float], None]
+        | None = None,
+    ) -> None:
+        """Calibrates the 3-Stage Causal Selective State-Space + 3-Band Decoupled (`LF`/`MF`/`HF`)
+        Cascade on each unique dry input signal in `inputs_list` and caches the 16-channel nested
+        tier base blocks `(b_lite_16, b_full_16, b_ultra_16)`.
+        """
+        self._calibrated_tier_blocks.clear()
+        for s_idx, x_arr in enumerate(inputs_list):
+            sha_key = (
+                in_shas[s_idx] if in_shas is not None and s_idx < len(in_shas) else f"idx_{s_idx}"
+            )
+            if sha_key in self._calibrated_tier_blocks:
+                continue
+            b_lite_16, b_full_16, b_ultra_16 = calibrate_3stage_selective_cascade(
+                x_arr[:, 0],
+                targets_list,
+                sample_rate_hz=self.sample_rate_hz,
+                on_stage_progress=on_stage_progress,
+                on_step_metrics=on_step_metrics,
+            )
+            self._calibrated_tier_blocks[sha_key] = (b_lite_16, b_full_16, b_ultra_16)
+
+    def extract_calibrated_or_tier_features(
+        self,
+        x_stereo: torch.Tensor,
+        *,
+        in_sha: str | None = None,
+        u_ctrl_3: tuple[float, float, float] | None = None,
+    ) -> NDArray[np.float32]:
+        """Returns the 192-D control-modulated cascade features `(T, 192)` when `in_sha` has been
+        calibrated via [`calibrate_selective_cascade`], or falls back to the Step-0 PyTorch
+        [`extract_tier_ordered_features`] tensor.
+        """
+        if in_sha is not None and in_sha in self._calibrated_tier_blocks:
+            b_lite_16, b_full_16, b_ultra_16 = self._calibrated_tier_blocks[in_sha]
+            return modulate_tier_blocks_with_controls(
+                b_lite_16,
+                b_full_16,
+                b_ultra_16,
+                u_ctrl_3 if u_ctrl_3 is not None else (0.0, 0.0, 0.0),
+            )
+        phi_t = self.extract_tier_ordered_features(x_stereo).squeeze(0)
+        return phi_t.detach().cpu().numpy().astype(np.float32)
 
     def forward_head_from_features(
         self,
@@ -388,14 +563,17 @@ class DnamTriPhysicsModel(nn.Module):
         ones = torch.ones((bsz, 1), device=features_192.device, dtype=features_192.dtype)
         psi_tilde = torch.cat([ones, z_head_4.to(dtype=features_192.dtype)], dim=-1)  # (B, 5)
 
-        w0 = self.w_head_tiers[0]  # (5, 2, 64)
-        out = torch.einsum("bm,mcf,btf->btc", psi_tilde, w0, features_192[:, :, :64])
-        if tier in ("full", "ultra"):
-            w1 = self.w_head_tiers[1]
-            out = out + torch.einsum("bm,mcf,btf->btc", psi_tilde, w1, features_192[:, :, 64:128])
-        if tier == "ultra":
-            w2 = self.w_head_tiers[2]
-            out = out + torch.einsum("bm,mcf,btf->btc", psi_tilde, w2, features_192[:, :, 128:192])
+        if tier == "lite":
+            w0 = self.w_head_tiers[0]  # (5, 2, 64)
+            out = torch.einsum("bm,mcf,btf->btc", psi_tilde, w0, features_192[:, :, :64])
+        elif tier == "full":
+            out = torch.einsum(
+                "bm,mcf,btf->btc", psi_tilde, self.w_head_full, features_192[:, :, :128]
+            )
+        else:
+            out = torch.einsum(
+                "bm,mcf,btf->btc", psi_tilde, self.w_head_ultra, features_192[:, :, :192]
+            )
 
         b_eff = torch.einsum("bm,mc->bc", psi_tilde, self.b_head).unsqueeze(1)
         return out + b_eff
@@ -432,6 +610,12 @@ class DnamTriPhysicsModel(nn.Module):
                 torch.as_tensor(
                     sol.arena2_head_delta_5x2x64_f32, device=device, dtype=torch.float32
                 )
+            )
+            self.w_head_full.copy_(
+                torch.as_tensor(sol.w_full_5x2x128, device=device, dtype=torch.float32)
+            )
+            self.w_head_ultra.copy_(
+                torch.as_tensor(sol.w_ultra_5x2x192, device=device, dtype=torch.float32)
             )
             self.b_head.zero_()
             p_svd_buf = self.get_buffer("p_svd_16x4")
@@ -548,30 +732,120 @@ class DnamTrainer:
         z_head_stems: NDArray[np.float64],
         head_sol: MultiTierKroneckerHeadSolution,
         stem_ids: Sequence[str],
-    ) -> tuple[float, float, float, dict[str, float]]:
-        """Computes mean dataset ESR (dB) across `Lite` ($N=64$), `Full` ($N=128$), and `Ultra`
-        ($N=192$)."""
-        esr_l: list[float] = []
-        esr_f: list[float] = []
-        esr_u: list[float] = []
+        *,
+        sample_rate_hz: int = 48_000,
+        full_psychoacoustics: bool = False,
+    ) -> tuple[float, float, float, dict[str, float], PsychoacousticMetricsReport]:
+        """Computes dataset Floor-Regularized Band-Balanced ESR (`bESR` in dB) across `Lite`
+        ($N=64$), `Full` ($N=128$), and `Ultra` ($N=192$), plus the multi-band and psychoacoustic
+        evaluation suite across active stems.
+        """
+        active_l: list[float] = []
+        active_f: list[float] = []
+        active_u: list[float] = []
+        active_reports: list[PsychoacousticMetricsReport] = []
+        fallback_l: list[float] = []
+        fallback_f: list[float] = []
+        fallback_u: list[float] = []
+        fallback_reports: list[PsychoacousticMetricsReport] = []
         per_stem_ultra: dict[str, float] = {}
+
         for s_idx, (phi, y) in enumerate(zip(features_list, targets_list, strict=True)):
             z_s = z_head_stems[s_idx]
             pred_l = evaluate_kronecker_head_features(phi, z_s, head_sol.w_lite_5x2x64)
             pred_f = evaluate_kronecker_head_features(phi, z_s, head_sol.w_full_5x2x128)
             pred_u = evaluate_kronecker_head_features(phi, z_s, head_sol.w_ultra_5x2x192)
-            el = compute_esr_db(pred_l, y)
-            ef = compute_esr_db(pred_f, y)
-            eu = compute_esr_db(pred_u, y)
-            esr_l.append(el)
-            esr_f.append(ef)
-            esr_u.append(eu)
-            per_stem_ultra[stem_ids[s_idx]] = eu
+            y_f64 = np.asarray(y, dtype=np.float64)
+
+            besr_l = compute_floor_regularized_besr_db(
+                pred_l, y_f64, sample_rate_hz=sample_rate_hz, floor_dbfs=DEFAULT_NOISE_FLOOR_DBFS
+            )
+            besr_f = compute_floor_regularized_besr_db(
+                pred_f, y_f64, sample_rate_hz=sample_rate_hz, floor_dbfs=DEFAULT_NOISE_FLOOR_DBFS
+            )
+            if full_psychoacoustics:
+                rep_u = evaluate_psychoacoustic_metrics(
+                    pred_u,
+                    y_f64,
+                    sample_rate_hz=sample_rate_hz,
+                    floor_dbfs=DEFAULT_NOISE_FLOOR_DBFS,
+                )
+            else:
+                besr_u_val = compute_floor_regularized_besr_db(
+                    pred_u,
+                    y_f64,
+                    sample_rate_hz=sample_rate_hz,
+                    floor_dbfs=DEFAULT_NOISE_FLOOR_DBFS,
+                )
+                lf_u, mf_u, hf_u = compute_band_split_esr_db(
+                    pred_u, y_f64, sample_rate_hz=sample_rate_hz
+                )
+                rep_u = PsychoacousticMetricsReport(
+                    besr_db=besr_u_val,
+                    esr_lf_db=lf_u,
+                    esr_mid_db=mf_u,
+                    esr_hf_db=hf_u,
+                    mr_stft_db=0.0,
+                    ltas_rms_tilt_db=0.0,
+                    ltas_hf_tilt_db=0.0,
+                    seg_esr_db=besr_u_val,
+                )
+
+            fallback_l.append(besr_l)
+            fallback_f.append(besr_f)
+            fallback_u.append(rep_u.besr_db)
+            fallback_reports.append(rep_u)
+
+            rms_tgt = float(np.mean(y_f64**2))
+            if rms_tgt <= 10.0 ** (-55.0 / 10.0):
+                # Silent/mute stem (`volume_min`): report residual output level in dBFS
+                per_stem_ultra[stem_ids[s_idx]] = float(
+                    10.0 * math.log10(max(float(np.mean(pred_u**2)), 1e-18))
+                )
+            else:
+                per_stem_ultra[stem_ids[s_idx]] = rep_u.besr_db
+                active_l.append(besr_l)
+                active_f.append(besr_f)
+                active_u.append(rep_u.besr_db)
+                active_reports.append(rep_u)
+
+        use_l = active_l if active_l else fallback_l
+        use_f = active_f if active_f else fallback_f
+        use_u = active_u if active_u else fallback_u
+        use_reps = active_reports if active_reports else fallback_reports
+
+        mean_l = float(np.mean(use_l)) if use_l else 0.0
+        mean_f = float(np.mean(use_f)) if use_f else 0.0
+        mean_u = float(np.mean(use_u)) if use_u else 0.0
+        if use_reps:
+            summary_rep = PsychoacousticMetricsReport(
+                besr_db=mean_u,
+                esr_lf_db=float(np.mean([r.esr_lf_db for r in use_reps])),
+                esr_mid_db=float(np.mean([r.esr_mid_db for r in use_reps])),
+                esr_hf_db=float(np.mean([r.esr_hf_db for r in use_reps])),
+                mr_stft_db=float(np.mean([r.mr_stft_db for r in use_reps])),
+                ltas_rms_tilt_db=float(np.mean([r.ltas_rms_tilt_db for r in use_reps])),
+                ltas_hf_tilt_db=float(np.mean([r.ltas_hf_tilt_db for r in use_reps])),
+                seg_esr_db=float(np.mean([r.seg_esr_db for r in use_reps])),
+            )
+        else:
+            summary_rep = PsychoacousticMetricsReport(
+                besr_db=0.0,
+                esr_lf_db=0.0,
+                esr_mid_db=0.0,
+                esr_hf_db=0.0,
+                mr_stft_db=0.0,
+                ltas_rms_tilt_db=0.0,
+                ltas_hf_tilt_db=0.0,
+                seg_esr_db=0.0,
+            )
+
         return (
-            float(np.mean(esr_l)),
-            float(np.mean(esr_f)),
-            float(np.mean(esr_u)),
+            mean_l,
+            mean_f,
+            mean_u,
             per_stem_ultra,
+            summary_rep,
         )
 
     def fit_job(
@@ -592,12 +866,12 @@ class DnamTrainer:
             raise ValueError(f"TrainingJobRequest for '{request.model_id}' has 0 stems")
 
         # ---------------------------------------------------------------------
-        # Stage 1: Step-0 System-ID, Topology Auto-Detection & Phase-1 Audit
+        # Stage 1: System-ID, Topology Auto-Detection & Phase-1 Audit
         # ---------------------------------------------------------------------
         self.observer.on_training_event(
             TrainingStageEvent(
                 stage=1,
-                stage_name="Step-0 System-ID & Phase-1 Control Audit",
+                stage_name="System-ID & Phase-1 Control Audit",
                 message=(
                     f"Auditing {len(stem_ids)} stems and {len(request.controls_schema)} controls"
                 ),
@@ -634,38 +908,66 @@ class DnamTrainer:
             svd_tol=request.config.svd_singular_floor,
             max_rank=request.config.max_head_svd_rank,
         )
-
-        # ---------------------------------------------------------------------
-        # Stage 2: Step-0 SVD-Orthonormal Kronecker float64 Warm-Start (CL-18)
-        # ---------------------------------------------------------------------
-        self.observer.on_training_event(
-            TrainingStageEvent(
-                stage=2,
-                stage_name="Step-0 SVD Kronecker float64 Wiener-Hopf Warm-Start",
-                message=f"core2_active={core2_active}, head_svd_rank={active_svd_rank}",
-            )
+        u_ctrl_stems = [
+            _compute_intrinsic_control_modulators(request.controls_schema, c)
+            for c in stems_controls
+        ]
+        min_stem_len = min(x.shape[0] for x in inputs_list)
+        use_selective_cascade = (
+            not audit_only and request.config.epochs > 0 and min_stem_len >= 32_768
         )
 
+        # ---------------------------------------------------------------------
+        # Stage 2: SVD-Orthonormal Kronecker float64 Warm-Start (CL-18)
+        # ---------------------------------------------------------------------
         model = DnamTriPhysicsModel(
             sample_rate_hz=sr,
             core2_active=core2_active,
         )
         device = torch.device("cpu")
-        if self.hardware_profile.torch_device.startswith(("cuda", "mps")):
+        if self.hardware_profile.torch_device.startswith("cuda"):
             device = torch.device(self.hardware_profile.torch_device)
         model.to(device)
 
+        self.observer.on_training_event(
+            TrainingStageEvent(
+                stage=2,
+                stage_name="SVD Kronecker float64 Wiener-Hopf Warm-Start",
+                message=(
+                    f"Extracting 192-D warm-start features across {len(stem_ids)} stems "
+                    f"(core2_active={core2_active}, head_svd_rank={active_svd_rank}, "
+                    f"device={device.type})"
+                ),
+            )
+        )
+
         features_list_s2: list[NDArray[np.float32]] = []
+        targets_list_s2: list[NDArray[np.float32]] = []
         stem_stats_s2: list[StemSufficientStatistics] = []
+        s2_phi_cache: dict[str, NDArray[np.float32]] = {}
         with torch.no_grad():
             for s_idx, s_id in enumerate(stem_ids):
-                x_t = torch.as_tensor(inputs_list[s_idx], device=device, dtype=torch.float32)
-                phi_t = model.extract_tier_ordered_features(x_t).squeeze(0)
-                phi_np = phi_t.detach().cpu().numpy().astype(np.float32)
+                s2_slice_len = (
+                    min(32_768, inputs_list[s_idx].shape[0])
+                    if use_selective_cascade
+                    else inputs_list[s_idx].shape[0]
+                )
+                sha_s2_key = f"{in_shas[s_idx]}:{s2_slice_len}"
+                if sha_s2_key in s2_phi_cache:
+                    phi_np = s2_phi_cache[sha_s2_key]
+                else:
+                    x_t = torch.as_tensor(
+                        inputs_list[s_idx][:s2_slice_len], device=device, dtype=torch.float32
+                    )
+                    phi_t = model.extract_tier_ordered_features(x_t).squeeze(0)
+                    phi_np = phi_t.detach().cpu().numpy().astype(np.float32)
+                    s2_phi_cache[sha_s2_key] = phi_np
+                y_s2 = targets_list[s_idx][:s2_slice_len]
                 features_list_s2.append(phi_np)
+                targets_list_s2.append(y_s2)
                 stat = compute_stem_sufficient_statistics(
                     phi_np,
-                    targets_list[s_idx],
+                    y_s2,
                     stem_id=s_id,
                     controls_meta=stems_controls[s_idx],
                     input_pcm_sha256=in_shas[s_idx],
@@ -685,152 +987,259 @@ class DnamTrainer:
         )
         model.load_kronecker_solution(head_init_sol, p_svd_16x4)
 
-        esr_l0, esr_f0, esr_u0, _ = self._evaluate_multi_tier_esr(
+        esr_l0, esr_f0, esr_u0, _, psycho_s2 = self._evaluate_multi_tier_esr(
             features_list_s2,
-            targets_list,
+            targets_list_s2,
             z_head_stems,
             head_init_sol,
             stem_ids,
+            sample_rate_hz=sr,
+            full_psychoacoustics=False,
         )
+        s2_elapsed = max(0.0, time.perf_counter() - t0)
         telemetry_rows: list[TrainingTelemetryRow] = [
             TrainingTelemetryRow(
                 stage=2,
-                epoch=0,
+                epoch=1,
                 esr_lite_db=esr_l0,
                 esr_full_db=esr_f0,
                 esr_ultra_db=esr_u0,
                 barrier_loss=0.0,
                 group_lasso_loss=0.0,
                 surrogate_sigma_samples=35.0,
-                elapsed_sec=max(0.0, time.perf_counter() - t0),
+                elapsed_sec=s2_elapsed,
             )
         ]
-
-        # ---------------------------------------------------------------------
-        # Stage 3: Adam(weight_decay=0.0) + 20-Step Warmup + Corner Barrier
-        # ---------------------------------------------------------------------
         self.observer.on_training_event(
-            TrainingStageEvent(
-                stage=3,
-                stage_name="Adam(weight_decay=0.0) + Surrogate Delay + Corner Barrier",
-                message=f"Running {request.config.epochs} epochs",
+            TrainingStepEvent(
+                stage=2,
+                epoch=1,
+                total_epochs=1,
+                esr_lite_db=esr_l0,
+                esr_full_db=esr_f0,
+                esr_ultra_db=esr_u0,
+                esr_lf_db=psycho_s2.esr_lf_db,
+                esr_mid_db=psycho_s2.esr_mid_db,
+                esr_hf_db=psycho_s2.esr_hf_db,
+                barrier_loss=0.0,
+                group_lasso_loss=0.0,
+                surrogate_sigma_samples=35.0,
+                elapsed_sec=s2_elapsed,
             )
         )
 
-        if not audit_only and request.config.epochs > 0:
-            backbone_params = [
-                p
-                for name, p in model.named_parameters()
-                if not name.startswith(("w_head_tiers", "b_head"))
-            ]
-            head_params = [
-                p
-                for name, p in model.named_parameters()
-                if name.startswith(("w_head_tiers", "b_head"))
-            ]
-            optimizer = torch.optim.Adam(
-                [
-                    {
-                        "params": backbone_params,
-                        "lr": request.config.backbone_lr,
-                        "weight_decay": 0.0,
-                    },
-                    {
-                        "params": head_params,
-                        "lr": request.config.head_lr,
-                        "weight_decay": 0.0,
-                    },
-                ],
-                weight_decay=0.0,
+        # ---------------------------------------------------------------------
+        # Stage 3: Causal Selective State-Space & 3-Band Backbone Calibration
+        # ---------------------------------------------------------------------
+        s2_state_dict = {k: v.detach().clone() for k, v in model.state_dict().items()}
+
+        if use_selective_cascade:
+            self.observer.on_training_event(
+                TrainingStageEvent(
+                    stage=3,
+                    stage_name="Causal Selective State-Space & 3-Band Backbone Calibration",
+                    message=(
+                        "Calibrating LTI + 3-stage nonlinear cascade "
+                        "(V1A/Pre -> V1B/Driver -> PowerTube/OT -> 48 kHz HF Polish)"
+                    ),
+                )
             )
 
-            win_len = min(4096, min(x.shape[0] for x in inputs_list))
-            x_batch = torch.stack(
-                [
-                    torch.as_tensor(x[:win_len], device=device, dtype=torch.float32)
-                    for x in inputs_list
-                ],
-                dim=0,
-            )
-            y_batch = torch.stack(
-                [
-                    torch.as_tensor(y[:win_len], device=device, dtype=torch.float32)
-                    for y in targets_list
-                ],
-                dim=0,
-            )
-            z_batch = torch.as_tensor(z_head_stems, device=device, dtype=torch.float32)
-            y_power = torch.mean(y_batch**2).clamp(min=1e-12)
-
-            total_steps = max(1, request.config.epochs)
-            warmup_steps = max(1, min(request.config.warmup_steps, total_steps))
-            report_every = max(1, total_steps // 4)
-
-            for step_idx in range(1, total_steps + 1):
-                warmup_scale = min(1.0, float(step_idx) / float(warmup_steps))
-                optimizer.param_groups[0]["lr"] = request.config.backbone_lr * warmup_scale
-                optimizer.param_groups[1]["lr"] = request.config.head_lr * warmup_scale
-
-                optimizer.zero_grad()
-                feats = model.extract_tier_ordered_features(x_batch)
-                pred_l = model.forward_head_from_features(feats, z_batch, tier="lite")
-                pred_f = model.forward_head_from_features(feats, z_batch, tier="full")
-                pred_u = model.forward_head_from_features(feats, z_batch, tier="ultra")
-
-                loss_l = torch.mean((pred_l - y_batch) ** 2) / y_power
-                loss_f = torch.mean((pred_f - y_batch) ** 2) / y_power
-                loss_u = torch.mean((pred_u - y_batch) ** 2) / y_power
-
-                # Evaluate Phase-2 Stop-Gradient Corner Barrier on SelectiveRgLru poles
-                rglru0 = model.rglru_tiers[0]
-                assert isinstance(rglru0, DifferentiableSelectiveRgLru)
-                r_low_0, dr_0 = rglru0.clamped_radii()
-                l_barrier = compute_phase2_corner_barrier_loss(
-                    r_low_0,
-                    dr_0,
-                    0.9990,
-                    lambda_bar=request.config.barrier_weight,
+            def _on_cascade_step_metrics(
+                c_step: int,
+                c_total: int,
+                besr_l: float,
+                besr_f: float,
+                besr_u: float,
+                lf_db: float,
+                mf_db: float,
+                hf_db: float,
+            ) -> None:
+                el_sec = max(0.0, time.perf_counter() - t0)
+                prog = float(c_step) / float(max(1, c_total))
+                sigma_s = max(0.0, 35.0 * (1.0 - min(prog / 0.75, 1.0)))
+                telemetry_rows.append(
+                    TrainingTelemetryRow(
+                        stage=3,
+                        epoch=c_step,
+                        esr_lite_db=besr_l,
+                        esr_full_db=besr_f,
+                        esr_ultra_db=besr_u,
+                        barrier_loss=0.0,
+                        group_lasso_loss=0.0,
+                        surrogate_sigma_samples=sigma_s,
+                        elapsed_sec=el_sec,
+                    )
+                )
+                self.observer.on_training_event(
+                    TrainingStepEvent(
+                        stage=3,
+                        epoch=c_step,
+                        total_epochs=c_total,
+                        esr_lite_db=besr_l,
+                        esr_full_db=besr_f,
+                        esr_ultra_db=besr_u,
+                        esr_lf_db=lf_db,
+                        esr_mid_db=mf_db,
+                        esr_hf_db=hf_db,
+                        barrier_loss=0.0,
+                        group_lasso_loss=0.0,
+                        surrogate_sigma_samples=sigma_s,
+                        elapsed_sec=el_sec,
+                    )
                 )
 
-                total_loss = 0.25 * loss_l + 0.35 * loss_f + 0.40 * loss_u + l_barrier
-                total_loss.backward()
-                optimizer.step()
+            model.calibrate_selective_cascade(
+                inputs_list,
+                targets_list,
+                in_shas=in_shas,
+                on_step_metrics=_on_cascade_step_metrics,
+            )
+        else:
+            self.observer.on_training_event(
+                TrainingStageEvent(
+                    stage=3,
+                    stage_name="Causal Selective State-Space & 3-Band Backbone Calibration",
+                    message=(
+                        "Audit-only mode (skipping backbone optimization)"
+                        if audit_only or request.config.epochs <= 0
+                        else f"Running {request.config.epochs} backbone optimization steps"
+                    ),
+                )
+            )
+            if not audit_only and request.config.epochs > 0:
+                backbone_params = [
+                    p
+                    for name, p in model.named_parameters()
+                    if not name.startswith(("w_head", "b_head"))
+                ]
+                head_params = [
+                    p
+                    for name, p in model.named_parameters()
+                    if name.startswith(("w_head", "b_head"))
+                ]
+                optimizer = torch.optim.Adam(
+                    [
+                        {
+                            "params": backbone_params,
+                            "lr": request.config.backbone_lr * 0.25,
+                            "weight_decay": 0.0,
+                        },
+                        {
+                            "params": head_params,
+                            "lr": request.config.head_lr * 0.25,
+                            "weight_decay": 0.0,
+                        },
+                    ],
+                    weight_decay=0.0,
+                )
 
-                if step_idx % report_every == 0 or step_idx == total_steps:
-                    esr_l_step = float(10.0 * torch.log10(loss_l.detach().clamp(min=1e-18)).item())
-                    esr_f_step = float(10.0 * torch.log10(loss_f.detach().clamp(min=1e-18)).item())
-                    esr_u_step = float(10.0 * torch.log10(loss_u.detach().clamp(min=1e-18)).item())
-                    bar_val = float(l_barrier.detach().item())
-                    el_sec = max(0.0, time.perf_counter() - t0)
-                    prog = step_idx / float(total_steps)
-                    sigma_s = max(0.0, 35.0 * (1.0 - min(prog / 0.45, 1.0)))
-                    telemetry_rows.append(
-                        TrainingTelemetryRow(
-                            stage=3,
-                            epoch=step_idx,
-                            esr_lite_db=esr_l_step,
-                            esr_full_db=esr_f_step,
-                            esr_ultra_db=esr_u_step,
-                            barrier_loss=bar_val,
-                            group_lasso_loss=0.0,
-                            surrogate_sigma_samples=sigma_s,
-                            elapsed_sec=el_sec,
-                        )
+                win_len = min(8192, min_stem_len)
+                burn_in = min(512, max(0, (win_len - 64) // 8))
+                win_start = 0
+                if min_stem_len > win_len:
+                    ref_energy = sum(
+                        np.mean(y[:min_stem_len].astype(np.float64) ** 2, axis=1)
+                        for y in targets_list
                     )
-                    self.observer.on_training_event(
-                        TrainingStepEvent(
-                            stage=3,
-                            epoch=step_idx,
-                            total_epochs=total_steps,
-                            esr_lite_db=esr_l_step,
-                            esr_full_db=esr_f_step,
-                            esr_ultra_db=esr_u_step,
-                            barrier_loss=bar_val,
-                            group_lasso_loss=0.0,
-                            surrogate_sigma_samples=sigma_s,
-                            elapsed_sec=el_sec,
-                        )
+                    csum = np.concatenate([[0.0], np.cumsum(ref_energy, dtype=np.float64)])
+                    win_sums = csum[win_len:] - csum[:-win_len]
+                    win_start = int(np.argmax(win_sums))
+                win_end = win_start + win_len
+                x_batch = torch.stack(
+                    [
+                        torch.as_tensor(x[win_start:win_end], device=device, dtype=torch.float32)
+                        for x in inputs_list
+                    ],
+                    dim=0,
+                )
+                y_batch = torch.stack(
+                    [
+                        torch.as_tensor(y[win_start:win_end], device=device, dtype=torch.float32)
+                        for y in targets_list
+                    ],
+                    dim=0,
+                )
+                y_eval = y_batch[:, burn_in:, :]
+                z_batch = torch.as_tensor(z_head_stems, device=device, dtype=torch.float32)
+
+                total_steps = max(1, request.config.epochs)
+                warmup_steps = max(1, min(request.config.warmup_steps, total_steps))
+                report_every = 1 if total_steps <= 50 else max(1, total_steps // 20)
+
+                for step_idx in range(1, total_steps + 1):
+                    warmup_scale = min(1.0, float(step_idx) / float(warmup_steps))
+                    optimizer.param_groups[0]["lr"] = (
+                        request.config.backbone_lr * 0.25 * warmup_scale
                     )
+                    optimizer.param_groups[1]["lr"] = request.config.head_lr * 0.25 * warmup_scale
+
+                    optimizer.zero_grad()
+                    feats = model.extract_tier_ordered_features(x_batch)[:, burn_in:, :]
+                    pred_l = model.forward_head_from_features(feats, z_batch, tier="lite")
+                    pred_f = model.forward_head_from_features(feats, z_batch, tier="full")
+                    pred_u = model.forward_head_from_features(feats, z_batch, tier="ultra")
+
+                    loss_l = torch_floor_regularized_besr_loss(pred_l, y_eval, sample_rate_hz=sr)
+                    loss_f = torch_floor_regularized_besr_loss(pred_f, y_eval, sample_rate_hz=sr)
+                    loss_u = torch_floor_regularized_besr_loss(pred_u, y_eval, sample_rate_hz=sr)
+
+                    # Evaluate Phase-2 Stop-Gradient Corner Barrier on SelectiveRgLru poles
+                    rglru0 = model.rglru_tiers[0]
+                    assert isinstance(rglru0, DifferentiableSelectiveRgLru)
+                    r_low_0, dr_0 = rglru0.clamped_radii()
+                    l_barrier = compute_phase2_corner_barrier_loss(
+                        r_low_0,
+                        dr_0,
+                        0.9990,
+                        lambda_bar=request.config.barrier_weight,
+                    )
+
+                    total_loss = 0.25 * loss_l + 0.35 * loss_f + 0.40 * loss_u + l_barrier
+                    total_loss.backward()
+                    optimizer.step()
+
+                    if step_idx % report_every == 0 or step_idx == total_steps:
+                        esr_l_step = float(
+                            10.0 * torch.log10(loss_l.detach().clamp(min=1e-18)).item()
+                        )
+                        esr_f_step = float(
+                            10.0 * torch.log10(loss_f.detach().clamp(min=1e-18)).item()
+                        )
+                        esr_u_step = float(
+                            10.0 * torch.log10(loss_u.detach().clamp(min=1e-18)).item()
+                        )
+                        bar_val = float(l_barrier.detach().item())
+                        el_sec = max(0.0, time.perf_counter() - t0)
+                        prog = step_idx / float(total_steps)
+                        sigma_s = max(0.0, 35.0 * (1.0 - min(prog / 0.45, 1.0)))
+                        telemetry_rows.append(
+                            TrainingTelemetryRow(
+                                stage=3,
+                                epoch=step_idx,
+                                esr_lite_db=esr_l_step,
+                                esr_full_db=esr_f_step,
+                                esr_ultra_db=esr_u_step,
+                                barrier_loss=bar_val,
+                                group_lasso_loss=0.0,
+                                surrogate_sigma_samples=sigma_s,
+                                elapsed_sec=el_sec,
+                            )
+                        )
+                        self.observer.on_training_event(
+                            TrainingStepEvent(
+                                stage=3,
+                                epoch=step_idx,
+                                total_epochs=total_steps,
+                                esr_lite_db=esr_l_step,
+                                esr_full_db=esr_f_step,
+                                esr_ultra_db=esr_u_step,
+                                barrier_loss=bar_val,
+                                group_lasso_loss=0.0,
+                                surrogate_sigma_samples=sigma_s,
+                                elapsed_sec=el_sec,
+                            )
+                        )
 
         updated_ctrls, p2_warnings = run_phase2_rail_lockup_audit(
             list(model.poly_adaa_tiers),
@@ -845,64 +1254,124 @@ class DnamTrainer:
         self.observer.on_training_event(AuditPhaseEvent(phase=2, audit_report=p2_report))
 
         # ---------------------------------------------------------------------
-        # Stage 4: Step-N float64 Cholesky Export Polish (CL-18) & Phase-3 Audit
+        # Stage 4: float64 Cholesky Export Polish (CL-18) & Phase-3 Audit
         # ---------------------------------------------------------------------
         self.observer.on_training_event(
             TrainingStageEvent(
                 stage=4,
-                stage_name="Step-N float64 Cholesky Export Polish & Phase-3 Corner Audit",
-                message="Computing final float64 Kronecker polish (lambda = 1e-6 * trace_avg)",
+                stage_name="float64 Cholesky Export Polish & Phase-3 Corner Audit",
+                message=(
+                    f"Accumulating {len(stem_ids)}-stem uplo='U' Gram stats & "
+                    f"solving float64 Cholesky polish (lambda = 1e-6 * trace_avg)"
+                ),
             )
         )
 
         features_list_s4: list[NDArray[np.float32]] = []
         stem_stats_s4: list[StemSufficientStatistics] = []
-        with torch.no_grad():
-            for s_idx, s_id in enumerate(stem_ids):
-                x_t = torch.as_tensor(inputs_list[s_idx], device=device, dtype=torch.float32)
-                phi_t = model.extract_tier_ordered_features(x_t).squeeze(0)
-                phi_np = phi_t.detach().cpu().numpy().astype(np.float32)
-                features_list_s4.append(phi_np)
-                stat = compute_stem_sufficient_statistics(
-                    phi_np,
-                    targets_list[s_idx],
-                    stem_id=s_id,
-                    controls_meta=stems_controls[s_idx],
-                    input_pcm_sha256=in_shas[s_idx],
-                    target_pcm_sha256=tgt_shas[s_idx],
-                    extracted_physics=ExtractedPhysics(
-                        delays_ms=[round(tail_time_ms, 3)] if core2_active else [],
-                        lfo_freqs_hz=[0.8] if core2_active else [],
-                        decay_gains_lin=[0.65] if core2_active else [],
-                    ),
-                )
-                stem_stats_s4.append(stat)
+        if audit_only or request.config.epochs == 0:
+            features_list_s4 = list(features_list_s2)
+            stem_stats_s4 = list(stem_stats_s2)
+        else:
+            with torch.no_grad():
+                for s_idx, s_id in enumerate(stem_ids):
+                    x_t = torch.as_tensor(inputs_list[s_idx], device=device, dtype=torch.float32)
+                    phi_np = model.extract_calibrated_or_tier_features(
+                        x_t,
+                        in_sha=in_shas[s_idx],
+                        u_ctrl_3=u_ctrl_stems[s_idx],
+                    )
+                    features_list_s4.append(phi_np)
+                    stat = compute_stem_sufficient_statistics(
+                        phi_np,
+                        targets_list[s_idx],
+                        stem_id=s_id,
+                        controls_meta=stems_controls[s_idx],
+                        input_pcm_sha256=in_shas[s_idx],
+                        target_pcm_sha256=tgt_shas[s_idx],
+                        extracted_physics=ExtractedPhysics(
+                            delays_ms=[round(tail_time_ms, 3)] if core2_active else [],
+                            lfo_freqs_hz=[0.8] if core2_active else [],
+                            decay_gains_lin=[0.65] if core2_active else [],
+                        ),
+                    )
+                    stem_stats_s4.append(stat)
 
         head_polish_sol = solve_all_tiers_kronecker_head_float64(
             stem_stats_s4,
             z_head_stems,
             mode="polish",
         )
-        model.load_kronecker_solution(head_polish_sol, p_svd_16x4)
-
-        esr_l_final, esr_f_final, esr_u_final, per_stem_ultra = self._evaluate_multi_tier_esr(
-            features_list_s4,
-            targets_list,
-            z_head_stems,
-            head_polish_sol,
-            stem_ids,
+        esr_l_final, esr_f_final, esr_u_final, per_stem_ultra, psycho_final = (
+            self._evaluate_multi_tier_esr(
+                features_list_s4,
+                targets_list,
+                z_head_stems,
+                head_polish_sol,
+                stem_ids,
+                sample_rate_hz=sr,
+                full_psychoacoustics=True,
+            )
         )
+        if not use_selective_cascade and not audit_only and request.config.epochs > 0:
+            head_polish_s2 = solve_all_tiers_kronecker_head_float64(
+                stem_stats_s2,
+                z_head_stems,
+                mode="polish",
+            )
+            esr_l_s2p, esr_f_s2p, esr_u_s2p, per_stem_s2p, psycho_s2p = (
+                self._evaluate_multi_tier_esr(
+                    features_list_s2,
+                    targets_list_s2,
+                    z_head_stems,
+                    head_polish_s2,
+                    stem_ids,
+                    sample_rate_hz=sr,
+                    full_psychoacoustics=True,
+                )
+            )
+            if esr_u_s2p < esr_u_final:
+                model.load_state_dict(s2_state_dict)
+                head_polish_sol = head_polish_s2
+                features_list_s4 = features_list_s2
+                stem_stats_s4 = stem_stats_s2
+                esr_l_final, esr_f_final, esr_u_final, per_stem_ultra, psycho_final = (
+                    esr_l_s2p,
+                    esr_f_s2p,
+                    esr_u_s2p,
+                    per_stem_s2p,
+                    psycho_s2p,
+                )
+        model.load_kronecker_solution(head_polish_sol, p_svd_16x4)
+        s4_elapsed = max(0.0, time.perf_counter() - t0)
         telemetry_rows.append(
             TrainingTelemetryRow(
                 stage=4,
-                epoch=request.config.epochs,
+                epoch=1,
                 esr_lite_db=esr_l_final,
                 esr_full_db=esr_f_final,
                 esr_ultra_db=esr_u_final,
                 barrier_loss=0.0,
                 group_lasso_loss=0.0,
                 surrogate_sigma_samples=0.0,
-                elapsed_sec=max(0.0, time.perf_counter() - t0),
+                elapsed_sec=s4_elapsed,
+            )
+        )
+        self.observer.on_training_event(
+            TrainingStepEvent(
+                stage=4,
+                epoch=1,
+                total_epochs=1,
+                esr_lite_db=esr_l_final,
+                esr_full_db=esr_f_final,
+                esr_ultra_db=esr_u_final,
+                esr_lf_db=psycho_final.esr_lf_db,
+                esr_mid_db=psycho_final.esr_mid_db,
+                esr_hf_db=psycho_final.esr_hf_db,
+                barrier_loss=0.0,
+                group_lasso_loss=0.0,
+                surrogate_sigma_samples=0.0,
+                elapsed_sec=s4_elapsed,
             )
         )
 
@@ -1000,6 +1469,13 @@ class DnamTrainer:
                 esr_lite_db=esr_l_final,
                 esr_full_db=esr_f_final,
                 esr_ultra_db=esr_u_final,
+                esr_lf_db=psycho_final.esr_lf_db,
+                esr_mid_db=psycho_final.esr_mid_db,
+                esr_hf_db=psycho_final.esr_hf_db,
+                mr_stft_db=psycho_final.mr_stft_db,
+                ltas_rms_tilt_db=psycho_final.ltas_rms_tilt_db,
+                ltas_hf_tilt_db=psycho_final.ltas_hf_tilt_db,
+                seg_esr_db=psycho_final.seg_esr_db,
                 core2_active=core2_active,
                 lfo_env_active=True,
                 resume_tier_executed=0,
@@ -1014,6 +1490,13 @@ class DnamTrainer:
             audit_report=final_audit,
             telemetry=telemetry_rows,
             stem_esr_ultra_db=per_stem_ultra,
+            esr_lf_db=psycho_final.esr_lf_db,
+            esr_mid_db=psycho_final.esr_mid_db,
+            esr_hf_db=psycho_final.esr_hf_db,
+            mr_stft_db=psycho_final.mr_stft_db,
+            ltas_rms_tilt_db=psycho_final.ltas_rms_tilt_db,
+            ltas_hf_tilt_db=psycho_final.ltas_hf_tilt_db,
+            seg_esr_db=psycho_final.seg_esr_db,
             resume_tier_executed=0,
             core2_active=core2_active,
             lfo_env_active=True,
@@ -1065,7 +1548,7 @@ class DnamTrainer:
             core2_active=core2_active,
         )
         device = torch.device("cpu")
-        if self.hardware_profile.torch_device.startswith(("cuda", "mps")):
+        if self.hardware_profile.torch_device.startswith("cuda"):
             device = torch.device(self.hardware_profile.torch_device)
         model.to(device)
 
@@ -1141,12 +1624,9 @@ class DnamTrainer:
         )
         model.load_kronecker_solution(head_polish_sol, p_svd_16x4)
 
-        # Evaluate ESR on the provided stems
-        esr_l_list: list[float] = []
-        esr_f_list: list[float] = []
-        esr_u_list: list[float] = []
-        per_stem_ultra: dict[str, float] = {}
+        # Evaluate Floor-Regularized Band-Balanced ESR (`bESR`) on the provided stems
         offset = len(kept_existing)
+        resume_features_list: list[NDArray[np.float32]] = []
         with torch.no_grad():
             for idx in range(len(stem_ids)):
                 phi_np = (
@@ -1157,28 +1637,34 @@ class DnamTrainer:
                     .detach()
                     .cpu()
                     .numpy()
+                    .astype(np.float32)
                 )
-                z_s = z_head_stems[offset + idx]
-                el = compute_esr_db(
-                    evaluate_kronecker_head_features(phi_np, z_s, head_polish_sol.w_lite_5x2x64),
-                    targets_list[idx],
-                )
-                ef = compute_esr_db(
-                    evaluate_kronecker_head_features(phi_np, z_s, head_polish_sol.w_full_5x2x128),
-                    targets_list[idx],
-                )
-                eu = compute_esr_db(
-                    evaluate_kronecker_head_features(phi_np, z_s, head_polish_sol.w_ultra_5x2x192),
-                    targets_list[idx],
-                )
-                esr_l_list.append(el)
-                esr_f_list.append(ef)
-                esr_u_list.append(eu)
-                per_stem_ultra[stem_ids[idx]] = eu
+                resume_features_list.append(phi_np)
 
-        esr_l_final = float(np.mean(esr_l_list)) if esr_l_list else -40.0
-        esr_f_final = float(np.mean(esr_f_list)) if esr_f_list else -42.0
-        esr_u_final = float(np.mean(esr_u_list)) if esr_u_list else -45.0
+        if stem_ids:
+            esr_l_final, esr_f_final, esr_u_final, per_stem_ultra, psycho_resume = (
+                self._evaluate_multi_tier_esr(
+                    resume_features_list,
+                    targets_list,
+                    z_head_stems[offset : offset + len(stem_ids)],
+                    head_polish_sol,
+                    stem_ids,
+                    sample_rate_hz=sr,
+                    full_psychoacoustics=True,
+                )
+            )
+        else:
+            esr_l_final, esr_f_final, esr_u_final, per_stem_ultra = -40.0, -42.0, -45.0, {}
+            psycho_resume = PsychoacousticMetricsReport(
+                besr_db=-45.0,
+                esr_lf_db=-45.0,
+                esr_mid_db=-45.0,
+                esr_hf_db=-45.0,
+                mr_stft_db=0.0,
+                ltas_rms_tilt_db=0.0,
+                ltas_hf_tilt_db=0.0,
+                seg_esr_db=-45.0,
+            )
 
         tier_executed: int = (
             2
@@ -1261,6 +1747,13 @@ class DnamTrainer:
             audit_report=p1_result.audit_report,
             telemetry=[telemetry_row],
             stem_esr_ultra_db=per_stem_ultra,
+            esr_lf_db=psycho_resume.esr_lf_db,
+            esr_mid_db=psycho_resume.esr_mid_db,
+            esr_hf_db=psycho_resume.esr_hf_db,
+            mr_stft_db=psycho_resume.mr_stft_db,
+            ltas_rms_tilt_db=psycho_resume.ltas_rms_tilt_db,
+            ltas_hf_tilt_db=psycho_resume.ltas_hf_tilt_db,
+            seg_esr_db=psycho_resume.seg_esr_db,
             resume_tier_executed=2 if tier_executed == 2 else 1,
             core2_active=core2_active,
             lfo_env_active=True,

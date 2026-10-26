@@ -6,10 +6,12 @@ use std::path::{Path, PathBuf};
 use clap::Subcommand;
 
 use crate::capture::{
-    align_hardware_latency, apply_subsample_shift_fft, compute_pcm_sha256,
-    create_capture_backend_with_gain, generate_excitation_signal,
+    CalibrationResult, Step1CalibrationMetrics, align_hardware_latency,
+    analyze_hot_corner_nonlinearity, analyze_probe_for_excitation, apply_subsample_shift_fft,
+    compute_pcm_sha256, create_capture_backend_with_gain, estimate_subsample_lag_and_snr,
+    generate_calibration_probe, generate_excitation_signal,
     generate_excitation_signal_with_profile, list_backend_devices, list_capture_backends,
-    write_wav_24bit,
+    measure_silent_window_noise_floor, query_cpal_devices, write_wav_24bit,
 };
 use crate::cli::format::{self, StemPromptAction};
 use crate::error::{StudioError, StudioResult};
@@ -58,6 +60,9 @@ pub enum CaptureAction {
         /// Optional initial output send gain in dB (Step 1 auto-pads if bypass clips).
         #[arg(long)]
         send_gain_db: Option<f32>,
+        /// Optional individual calibration step (`1` = Bypass Unity, `2` = Engaged Hot-Corner).
+        #[arg(long)]
+        step: Option<u8>,
         /// Automatically confirm interactive calibration prompts.
         #[arg(long, short = 'y')]
         yes: bool,
@@ -82,6 +87,12 @@ pub enum CaptureAction {
         /// Number of samples per stem.
         #[arg(long, default_value_t = 2048)]
         samples: usize,
+        /// Optional specific stem ID to record (`stem_00_star_center`, etc.).
+        #[arg(long)]
+        stem: Option<String>,
+        /// Optional maximum number of pending stems to record in this invocation.
+        #[arg(long)]
+        max_stems: Option<usize>,
         /// Automatically confirm interactive stem prompts.
         #[arg(long, short = 'y')]
         yes: bool,
@@ -92,6 +103,25 @@ pub enum CaptureAction {
         #[arg(long)]
         all_stems: bool,
     },
+}
+
+fn is_real_hw_device(backend: &str, device_id: &str) -> bool {
+    let trimmed = device_id.trim();
+    backend != "software"
+        && !trimmed.is_empty()
+        && trimmed != "loopback_default"
+        && trimmed != "usb_class_compliant_0"
+        && trimmed != "anagram_rk3582_usb"
+}
+
+fn resolve_effective_device(backend: &str, device: &str) -> String {
+    if backend != "software"
+        && (device.trim().is_empty() || device.trim() == "loopback_default")
+        && let Some(first) = query_cpal_devices(backend).into_iter().next()
+    {
+        return first.device_id;
+    }
+    device.to_string()
 }
 
 fn resolve_target_model_id(proj: &DnamProject, explicit: Option<&str>) -> StudioResult<String> {
@@ -141,30 +171,167 @@ pub fn run_capture(workspace: &Path, action: &CaptureAction) -> StudioResult<Str
             backend,
             device,
             send_gain_db,
+            step,
             yes,
         } => {
             let proj = DnamProject::open(workspace)?;
             let sr = proj.manifest().project.sample_rate_hz;
             let model_id = resolve_target_model_id(&proj, model.as_deref())?;
             let model_manifest = proj.load_model(&model_id)?;
+            let resolved_dev = resolve_effective_device(backend, device);
             let initial_gain_db = send_gain_db.unwrap_or(model_manifest.capture.send_gain_db);
             let cap_backend =
-                create_capture_backend_with_gain(backend, Some(device), sr, initial_gain_db);
+                create_capture_backend_with_gain(backend, Some(&resolved_dev), sr, initial_gain_db);
             let auto_yes = *yes || backend == "software";
+            let is_hw = is_real_hw_device(backend, &resolved_dev);
+            let probe_len = if is_hw {
+                ((sr as usize) * 4).max(2_048)
+            } else {
+                2_048
+            };
+            let dry_len = if is_hw {
+                ((sr as usize) * 12).max(4_096)
+            } else {
+                4_096
+            };
+
+            if *step == Some(1) {
+                format::prompt_calibration_step1(&cap_backend.setup_instructions(sr), auto_yes)?;
+                let base_dry = generate_calibration_probe(sr, probe_len);
+                let mut unity_ranges = BTreeMap::new();
+                unity_ranges.insert("drive".to_string(), 0.0_f32);
+                let mut locked_gain_db = initial_gain_db;
+                let mut scaled_dry = base_dry.clone();
+                let mut wet_step1 = Vec::new();
+                for attempt in 0..5 {
+                    let pad_lin = 10.0_f32.powf((locked_gain_db - initial_gain_db) / 20.0);
+                    scaled_dry = base_dry.iter().map(|&s| s * pad_lin).collect();
+                    wet_step1 =
+                        cap_backend.capture_stem(&scaled_dry, &unity_ranges, &BTreeMap::new())?;
+                    if !wet_step1.iter().any(|&s| s.abs() >= 0.994) || attempt == 4 {
+                        break;
+                    }
+                    locked_gain_db -= 6.0;
+                }
+                let report = estimate_subsample_lag_and_snr(
+                    &scaled_dry,
+                    &wet_step1,
+                    (scaled_dry.len() / 4).max(32),
+                )?;
+                let noise_1 = measure_silent_window_noise_floor(&wet_step1, sr, None);
+                let dry_rms = (scaled_dry.iter().map(|&x| x * x).sum::<f32>()
+                    / (scaled_dry.len().max(1) as f32))
+                    .sqrt()
+                    .max(1e-9);
+                let wet1_rms = (wet_step1.iter().map(|&x| x * x).sum::<f32>()
+                    / (wet_step1.len().max(1) as f32))
+                    .sqrt()
+                    .max(1e-9);
+                let unity_ref_dbfs = 20.0 * (wet1_rms / dry_rms).log10();
+                let s1 = Step1CalibrationMetrics {
+                    backend: backend.clone(),
+                    device_id: resolved_dev.clone(),
+                    send_gain_db: locked_gain_db,
+                    latency_samples: report.coarse_lag_samples,
+                    unity_ref_dbfs,
+                    noise_floor_dbfs: noise_1,
+                    snr_db: report.snr_db,
+                };
+                proj.update_calibration_with_profile(
+                    &model_id,
+                    backend,
+                    &resolved_dev,
+                    s1.send_gain_db,
+                    s1.latency_samples,
+                    s1.noise_floor_dbfs,
+                    s1.unity_ref_dbfs,
+                    model_manifest
+                        .capture
+                        .excitation_profile
+                        .unwrap_or_default(),
+                )?;
+                return Ok(serde_json::to_string_pretty(&s1)?);
+            }
+
+            if *step == Some(2) {
+                let s1 = Step1CalibrationMetrics {
+                    backend: backend.clone(),
+                    device_id: resolved_dev.clone(),
+                    send_gain_db: initial_gain_db,
+                    latency_samples: model_manifest.capture.calibrated_latency_samples,
+                    unity_ref_dbfs: model_manifest.capture.unity_ref_dbfs,
+                    noise_floor_dbfs: model_manifest.capture.noise_floor_dbfs,
+                    snr_db: 60.0,
+                };
+                format::prompt_calibration_step2(&s1, auto_yes)?;
+                let scaled_dry = generate_calibration_probe(sr, probe_len);
+                let mut hot_ranges = BTreeMap::new();
+                hot_ranges.insert("drive".to_string(), 1.0_f32);
+                let wet_step2 =
+                    cap_backend.capture_stem(&scaled_dry, &hot_ranges, &BTreeMap::new())?;
+                let report = align_hardware_latency(
+                    &scaled_dry,
+                    &wet_step2,
+                    (scaled_dry.len() / 4).max(32),
+                    if s1.latency_samples != 0 {
+                        Some(s1.latency_samples)
+                    } else {
+                        None
+                    },
+                    sr,
+                    Some(s1.noise_floor_dbfs),
+                )?;
+                let aligned_wet2 =
+                    apply_subsample_shift_fft(&wet_step2, report.subsample_lag_samples);
+                let hot_analysis =
+                    analyze_hot_corner_nonlinearity(&scaled_dry, &aligned_wet2, s1.unity_ref_dbfs);
+                let profile = analyze_probe_for_excitation(&scaled_dry, &aligned_wet2, sr);
+                let cal = CalibrationResult {
+                    backend: backend.clone(),
+                    device_id: resolved_dev.clone(),
+                    send_gain_db: initial_gain_db,
+                    latency_samples: report.coarse_lag_samples,
+                    noise_floor_dbfs: s1.noise_floor_dbfs,
+                    snr_db: report.snr_db,
+                    unity_ref_dbfs: s1.unity_ref_dbfs,
+                    hot_corner_peak_dbfs: hot_analysis.measured_return_peak_dbfs,
+                    hot_corner_clipped_fraction: hot_analysis.clipped_sample_fraction,
+                    excitation_profile: profile,
+                };
+                let tailored = generate_excitation_signal_with_profile(
+                    sr,
+                    dry_len,
+                    Some(&cal.excitation_profile),
+                );
+                let dry_path = proj.model_dry_input_wav_path(&model_id);
+                write_wav_24bit(&dry_path, &tailored, sr, 1)?;
+                proj.update_calibration_with_profile(
+                    &model_id,
+                    backend,
+                    &resolved_dev,
+                    cal.send_gain_db,
+                    cal.latency_samples,
+                    cal.noise_floor_dbfs,
+                    cal.unity_ref_dbfs,
+                    cal.excitation_profile.clone(),
+                )?;
+                return Ok(serde_json::to_string_pretty(&cal)?);
+            }
+
             let cal = cap_backend.calibrate_with_prompts(
-                device,
+                &resolved_dev,
                 sr,
                 &mut |setup| format::prompt_calibration_step1(setup, auto_yes),
                 &mut |step1| format::prompt_calibration_step2(step1, auto_yes),
             )?;
             let tailored =
-                generate_excitation_signal_with_profile(sr, 4_096, Some(&cal.excitation_profile));
+                generate_excitation_signal_with_profile(sr, dry_len, Some(&cal.excitation_profile));
             let dry_path = proj.model_dry_input_wav_path(&model_id);
             write_wav_24bit(&dry_path, &tailored, sr, 1)?;
             proj.update_calibration_with_profile(
                 &model_id,
                 backend,
-                device,
+                &resolved_dev,
                 cal.send_gain_db,
                 cal.latency_samples,
                 cal.noise_floor_dbfs,
@@ -190,6 +357,8 @@ pub fn run_capture(workspace: &Path, action: &CaptureAction) -> StudioResult<Str
             model,
             backend,
             samples,
+            stem,
+            max_stems,
             yes,
             countdown_sec,
             all_stems,
@@ -208,7 +377,13 @@ pub fn run_capture(workspace: &Path, action: &CaptureAction) -> StudioResult<Str
                 .as_deref()
                 .unwrap_or(&manifest.capture.backend)
                 .to_string();
-            let device_id = manifest.capture.device_id.clone();
+            let device_id = resolve_effective_device(&backend_name, &manifest.capture.device_id);
+            let is_hw = is_real_hw_device(&backend_name, &device_id);
+            let effective_samples = if is_hw && *samples == 2048 {
+                ((sr as usize) * 12).max(*samples)
+            } else {
+                *samples
+            };
             let auto_yes = *yes || backend_name == "software";
             let mut cap_backend = create_capture_backend_with_gain(
                 &backend_name,
@@ -242,7 +417,7 @@ pub fn run_capture(workspace: &Path, action: &CaptureAction) -> StudioResult<Str
 
             let dry = generate_excitation_signal_with_profile(
                 sr,
-                *samples,
+                effective_samples,
                 manifest.capture.excitation_profile.as_ref(),
             );
             let dry_sha = compute_pcm_sha256(&dry);
@@ -260,13 +435,22 @@ pub fn run_capture(workspace: &Path, action: &CaptureAction) -> StudioResult<Str
             let pending: Vec<_> = plan
                 .steps
                 .iter()
-                .filter(|s| !s.already_captured || *all_stems)
+                .filter(|s| {
+                    if let Some(target_stem) = stem.as_deref() {
+                        s.stem_id == target_stem
+                    } else {
+                        !s.already_captured || *all_stems
+                    }
+                })
                 .collect();
-            let total = pending.len();
+            let total = max_stems
+                .map(|m| pending.len().min(m))
+                .unwrap_or(pending.len());
             let mut prev_ranges: Option<BTreeMap<String, f32>> = None;
             let mut prev_switches: Option<BTreeMap<String, usize>> = None;
             let mut recorded = 0_usize;
             let mut idx = 0_usize;
+            let max_lag = (dry.len() / 4).max(32);
 
             while idx < total {
                 let step = pending[idx];
@@ -294,7 +478,8 @@ pub fn run_capture(workspace: &Path, action: &CaptureAction) -> StudioResult<Str
 
                 let wet =
                     cap_backend.capture_stem(&dry, &step.normalized_ranges, &step.switches)?;
-                let align = align_hardware_latency(&dry, &wet, 32, locked_lag, sr, baseline_noise)?;
+                let align =
+                    align_hardware_latency(&dry, &wet, max_lag, locked_lag, sr, baseline_noise)?;
                 let aligned_wet = apply_subsample_shift_fft(&wet, align.subsample_lag_samples);
                 let wet_rel = format!("models/{model_id}/stems/{}.wav", step.stem_id);
                 let wet_abs = stems_dir.join(format!("{}.wav", step.stem_id));
@@ -401,6 +586,8 @@ mod tests {
                 model: None,
                 backend: Some("software".to_string()),
                 samples: 1024,
+                stem: None,
+                max_stems: None,
                 yes: true,
                 countdown_sec: 0.0,
                 all_stems: false,
@@ -409,7 +596,7 @@ mod tests {
         .expect("record uncalibrated");
         assert!(rec1.contains("Recorded and aligned 3 stems"));
 
-        // Explicit calibrate
+        // Explicit calibrate (both steps, step 1, and step 2)
         let cal_out = run_capture(
             &dir,
             &CaptureAction::Calibrate {
@@ -417,11 +604,40 @@ mod tests {
                 backend: "software".to_string(),
                 device: "loopback_default".to_string(),
                 send_gain_db: Some(0.0),
+                step: None,
                 yes: true,
             },
         )
         .expect("calibrate");
         assert!(cal_out.contains("excitation_profile"));
+
+        let cal_s1 = run_capture(
+            &dir,
+            &CaptureAction::Calibrate {
+                model: Some("m1".to_string()),
+                backend: "software".to_string(),
+                device: "loopback_default".to_string(),
+                send_gain_db: Some(0.0),
+                step: Some(1),
+                yes: true,
+            },
+        )
+        .expect("calibrate step 1");
+        assert!(cal_s1.contains("unity_ref_dbfs"));
+
+        let cal_s2 = run_capture(
+            &dir,
+            &CaptureAction::Calibrate {
+                model: Some("m1".to_string()),
+                backend: "software".to_string(),
+                device: "loopback_default".to_string(),
+                send_gain_db: Some(0.0),
+                step: Some(2),
+                yes: true,
+            },
+        )
+        .expect("calibrate step 2");
+        assert!(cal_s2.contains("excitation_profile"));
 
         // Plan shows [CAPTURED]
         let plan_out = run_capture(
@@ -434,20 +650,22 @@ mod tests {
         .expect("plan");
         assert!(plan_out.contains("[CAPTURED]"));
 
-        // Record again with all_stems = true
+        // Record again with all_stems = true and max_stems = Some(1)
         let rec2 = run_capture(
             &dir,
             &CaptureAction::Record {
                 model: Some("m1".to_string()),
                 backend: None,
                 samples: 1024,
+                stem: None,
+                max_stems: Some(1),
                 yes: true,
                 countdown_sec: 0.0,
                 all_stems: true,
             },
         )
-        .expect("record all_stems");
-        assert!(rec2.contains("Recorded and aligned 3 stems"));
+        .expect("record max_stems=1");
+        assert!(rec2.contains("Recorded and aligned 1 stems"));
         let _ = fs::remove_dir_all(&dir);
     }
 }

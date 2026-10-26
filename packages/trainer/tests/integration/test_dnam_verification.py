@@ -36,7 +36,8 @@ from dnam_trainer.training.kronecker_head import (
     evaluate_kronecker_head_features,
     solve_all_tiers_kronecker_head_float64,
 )
-from dnam_trainer.training.pipeline import DnamTrainer, compute_esr_db
+from dnam_trainer.training.metrics import compute_floor_regularized_besr_db
+from dnam_trainer.training.pipeline import DnamTrainer
 from dnam_trainer.training.surrogate_delay import (
     _sample_cubic_lagrange_1d,
     optimize_delay_with_surrogate,
@@ -77,10 +78,10 @@ def test_verification_test6_and_test7_and_test7b() -> None:
     z0 = np.zeros((1, 4), dtype=np.float64)
     sol_init = solve_all_tiers_kronecker_head_float64([stat], z0, mode="init")
     sol_pol = solve_all_tiers_kronecker_head_float64([stat], z0, mode="polish")
-    esr_init = compute_esr_db(
+    esr_init = compute_floor_regularized_besr_db(
         evaluate_kronecker_head_features(phi, z0[0], sol_init.w_ultra_5x2x192), y_true
     )
-    esr_pol = compute_esr_db(
+    esr_pol = compute_floor_regularized_besr_db(
         evaluate_kronecker_head_features(phi, z0[0], sol_pol.w_ultra_5x2x192), y_true
     )
     assert esr_init < -25.0

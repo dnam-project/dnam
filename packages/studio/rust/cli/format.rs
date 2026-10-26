@@ -1,7 +1,10 @@
 //! Terminal formatting helpers and interactive `dialoguer` prompts for `dnam` CLI tables, panels, and capture steps.
 
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
+
+static FORCE_NONINTERACTIVE: AtomicBool = AtomicBool::new(false);
 
 use dialoguer::theme::ColorfulTheme;
 use dialoguer::{Confirm, Select};
@@ -198,6 +201,13 @@ pub fn prompt_calibration_step1(setup_instructions: &str, auto_yes: bool) -> Stu
     if auto_yes {
         return Ok(());
     }
+    if FORCE_NONINTERACTIVE.load(Ordering::Relaxed)
+        || std::env::var_os("DNAM_NONINTERACTIVE").is_some()
+    {
+        return Err(StudioError::Audio(
+            "Calibration Step 1 prompt requires interactive terminal or --yes".to_string(),
+        ));
+    }
     let confirmed = Confirm::with_theme(&ColorfulTheme::default())
         .with_prompt("Device is in Bypass / 0% Mix Dry-Through — ready to probe Step 1?")
         .default(true)
@@ -220,6 +230,13 @@ pub fn prompt_calibration_step2(
     eprintln!("{panel}");
     if auto_yes {
         return Ok(());
+    }
+    if FORCE_NONINTERACTIVE.load(Ordering::Relaxed)
+        || std::env::var_os("DNAM_NONINTERACTIVE").is_some()
+    {
+        return Err(StudioError::Audio(
+            "Calibration Step 2 prompt requires interactive terminal or --yes".to_string(),
+        ));
     }
     let confirmed = Confirm::with_theme(&ColorfulTheme::default())
         .with_prompt("Device is engaged at its Hot Corner — ready to probe Step 2?")
@@ -262,6 +279,13 @@ pub fn prompt_next_stem_action(
     }
     if auto_yes {
         return Ok(StemPromptAction::Record);
+    }
+    if FORCE_NONINTERACTIVE.load(Ordering::Relaxed)
+        || std::env::var_os("DNAM_NONINTERACTIVE").is_some()
+    {
+        return Err(StudioError::Audio(
+            "Stem capture prompt requires interactive terminal or --yes".to_string(),
+        ));
     }
 
     let items: &[&str] = if stem_index > 1 {
@@ -395,8 +419,9 @@ mod tests {
         assert!(delta_panel.contains("Unchanged"));
 
         // Calibration step1 & step2 panels + auto_yes prompts + non-TTY error path
+        FORCE_NONINTERACTIVE.store(true, Ordering::Relaxed);
         prompt_calibration_step1("Connect Send 1 -> Input", true).expect("step1 auto_yes");
-        let _ = prompt_calibration_step1("Connect Send 1 -> Input", false);
+        assert!(prompt_calibration_step1("Connect Send 1 -> Input", false).is_err());
         let s1_metrics = Step1CalibrationMetrics {
             backend: "software".to_string(),
             device_id: "loopback_default".to_string(),
@@ -407,7 +432,7 @@ mod tests {
             snr_db: 50.0,
         };
         prompt_calibration_step2(&s1_metrics, true).expect("step2 auto_yes");
-        let _ = prompt_calibration_step2(&s1_metrics, false);
+        assert!(prompt_calibration_step2(&s1_metrics, false).is_err());
 
         // prompt_next_stem_action with countdown, auto_yes, non-TTY, and map_stem_prompt_selection
         let act_cd = prompt_next_stem_action(&model, &step1, 1, 2, None, None, false, 0.001)
@@ -416,8 +441,8 @@ mod tests {
         let act_yes =
             prompt_next_stem_action(&model, &step1, 1, 2, None, None, true, 0.0).expect("auto_yes");
         assert_eq!(act_yes, StemPromptAction::Record);
-        let _ = prompt_next_stem_action(&model, &step1, 1, 2, None, None, false, 0.0);
-        let _ = prompt_next_stem_action(&model, &step2, 2, 2, None, None, false, 0.0);
+        assert!(prompt_next_stem_action(&model, &step1, 1, 2, None, None, false, 0.0).is_err());
+        assert!(prompt_next_stem_action(&model, &step2, 2, 2, None, None, false, 0.0).is_err());
 
         assert_eq!(map_stem_prompt_selection(1, 0), StemPromptAction::Record);
         assert_eq!(map_stem_prompt_selection(1, 1), StemPromptAction::Skip);

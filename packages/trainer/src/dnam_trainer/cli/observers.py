@@ -34,11 +34,22 @@ class RichTrainingObserver:
                 f"{event.message}"
             )
         elif isinstance(event, TrainingStepEvent):
+            bands_str = ""
+            if (
+                event.esr_lf_db is not None
+                and event.esr_mid_db is not None
+                and event.esr_hf_db is not None
+            ):
+                bands_str = (
+                    f" | Bands(LF/MF/HF)={event.esr_lf_db:+.2f}/"
+                    f"{event.esr_mid_db:+.2f}/{event.esr_hf_db:+.2f} dB"
+                )
             self.console.print(
                 f"  [dim]Epoch {event.epoch:>3}/{event.total_epochs}[/dim] | "
-                f"Lite={event.esr_lite_db:+.2f} dB | "
+                f"bESR: Lite={event.esr_lite_db:+.2f} dB | "
                 f"Full={event.esr_full_db:+.2f} dB | "
-                f"[bold]Ultra={event.esr_ultra_db:+.2f} dB[/bold] | "
+                f"[bold]Ultra={event.esr_ultra_db:+.2f} dB[/bold]"
+                f"{bands_str} | "
                 f"barrier={event.barrier_loss:.4f} | t={event.elapsed_sec:.2f}s"
             )
         elif isinstance(event, AuditPhaseEvent):
@@ -57,11 +68,30 @@ class RichTrainingObserver:
                 else "Full 4-Stage Train"
             )
             c2_state = "ON" if event.core2_active else "BYPASS"
+            psycho_str = ""
+            if (
+                event.esr_lf_db is not None
+                and event.esr_mid_db is not None
+                and event.esr_hf_db is not None
+            ):
+                psycho_str += (
+                    f" | Bands(LF/MF/HF)={event.esr_lf_db:+.2f}/"
+                    f"{event.esr_mid_db:+.2f}/{event.esr_hf_db:+.2f} dB"
+                )
+            if event.mr_stft_db is not None:
+                psycho_str += f" | MR-STFT={event.mr_stft_db:.2f} dB"
+            if event.ltas_rms_tilt_db is not None and event.ltas_hf_tilt_db is not None:
+                psycho_str += (
+                    f" | Tilt(RMS/HF)={event.ltas_rms_tilt_db:.2f}/{event.ltas_hf_tilt_db:+.2f} dB"
+                )
+            if event.seg_esr_db is not None:
+                psycho_str += f" | SegESR={event.seg_esr_db:+.2f} dB"
             self.console.print(
                 f"[bold green]✓ {mode_label} Complete ({event.model_id})[/bold green] | "
-                f"Lite={event.esr_lite_db:+.2f} dB | Full={event.esr_full_db:+.2f} dB | "
-                f"Ultra={event.esr_ultra_db:+.2f} dB | Core2={c2_state} | "
-                f"{event.elapsed_sec:.2f}s"
+                f"Final bESR: Lite={event.esr_lite_db:+.2f} dB | "
+                f"Full={event.esr_full_db:+.2f} dB | "
+                f"Ultra={event.esr_ultra_db:+.2f} dB{psycho_str} | "
+                f"Core2={c2_state} | {event.elapsed_sec:.2f}s"
             )
 
 
