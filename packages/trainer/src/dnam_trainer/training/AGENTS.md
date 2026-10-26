@@ -4,9 +4,10 @@
 
 - [`hardware.py`](hardware.py): Accelerator runtime profile & environment setup (`ROCm`/`CUDA`/`MPS`/`TPU`/`CPU`).
 - [`metrics.py`](metrics.py): Psychoacoustic evaluation suite (`bESR`, 4th-order Bezout 3-band `ESR`, `MR-STFT`, `LTAS` tilt, `SegESR`).
-- [`selective_cascade.py`](selective_cascade.py): Causal Wiener LTI (`IR`/space) + 3-stage selective state-space & 3-band cascade + $48\text{ kHz}$ HF polish.
+- [`selective_cascade.py`](selective_cascade.py): Causal Wiener LTI (`IR`/space) + 3-stage selective state-space & 3-band cascade + $48\text{ kHz}$ quadrature wavefolder polish.
 - [`surrogate_delay.py`](surrogate_delay.py): Multi-scale Gaussian derivative envelope surrogate delay readout (`Test 6`).
-- [`kronecker_head.py`](kronecker_head.py): Partitioned SVD control projector, 3-band `bESR` Gram stats, Dual-Ridge `float64` Kronecker solver (`CL-18`), and `.dnam-ckpt` resume.
+- [`kronecker_head.py`](kronecker_head.py): Partitioned SVD control projector, `Base48BandGramCache`, 3-band `bESR` Gram stats, Dual-Ridge `float64` Kronecker solver (`CL-18`), and `.dnam-ckpt` resume.
+- [`wav_io.py`](wav_io.py): 16/24/32-bit PCM & unclipped 32-bit IEEE-754 float WAV reader/writer.
 - [`arena.py`](arena.py): 64B-aligned `Arena 0..3` weight layout (`36,224 B` + `151,296 B/stem`) & `Ed25519` container builder.
 - [`telemetry.py`](telemetry.py): Polars + Altair `bESR` convergence Parquet & HTML reports.
 - [`pipeline.py`](pipeline.py): `DnamTriPhysicsModel` and 4-Stage `DnamTrainer` orchestrator.
