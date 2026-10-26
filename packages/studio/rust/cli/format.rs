@@ -128,6 +128,19 @@ pub fn format_calibration_step2_panel(step1: &Step1CalibrationMetrics) -> String
     )
 }
 
+/// Formats a warning panel when Calibration Step 2/2 (Engaged Hot-Corner) detects return clipping.
+pub fn format_step2_clipping_warning(peak_dbfs: f32, clipped_fraction: f32) -> String {
+    let pct = (clipped_fraction * 100.0).clamp(0.0, 100.0);
+    format!(
+        "╭─── ⚠ Calibration Step 2/2 Warning — Return Clipping Detected ───────────────╮\n\
+         • Measured Hot-Corner Return Peak: {peak_dbfs:+.2} dBFS ({pct:.2}% clipped samples).\n\
+         • Input send gain remains locked to preserve target drive headroom.\n\
+         • If your signal chain has a clean output level adjustment (or audio interface\n\
+           return input trim/pad), lower it slightly and repeat calibration.\n\
+         ╰──────────────────────────────────────────────────────────────────────────────╯"
+    )
+}
+
 /// Formats the per-stem knob/switch delta panel (`Control | Previous | Target Setting | Action`).
 pub fn format_stem_prompt_panel(
     model: &ModelManifest,
@@ -249,6 +262,34 @@ pub fn prompt_calibration_step2(
         ));
     }
     Ok(())
+}
+
+/// Displays the Step-2 return clipping warning panel and, when running interactively (`!auto_yes`),
+/// prompts the user (`Y/N`) whether to repeat calibration immediately without re-running the command.
+pub fn prompt_repeat_calibration_on_clipping(
+    peak_dbfs: f32,
+    clipped_fraction: f32,
+    auto_yes: bool,
+) -> StudioResult<bool> {
+    let warning = format_step2_clipping_warning(peak_dbfs, clipped_fraction);
+    eprintln!("{warning}");
+    if auto_yes {
+        return Ok(false);
+    }
+    if FORCE_NONINTERACTIVE.load(Ordering::Relaxed)
+        || std::env::var_os("DNAM_NONINTERACTIVE").is_some()
+    {
+        return Err(StudioError::Audio(
+            "Calibration clipping retry prompt requires interactive terminal or --yes".to_string(),
+        ));
+    }
+    Confirm::with_theme(&ColorfulTheme::default())
+        .with_prompt(
+            "Repeat calibration now after adjusting your signal chain's clean output level?",
+        )
+        .default(true)
+        .interact()
+        .map_err(|e| StudioError::Audio(format!("Calibration retry prompt cancelled: {e}")))
 }
 
 /// Displays the control-delta panel for `step` and prompts for [`StemPromptAction`] via `dialoguer::Select`.
@@ -433,6 +474,12 @@ mod tests {
         };
         prompt_calibration_step2(&s1_metrics, true).expect("step2 auto_yes");
         assert!(prompt_calibration_step2(&s1_metrics, false).is_err());
+
+        let clip_warn = format_step2_clipping_warning(0.0, 0.025);
+        assert!(clip_warn.contains("Return Clipping Detected"));
+        assert!(clip_warn.contains("clean output level adjustment"));
+        assert!(!prompt_repeat_calibration_on_clipping(0.0, 0.025, true).expect("clip auto_yes"));
+        assert!(prompt_repeat_calibration_on_clipping(0.0, 0.025, false).is_err());
 
         // prompt_next_stem_action with countdown, auto_yes, non-TTY, and map_stem_prompt_selection
         let act_cd = prompt_next_stem_action(&model, &step1, 1, 2, None, None, false, 0.001)

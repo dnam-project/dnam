@@ -136,6 +136,36 @@ fn resolve_target_model_id(proj: &DnamProject, explicit: Option<&str>) -> Studio
     ))
 }
 
+fn is_step2_return_clipped(peak_dbfs: f32, clipped_fraction: f32) -> bool {
+    clipped_fraction > 0.0 || peak_dbfs >= -0.05
+}
+
+fn calibrate_two_step_with_clipping_prompt(
+    cap_backend: &dyn crate::capture::CaptureBackend,
+    device_id: &str,
+    sample_rate_hz: u32,
+    auto_yes: bool,
+) -> StudioResult<CalibrationResult> {
+    loop {
+        let cal = cap_backend.calibrate_with_prompts(
+            device_id,
+            sample_rate_hz,
+            &mut |setup| format::prompt_calibration_step1(setup, auto_yes),
+            &mut |step1| format::prompt_calibration_step2(step1, auto_yes),
+        )?;
+        if is_step2_return_clipped(cal.hot_corner_peak_dbfs, cal.hot_corner_clipped_fraction)
+            && format::prompt_repeat_calibration_on_clipping(
+                cal.hot_corner_peak_dbfs,
+                cal.hot_corner_clipped_fraction,
+                auto_yes,
+            )?
+        {
+            continue;
+        }
+        return Ok(cal);
+    }
+}
+
 /// Executes `dnam capture`.
 pub fn run_capture(workspace: &Path, action: &CaptureAction) -> StudioResult<String> {
     match action {
@@ -263,40 +293,56 @@ pub fn run_capture(workspace: &Path, action: &CaptureAction) -> StudioResult<Str
                     noise_floor_dbfs: model_manifest.capture.noise_floor_dbfs,
                     snr_db: 60.0,
                 };
-                format::prompt_calibration_step2(&s1, auto_yes)?;
-                let scaled_dry = generate_calibration_probe(sr, probe_len);
-                let mut hot_ranges = BTreeMap::new();
-                hot_ranges.insert("drive".to_string(), 1.0_f32);
-                let wet_step2 =
-                    cap_backend.capture_stem(&scaled_dry, &hot_ranges, &BTreeMap::new())?;
-                let report = align_hardware_latency(
-                    &scaled_dry,
-                    &wet_step2,
-                    (scaled_dry.len() / 4).max(32),
-                    if s1.latency_samples != 0 {
-                        Some(s1.latency_samples)
-                    } else {
-                        None
-                    },
-                    sr,
-                    Some(s1.noise_floor_dbfs),
-                )?;
-                let aligned_wet2 =
-                    apply_subsample_shift_fft(&wet_step2, report.subsample_lag_samples);
-                let hot_analysis =
-                    analyze_hot_corner_nonlinearity(&scaled_dry, &aligned_wet2, s1.unity_ref_dbfs);
-                let profile = analyze_probe_for_excitation(&scaled_dry, &aligned_wet2, sr);
-                let cal = CalibrationResult {
-                    backend: backend.clone(),
-                    device_id: resolved_dev.clone(),
-                    send_gain_db: initial_gain_db,
-                    latency_samples: report.coarse_lag_samples,
-                    noise_floor_dbfs: s1.noise_floor_dbfs,
-                    snr_db: report.snr_db,
-                    unity_ref_dbfs: s1.unity_ref_dbfs,
-                    hot_corner_peak_dbfs: hot_analysis.measured_return_peak_dbfs,
-                    hot_corner_clipped_fraction: hot_analysis.clipped_sample_fraction,
-                    excitation_profile: profile,
+                let cal = loop {
+                    format::prompt_calibration_step2(&s1, auto_yes)?;
+                    let scaled_dry = generate_calibration_probe(sr, probe_len);
+                    let mut hot_ranges = BTreeMap::new();
+                    hot_ranges.insert("drive".to_string(), 1.0_f32);
+                    let wet_step2 =
+                        cap_backend.capture_stem(&scaled_dry, &hot_ranges, &BTreeMap::new())?;
+                    let report = align_hardware_latency(
+                        &scaled_dry,
+                        &wet_step2,
+                        (scaled_dry.len() / 4).max(32),
+                        if s1.latency_samples != 0 {
+                            Some(s1.latency_samples)
+                        } else {
+                            None
+                        },
+                        sr,
+                        Some(s1.noise_floor_dbfs),
+                    )?;
+                    let aligned_wet2 =
+                        apply_subsample_shift_fft(&wet_step2, report.subsample_lag_samples);
+                    let hot_analysis = analyze_hot_corner_nonlinearity(
+                        &scaled_dry,
+                        &aligned_wet2,
+                        s1.unity_ref_dbfs,
+                    );
+                    let profile = analyze_probe_for_excitation(&scaled_dry, &aligned_wet2, sr);
+                    let candidate = CalibrationResult {
+                        backend: backend.clone(),
+                        device_id: resolved_dev.clone(),
+                        send_gain_db: initial_gain_db,
+                        latency_samples: report.coarse_lag_samples,
+                        noise_floor_dbfs: s1.noise_floor_dbfs,
+                        snr_db: report.snr_db,
+                        unity_ref_dbfs: s1.unity_ref_dbfs,
+                        hot_corner_peak_dbfs: hot_analysis.measured_return_peak_dbfs,
+                        hot_corner_clipped_fraction: hot_analysis.clipped_sample_fraction,
+                        excitation_profile: profile,
+                    };
+                    if is_step2_return_clipped(
+                        candidate.hot_corner_peak_dbfs,
+                        candidate.hot_corner_clipped_fraction,
+                    ) && format::prompt_repeat_calibration_on_clipping(
+                        candidate.hot_corner_peak_dbfs,
+                        candidate.hot_corner_clipped_fraction,
+                        auto_yes,
+                    )? {
+                        continue;
+                    }
+                    break candidate;
                 };
                 let tailored = generate_excitation_signal_with_profile(
                     sr,
@@ -318,11 +364,11 @@ pub fn run_capture(workspace: &Path, action: &CaptureAction) -> StudioResult<Str
                 return Ok(serde_json::to_string_pretty(&cal)?);
             }
 
-            let cal = cap_backend.calibrate_with_prompts(
+            let cal = calibrate_two_step_with_clipping_prompt(
+                cap_backend.as_ref(),
                 &resolved_dev,
                 sr,
-                &mut |setup| format::prompt_calibration_step1(setup, auto_yes),
-                &mut |step1| format::prompt_calibration_step2(step1, auto_yes),
+                auto_yes,
             )?;
             let tailored =
                 generate_excitation_signal_with_profile(sr, dry_len, Some(&cal.excitation_profile));
@@ -395,11 +441,11 @@ pub fn run_capture(workspace: &Path, action: &CaptureAction) -> StudioResult<Str
             // Always ensure target probe calibration & probe-optimized dry stem synthesis have run
             let dry_path = proj.model_dry_input_wav_path(&model_id);
             if manifest.capture.excitation_profile.is_none() || !dry_path.is_file() {
-                let cal = cap_backend.calibrate_with_prompts(
+                let cal = calibrate_two_step_with_clipping_prompt(
+                    cap_backend.as_ref(),
                     &device_id,
                     sr,
-                    &mut |setup| format::prompt_calibration_step1(setup, auto_yes),
-                    &mut |step1| format::prompt_calibration_step2(step1, auto_yes),
+                    auto_yes,
                 )?;
                 cap_backend.set_send_gain_db(cal.send_gain_db);
                 proj.update_calibration_with_profile(
@@ -666,6 +712,24 @@ mod tests {
         )
         .expect("record max_stems=1");
         assert!(rec2.contains("Recorded and aligned 1 stems"));
+
+        // Verify Step-2 clipping detection & high-gain software calibration warning path
+        assert!(!is_step2_return_clipped(-3.0, 0.0));
+        assert!(is_step2_return_clipped(0.0, 0.01));
+        assert!(is_step2_return_clipped(-0.02, 0.0));
+        let cal_hot = run_capture(
+            &dir,
+            &CaptureAction::Calibrate {
+                model: Some("m1".to_string()),
+                backend: "software".to_string(),
+                device: "loopback_default".to_string(),
+                send_gain_db: Some(48.0),
+                step: Some(2),
+                yes: true,
+            },
+        )
+        .expect("calibrate step 2 hot");
+        assert!(cal_hot.contains("hot_corner_clipped_fraction"));
         let _ = fs::remove_dir_all(&dir);
     }
 }

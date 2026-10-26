@@ -120,13 +120,18 @@ fn test_project_manifest_controls_presets_crud_and_capture_plan() {
     assert_eq!(loaded.presets[0].label, "Lead Solo Boosted");
 
     let plan = build_capture_plan(&loaded, true);
-    // 1 center + 2*2 axis + 2 switch throws + 1 corner = 8 steps
-    assert_eq!(plan.steps.len(), 8);
+    // 1 center + 2*2 axis + 1 default-switch corner + 2*(1 switch throw + 2 switch*gain corners) = 12 steps
+    assert_eq!(plan.steps.len(), 12);
     assert_eq!(plan.steps[0].tier, CaptureTier::StarCenter);
     assert!(
         plan.steps
             .iter()
             .any(|s| s.tier == CaptureTier::CornerAnchor)
+    );
+    assert!(
+        plan.steps
+            .iter()
+            .any(|s| s.stem_id == "stem_corner_switch_voice_2_gain_max")
     );
 
     // Verify control deltas and interactive stem prompt panel formatting
@@ -163,7 +168,7 @@ fn test_project_manifest_controls_presets_crud_and_capture_plan() {
             "High gain corner".to_string(),
         )],
     );
-    assert_eq!(plan_with_presc.steps.len(), 9);
+    assert_eq!(plan_with_presc.steps.len(), 13);
     assert!(
         plan_with_presc
             .steps

@@ -8,7 +8,15 @@ from __future__ import annotations
 import numpy as np
 import torch
 
+from dnam_trainer.control.basis import ParametricControlHyperBus
 from dnam_trainer.schema import parse_compact_range_spec, parse_compact_switch_spec
+from dnam_trainer.training.kronecker_head import (
+    compute_modulated_stem_sufficient_statistics,
+    compute_stem_sufficient_statistics,
+    compute_svd_control_projector,
+    precompute_base48_band_cache,
+    solve_all_tiers_kronecker_head_float64,
+)
 from dnam_trainer.training.metrics import (
     causal_1pole_lpf_np,
     compute_band_split_esr_db,
@@ -244,3 +252,103 @@ def test_lti_cabinet_and_acoustic_space_modeling() -> None:
     assert rep_room.esr_lf_db <= -34.0
     assert rep_room.esr_mid_db <= -31.0
     assert rep_room.esr_hf_db <= -26.0
+
+
+def test_multi_control_kronecker_and_base48_gram_cache() -> None:
+    """Verifies `>3` controls + switches in `_compute_intrinsic_control_modulators`, `>7` active
+    stems in `calibrate_3stage_selective_cascade`, `-55 dBFS` mute-stem handling (`-57.2 dBFS`),
+    and exact `Base48BandGramCache` + `compute_modulated_stem_sufficient_statistics` assembly.
+    """
+    # 1. 5-control schema (4 ranges + 1 switch, matching fruity_hb500)
+    ctrls5 = [
+        parse_compact_range_spec("gain=0..10:5"),
+        parse_compact_range_spec("bass=0..10:5"),
+        parse_compact_range_spec("middle=0..10:5"),
+        parse_compact_range_spec("treble=0..10:5"),
+        parse_compact_switch_spec("overdrive=Off,On:Off"),
+    ]
+    stems_meta: list[dict[str, float | str]] = [
+        {"gain": 5.0, "bass": 5.0, "middle": 5.0, "treble": 5.0, "overdrive": "Off"},
+        {"gain": 0.0, "bass": 5.0, "middle": 5.0, "treble": 5.0, "overdrive": "Off"},
+        {"gain": 10.0, "bass": 5.0, "middle": 5.0, "treble": 5.0, "overdrive": "Off"},
+        {"gain": 5.0, "bass": 0.0, "middle": 5.0, "treble": 5.0, "overdrive": "Off"},
+        {"gain": 5.0, "bass": 10.0, "middle": 5.0, "treble": 5.0, "overdrive": "Off"},
+        {"gain": 5.0, "bass": 5.0, "middle": 0.0, "treble": 5.0, "overdrive": "Off"},
+        {"gain": 5.0, "bass": 5.0, "middle": 10.0, "treble": 5.0, "overdrive": "Off"},
+        {"gain": 5.0, "bass": 5.0, "middle": 5.0, "treble": 0.0, "overdrive": "Off"},
+        {"gain": 5.0, "bass": 5.0, "middle": 5.0, "treble": 10.0, "overdrive": "Off"},
+        {"gain": 5.0, "bass": 5.0, "middle": 5.0, "treble": 5.0, "overdrive": "On"},
+        {"gain": 10.0, "bass": 10.0, "middle": 5.0, "treble": 5.0, "overdrive": "Off"},
+        {"gain": 0.0, "bass": 5.0, "middle": 5.0, "treble": 5.0, "overdrive": "On"},
+        {"gain": 10.0, "bass": 5.0, "middle": 5.0, "treble": 5.0, "overdrive": "On"},
+    ]
+    hyper_bus = ParametricControlHyperBus(ctrls5)
+    psi_stems = hyper_bus.encode_batch_coords(stems_meta).detach().cpu().numpy()
+    _, _, active_rank, z_head_stems = compute_svd_control_projector(psi_stems)
+    assert active_rank == 4
+
+    k_rows: list[np.ndarray] = []
+    for s_idx, meta in enumerate(stems_meta):
+        u_mod = _compute_intrinsic_control_modulators(ctrls5, meta)
+        psi_tilde = np.concatenate([[1.0], z_head_stems[s_idx]])
+        m_vec = np.array([1.0, u_mod[0], u_mod[1], u_mod[2]], dtype=np.float64)
+        k_rows.append(np.kron(psi_tilde, m_vec))
+    k_mat = np.vstack(k_rows)  # (13, 20)
+    assert np.linalg.matrix_rank(k_mat, tol=1e-4) == 13
+
+    # 2. >7 active stems in calibrate_3stage_selective_cascade + -57.2 dBFS mute stem
+    rng = np.random.default_rng(77)
+    t_len = 1024
+    x_np = (0.3 * rng.standard_normal(t_len)).astype(np.float32)
+    targets_13: list[np.ndarray] = []
+    for s_idx in range(13):
+        if s_idx in (1, 11):
+            # Mute stems at -61 dBFS and -57.2 dBFS (between -60 and -55 dBFS)
+            amp = 10.0 ** (-61.0 / 20.0) if s_idx == 1 else 10.0 ** (-57.2 / 20.0)
+            y_s = (amp * rng.standard_normal(t_len)).astype(np.float32)
+        else:
+            drive = 1.2 + 0.15 * s_idx
+            y_s = np.tanh(drive * x_np).astype(np.float32)
+        targets_13.append(np.column_stack([y_s, y_s]))
+
+    b_lite, b_full, b_ultra = calibrate_3stage_selective_cascade(
+        x_np, targets_13, sample_rate_hz=48_000
+    )
+    assert b_lite.shape == (t_len, 16)
+    assert b_full.shape == (t_len, 16)
+    assert b_ultra.shape == (t_len, 16)
+
+    # 3. Verify Base48BandGramCache matches full-length compute_stem_sufficient_statistics
+    base_cache = precompute_base48_band_cache(b_lite, b_full, b_ultra)
+    stats_mod = []
+    for s_idx, meta in enumerate(stems_meta):
+        u_mod = _compute_intrinsic_control_modulators(ctrls5, meta)
+        st_m = compute_modulated_stem_sufficient_statistics(
+            base_cache,
+            u_mod,
+            targets_13[s_idx],
+            stem_id=f"stem_{s_idx:02d}",
+            controls_meta=meta,
+            input_pcm_sha256="sha_in",
+            target_pcm_sha256=f"sha_{s_idx:02d}",
+        )
+        stats_mod.append(st_m)
+        if s_idx in (0, 11):
+            phi_192 = modulate_tier_blocks_with_controls(b_lite, b_full, b_ultra, u_mod)
+            st_ref = compute_stem_sufficient_statistics(
+                phi_192,
+                targets_13[s_idx],
+                stem_id=f"stem_{s_idx:02d}",
+                controls_meta=meta,
+                input_pcm_sha256="sha_in",
+                target_pcm_sha256=f"sha_{s_idx:02d}",
+            )
+            np.testing.assert_allclose(
+                st_m.g_audio_uplo_u_f64, st_ref.g_audio_uplo_u_f64, rtol=1e-4, atol=1e-2
+            )
+            np.testing.assert_allclose(
+                st_m.c_audio_tier_f64, st_ref.c_audio_tier_f64, rtol=1e-4, atol=1e-2
+            )
+
+    sol = solve_all_tiers_kronecker_head_float64(stats_mod, z_head_stems, mode="polish")
+    assert sol.w_ultra_5x2x192.shape == (5, 2, 192)

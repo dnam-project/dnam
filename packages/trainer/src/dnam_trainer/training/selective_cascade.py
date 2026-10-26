@@ -405,15 +405,17 @@ def solve_selective_stage_3band(
                 - 0.85 * y7_hp2500_pad[pad - sh : pad - sh + l_tot - 1 : stride_a]
             )[:n_pre_a]
         )
-    y_multi_a_sub = torch.cat(tgt_a_sub, dim=-1)  # (L_tot//stride_a, 63)
+    y_multi_a_sub = torch.cat(tgt_a_sub, dim=-1)  # (L_tot//stride_a, 9 * m_col)
     y_multi_a_pre = torch.cat(tgt_a_pre, dim=-1)
 
+    m_col = y7_full.shape[1]
+    n_a_tgt = 9 * m_col
     p_a = 6 * c_u
     g_a_gl = torch.zeros((p_a, p_a), dtype=torch.float64)
-    c_a_gl = torch.zeros((p_a, 63), dtype=torch.float64)
+    c_a_gl = torch.zeros((p_a, n_a_tgt), dtype=torch.float64)
     ov_a = 512 if l_tot >= 32_768 else 0
     burn_a = 2048 if l_tot >= 32_768 else 0
-    z_a_loc = torch.zeros((l_tot, 63), dtype=torch.float32)
+    z_a_loc = torch.zeros((l_tot, n_a_tgt), dtype=torch.float32)
 
     for r_idx, (r0, r1) in enumerate(regimes):
         sr0 = 0 if r_idx == 0 else max(0, r0 - ov_a)
@@ -458,9 +460,9 @@ def solve_selective_stage_3band(
 
         s_eval = max(0, sr0 - burn_a)
         b_off = sr0 - s_eval
-        z_r_slice = _eval_lti_commuted_projection(u_stage[s_eval:er1], wa.view(6, c_u, 63), sr=sr)[
-            b_off:
-        ]
+        z_r_slice = _eval_lti_commuted_projection(
+            u_stage[s_eval:er1], wa.view(6, c_u, n_a_tgt), sr=sr
+        )[b_off:]
         z_a_loc[sr0:er1] += bspline_weights_reg[sr0:er1, r_idx : r_idx + 1] * z_r_slice
         del z_r_slice, wa
 
@@ -471,17 +473,26 @@ def solve_selective_stage_3band(
     del u_sub_l80, u_pre_l80, u_sub_l400, u_pre_l400, u_sub_l2000, u_pre_l2000
     del y_multi_a_sub, y_multi_a_pre, g_a_gl, la_gl
 
-    z_a_gl = _eval_lti_commuted_projection(u_stage, wa_gl.view(6, c_u, 63), sr=sr)
-    z_a = torch.cat([z_a_loc, z_a_gl], dim=-1)  # (L_tot, 126)
+    z_a_gl = _eval_lti_commuted_projection(u_stage, wa_gl.view(6, c_u, n_a_tgt), sr=sr)
+    z_a = torch.cat([z_a_loc, z_a_gl], dim=-1)  # (L_tot, 2 * n_a_tgt)
     del z_a_loc, z_a_gl
 
     core_idx: list[int] = []
     for r_i in range(2):
-        base = r_i * 63
-        core_idx.extend(range(base + 14, base + 21))
-        core_idx.extend(range(base + 42, base + 49))
-        core_idx.extend(range(base + 56, base + 63))
-    za_core = z_a[:, core_idx]  # (L_tot, 42)
+        base = r_i * n_a_tgt
+        core_idx.extend(range(base + 2 * m_col, base + 3 * m_col))
+        core_idx.extend(range(base + 6 * m_col, base + 7 * m_col))
+        core_idx.extend(range(base + 8 * m_col, base + 9 * m_col))
+    za_core_raw = z_a[:, core_idx]
+    if za_core_raw.shape[1] > 42:
+        svd_st = max(1, l_tot // 32_768)
+        za_std = torch.sqrt(torch.mean(za_core_raw**2, dim=0, keepdim=True) + 1e-12)
+        za_n = za_core_raw / za_std
+        _, _, vt_c = torch.linalg.svd(za_n[::svd_st].to(torch.float64), full_matrices=False)
+        za_core = (za_n.to(torch.float64) @ vt_c[:42, :].T).to(torch.float32)
+        del za_core_raw, za_n, vt_c
+    else:
+        za_core = za_core_raw
     c_core = za_core.shape[1]
 
     post_lpfs = (45.0, 150.0, 500.0, 1600.0, 4500.0)
@@ -489,14 +500,16 @@ def solve_selective_stage_3band(
     za_lpf_list = [fast_1pole_lpf(za_core, fc, sr=sr) for fc in post_lpfs]
     za_core_pad = F.pad(za_core.unsqueeze(0), (0, 0, pad, pad)).squeeze(0)
 
-    y21_bands = torch.cat([y7_lf, y7_mf, y7_hf], dim=-1)  # (L_tot, 21)
+    n_b_tgt = 3 * m_col
+    y21_bands = torch.cat([y7_lf, y7_mf, y7_hf], dim=-1)  # (L_tot, 3 * m_col)
 
-    n_b = 126 + len(post_lpfs) * c_core + len(delays) * c_core  # 798 cols
+    n_z_a = z_a.shape[1]
+    n_b = n_z_a + len(post_lpfs) * c_core + len(delays) * c_core
     g_b_gl = torch.zeros((n_b, n_b), dtype=torch.float64)
-    c_b_gl = torch.zeros((n_b, 21), dtype=torch.float64)
+    c_b_gl = torch.zeros((n_b, n_b_tgt), dtype=torch.float64)
     n_wins = len(win_bounds)
     overlap = 256 if l_tot >= 32_768 else 0
-    z_spline_21 = torch.zeros((l_tot, 21), dtype=torch.float32)
+    z_spline_21 = torch.zeros((l_tot, n_b_tgt), dtype=torch.float32)
 
     for w_idx, (k0, k1) in enumerate(win_bounds):
         s_w = 0 if w_idx == 0 else max(0, k0 - overlap)
@@ -504,7 +517,7 @@ def solve_selective_stage_3band(
         b_win_list = [z_a[s_w:e_w]] + [zl[s_w:e_w] for zl in za_lpf_list]
         for d in delays:
             b_win_list.append(za_core_pad[pad + s_w - d : pad + e_w - d])
-        pk_full = torch.cat(b_win_list, dim=-1)  # (L_win, 798)
+        pk_full = torch.cat(b_win_list, dim=-1)  # (L_win, n_b)
         del b_win_list
 
         pk_sub = pk_full[::stride_b].to(torch.float64)
@@ -519,7 +532,7 @@ def solve_selective_stage_3band(
         c_b_gl += cw
         rw = max(1e-9, 1e-5 * float(torch.diagonal(gw).mean().item()))
         lw = torch.linalg.cholesky(gw + rw * torch.eye(n_b, dtype=torch.float64))
-        ww = torch.linalg.solve(lw.T, torch.linalg.solve(lw, cw)).to(torch.float32)  # (798, 21)
+        ww = torch.linalg.solve(lw.T, torch.linalg.solve(lw, cw)).to(torch.float32)
 
         bw_slice = bspline_weights_win[s_w:e_w, w_idx : w_idx + 1]
         z_spline_21[s_w:e_w] += bw_slice * (pk_full @ ww)
@@ -530,8 +543,8 @@ def solve_selective_stage_3band(
     w_b_gl = torch.linalg.solve(lb_gl.T, torch.linalg.solve(lb_gl, c_b_gl)).to(torch.float32)
 
     idx = 0
-    z_glob_21 = z_a @ w_b_gl[idx : idx + 126]
-    idx += 126
+    z_glob_21 = z_a @ w_b_gl[idx : idx + n_z_a]
+    idx += n_z_a
     for zl in za_lpf_list:
         z_glob_21 = z_glob_21 + (zl @ w_b_gl[idx : idx + c_core])
         idx += c_core
@@ -548,8 +561,8 @@ def solve_selective_stage_3band(
     c_mf_cols: list[torch.Tensor] = []
     c_hf_cols: list[torch.Tensor] = []
 
-    for s_idx in range(7):
-        b_idx = [s_idx, 7 + s_idx, 14 + s_idx]
+    for s_idx in range(m_col):
+        b_idx = [s_idx, m_col + s_idx, 2 * m_col + s_idx]
         base_6 = torch.cat([z_spline_21[:, b_idx], z_glob_21[:, b_idx]], dim=-1)  # (L_tot, 6)
         phi_parts = [base_6 * g.unsqueeze(-1) for g in ref_gates]
         if z_lti_bands is not None:
@@ -609,7 +622,7 @@ def solve_selective_stage_3band(
 
     del z_spline_21, z_glob_21
 
-    # Exact `bESR` 3-band crossover deconvolution on the 21 candidate band trajectories:
+    # Exact `bESR` 3-band crossover deconvolution on the `3 * m_col` candidate band trajectories:
     c_21 = torch.cat(
         [
             torch.stack(c_lf_cols, dim=-1),
@@ -617,7 +630,7 @@ def solve_selective_stage_3band(
             torch.stack(c_hf_cols, dim=-1),
         ],
         dim=-1,
-    )  # (L_tot, 21)
+    )  # (L_tot, 3 * m_col)
     del c_lf_cols, c_mf_cols, c_hf_cols
 
     c_l120 = fast_1pole_lpf(c_21, 120.0, sr=sr)
@@ -646,8 +659,8 @@ def solve_selective_stage_3band(
     z_tot_cols: list[torch.Tensor] = []
     floor_e = float(l_tot) * (10.0 ** (-60.0 / 10.0))
 
-    for s_idx in range(7):
-        s_cols = [s_idx, 7 + s_idx, 14 + s_idx]
+    for s_idx in range(m_col):
+        s_cols = [s_idx, m_col + s_idx, 2 * m_col + s_idx]
         m_base = torch.cat([mb[:, s_cols] for mb in m_bank], dim=-1)  # (L_tot, 27)
         c3_s = c_21[:, s_cols]
         m_gated = [c3_s * g.unsqueeze(-1) for g in ref_gates[:5]]  # (L_tot, 15)
@@ -716,9 +729,18 @@ def build_interstage_basis(
     z_hp600 = z_norm - fast_1pole_lpf(z_norm, 600.0, sr=sr)
     z_hp2500 = z_norm - fast_1pole_lpf(z_norm, 2500.0, sr=sr)
 
-    z_nl = z_norm
-    z_nl_hp600 = z_hp600
-    z_nl_hp2500 = z_hp2500
+    if z_norm.shape[1] > 7:
+        l_seq = z_norm.shape[0]
+        svd_st = max(1, l_seq // 32_768)
+        _, _, vt_nl = torch.linalg.svd(z_norm[::svd_st].to(torch.float64), full_matrices=False)
+        z_nl = (z_norm.to(torch.float64) @ vt_nl[:7, :].T).to(torch.float32)
+        z_nl_hp600 = z_nl - fast_1pole_lpf(z_nl, 600.0, sr=sr)
+        z_nl_hp2500 = z_nl - fast_1pole_lpf(z_nl, 2500.0, sr=sr)
+        del vt_nl
+    else:
+        z_nl = z_norm
+        z_nl_hp600 = z_hp600
+        z_nl_hp2500 = z_hp2500
 
     env_s = fast_1pole_lpf(torch.abs(z_nl), env_fast_fc, sr=sr)
     env_slow = fast_1pole_lpf(z_nl * z_nl if use_power_sag else torch.abs(z_nl), env_slow_fc, sr=sr)
@@ -768,12 +790,22 @@ def solve_fullrate_hf_residual_polish(
     sr: float = 48_000.0,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """High-frequency residual solver for `Ultra` Reference Grade polish (`CL-18` `float64`)."""
-    l_tot = z3_full.shape[0]
+    l_tot, m_col = z3_full.shape
     stride_hf = 2 if l_tot >= 16_384 else 1
     z3_std = torch.sqrt(torch.mean(z3_full**2, dim=0, keepdim=True) + 1e-12)
-    z3_k = z3_full / z3_std
+    z3_k_all = z3_full / z3_std
     z2_std = torch.sqrt(torch.mean(z2_full**2, dim=0, keepdim=True) + 1e-12)
-    z2_k = z2_full / z2_std
+    z2_k_all = z2_full / z2_std
+    if m_col > 7:
+        svd_st = max(1, l_tot // 32_768)
+        _, _, vt3 = torch.linalg.svd(z3_k_all[::svd_st].to(torch.float64), full_matrices=False)
+        z3_k = (z3_k_all.to(torch.float64) @ vt3[:7, :].T).to(torch.float32)
+        z2_k = (z2_k_all.to(torch.float64) @ vt3[:7, :].T).to(torch.float32)
+        del vt3
+    else:
+        z3_k = z3_k_all
+        z2_k = z2_k_all
+    del z3_k_all, z2_k_all
 
     h1 = z3_k - fast_1pole_lpf(z3_k, 1200.0, sr=sr)
     h2 = z3_k - fast_1pole_lpf(z3_k, 2800.0, sr=sr)
@@ -793,15 +825,15 @@ def solve_fullrate_hf_residual_polish(
             h2 * (1.0 - 0.4 * e_fast),
         ],
         dim=-1,
-    )  # (L_tot, 24)
-    nl_inst = fast_poly_inst_batch(nl_in, (0.9, 3.0, 10.0), sr=sr)  # (L_tot, 144)
+    )
+    nl_inst = fast_poly_inst_batch(nl_in, (0.9, 3.0, 10.0), sr=sr)
 
     pad = 4
-    h_cat = torch.cat([h2, h3], dim=-1)  # (L_tot, 8)
+    h_cat = torch.cat([h2, h3], dim=-1)
     h_pad = F.pad(h_cat.unsqueeze(0), (0, 0, pad, pad)).squeeze(0)
     shifts = [h_pad[pad - d : pad - d + l_tot] for d in (-3, -2, -1, 0, 1, 2, 3)]
 
-    u_raw = torch.cat([nl_inst, *shifts], dim=-1)  # (L_tot, 200)
+    u_raw = torch.cat([nl_inst, *shifts], dim=-1)
     del nl_in, nl_inst, h_cat, h_pad, shifts
 
     u_hf = u_raw - fast_1pole_lpf(u_raw, 1800.0, sr=sr)
@@ -809,10 +841,10 @@ def solve_fullrate_hf_residual_polish(
 
     n_cols = u_hf.shape[1]
     g_gl = torch.zeros((n_cols, n_cols), dtype=torch.float64)
-    c_gl = torch.zeros((n_cols, 7), dtype=torch.float64)
+    c_gl = torch.zeros((n_cols, m_col), dtype=torch.float64)
     n_wins = len(win_bounds)
     overlap = 256 if l_tot >= 32_768 else 0
-    d_win_7 = torch.zeros((l_tot, 7), dtype=torch.float32)
+    d_win_7 = torch.zeros((l_tot, m_col), dtype=torch.float32)
 
     for w_idx, (k0, k1) in enumerate(win_bounds):
         s_w = 0 if w_idx == 0 else max(0, k0 - overlap)
@@ -840,7 +872,7 @@ def solve_fullrate_hf_residual_polish(
     d4_lf_cols: list[torch.Tensor] = []
     d4_mf_cols: list[torch.Tensor] = []
     d4_hf_cols: list[torch.Tensor] = []
-    for s_idx in range(7):
+    for s_idx in range(m_col):
         base_2 = torch.stack([d_win_7[:, s_idx], d_glob_7[:, s_idx]], dim=-1)  # (L_tot, 2)
         phi_hf = torch.cat([base_2 * g.unsqueeze(-1) for g in ref_gates], dim=-1)  # (L_tot, 30)
         p_lf = fast_1pole_lpf(phi_hf, 250.0, sr=sr, bezout_order4=True).to(torch.float64)
@@ -916,13 +948,13 @@ def calibrate_3stage_selective_cascade(
     x = torch.as_tensor(np.asarray(x_mono, dtype=np.float32).ravel(), dtype=torch.float32)
     l_tot = x.shape[0]
 
-    # Build 7 active target trajectories (excluding silent/mute stems `<= -55 dBFS`)
+    # Build active target trajectories (excluding silent/mute stems `<= -55 dBFS`, up to 14 stems)
     active_cols: list[torch.Tensor] = []
     mute_thresh_sq = 10.0 ** (-55.0 / 10.0)
     for y_arr in targets_list:
         y_2d = np.asarray(y_arr, dtype=np.float64)
         y_1d = y_2d[:, 0] if y_2d.ndim == 2 else y_2d.ravel()
-        if float(np.mean(y_1d**2)) > mute_thresh_sq and len(active_cols) < 7:
+        if float(np.mean(y_1d**2)) > mute_thresh_sq and len(active_cols) < 14:
             active_cols.append(torch.as_tensor(y_1d[:l_tot], dtype=torch.float64))
 
     if not active_cols:
@@ -938,7 +970,8 @@ def calibrate_3stage_selective_cascade(
         aug_t = src_t - fast_1pole_lpf(src_t, fc_aug, sr=sr)
         active_cols.append(aug_t)
 
-    y7_full = torch.stack(active_cols[:7], dim=-1)  # (L_tot, 7)
+    m_col = len(active_cols)
+    y7_full = torch.stack(active_cols, dim=-1)  # (L_tot, m_col)
     y7_lf = fast_1pole_lpf(y7_full, 250.0, sr=sr, bezout_order4=True)
     y7_lpf2500 = fast_1pole_lpf(y7_full, 2500.0, sr=sr, bezout_order4=True)
     y7_mf = y7_lpf2500 - y7_lf
@@ -1218,19 +1251,19 @@ def calibrate_3stage_selective_cascade(
     d23_full = z3_full - z2_full
     svd_stride = max(1, l_tot // 65_536)
 
-    d23_n = d23_full / (torch.sqrt(torch.mean(d23_full**2, dim=0, keepdim=True)) + 1e-12)
-    _, _, vt_d23 = torch.linalg.svd(d23_n[::svd_stride].to(torch.float64), full_matrices=False)
-    d23_top2 = (d23_full.to(torch.float64) @ vt_d23[:2, :].T).to(torch.float32)
+    if m_col <= 7:
+        d23_n = d23_full / (torch.sqrt(torch.mean(d23_full**2, dim=0, keepdim=True)) + 1e-12)
+        _, _, vt_d23 = torch.linalg.svd(d23_n[::svd_stride].to(torch.float64), full_matrices=False)
+        d23_top2 = (d23_full.to(torch.float64) @ vt_d23[:2, :].T).to(torch.float32)
 
-    d4_n = d4_tot / (torch.sqrt(torch.mean(d4_tot**2, dim=0, keepdim=True)) + 1e-12)
-    _, _, vt_d4 = torch.linalg.svd(d4_n[::svd_stride].to(torch.float64), full_matrices=False)
-    d4_top2 = (d4_tot.to(torch.float64) @ vt_d4[:2, :].T).to(torch.float32)
+        d4_n = d4_tot / (torch.sqrt(torch.mean(d4_tot**2, dim=0, keepdim=True)) + 1e-12)
+        _, _, vt_d4 = torch.linalg.svd(d4_n[::svd_stride].to(torch.float64), full_matrices=False)
+        d4_top2 = (d4_tot.to(torch.float64) @ vt_d4[:2, :].T).to(torch.float32)
 
-    _, _, vt_hf = torch.linalg.svd(z3_hf[::svd_stride].to(torch.float64), full_matrices=False)
-    z3_hf_top2 = (z3_hf.to(torch.float64) @ vt_hf[:2, :].T).to(torch.float32)
+        _, _, vt_hf = torch.linalg.svd(z3_hf[::svd_stride].to(torch.float64), full_matrices=False)
+        z3_hf_top2 = (z3_hf.to(torch.float64) @ vt_hf[:2, :].T).to(torch.float32)
 
-    b_lite_16 = (
-        torch.cat(
+        b_lite_t = torch.cat(
             [
                 _rms_balance_cols(z1_full),
                 _rms_balance_cols(d12_full),
@@ -1238,13 +1271,7 @@ def calibrate_3stage_selective_cascade(
             ],
             dim=-1,
         )
-        .detach()
-        .cpu()
-        .numpy()
-        .astype(np.float32)
-    )
-    b_full_16 = (
-        torch.cat(
+        b_full_t = torch.cat(
             [
                 _rms_balance_cols(d23_full),
                 _rms_balance_cols(z4_hf),
@@ -1252,13 +1279,7 @@ def calibrate_3stage_selective_cascade(
             ],
             dim=-1,
         )
-        .detach()
-        .cpu()
-        .numpy()
-        .astype(np.float32)
-    )
-    b_ultra_16 = (
-        torch.cat(
+        b_ultra_t = torch.cat(
             [
                 _rms_balance_cols(d4_tot),
                 _rms_balance_cols(z4_lf),
@@ -1266,11 +1287,27 @@ def calibrate_3stage_selective_cascade(
             ],
             dim=-1,
         )
-        .detach()
-        .cpu()
-        .numpy()
-        .astype(np.float32)
-    )
+    else:
+        rem = max(1, 16 - m_col)
+        d4_n = d4_tot / (torch.sqrt(torch.mean(d4_tot**2, dim=0, keepdim=True)) + 1e-12)
+        _, _, vt_d4 = torch.linalg.svd(d4_n[::svd_stride].to(torch.float64), full_matrices=False)
+        d4_top = (d4_tot.to(torch.float64) @ vt_d4[:rem, :].T).to(torch.float32)
+
+        z4hf_n = z4_hf / (torch.sqrt(torch.mean(z4_hf**2, dim=0, keepdim=True)) + 1e-12)
+        _, _, vt_hf = torch.linalg.svd(z4hf_n[::svd_stride].to(torch.float64), full_matrices=False)
+        z4_hf_top = (z4_hf.to(torch.float64) @ vt_hf[:rem, :].T).to(torch.float32)
+
+        z4mf_n = z4_mf / (torch.sqrt(torch.mean(z4_mf**2, dim=0, keepdim=True)) + 1e-12)
+        _, _, vt_mf = torch.linalg.svd(z4mf_n[::svd_stride].to(torch.float64), full_matrices=False)
+        z4_mf_top = (z4_mf.to(torch.float64) @ vt_mf[:rem, :].T).to(torch.float32)
+
+        b_lite_t = torch.cat([_rms_balance_cols(z3_full), _rms_balance_cols(d4_top)], dim=-1)
+        b_full_t = torch.cat([_rms_balance_cols(d4_tot), _rms_balance_cols(z4_hf_top)], dim=-1)
+        b_ultra_t = torch.cat([_rms_balance_cols(z4_lf), _rms_balance_cols(z4_mf_top)], dim=-1)
+
+    b_lite_16 = b_lite_t.detach().cpu().numpy().astype(np.float32)
+    b_full_16 = b_full_t.detach().cpu().numpy().astype(np.float32)
+    b_ultra_16 = b_ultra_t.detach().cpu().numpy().astype(np.float32)
     return b_lite_16, b_full_16, b_ultra_16
 
 

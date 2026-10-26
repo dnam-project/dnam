@@ -8,7 +8,7 @@ use dnam_engine::container::DnamContainerView;
 use dnam_engine::provenance::DefaultCryptoProvider;
 use serde::{Deserialize, Serialize};
 
-use crate::project::manifest::ModelManifest;
+use crate::project::manifest::{ControlRangeSpec, ModelManifest};
 
 /// Priority tier of a planned capture stem.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -187,7 +187,24 @@ pub fn build_capture_plan_with_prescriptions(
         }
     }
 
-    // 3. Switch throws
+    // 3. Multi-knob high-corner anchor on default switch state (before switch throws
+    //    so all default-switch stems are recorded together without extra switch flips)
+    let corner_pair = select_corner_range_pair(&model.ranges);
+    if include_corners && let Some((primary, Some(secondary))) = corner_pair {
+        let mut corner_coords = default_ranges.clone();
+        corner_coords.insert(primary.id.clone(), 1.0);
+        corner_coords.insert(secondary.id.clone(), 1.0);
+        steps.push(make_step(
+            model,
+            "stem_corner_high_pair".to_string(),
+            CaptureTier::CornerAnchor,
+            corner_coords,
+            default_switches.clone(),
+            None,
+        ));
+    }
+
+    // 4. Switch throws + Switch x Primary-Gain min/max interaction corners
     for sw in &model.switches {
         for opt in &sw.options {
             if opt.index == sw.default_index {
@@ -201,26 +218,33 @@ pub fn build_capture_plan_with_prescriptions(
                 stem_id,
                 CaptureTier::SwitchState,
                 default_ranges.clone(),
-                sw_map,
+                sw_map.clone(),
                 None,
             ));
-        }
-    }
 
-    // 4. Optional high-corner anchor when >= 2 continuous controls exist
-    if include_corners && model.ranges.len() >= 2 {
-        let mut corner_coords = default_ranges;
-        for r in model.ranges.iter().take(2) {
-            corner_coords.insert(r.id.clone(), 1.0);
+            if include_corners && let Some((primary, _)) = corner_pair {
+                let primary_default = default_ranges.get(&primary.id).copied().unwrap_or(0.5);
+                for (tag, norm_val) in [("min", 0.0_f32), ("max", 1.0_f32)] {
+                    if (norm_val - primary_default).abs() < 0.05 {
+                        continue;
+                    }
+                    let mut sw_corner_coords = default_ranges.clone();
+                    sw_corner_coords.insert(primary.id.clone(), norm_val);
+                    let sw_corner_id = format!(
+                        "stem_corner_switch_{}_{}_{}_{}",
+                        sw.id, opt.index, primary.id, tag
+                    );
+                    steps.push(make_step(
+                        model,
+                        sw_corner_id,
+                        CaptureTier::CornerAnchor,
+                        sw_corner_coords,
+                        sw_map.clone(),
+                        None,
+                    ));
+                }
+            }
         }
-        steps.push(make_step(
-            model,
-            "stem_corner_high_pair".to_string(),
-            CaptureTier::CornerAnchor,
-            corner_coords,
-            default_switches,
-            None,
-        ));
     }
 
     // 5. `.dnam-ckpt` Audit Report prescribed stems
@@ -318,6 +342,52 @@ pub fn compute_control_deltas(
         });
     }
     deltas
+}
+
+fn is_gain_like_control(r: &ControlRangeSpec) -> bool {
+    let id = r.id.to_ascii_lowercase();
+    let label = r.label.to_ascii_lowercase();
+    const KEYWORDS: &[&str] = &[
+        "gain",
+        "drive",
+        "dist",
+        "fuzz",
+        "overdrive",
+        "preamp",
+        "saturat",
+        "boost",
+        "comp",
+        "sustain",
+    ];
+    KEYWORDS
+        .iter()
+        .any(|kw| id.contains(kw) || label.contains(kw))
+}
+
+fn is_tone_body_control(r: &ControlRangeSpec) -> bool {
+    let id = r.id.to_ascii_lowercase();
+    let label = r.label.to_ascii_lowercase();
+    const KEYWORDS: &[&str] = &[
+        "drive", "gain", "bass", "low", "body", "depth", "reson", "tone", "filter", "freq",
+    ];
+    KEYWORDS
+        .iter()
+        .any(|kw| id.contains(kw) || label.contains(kw))
+}
+
+fn select_corner_range_pair(
+    ranges: &[ControlRangeSpec],
+) -> Option<(&ControlRangeSpec, Option<&ControlRangeSpec>)> {
+    let primary = ranges
+        .iter()
+        .find(|r| is_gain_like_control(r))
+        .or_else(|| ranges.first())?;
+    let secondary = ranges
+        .iter()
+        .filter(|r| r.id != primary.id)
+        .find(|r| is_tone_body_control(r))
+        .or_else(|| ranges.iter().find(|r| r.id != primary.id));
+    Some((primary, secondary))
 }
 
 fn make_step(

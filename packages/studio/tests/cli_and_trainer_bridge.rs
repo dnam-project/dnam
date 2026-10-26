@@ -113,7 +113,7 @@ fn test_cli_end_to_end_workflow_and_ipc_handler() {
         "--samples",
         "1024",
     ]);
-    assert!(rec_out.contains("Recorded and aligned 4 stems"));
+    assert!(rec_out.contains("Recorded and aligned 6 stems"));
 
     let stem_list = run(&["stem", "list", "--model", "Plexi50"]);
     assert!(stem_list.contains("stem_00_star_center"));

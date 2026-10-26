@@ -87,12 +87,15 @@ from dnam_trainer.training.arena import (
 )
 from dnam_trainer.training.hardware import HardwareRuntimeProfile, resolve_hardware_profile
 from dnam_trainer.training.kronecker_head import (
+    Base48BandGramCache,
     MultiTierKroneckerHeadSolution,
     StemSufficientStatistics,
+    compute_modulated_stem_sufficient_statistics,
     compute_stem_sufficient_statistics,
     compute_svd_control_projector,
     evaluate_kronecker_head_features,
     merge_stem_statistics_for_resume,
+    precompute_base48_band_cache,
     solve_all_tiers_kronecker_head_float64,
 )
 from dnam_trainer.training.metrics import (
@@ -267,27 +270,60 @@ def _compute_intrinsic_control_modulators(
     strictly from `declared_range` / `declared_options` and `controls_meta` (`Test 8E` / `Test 8G`
     invariant).
     """
-    coords: list[float] = []
-    for ctrl in list(controls_schema)[:3]:
+    ctrl_list = list(controls_schema)
+    if len(ctrl_list) <= 3:
+        coords: list[float] = []
+        for ctrl in ctrl_list[:3]:
+            kind = getattr(ctrl, "kind", None)
+            ctrl_id = getattr(ctrl, "id", "")
+            default_v = getattr(ctrl, "default", 0.0)
+            if kind == "range":
+                dec_range = getattr(ctrl, "declared_range", (0.0, 1.0))
+                lo, hi = float(dec_range[0]), float(dec_range[1])
+                raw_v = float(controls_meta.get(ctrl_id, default_v))
+                span = max(hi - lo, 1e-12)
+                u_val = float(np.clip(2.0 * (raw_v - lo) / span - 1.0, -1.0, 1.0))
+                coords.append(u_val)
+            elif kind == "switch":
+                opts = list(getattr(ctrl, "declared_options", []))
+                raw_s = str(controls_meta.get(ctrl_id, default_v))
+                idx = opts.index(raw_s) if raw_s in opts else 0
+                u_val = 0.0 if len(opts) <= 1 else float(2.0 * idx / (len(opts) - 1) - 1.0)
+                coords.append(u_val)
+        while len(coords) < 3:
+            coords.append(0.0)
+        return (coords[0], coords[1], coords[2])
+
+    range_du: list[float] = []
+    switch_du: list[float] = []
+    for ctrl in ctrl_list:
         kind = getattr(ctrl, "kind", None)
         ctrl_id = getattr(ctrl, "id", "")
         default_v = getattr(ctrl, "default", 0.0)
         if kind == "range":
             dec_range = getattr(ctrl, "declared_range", (0.0, 1.0))
             lo, hi = float(dec_range[0]), float(dec_range[1])
-            raw_v = float(controls_meta.get(ctrl_id, default_v))
             span = max(hi - lo, 1e-12)
+            def_u = float(np.clip(2.0 * (float(default_v) - lo) / span - 1.0, -1.0, 1.0))
+            raw_v = float(controls_meta.get(ctrl_id, default_v))
             u_val = float(np.clip(2.0 * (raw_v - lo) / span - 1.0, -1.0, 1.0))
-            coords.append(u_val)
+            range_du.append(u_val - def_u)
         elif kind == "switch":
             opts = list(getattr(ctrl, "declared_options", []))
+            def_s = str(default_v)
             raw_s = str(controls_meta.get(ctrl_id, default_v))
-            idx = opts.index(raw_s) if raw_s in opts else 0
-            u_val = 0.0 if len(opts) <= 1 else float(2.0 * idx / (len(opts) - 1) - 1.0)
-            coords.append(u_val)
-    while len(coords) < 3:
-        coords.append(0.0)
-    return (coords[0], coords[1], coords[2])
+            def_idx = opts.index(def_s) if def_s in opts else 0
+            raw_idx = opts.index(raw_s) if raw_s in opts else def_idx
+            denom = float(max(1, len(opts) - 1))
+            switch_du.append(float(raw_idx - def_idx) / denom)
+
+    m0 = sum((0.55 + 0.13 * i) * du for i, du in enumerate(range_du))
+    m1 = sum((0.50 + 0.15 * i) * (du * du) for i, du in enumerate(range_du))
+    corner_pair = 0.45 * range_du[0] * range_du[1] if len(range_du) >= 2 else 0.0
+    extra_lin = sum((0.60 + 0.17 * i) * du for i, du in enumerate(range_du[3:]))
+    sw_term = sum((0.85 + 0.25 * j) * su for j, su in enumerate(switch_du))
+    m2 = sw_term + corner_pair + extra_lin
+    return (float(m0), float(m1), float(m2))
 
 
 class DnamTriPhysicsModel(nn.Module):
@@ -1273,28 +1309,48 @@ class DnamTrainer:
             features_list_s4 = list(features_list_s2)
             stem_stats_s4 = list(stem_stats_s2)
         else:
+            base48_caches: dict[str, Base48BandGramCache] = {}
             with torch.no_grad():
                 for s_idx, s_id in enumerate(stem_ids):
                     x_t = torch.as_tensor(inputs_list[s_idx], device=device, dtype=torch.float32)
+                    in_sha = in_shas[s_idx]
                     phi_np = model.extract_calibrated_or_tier_features(
                         x_t,
-                        in_sha=in_shas[s_idx],
+                        in_sha=in_sha,
                         u_ctrl_3=u_ctrl_stems[s_idx],
                     )
                     features_list_s4.append(phi_np)
-                    stat = compute_stem_sufficient_statistics(
-                        phi_np,
-                        targets_list[s_idx],
-                        stem_id=s_id,
-                        controls_meta=stems_controls[s_idx],
-                        input_pcm_sha256=in_shas[s_idx],
-                        target_pcm_sha256=tgt_shas[s_idx],
-                        extracted_physics=ExtractedPhysics(
-                            delays_ms=[round(tail_time_ms, 3)] if core2_active else [],
-                            lfo_freqs_hz=[0.8] if core2_active else [],
-                            decay_gains_lin=[0.65] if core2_active else [],
-                        ),
+                    ext_phys = ExtractedPhysics(
+                        delays_ms=[round(tail_time_ms, 3)] if core2_active else [],
+                        lfo_freqs_hz=[0.8] if core2_active else [],
+                        decay_gains_lin=[0.65] if core2_active else [],
                     )
+                    if in_sha in model._calibrated_tier_blocks:
+                        if in_sha not in base48_caches:
+                            b_l16, b_f16, b_u16 = model._calibrated_tier_blocks[in_sha]
+                            base48_caches[in_sha] = precompute_base48_band_cache(
+                                b_l16, b_f16, b_u16
+                            )
+                        stat = compute_modulated_stem_sufficient_statistics(
+                            base48_caches[in_sha],
+                            u_ctrl_stems[s_idx],
+                            targets_list[s_idx],
+                            stem_id=s_id,
+                            controls_meta=stems_controls[s_idx],
+                            input_pcm_sha256=in_sha,
+                            target_pcm_sha256=tgt_shas[s_idx],
+                            extracted_physics=ext_phys,
+                        )
+                    else:
+                        stat = compute_stem_sufficient_statistics(
+                            phi_np,
+                            targets_list[s_idx],
+                            stem_id=s_id,
+                            controls_meta=stems_controls[s_idx],
+                            input_pcm_sha256=in_sha,
+                            target_pcm_sha256=tgt_shas[s_idx],
+                            extracted_physics=ext_phys,
+                        )
                     stem_stats_s4.append(stat)
 
         head_polish_sol = solve_all_tiers_kronecker_head_float64(
