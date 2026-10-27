@@ -6,12 +6,12 @@ use std::path::{Path, PathBuf};
 use clap::Subcommand;
 
 use crate::capture::{
-    CalibrationResult, Step1CalibrationMetrics, align_hardware_latency,
-    analyze_hot_corner_nonlinearity, analyze_probe_for_excitation, apply_subsample_shift_fft,
-    compute_pcm_sha256, create_capture_backend_with_gain, estimate_subsample_lag_and_snr,
-    generate_calibration_probe, generate_excitation_signal,
-    generate_excitation_signal_with_profile, list_backend_devices, list_capture_backends,
-    measure_silent_window_noise_floor, query_cpal_devices, read_wav,
+    CalibrationResult, DEFAULT_HARDWARE_EXCITATION_SEC, DEFAULT_HARDWARE_PROBE_SEC,
+    Step1CalibrationMetrics, align_hardware_latency, analyze_hot_corner_nonlinearity,
+    analyze_probe_for_excitation, apply_subsample_shift_fft, compute_pcm_sha256,
+    create_capture_backend_with_gain, estimate_subsample_lag_and_snr, generate_calibration_probe,
+    generate_excitation_signal, generate_excitation_signal_with_profile, list_backend_devices,
+    list_capture_backends, measure_silent_window_noise_floor, query_cpal_devices, read_wav,
     verify_and_polish_post_alignment, write_wav_24bit, write_wav_32bit_float,
 };
 use crate::cli::format::{self, StemPromptAction};
@@ -223,12 +223,12 @@ pub fn run_capture(workspace: &Path, action: &CaptureAction) -> StudioResult<Str
             let auto_yes = *yes || backend == "software";
             let is_hw = is_real_hw_device(backend, &resolved_dev);
             let probe_len = if is_hw {
-                ((sr as usize) * 4).max(2_048)
+                ((sr as usize) * DEFAULT_HARDWARE_PROBE_SEC).max(2_048)
             } else {
                 2_048
             };
             let dry_len = if is_hw {
-                ((sr as usize) * 12).max(4_096)
+                ((sr as usize) * DEFAULT_HARDWARE_EXCITATION_SEC).max(4_096)
             } else {
                 4_096
             };
@@ -442,7 +442,7 @@ pub fn run_capture(workspace: &Path, action: &CaptureAction) -> StudioResult<Str
             let device_id = resolve_effective_device(&backend_name, &manifest.capture.device_id);
             let is_hw = is_real_hw_device(&backend_name, &device_id);
             let effective_samples = if is_hw && *samples == 2048 {
-                ((sr as usize) * 12).max(*samples)
+                ((sr as usize) * DEFAULT_HARDWARE_EXCITATION_SEC).max(*samples)
             } else {
                 *samples
             };

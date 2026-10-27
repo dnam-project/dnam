@@ -16,7 +16,8 @@ use crate::capture::alignment::{
     measure_silent_window_noise_floor,
 };
 use crate::capture::excitation::{
-    TargetExcitationProfile, analyze_probe_for_excitation, generate_calibration_probe,
+    DEFAULT_HARDWARE_PROBE_SEC, TargetExcitationProfile, analyze_probe_for_excitation,
+    generate_calibration_probe,
 };
 use crate::error::{StudioError, StudioResult};
 
@@ -519,7 +520,7 @@ fn run_two_step_calibration_with_prompts<B: CaptureBackend + ?Sized>(
 ) -> StudioResult<CalibrationResult> {
     let is_hw = backend.backend_name() != "software" && !is_virtual_fallback_device(device_id);
     let probe_len = if is_hw {
-        ((sample_rate_hz as usize) * 4).max(2_048)
+        ((sample_rate_hz as usize) * DEFAULT_HARDWARE_PROBE_SEC).max(2_048)
     } else {
         2_048
     };

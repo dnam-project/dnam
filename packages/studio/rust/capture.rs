@@ -19,8 +19,8 @@ pub use backends::{
 };
 pub use excitation::{
     ALIGNMENT_HEADER_TOTAL_SEC, ALIGNMENT_PULSE_DURATION_SEC, ALIGNMENT_SETTLE_SILENCE_SEC,
-    TRAILING_NOISE_WINDOW_SEC, TargetExcitationProfile, analyze_probe_for_excitation,
-    generate_calibration_probe, generate_excitation_signal,
-    generate_excitation_signal_with_profile, synth_alignment_pulses,
+    DEFAULT_HARDWARE_EXCITATION_SEC, DEFAULT_HARDWARE_PROBE_SEC, TRAILING_NOISE_WINDOW_SEC,
+    TargetExcitationProfile, analyze_probe_for_excitation, generate_calibration_probe,
+    generate_excitation_signal, generate_excitation_signal_with_profile, synth_alignment_pulses,
 };
 pub use wav::{WavData, compute_pcm_sha256, read_wav, write_wav_24bit, write_wav_32bit_float};
