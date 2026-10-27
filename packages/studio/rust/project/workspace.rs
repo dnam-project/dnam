@@ -213,6 +213,7 @@ pub fn parse_compact_range_spec(spec: &str) -> StudioResult<ControlRangeSpec> {
             max,
             default_value,
             unit: None,
+            calibration: None,
         });
     }
 
@@ -267,6 +268,7 @@ pub fn parse_compact_range_spec(spec: &str) -> StudioResult<ControlRangeSpec> {
         max,
         default_value,
         unit,
+        calibration: None,
     })
 }
 
@@ -325,6 +327,7 @@ pub fn parse_compact_switch_spec(spec: &str) -> StudioResult<ControlSwitchSpec> 
             label: humanize_id(id),
             options,
             default_index,
+            calibration: None,
         });
     }
 
@@ -380,6 +383,7 @@ pub fn parse_compact_switch_spec(spec: &str) -> StudioResult<ControlSwitchSpec> 
         label: label.to_string(),
         options,
         default_index,
+        calibration: None,
     })
 }
 

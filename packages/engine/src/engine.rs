@@ -7,7 +7,9 @@ use crate::core2::ModulatedUfdn;
 use crate::math::{DefaultMathBackend, MathBackend};
 use crate::memory::{AlignedBuffer, AlignedFp16Block, ArenaStorage, CacheLine64};
 use crate::provenance::{CryptoProvider, DefaultCryptoProvider, VerificationStatus};
-use crate::schema::{DnamError, DnamJsonHeader};
+use crate::schema::{
+    ControlCalibrationRole, DnamError, DnamJsonHeader, TempoSubdivision, cold_pow_f64,
+};
 use crate::types::{DnamTelemetrySnapshot, FtzDazGuard, Tier};
 
 /// Zero-allocation real-time DNAM ("Tri-Physics") inference engine parameterized over a
@@ -23,6 +25,9 @@ pub struct DnamEngine<'a, B: MathBackend = DefaultMathBackend> {
     zoh: ZohRescaledParams,
     ctrl_sub_counter: usize,
     ctrl_energy_accum: f32,
+    bypassed: bool,
+    trails_enabled: bool,
+    stereo_width: f32,
     pub control_bus: ControlBus<B>,
     pub core1: Core1Stack<B>,
     pub core2: ModulatedUfdn<'a, B>,
@@ -138,6 +143,9 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
             zoh,
             ctrl_sub_counter: 0,
             ctrl_energy_accum: 0.0,
+            bypassed: false,
+            trails_enabled: false,
+            stereo_width: 1.0,
             control_bus: ControlBus::new(),
             core1: Core1Stack::new(),
             core2: ModulatedUfdn::with_max_capacity(max_ring_log2),
@@ -281,6 +289,9 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
             zoh,
             ctrl_sub_counter: 0,
             ctrl_energy_accum: 0.0,
+            bypassed: false,
+            trails_enabled: false,
+            stereo_width: 1.0,
             control_bus: ControlBus::new(),
             core1: Core1Stack::new(),
             core2,
@@ -332,7 +343,8 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
         // compile descriptors from header.controls_schema
         if let Some(ref hdr) = self.header
             && !hdr.controls_schema.is_empty()
-            && self.control_bus.descriptors[0].ctrl_kind == 0xFF
+            && (self.control_bus.descriptors[0].ctrl_kind == 0xFF
+                || self.control_bus.descriptors[0].scale_norm == 0.0)
             && let Ok(compiled) = hdr.compile_clamp_descriptors()
         {
             self.control_bus.descriptors = compiled;
@@ -416,6 +428,7 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
     #[inline]
     pub fn set_control_value(&mut self, ctrl_idx: usize, physical_value: f32) {
         self.control_bus.set_control_value(ctrl_idx, physical_value);
+        self.refresh_calibrated_control_effects(ctrl_idx, physical_value);
     }
 
     /// Sets a user control value and snaps immediately without anti-zipper lag, refreshing the
@@ -424,6 +437,7 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
     pub fn set_control_immediate(&mut self, ctrl_idx: usize, physical_value: f32) {
         self.control_bus
             .set_control_immediate(ctrl_idx, physical_value);
+        self.refresh_calibrated_control_effects(ctrl_idx, physical_value);
         let arena = self.arena_storage.as_bytes();
         if self
             .control_bus
@@ -435,6 +449,150 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
                 self.tier.core1_groups(),
             );
         }
+    }
+
+    /// Updates engine-level calibrated effects (`StereoMode` / `StereoWidth`) when `ctrl_idx` changes.
+    fn refresh_calibrated_control_effects(&mut self, ctrl_idx: usize, physical_value: f32) {
+        let Some(ref hdr) = self.header else {
+            return;
+        };
+        let Some(ctrl_def) = hdr.controls_schema.get(ctrl_idx) else {
+            return;
+        };
+        let Some(ref cal) = ctrl_def.calibration else {
+            return;
+        };
+        match cal.role {
+            ControlCalibrationRole::StereoMode => {
+                if let Some(ref opts) = ctrl_def.declared_options {
+                    let idx = (physical_value.round() as isize).max(0) as usize;
+                    if let Some(opt_label) = opts.get(idx)
+                        && let Some(w) = cal.stereo_width_for_option(opt_label)
+                    {
+                        self.stereo_width = w;
+                    }
+                }
+            }
+            ControlCalibrationRole::StereoWidth => {
+                let decl = ctrl_def.declared_range.unwrap_or([0.0, 1.0]);
+                let span = (decl[1] - decl[0]).max(1e-6);
+                self.stereo_width = ((physical_value - decl[0]) / span).clamp(0.0, 1.0);
+            }
+            _ => {}
+        }
+    }
+
+    /// Configures bypass and spillover **Trails** (`bypassed = true, trails = true`).
+    ///
+    /// - When `bypassed && !trails`: true hard bypass (output equals dry input, `0` wet signal).
+    /// - When `bypassed && trails`: dry input passes through at unity while new audio injection into
+    ///   Core 1 / Core 2 is muted (`0.0`), allowing Core 2's `ModulatedUfdn` delay/reverb tank to ring out naturally.
+    #[inline]
+    pub fn set_bypass(&mut self, bypassed: bool, trails: bool) {
+        self.bypassed = bypassed;
+        self.trails_enabled = trails;
+    }
+
+    /// Returns `(bypassed, trails_enabled)`.
+    #[inline]
+    pub const fn bypass_state(&self) -> (bool, bool) {
+        (self.bypassed, self.trails_enabled)
+    }
+
+    /// Sets the Mid/Side stereo width $\alpha_{\text{width}} \in [0.0, 1.0]$ (`0.0` = Mono, `1.0` = Full Stereo).
+    #[inline]
+    pub fn set_stereo_width(&mut self, width: f32) {
+        self.stereo_width = width.clamp(0.0, 1.0);
+    }
+
+    /// Returns the active Mid/Side stereo width $\alpha_{\text{width}} \in [0.0, 1.0]$.
+    #[inline]
+    pub const fn stereo_width(&self) -> f32 {
+        self.stereo_width
+    }
+
+    /// Configures host parallel Dry/Wet `Blend` ($b \in [0.0, 1.0]$), output gain trim in dB,
+    /// and auto-unity leveling from `header.io_config.{capabilities, leveling}`.
+    ///
+    /// - Uses linear voltage mixing ($\text{dry} = 1 - b$, $\text{wet} = b$) so correlated bass fundamentals
+    ///   sum to `0.0 dB` at `50%` blend.
+    /// - When `io_config.capabilities.wet_polarity_inverted` is `true`, inverts `wet_g` (`wet_g *= -1.0`)
+    ///   so `0%` blend matches bypass polarity and `50%` blend sums constructively without phase cancellation.
+    /// - When `apply_unity_leveling` is `true`, adds `io_config.leveling.calibrated_trim_db` to `output_gain_db`
+    ///   on the wet path so at default control settings ($\mathbf{u} = \mathbf{0}$) and `0.0 dB` output trim,
+    ///   the engine outputs exact unity (`+ target_gain_db`).
+    pub fn configure_host_mix_and_leveling(
+        &mut self,
+        blend_wet: f32,
+        output_gain_db: f32,
+        apply_unity_leveling: bool,
+    ) {
+        let b = blend_wet.clamp(0.0, 1.0);
+        let (pol_sign, cal_trim_db) = if let Some(ref hdr) = self.header {
+            let sign = if hdr.io_config.capabilities.wet_polarity_inverted {
+                -1.0_f32
+            } else {
+                1.0_f32
+            };
+            let trim = if apply_unity_leveling && hdr.io_config.leveling.auto_unity_enabled {
+                hdr.io_config.leveling.calibrated_trim_db
+            } else {
+                0.0_f32
+            };
+            (sign, trim)
+        } else {
+            (1.0_f32, 0.0_f32)
+        };
+
+        let out_scale = cold_pow_f64(10.0, (output_gain_db as f64) / 20.0) as f32;
+        let wet_trim_scale =
+            cold_pow_f64(10.0, ((output_gain_db + cal_trim_db) as f64) / 20.0) as f32;
+
+        self.core1.mix_dry_gain = (1.0 - b) * out_scale;
+        self.core1.mix_wet_gain = pol_sign * b * wet_trim_scale;
+    }
+
+    /// Synchronizes all calibrated delay-time (`DelayTimeMs`) and LFO-rate (`LfoRateHz`) controls
+    /// (and any associated `Range` switch in `conditional_physical_anchors`) to `(bpm, subdivision_override)`.
+    ///
+    /// Returns the number of calibrated controls updated.
+    pub fn sync_tempo(
+        &mut self,
+        bpm: f32,
+        subdivision_override: Option<TempoSubdivision>,
+        fold_octave: bool,
+    ) -> usize {
+        let Some(ref hdr) = self.header else {
+            return 0;
+        };
+        let mut updates: alloc::vec::Vec<(usize, f32)> = alloc::vec::Vec::new();
+        for (ctrl_idx, ctrl_def) in hdr.controls_schema.iter().enumerate() {
+            let Some(ref cal) = ctrl_def.calibration else {
+                continue;
+            };
+            let Some(res) = cal.resolve_tempo_sync(bpm, subdivision_override, fold_octave) else {
+                continue;
+            };
+            if let Some((sw_id, opt_label)) = res.switch_selection
+                && let Some((sw_idx, sw_def)) = hdr
+                    .controls_schema
+                    .iter()
+                    .enumerate()
+                    .find(|(_, c)| c.id == sw_id)
+                && let Some(ref opts) = sw_def.declared_options
+                && let Some(opt_idx) = opts.iter().position(|o| o == &opt_label)
+            {
+                updates.push((sw_idx, opt_idx as f32));
+            }
+            let decl = ctrl_def.declared_range.unwrap_or([0.0, 10.0]);
+            let phys = decl[0] + 0.5 * (res.normalized_u + 1.0) * (decl[1] - decl[0]);
+            updates.push((ctrl_idx, phys));
+        }
+        let count = updates.len();
+        for (idx, val) in updates {
+            self.set_control_immediate(idx, val);
+        }
+        count
     }
 
     /// Applies a named built-in preset from `header.presets` and snaps all controls to the preset's
@@ -453,12 +611,13 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
                 DnamError::SchemaValidationError(alloc::format!("unknown preset id: {preset_id}"))
             })?;
 
+        let mut pending: alloc::vec::Vec<(usize, f32)> = alloc::vec::Vec::new();
         for (ctrl_idx, ctrl_def) in hdr.controls_schema.iter().enumerate() {
             if let Some(val) = preset.controls.get(&ctrl_def.id) {
                 match ctrl_def.kind {
                     crate::schema::ControlKind::Range => {
                         if let Some(num) = val.as_f64() {
-                            self.control_bus.set_control_immediate(ctrl_idx, num as f32);
+                            pending.push((ctrl_idx, num as f32));
                         }
                     }
                     crate::schema::ControlKind::Switch => {
@@ -466,12 +625,15 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
                             && let Some(ref opts) = ctrl_def.declared_options
                             && let Some(opt_idx) = opts.iter().position(|o| o == s)
                         {
-                            self.control_bus
-                                .set_control_immediate(ctrl_idx, opt_idx as f32);
+                            pending.push((ctrl_idx, opt_idx as f32));
                         }
                     }
                 }
             }
+        }
+        for (ctrl_idx, phys_val) in pending {
+            self.control_bus.set_control_immediate(ctrl_idx, phys_val);
+            self.refresh_calibrated_control_effects(ctrl_idx, phys_val);
         }
         let arena = self.arena_storage.as_bytes();
         let _ = self
@@ -532,9 +694,22 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
         mono_only: bool,
         dry_g: f32,
         wet_g: f32,
+        bypassed: bool,
+        trails_enabled: bool,
+        stereo_width: f32,
     ) -> [f32; 2] {
+        if bypassed && !trails_enabled {
+            return if mono_only {
+                [in_l, in_l]
+            } else {
+                [in_l, in_r]
+            };
+        }
+
+        let (eff_in_l, eff_in_r) = if bypassed { (0.0, 0.0) } else { (in_l, in_r) };
+
         // Accumulate block energy for 3 kHz envelope follower
-        *ctrl_energy_accum += 0.5 * (in_l.abs() + in_r.abs());
+        *ctrl_energy_accum += 0.5 * (eff_in_l.abs() + eff_in_r.abs());
         *ctrl_sub_counter += 1;
         if *ctrl_sub_counter >= k_ctrl {
             let avg_energy = *ctrl_energy_accum * (1.0 / 16.0);
@@ -545,26 +720,46 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
             }
         }
 
-        let core1_out = core1.process_sample_tiles::<GROUPS>(in_l, in_r, tiles, mono_only);
+        let core1_out = core1.process_sample_tiles::<GROUPS>(eff_in_l, eff_in_r, tiles, mono_only);
 
-        let (wet_l, wet_r, dry_l, dry_r) = if core2.active {
+        let (mut wet_l, mut wet_r, dry_l, dry_r) = if core2.active {
+            let zero_tap = [[0.0_f32; 4]; 2];
+            let tap_ref = if bypassed {
+                &zero_tap
+            } else {
+                &core1.latest_core1_tap
+            };
             let c2 = core2.process_sample(
-                in_l,
-                in_r,
-                &core1.latest_core1_tap,
+                eff_in_l,
+                eff_in_r,
+                tap_ref,
                 &control_bus.core2_delay_mod_samples,
                 FDN_GROUPS,
             );
-            (core1_out[0] + c2[0], core1_out[1] + c2[1], c2[2], c2[3])
+            if bypassed {
+                (c2[0], c2[1], in_l, in_r)
+            } else {
+                (core1_out[0] + c2[0], core1_out[1] + c2[1], c2[2], c2[3])
+            }
+        } else if bypassed {
+            (0.0, 0.0, in_l, in_r)
         } else {
             (core1_out[0], core1_out[1], in_l, in_r)
         };
 
-        let out_l = dry_g * dry_l + wet_g * wet_l;
+        if !mono_only && stereo_width < 0.999_999 {
+            let mid = 0.5 * (wet_l + wet_r);
+            let side = 0.5 * (wet_l - wet_r);
+            wet_l = mid + stereo_width * side;
+            wet_r = mid - stereo_width * side;
+        }
+
+        let eff_dry_g = if bypassed { 1.0 } else { dry_g };
+        let out_l = eff_dry_g * dry_l + wet_g * wet_l;
         let out_r = if mono_only {
             out_l
         } else {
-            dry_g * dry_r + wet_g * wet_r
+            eff_dry_g * dry_r + wet_g * wet_r
         };
         [out_l, out_r]
     }
@@ -601,6 +796,9 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
         let mono_only = !self.preamble.is_stereo_out();
         let dry_g = self.core1.mix_dry_gain;
         let wet_g = self.core1.mix_wet_gain * self.core1.tier_gain_trim_lin[self.tier as usize];
+        let bypassed = self.bypassed;
+        let trails = self.trails_enabled;
+        let width = self.stereo_width;
 
         match self.tier {
             Tier::Lite => {
@@ -620,6 +818,9 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
                         mono_only,
                         dry_g,
                         wet_g,
+                        bypassed,
+                        trails,
+                        width,
                     );
                     left_out[i] = l;
                     right_out[i] = r;
@@ -642,6 +843,9 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
                         mono_only,
                         dry_g,
                         wet_g,
+                        bypassed,
+                        trails,
+                        width,
                     );
                     left_out[i] = l;
                     right_out[i] = r;
@@ -664,6 +868,9 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
                         mono_only,
                         dry_g,
                         wet_g,
+                        bypassed,
+                        trails,
+                        width,
                     );
                     left_out[i] = l;
                     right_out[i] = r;
@@ -689,6 +896,9 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
         let mono_only = !self.preamble.is_stereo_out();
         let dry_g = self.core1.mix_dry_gain;
         let wet_g = self.core1.mix_wet_gain * self.core1.tier_gain_trim_lin[self.tier as usize];
+        let bypassed = self.bypassed;
+        let trails = self.trails_enabled;
+        let width = self.stereo_width;
 
         match self.tier {
             Tier::Lite => {
@@ -708,6 +918,9 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
                         mono_only,
                         dry_g,
                         wet_g,
+                        bypassed,
+                        trails,
+                        width,
                     );
                     left_io[i] = l;
                     right_io[i] = r;
@@ -730,6 +943,9 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
                         mono_only,
                         dry_g,
                         wet_g,
+                        bypassed,
+                        trails,
+                        width,
                     );
                     left_io[i] = l;
                     right_io[i] = r;
@@ -752,6 +968,9 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
                         mono_only,
                         dry_g,
                         wet_g,
+                        bypassed,
+                        trails,
+                        width,
                     );
                     left_io[i] = l;
                     right_io[i] = r;
@@ -782,6 +1001,9 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
         let mono_only = !self.preamble.is_stereo_out();
         let dry_g = self.core1.mix_dry_gain;
         let wet_g = self.core1.mix_wet_gain * self.core1.tier_gain_trim_lin[self.tier as usize];
+        let bypassed = self.bypassed;
+        let trails = self.trails_enabled;
+        let width = self.stereo_width;
 
         match self.tier {
             Tier::Lite => {
@@ -802,6 +1024,9 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
                         mono_only,
                         dry_g,
                         wet_g,
+                        bypassed,
+                        trails,
+                        width,
                     );
                     left_out[i] = l;
                     right_out[i] = r;
@@ -825,6 +1050,9 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
                         mono_only,
                         dry_g,
                         wet_g,
+                        bypassed,
+                        trails,
+                        width,
                     );
                     left_out[i] = l;
                     right_out[i] = r;
@@ -848,6 +1076,9 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
                         mono_only,
                         dry_g,
                         wet_g,
+                        bypassed,
+                        trails,
+                        width,
                     );
                     left_out[i] = l;
                     right_out[i] = r;
@@ -873,6 +1104,9 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
         let lfo_env_active = self.preamble.is_lfo_env_active();
         let dry_g = self.core1.mix_dry_gain;
         let wet_g = self.core1.mix_wet_gain * self.core1.tier_gain_trim_lin[self.tier as usize];
+        let bypassed = self.bypassed;
+        let trails = self.trails_enabled;
+        let width = self.stereo_width;
 
         match self.tier {
             Tier::Lite => {
@@ -893,6 +1127,9 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
                         true,
                         dry_g,
                         wet_g,
+                        bypassed,
+                        trails,
+                        width,
                     );
                     mono_out[i] = l;
                 }
@@ -915,6 +1152,9 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
                         true,
                         dry_g,
                         wet_g,
+                        bypassed,
+                        trails,
+                        width,
                     );
                     mono_out[i] = l;
                 }
@@ -937,6 +1177,9 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
                         true,
                         dry_g,
                         wet_g,
+                        bypassed,
+                        trails,
+                        width,
                     );
                     mono_out[i] = l;
                 }
@@ -954,7 +1197,9 @@ mod tests {
     use super::*;
     use crate::container::{ARENA_OFFSET_ULTRA_END, build_dnam_container};
     use crate::math::ScalarBackend;
-    use crate::schema::{ControlKind, ControlSchemaDef, ControlUiHints, PresetDef};
+    use crate::schema::{
+        BlendMode, ControlCalibration, ControlKind, ControlSchemaDef, ControlUiHints, PresetDef,
+    };
     use alloc::collections::BTreeMap;
     use alloc::string::String;
 
@@ -977,6 +1222,7 @@ mod tests {
                 declared_options: None,
                 active_options: None,
                 clamp_warning: None,
+                calibration: None,
                 ui_hints: ControlUiHints::default(),
                 user_metadata: BTreeMap::new(),
             },
@@ -995,6 +1241,7 @@ mod tests {
                 declared_options: Some(alloc::vec![String::from("Clean"), String::from("Lead")]),
                 active_options: Some(alloc::vec![String::from("Clean"), String::from("Lead")]),
                 clamp_warning: None,
+                calibration: None,
                 ui_hints: ControlUiHints::default(),
                 user_metadata: BTreeMap::new(),
             },
@@ -1058,5 +1305,147 @@ mod tests {
         let owned_eng =
             DnamEngine::<ScalarBackend>::from_bytes_owned(&container, Tier::Lite, 48_000).unwrap();
         assert_eq!(owned_eng.tier(), Tier::Lite);
+    }
+
+    #[test]
+    fn test_dnam_engine_leveling_blend_trails_tempo_and_stereo_mode() {
+        let mut header = DnamJsonHeader::default_reference(true);
+        header.io_config.capabilities.blend_mode = BlendMode::HostParallel;
+        header.io_config.capabilities.wet_polarity_inverted = true;
+        header.io_config.capabilities.supports_trails = true;
+        header.io_config.capabilities.tempo_sync_capable = true;
+        header.io_config.leveling.auto_unity_enabled = true;
+        header.io_config.leveling.calibrated_trim_db = 6.0206; // ~2.0x linear gain
+
+        let mut cond_anchors = BTreeMap::new();
+        cond_anchors.insert(String::from("range=0.01-0.1s"), [10.0, 55.0, 100.0]);
+        cond_anchors.insert(String::from("range=0.1-1s"), [100.0, 550.0, 1000.0]);
+        cond_anchors.insert(String::from("range=1-2s"), [1000.0, 1500.0, 2000.0]);
+
+        header.controls_schema = alloc::vec![
+            ControlSchemaDef {
+                id: String::from("time"),
+                name: String::from("Time"),
+                kind: ControlKind::Range,
+                unit: Some(String::from("ms")),
+                lobatto_degree: Some(2),
+                anchor_nodes_norm: None,
+                declared_range: Some([0.0, 10.0]),
+                safe_clamped_range: Some([0.0, 10.0]),
+                default: serde_json::json!(5.0),
+                conditional_min: BTreeMap::new(),
+                conditional_max: BTreeMap::new(),
+                declared_options: None,
+                active_options: None,
+                clamp_warning: None,
+                calibration: Some(ControlCalibration {
+                    role: ControlCalibrationRole::DelayTimeMs,
+                    lobatto_physical_anchors: None,
+                    conditional_physical_anchors: cond_anchors,
+                    tempo_sync_default_subdivision: Some(TempoSubdivision::EighthDotted),
+                }),
+                ui_hints: ControlUiHints::default(),
+                user_metadata: BTreeMap::new(),
+            },
+            ControlSchemaDef {
+                id: String::from("range"),
+                name: String::from("Range"),
+                kind: ControlKind::Switch,
+                unit: None,
+                lobatto_degree: None,
+                anchor_nodes_norm: None,
+                declared_range: None,
+                safe_clamped_range: None,
+                default: serde_json::json!("0.1-1s"),
+                conditional_min: BTreeMap::new(),
+                conditional_max: BTreeMap::new(),
+                declared_options: Some(alloc::vec![
+                    String::from("0.01-0.1s"),
+                    String::from("0.1-1s"),
+                    String::from("1-2s"),
+                ]),
+                active_options: Some(alloc::vec![
+                    String::from("0.01-0.1s"),
+                    String::from("0.1-1s"),
+                    String::from("1-2s"),
+                ]),
+                clamp_warning: None,
+                calibration: None,
+                ui_hints: ControlUiHints::default(),
+                user_metadata: BTreeMap::new(),
+            },
+            ControlSchemaDef {
+                id: String::from("mode"),
+                name: String::from("Mode"),
+                kind: ControlKind::Switch,
+                unit: None,
+                lobatto_degree: None,
+                anchor_nodes_norm: None,
+                declared_range: None,
+                safe_clamped_range: None,
+                default: serde_json::json!("Stereo"),
+                conditional_min: BTreeMap::new(),
+                conditional_max: BTreeMap::new(),
+                declared_options: Some(alloc::vec![String::from("Mono"), String::from("Stereo")]),
+                active_options: Some(alloc::vec![String::from("Mono"), String::from("Stereo")]),
+                clamp_warning: None,
+                calibration: Some(ControlCalibration {
+                    role: ControlCalibrationRole::StereoMode,
+                    lobatto_physical_anchors: None,
+                    conditional_physical_anchors: BTreeMap::new(),
+                    tempo_sync_default_subdivision: None,
+                }),
+                ui_hints: ControlUiHints::default(),
+                user_metadata: BTreeMap::new(),
+            },
+        ];
+
+        let arena = alloc::vec![0u8; ARENA_OFFSET_ULTRA_END as usize];
+        let container = build_dnam_container(&mut header, &arena, &arena, false).unwrap();
+        let mut engine =
+            DnamEngine::<ScalarBackend>::from_bytes(&container, Tier::Lite, 48_000).unwrap();
+
+        // 1. Test configure_host_mix_and_leveling at 50% blend with wet_polarity_inverted=true and +6.0206 dB trim
+        engine.configure_host_mix_and_leveling(0.5, 0.0, true);
+        assert!((engine.core1.mix_dry_gain - 0.5).abs() < 1e-4);
+        assert!((engine.core1.mix_wet_gain - (-1.0)).abs() < 1e-3);
+
+        // 2. Test StereoMode switch ("Mono" = index 0 -> stereo_width = 0.0; "Stereo" = index 1 -> stereo_width = 1.0)
+        assert!((engine.stereo_width() - 1.0).abs() < 1e-6);
+        engine.set_control_immediate(2, 0.0);
+        assert!(engine.stereo_width().abs() < 1e-6);
+        engine.set_control_immediate(2, 1.0);
+        assert!((engine.stereo_width() - 1.0).abs() < 1e-6);
+
+        // 3. Test sync_tempo: 120 BPM + 1/2. = 1500 ms -> range="1-2s" (index 2) and time=5.0
+        let updated = engine.sync_tempo(120.0, Some(TempoSubdivision::HalfDotted), false);
+        assert_eq!(updated, 2);
+        let snap = engine.telemetry_snapshot();
+        assert!((snap.clamped_controls[0] - 5.0).abs() < 1e-3);
+        assert!((snap.clamped_controls[1] - 2.0).abs() < 1e-3);
+
+        // 4. Test hard bypass and trails bypass
+        engine.set_bypass(true, false);
+        assert_eq!(engine.bypass_state(), (true, false));
+        let mut l_out = [0.0_f32; 4];
+        let mut r_out = [0.0_f32; 4];
+        engine.process_block(
+            &[0.25, -0.5, 0.75, -0.25],
+            &[-0.25, 0.5, -0.75, 0.25],
+            &mut l_out,
+            &mut r_out,
+        );
+        assert_eq!(l_out, [0.25, -0.5, 0.75, -0.25]);
+        assert_eq!(r_out, [-0.25, 0.5, -0.75, 0.25]);
+
+        engine.set_bypass(true, true);
+        assert_eq!(engine.bypass_state(), (true, true));
+        engine.process_block(
+            &[0.25, -0.5, 0.75, -0.25],
+            &[-0.25, 0.5, -0.75, 0.25],
+            &mut l_out,
+            &mut r_out,
+        );
+        assert_eq!(l_out, [0.25, -0.5, 0.75, -0.25]);
     }
 }

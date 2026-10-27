@@ -8,6 +8,230 @@ import { type JsonValue, JsonValueSchema } from "./base.js";
 
 export type ControlKind = "range" | "switch";
 
+export const TEMPO_SUBDIVISIONS = [
+  "1/2.",
+  "1/2",
+  "1/2T",
+  "1/4.",
+  "1/4",
+  "1/4T",
+  "1/8.",
+  "1/8",
+  "1/8T",
+  "1/16.",
+  "1/16",
+  "1/16T",
+] as const;
+
+export type TempoSubdivision = (typeof TEMPO_SUBDIVISIONS)[number];
+
+export const TEMPO_SUBDIVISION_MULTIPLIERS: Record<TempoSubdivision, number> = {
+  "1/2.": 3.0,
+  "1/2": 2.0,
+  "1/2T": 4.0 / 3.0,
+  "1/4.": 1.5,
+  "1/4": 1.0,
+  "1/4T": 2.0 / 3.0,
+  "1/8.": 0.75,
+  "1/8": 0.5,
+  "1/8T": 1.0 / 3.0,
+  "1/16.": 0.375,
+  "1/16": 0.25,
+  "1/16T": 1.0 / 6.0,
+};
+
+export type ControlCalibrationRole =
+  | "delay_time_ms"
+  | "lfo_rate_hz"
+  | "feedback"
+  | "mix"
+  | "crossover_hz"
+  | "stereo_mode"
+  | "stereo_width";
+
+export interface ControlCalibration {
+  role: ControlCalibrationRole;
+  lobattoPhysicalAnchors?: [number, number, number] | undefined;
+  conditionalPhysicalAnchors: Record<string, [number, number, number]>;
+  tempoSyncDefaultSubdivision?: TempoSubdivision | undefined;
+}
+
+export interface TempoSyncResolution {
+  targetPhysical: number;
+  normalizedU: number;
+  switchSelection?: [string, string] | undefined;
+  wasClamped: boolean;
+}
+
+const RawControlCalibrationSchema = z
+  .object({
+    role: z.enum([
+      "delay_time_ms",
+      "lfo_rate_hz",
+      "feedback",
+      "mix",
+      "crossover_hz",
+      "stereo_mode",
+      "stereo_width",
+    ]),
+    lobatto_physical_anchors: z.tuple([z.number(), z.number(), z.number()]).nullable().optional(),
+    lobattoPhysicalAnchors: z.tuple([z.number(), z.number(), z.number()]).nullable().optional(),
+    conditional_physical_anchors: z
+      .record(z.string(), z.tuple([z.number(), z.number(), z.number()]))
+      .optional(),
+    conditionalPhysicalAnchors: z
+      .record(z.string(), z.tuple([z.number(), z.number(), z.number()]))
+      .optional(),
+    tempo_sync_default_subdivision: z.enum(TEMPO_SUBDIVISIONS).nullable().optional(),
+    tempoSyncDefaultSubdivision: z.enum(TEMPO_SUBDIVISIONS).nullable().optional(),
+  })
+  .strict();
+
+export const ControlCalibrationSchema: z.ZodType<ControlCalibration, unknown> =
+  RawControlCalibrationSchema.transform(
+    (raw): ControlCalibration => ({
+      role: raw.role,
+      lobattoPhysicalAnchors:
+        raw.lobattoPhysicalAnchors ?? raw.lobatto_physical_anchors ?? undefined,
+      conditionalPhysicalAnchors:
+        raw.conditionalPhysicalAnchors ?? raw.conditional_physical_anchors ?? {},
+      tempoSyncDefaultSubdivision:
+        raw.tempoSyncDefaultSubdivision ?? raw.tempo_sync_default_subdivision ?? undefined,
+    }),
+  );
+
+export function tempoSubdivisionDelayMs(bpm: number, subdivision: TempoSubdivision): number {
+  const safeBpm = Math.min(400.0, Math.max(20.0, bpm));
+  return (60_000.0 / safeBpm) * TEMPO_SUBDIVISION_MULTIPLIERS[subdivision];
+}
+
+export function tempoSubdivisionFreqHz(bpm: number, subdivision: TempoSubdivision): number {
+  return 1000.0 / tempoSubdivisionDelayMs(bpm, subdivision);
+}
+
+export function invertLobattoAnchors(vTarget: number, anchors: [number, number, number]): number {
+  const [vMin, vMid, vMax] = anchors;
+  const c1 = 0.5 * (vMax - vMin);
+  const c2 = 0.5 * (vMax + vMin) - vMid;
+  const dv = vTarget - vMid;
+  if (Math.abs(c2) < 1e-6) {
+    if (Math.abs(c1) < 1e-9) {
+      return 0.0;
+    }
+    return Math.min(1.0, Math.max(-1.0, dv / c1));
+  }
+  const disc = Math.max(0.0, c1 * c1 + 4.0 * c2 * dv);
+  const sqrtDisc = Math.sqrt(disc);
+  const denom = c1 >= 0.0 ? c1 + sqrtDisc : c1 - sqrtDisc;
+  if (Math.abs(denom) < 1e-9) {
+    return 0.0;
+  }
+  return Math.min(1.0, Math.max(-1.0, (2.0 * dv) / denom));
+}
+
+export function resolveTempoSyncTarget(
+  calibration: ControlCalibration,
+  bpm: number,
+  subdivisionOverride?: TempoSubdivision,
+  foldOctave = false,
+): TempoSyncResolution | undefined {
+  const sub = subdivisionOverride ?? calibration.tempoSyncDefaultSubdivision ?? "1/4";
+  let vTarget: number;
+  if (calibration.role === "delay_time_ms") {
+    vTarget = tempoSubdivisionDelayMs(bpm, sub);
+  } else if (calibration.role === "lfo_rate_hz") {
+    vTarget = tempoSubdivisionFreqHz(bpm, sub);
+  } else {
+    return undefined;
+  }
+
+  const condEntries = Object.entries(calibration.conditionalPhysicalAnchors);
+  if (condEntries.length > 0) {
+    let best:
+      | { condKey: string; anchors: [number, number, number]; vEff: number; clamped: boolean }
+      | undefined;
+    let bestDist = Number.POSITIVE_INFINITY;
+    for (const [condKey, anchors] of condEntries) {
+      const lo = Math.min(anchors[0], anchors[2]);
+      const hi = Math.max(anchors[0], anchors[2]);
+      let v = vTarget;
+      let folded = false;
+      if (foldOctave && lo > 0.0) {
+        while (v > hi && v * 0.5 >= lo) {
+          v *= 0.5;
+          folded = true;
+        }
+        while (v < lo && v * 2.0 <= hi) {
+          v *= 2.0;
+          folded = true;
+        }
+      }
+      let dist: number;
+      let clamped: boolean;
+      let vEff: number;
+      if (v >= lo && v <= hi) {
+        dist = 0.0;
+        clamped = folded;
+        vEff = v;
+      } else if (v < lo) {
+        dist = lo - v;
+        clamped = true;
+        vEff = lo;
+      } else {
+        dist = v - hi;
+        clamped = true;
+        vEff = hi;
+      }
+      if (dist < bestDist) {
+        bestDist = dist;
+        best = { condKey, anchors, vEff, clamped };
+        if (dist === 0.0 && !folded) {
+          break;
+        }
+      }
+    }
+    if (best !== undefined) {
+      const eqIdx = best.condKey.indexOf("=");
+      const swSel: [string, string] | undefined =
+        eqIdx > 0 ? [best.condKey.slice(0, eqIdx), best.condKey.slice(eqIdx + 1)] : undefined;
+      return {
+        targetPhysical: best.vEff,
+        normalizedU: invertLobattoAnchors(best.vEff, best.anchors),
+        switchSelection: swSel,
+        wasClamped: best.clamped,
+      };
+    }
+  }
+
+  if (calibration.lobattoPhysicalAnchors !== undefined) {
+    const anchors = calibration.lobattoPhysicalAnchors;
+    const lo = Math.min(anchors[0], anchors[2]);
+    const hi = Math.max(anchors[0], anchors[2]);
+    let v = vTarget;
+    let clamped = false;
+    if (foldOctave && lo > 0.0) {
+      while (v > hi && v * 0.5 >= lo) {
+        v *= 0.5;
+        clamped = true;
+      }
+      while (v < lo && v * 2.0 <= hi) {
+        v *= 2.0;
+        clamped = true;
+      }
+    }
+    if (v < lo || v > hi) {
+      clamped = true;
+      v = Math.min(hi, Math.max(lo, v));
+    }
+    return {
+      targetPhysical: v,
+      normalizedU: invertLobattoAnchors(v, anchors),
+      wasClamped: clamped,
+    };
+  }
+  return undefined;
+}
+
 export interface ControlUiHints {
   section?: string | undefined;
   order: number;
@@ -143,6 +367,7 @@ export interface ControlSchemaDef {
   declaredOptions?: string[] | undefined;
   activeOptions?: string[] | undefined;
   clampWarning?: string | undefined;
+  calibration?: ControlCalibration | undefined;
   uiHints: ControlUiHints;
   userMetadata: Record<string, JsonValue>;
 }
@@ -173,6 +398,7 @@ const RawControlSchemaDefSchema = z
     activeOptions: z.array(z.string()).nullable().optional(),
     clamp_warning: z.string().nullable().optional(),
     clampWarning: z.string().nullable().optional(),
+    calibration: ControlCalibrationSchema.nullable().optional(),
     ui_hints: ControlUiHintsSchema.optional(),
     uiHints: ControlUiHintsSchema.optional(),
     user_metadata: z.record(z.string(), JsonValueSchema).optional(),
@@ -214,6 +440,7 @@ export const ControlSchemaDefSchema: z.ZodType<ControlSchemaDef, unknown> =
       declaredOptions: raw.declaredOptions ?? raw.declared_options ?? undefined,
       activeOptions: raw.activeOptions ?? raw.active_options ?? undefined,
       clampWarning: raw.clampWarning ?? raw.clamp_warning ?? undefined,
+      calibration: raw.calibration ?? undefined,
       uiHints,
       userMetadata: raw.userMetadata ?? raw.user_metadata ?? {},
     };
@@ -265,8 +492,17 @@ export function controlUiHintsToWire(hints: ControlUiHints): Record<string, unkn
   };
 }
 
-export function controlSchemaDefToWire(ctrl: ControlSchemaDef): Record<string, unknown> {
+export function controlCalibrationToWire(cal: ControlCalibration): Record<string, unknown> {
   return {
+    role: cal.role,
+    lobatto_physical_anchors: cal.lobattoPhysicalAnchors ?? null,
+    conditional_physical_anchors: cal.conditionalPhysicalAnchors,
+    tempo_sync_default_subdivision: cal.tempoSyncDefaultSubdivision ?? null,
+  };
+}
+
+export function controlSchemaDefToWire(ctrl: ControlSchemaDef): Record<string, unknown> {
+  const out: Record<string, unknown> = {
     id: ctrl.id,
     name: ctrl.name,
     type: ctrl.type,
@@ -284,6 +520,10 @@ export function controlSchemaDefToWire(ctrl: ControlSchemaDef): Record<string, u
     ui_hints: controlUiHintsToWire(ctrl.uiHints),
     user_metadata: ctrl.userMetadata,
   };
+  if (ctrl.calibration !== undefined) {
+    out["calibration"] = controlCalibrationToWire(ctrl.calibration);
+  }
+  return out;
 }
 
 export function presetDefToWire(preset: PresetDef): Record<string, unknown> {

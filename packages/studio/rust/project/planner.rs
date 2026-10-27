@@ -606,6 +606,7 @@ mod tests {
                         max: 10.0,
                         default_value: def,
                         unit: None,
+                        calibration: None,
                     }
                 })
                 .collect();
@@ -618,6 +619,7 @@ mod tests {
                         ControlSwitchOptionSpec { index: 1, label: "b".to_string() },
                     ],
                     default_index: 0,
+                    calibration: None,
                 })
                 .collect();
             let model = ModelManifest {
@@ -680,6 +682,7 @@ mod tests {
                     max: 10.0,
                     default_value: 5.0,
                     unit: None,
+                    calibration: None,
                 },
                 ControlRangeSpec {
                     id: "tone".to_string(),
@@ -688,6 +691,7 @@ mod tests {
                     max: 10.0,
                     default_value: 10.0,
                     unit: None,
+                    calibration: None,
                 },
             ],
             switches: vec![ControlSwitchSpec {
@@ -704,6 +708,7 @@ mod tests {
                     },
                 ],
                 default_index: 0,
+                calibration: None,
             }],
             presets: Vec::new(),
             stems: Vec::new(),
@@ -827,6 +832,7 @@ mod tests {
             max: 10.0,
             default_value: 5.0,
             unit: None,
+            calibration: None,
         });
         model.ranges.push(ControlRangeSpec {
             id: "mid_freq".to_string(),
@@ -835,6 +841,7 @@ mod tests {
             max: 4000.0,
             default_value: 250.0,
             unit: Some("Hz".to_string()),
+            calibration: None,
         });
         let plan = build_capture_plan(&model, true);
         for expected_id in [
@@ -868,6 +875,7 @@ mod tests {
                     max: 10.0,
                     default_value: 5.0,
                     unit: None,
+                    calibration: None,
                 },
                 ControlRangeSpec {
                     id: "filter".to_string(),
@@ -876,6 +884,7 @@ mod tests {
                     max: 10.0,
                     default_value: 5.0,
                     unit: None,
+                    calibration: None,
                 },
             ],
             switches: Vec::new(),

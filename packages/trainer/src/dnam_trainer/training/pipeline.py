@@ -23,7 +23,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import numpy as np
 import torch
@@ -41,6 +41,8 @@ from dnam_engine.schema import (
     DnamJsonHeader,
     ExtractedPhysics,
     IoConfig,
+    LevelingConfig,
+    ModelCapabilities,
     ModelMetadata,
     PresetDef,
     SlimmableTiersConfig,
@@ -262,6 +264,248 @@ def detect_core2_activity(
         tail_ms = max(80.0, min(1200.0, 400.0 * max_ratio))
         return True, tail_ms
     return False, 0.0
+
+
+def measure_gated_loudness_db(
+    audio: NDArray[np.floating[Any]],
+    *,
+    sample_rate_hz: int = 48_000,
+    metric: str = "rms_dbfs",
+) -> float:
+    """Computes gated unweighted broadband RMS (`rms_dbfs`) or K-weighted LUFS (`k_weighted_lufs`)
+    in dB over active 100 ms blocks (with -70 dBFS absolute and -10 dB relative gates).
+    """
+    arr = np.asarray(audio, dtype=np.float64)
+    if arr.ndim == 1:
+        arr = arr[:, None]
+    elif arr.shape[0] == 2 and arr.shape[1] > 2:
+        arr = arr.T
+    if arr.shape[0] == 0:
+        return -96.0
+
+    if metric == "k_weighted_lufs" and arr.shape[0] >= 64:
+        n_fft = int(arr.shape[0])
+        freqs = np.fft.rfftfreq(n_fft, d=1.0 / float(max(1, sample_rate_hz)))
+        f_hp = 38.135
+        hp_mag_sq = (freqs**4) / ((freqs**2 + f_hp**2) ** 2 + 1e-18)
+        f_sh = 1681.97
+        sh_boost = 1.0 + (10.0 ** (4.0 / 20.0) - 1.0) * ((freqs**2) / (freqs**2 + f_sh**2 + 1e-18))
+        k_weight = np.sqrt(hp_mag_sq) * sh_boost
+        spec = np.fft.rfft(arr, axis=0) * k_weight[:, None]
+        arr = np.fft.irfft(spec, n=n_fft, axis=0)
+
+    win = max(64, int(0.100 * sample_rate_hz))
+    n_win = int(arr.shape[0]) // win
+    if n_win >= 1:
+        blocks = arr[: n_win * win].reshape(n_win, win, -1)
+        ms_blocks = np.mean(blocks * blocks, axis=(1, 2))
+        abs_mask = ms_blocks > 1.0e-7
+        if np.any(abs_mask):
+            abs_blocks = ms_blocks[abs_mask]
+            rel_thresh = 0.1 * float(np.mean(abs_blocks))
+            gated = abs_blocks[abs_blocks >= rel_thresh]
+            mean_ms = float(np.mean(gated)) if gated.size > 0 else float(np.mean(abs_blocks))
+        else:
+            mean_ms = float(np.mean(ms_blocks))
+    else:
+        mean_ms = float(np.mean(arr * arr))
+
+    offset_db = -0.691 if metric == "k_weighted_lufs" else 0.0
+    return float(max(-96.0, offset_db + 10.0 * math.log10(max(mean_ms, 1.0e-12))))
+
+
+def detect_wet_polarity_inverted(
+    inputs_list: Sequence[NDArray[np.float32]],
+    targets_list: Sequence[NDArray[np.float32]],
+) -> bool:
+    """Detects whether the captured hardware inverts signal polarity (`-1`)."""
+    if not inputs_list or not targets_list:
+        return False
+    x = np.mean(inputs_list[0], axis=1, dtype=np.float64)
+    y = np.mean(targets_list[0], axis=1, dtype=np.float64)
+    n = min(int(x.shape[0]), int(y.shape[0]), 65_536)
+    if n < 64:
+        return False
+    x_seg = x[:n]
+    y_seg = y[:n]
+    denom = float(np.linalg.norm(x_seg) * np.linalg.norm(y_seg)) + 1.0e-12
+    best_corr = 0.0
+    for lag in range(-16, 17):
+        if lag < 0:
+            c = float(np.dot(x_seg[-lag:], y_seg[: n + lag])) / denom
+        elif lag > 0:
+            c = float(np.dot(x_seg[: n - lag], y_seg[lag:])) / denom
+        else:
+            c = float(np.dot(x_seg, y_seg)) / denom
+        if abs(c) > abs(best_corr):
+            best_corr = c
+    return best_corr < -0.15
+
+
+def _estimate_core2_ring_buffer_log2(
+    controls_schema: Sequence[Any],
+    tail_time_ms: float,
+    sample_rate_hz: int,
+    core2_active: bool,
+) -> int:
+    """Computes `Core2Config.ring_buffer_pow2_log2` (`12..=18`) when Core 2 is active."""
+    if not core2_active:
+        return 0
+    max_cal_ms = 0.0
+    for ctrl in controls_schema:
+        cal = getattr(ctrl, "calibration", None)
+        if cal is not None and getattr(cal, "role", None) == "delay_time_ms":
+            lob = getattr(cal, "lobatto_physical_anchors", None)
+            if lob is not None:
+                max_cal_ms = max(max_cal_ms, float(max(lob)))
+            cond_map = getattr(cal, "conditional_physical_anchors", {}) or {}
+            for anchors in cond_map.values():
+                max_cal_ms = max(max_cal_ms, float(max(anchors)))
+    effective_ms = max(max_cal_ms, min(float(tail_time_ms), 2000.0))
+    if effective_ms <= 0.0:
+        return 12
+    needed_samples = max(4096, math.ceil((effective_ms * 0.001 * sample_rate_hz) * 1.25))
+    return max(12, min(18, math.ceil(math.log2(needed_samples))))
+
+
+def _calibrate_capabilities_and_leveling(
+    *,
+    controls_schema: Sequence[Any],
+    config: Any,
+    core2_active: bool,
+    head_sol: MultiTierKroneckerHeadSolution,
+    sample_rate_hz: int,
+    inputs_list: Sequence[NDArray[np.float32]],
+    targets_list: Sequence[NDArray[np.float32]],
+    stems_controls: Sequence[dict[str, float | str]],
+    default_features_192: NDArray[np.floating[Any]] | None,
+    stem_stats: Sequence[StemSufficientStatistics],
+) -> tuple[
+    ModelCapabilities, LevelingConfig, tuple[float, float, float], tuple[float, float, float]
+]:
+    """Computes `ModelCapabilities`, `LevelingConfig` anchored strictly at default control settings
+    (`controls_schema[*].default`, normalized `u = 0`, `z_head = 0`), tier loudness
+    `(L_lite, L_full, L_ultra)`, and inter-tier parity trims `(trim_lite_db, trim_full_db, 0.0)`.
+    """
+    cfg_blend = getattr(config, "blend_mode", "auto")
+    resolved_blend: Literal["none", "host_parallel", "modeled_control"]
+    if cfg_blend == "none":
+        resolved_blend = "none"
+    elif cfg_blend == "modeled_control":
+        resolved_blend = "modeled_control"
+    elif cfg_blend == "host_parallel":
+        resolved_blend = "host_parallel"
+    else:
+        has_mix_ctrl = any(
+            (
+                getattr(getattr(c, "calibration", None), "role", None) == "mix"
+                or str(getattr(c, "id", "")).strip().lower() in ("blend", "mix", "dry_wet")
+            )
+            for c in controls_schema
+        )
+        resolved_blend = "modeled_control" if has_mix_ctrl else "host_parallel"
+
+    cfg_trails = getattr(config, "supports_trails", None)
+    supports_trails = core2_active if cfg_trails is None else bool(cfg_trails)
+    tempo_sync_capable = any(
+        getattr(getattr(c, "calibration", None), "role", None) in ("delay_time_ms", "lfo_rate_hz")
+        for c in controls_schema
+    )
+    wet_pol_inv = detect_wet_polarity_inverted(inputs_list, targets_list)
+
+    capabilities = ModelCapabilities(
+        blend_mode=resolved_blend,
+        default_blend=float(getattr(config, "default_blend", 1.0)),
+        wet_polarity_inverted=wet_pol_inv,
+        supports_trails=supports_trails,
+        tempo_sync_capable=tempo_sync_capable,
+    )
+
+    metric = str(getattr(config, "leveling_metric", "rms_dbfs"))
+    auto_unity = bool(getattr(config, "auto_unity_leveling", True))
+    target_gain_db = float(getattr(config, "target_gain_db", 0.0))
+
+    # Pick stem closest to default controls (u = 0)
+    best_idx = 0
+    if controls_schema and stems_controls:
+        best_dist = float("inf")
+        for s_idx, c_meta in enumerate(stems_controls):
+            u_mod = _compute_intrinsic_control_modulators(controls_schema, c_meta)
+            dist = float(u_mod[0] ** 2 + u_mod[1] ** 2 + u_mod[2] ** 2)
+            if dist < best_dist:
+                best_dist = dist
+                best_idx = s_idx
+
+    if inputs_list and best_idx < len(inputs_list):
+        ref_in_db = measure_gated_loudness_db(
+            inputs_list[best_idx], sample_rate_hz=sample_rate_hz, metric=metric
+        )
+    else:
+        ref_in_db = -20.5
+
+    z_zero = np.zeros(4, dtype=np.float64)
+    if default_features_192 is not None and default_features_192.shape[0] >= 16:
+        y_lite = evaluate_kronecker_head_features(
+            default_features_192, z_zero, head_sol.w_lite_5x2x64
+        )
+        y_full = evaluate_kronecker_head_features(
+            default_features_192, z_zero, head_sol.w_full_5x2x128
+        )
+        y_ultra = evaluate_kronecker_head_features(
+            default_features_192, z_zero, head_sol.w_ultra_5x2x192
+        )
+        l_lite = measure_gated_loudness_db(y_lite, sample_rate_hz=sample_rate_hz, metric=metric)
+        l_full = measure_gated_loudness_db(y_full, sample_rate_hz=sample_rate_hz, metric=metric)
+        l_ultra = measure_gated_loudness_db(y_ultra, sample_rate_hz=sample_rate_hz, metric=metric)
+    elif stem_stats:
+        from dnam_engine.container import GramMatrix
+
+        stat_idx = min(best_idx, len(stem_stats) - 1)
+        st0 = stem_stats[stat_idx]
+        tier_quads: list[float] = []
+        for tier_dim, w_head in (
+            (64, head_sol.w_lite_5x2x64),
+            (128, head_sol.w_full_5x2x128),
+            (192, head_sol.w_ultra_5x2x192),
+        ):
+            w_dc = np.asarray(w_head[0], dtype=np.float64)  # (2, tier_dim) at z_head = 0
+            g_sub = GramMatrix.unpack(st0.g_audio_uplo_u_f64, dim=tier_dim)
+            tier_quads.append(max(float(np.sum(w_dc * (w_dc @ g_sub))), 1.0e-18))
+
+        if targets_list and best_idx < len(targets_list):
+            base_wet_db = measure_gated_loudness_db(
+                targets_list[best_idx], sample_rate_hz=sample_rate_hz, metric=metric
+            )
+            l_ultra = base_wet_db
+            l_full = base_wet_db + 10.0 * math.log10(tier_quads[1] / tier_quads[2])
+            l_lite = base_wet_db + 10.0 * math.log10(tier_quads[0] / tier_quads[2])
+        else:
+            n_frames = float(max(1, st0.num_frames))
+            l_lite = float(10.0 * math.log10(max(tier_quads[0] / (2.0 * n_frames), 1.0e-12)))
+            l_full = float(10.0 * math.log10(max(tier_quads[1] / (2.0 * n_frames), 1.0e-12)))
+            l_ultra = float(10.0 * math.log10(max(tier_quads[2] / (2.0 * n_frames), 1.0e-12)))
+    else:
+        l_lite, l_full, l_ultra = ref_in_db, ref_in_db, ref_in_db
+
+    unity_offset_db = round(ref_in_db - l_ultra, 3)
+    cal_trim_db = round((unity_offset_db + target_gain_db) if auto_unity else target_gain_db, 3)
+    leveling = LevelingConfig(
+        auto_unity_enabled=auto_unity,
+        leveling_metric="k_weighted_lufs" if metric == "k_weighted_lufs" else "rms_dbfs",
+        reference_input_level_db=round(ref_in_db, 3),
+        measured_default_output_level_db=round(l_ultra, 3),
+        unity_gain_offset_db=unity_offset_db,
+        target_gain_db=round(target_gain_db, 3),
+        calibrated_trim_db=cal_trim_db,
+    )
+    trim_lite = float(np.clip(round(l_ultra - l_lite, 3), -12.0, 12.0))
+    trim_full = float(np.clip(round(l_ultra - l_full, 3), -12.0, 12.0))
+    return (
+        capabilities,
+        leveling,
+        (round(l_lite, 3), round(l_full, 3), round(l_ultra, 3)),
+        (trim_lite, trim_full, 0.0),
+    )
 
 
 def _compute_intrinsic_control_modulators(
@@ -1506,6 +1750,32 @@ class DnamTrainer:
             )
         dataset_sha256 = manifest_hasher.hexdigest()
 
+        default_phi_192: NDArray[np.float32] | None = None
+        if inputs_list:
+            with torch.no_grad():
+                x0_t = torch.as_tensor(inputs_list[0], device=device, dtype=torch.float32)
+                default_phi_192 = model.extract_calibrated_or_tier_features(
+                    x0_t,
+                    in_sha=in_shas[0],
+                    u_ctrl_3=(0.0, 0.0, 0.0),
+                )
+
+        capabilities, leveling_cfg, (l_lite, l_full, l_ultra), (trim_l, trim_f, trim_u) = (
+            _calibrate_capabilities_and_leveling(
+                controls_schema=updated_ctrls,
+                config=request.config,
+                core2_active=core2_active,
+                head_sol=head_polish_sol,
+                sample_rate_hz=sr,
+                inputs_list=inputs_list,
+                targets_list=targets_list,
+                stems_controls=stems_controls,
+                default_features_192=default_phi_192,
+                stem_stats=stem_stats_s4,
+            )
+        )
+        ring_log2 = _estimate_core2_ring_buffer_log2(updated_ctrls, tail_time_ms, sr, core2_active)
+
         header = DnamJsonHeader(
             version="1.0.0",
             container_kind="dnam",
@@ -1517,7 +1787,7 @@ class DnamTrainer:
                 description=request.description or None,
                 license="LicenseRef-DNAM-1.0.0",
                 created_at=datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
-                input_reference_dbfs=-20.5,
+                input_reference_dbfs=leveling_cfg.reference_input_level_db,
                 provenance=DatasetProvenance(
                     dataset_manifest_sha256=dataset_sha256,
                     config_recipe_sha256=hashlib.sha256(
@@ -1533,6 +1803,8 @@ class DnamTrainer:
                 output_mode=request.config.output_mode,
                 latency_samples=0,
                 tail_time_ms=round(tail_time_ms, 2),
+                capabilities=capabilities,
+                leveling=leveling_cfg,
             ),
             slimmable_tiers=SlimmableTiersConfig(
                 lite=TierProfile(
@@ -1540,6 +1812,8 @@ class DnamTrainer:
                     fdn_lines=4 if core2_active else 0,
                     early_taps=4 if core2_active else 0,
                     head_svd_rank=active_svd_rank,
+                    loudness_lufs=l_lite,
+                    output_trim_db=trim_l,
                     validation_esr_db=round(esr_l_final, 3),
                     arena_end_byte_offset=ARENA_OFFSET_LITE_END,
                 ),
@@ -1548,6 +1822,8 @@ class DnamTrainer:
                     fdn_lines=8 if core2_active else 0,
                     early_taps=8 if core2_active else 0,
                     head_svd_rank=active_svd_rank,
+                    loudness_lufs=l_full,
+                    output_trim_db=trim_f,
                     validation_esr_db=round(esr_f_final, 3),
                     arena_end_byte_offset=ARENA_OFFSET_FULL_END,
                 ),
@@ -1556,6 +1832,8 @@ class DnamTrainer:
                     fdn_lines=8 if core2_active else 0,
                     early_taps=8 if core2_active else 0,
                     head_svd_rank=active_svd_rank,
+                    loudness_lufs=l_ultra,
+                    output_trim_db=trim_u,
                     validation_esr_db=round(esr_u_final, 3),
                     arena_end_byte_offset=ARENA_OFFSET_ULTRA_END,
                 ),
@@ -1566,7 +1844,7 @@ class DnamTrainer:
             core1_hybrid_ssm=Core1Config(),
             core2_mufdn=Core2Config(
                 active=core2_active,
-                ring_buffer_pow2_log2=12 if core2_active else 0,
+                ring_buffer_pow2_log2=ring_log2,
             ),
             audit_report=final_audit,
         )
@@ -1845,28 +2123,62 @@ class DnamTrainer:
         arena_layout = ArenaWeightLayout.from_arena012_bytes(raw_arena)
         arena_layout.with_kronecker_solution(head_polish_sol, p_svd_16x4)
 
+        capabilities, leveling_cfg, (l_lite, l_full, l_ultra), (trim_l, trim_f, trim_u) = (
+            _calibrate_capabilities_and_leveling(
+                controls_schema=updated_ctrls,
+                config=resume_request.config,
+                core2_active=core2_active,
+                head_sol=head_polish_sol,
+                sample_rate_hz=sr,
+                inputs_list=inputs_list,
+                targets_list=targets_list,
+                stems_controls=stems_controls if stems_controls else all_controls,
+                default_features_192=None,
+                stem_stats=final_stats,
+            )
+        )
+        updated_io_config = ckpt_container.header.io_config.model_copy(
+            update={
+                "capabilities": capabilities,
+                "leveling": leveling_cfg,
+            }
+        )
+        updated_metadata = ckpt_container.header.metadata.model_copy(
+            update={
+                "input_reference_dbfs": leveling_cfg.reference_input_level_db,
+            }
+        )
+
         updated_tiers = SlimmableTiersConfig(
             lite=ckpt_container.header.slimmable_tiers.lite.model_copy(
                 update={
                     "head_svd_rank": active_svd_rank,
+                    "loudness_lufs": l_lite,
+                    "output_trim_db": trim_l,
                     "validation_esr_db": round(esr_l_final, 3),
                 }
             ),
             full=ckpt_container.header.slimmable_tiers.full.model_copy(
                 update={
                     "head_svd_rank": active_svd_rank,
+                    "loudness_lufs": l_full,
+                    "output_trim_db": trim_f,
                     "validation_esr_db": round(esr_f_final, 3),
                 }
             ),
             ultra=ckpt_container.header.slimmable_tiers.ultra.model_copy(
                 update={
                     "head_svd_rank": active_svd_rank,
+                    "loudness_lufs": l_ultra,
+                    "output_trim_db": trim_u,
                     "validation_esr_db": round(esr_u_final, 3),
                 }
             ),
         )
         updated_header = ckpt_container.header.model_copy(
             update={
+                "metadata": updated_metadata,
+                "io_config": updated_io_config,
                 "controls_schema": updated_ctrls,
                 "presets": list(existing_presets_by_id.values()),
                 "user_metadata": merged_user_meta,

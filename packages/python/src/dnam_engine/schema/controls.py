@@ -4,12 +4,225 @@ presets (`PresetDef`), clamping results (`ClampedControlsResult`), and `LobattoP
 from __future__ import annotations
 
 import math
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import ConfigDict, Field, field_validator, model_validator
 
 from dnam_engine.exceptions import DnamValidationError
 from dnam_engine.schema.base import ControlKind, StrictModel
+
+TempoSubdivision = Literal[
+    "1/2.",
+    "1/2",
+    "1/2T",
+    "1/4.",
+    "1/4",
+    "1/4T",
+    "1/8.",
+    "1/8",
+    "1/8T",
+    "1/16.",
+    "1/16",
+    "1/16T",
+]
+
+TEMPO_SUBDIVISION_MULTIPLIERS: dict[TempoSubdivision, float] = {
+    "1/2.": 3.0,
+    "1/2": 2.0,
+    "1/2T": 4.0 / 3.0,
+    "1/4.": 1.5,
+    "1/4": 1.0,
+    "1/4T": 2.0 / 3.0,
+    "1/8.": 0.75,
+    "1/8": 0.5,
+    "1/8T": 1.0 / 3.0,
+    "1/16.": 0.375,
+    "1/16": 0.25,
+    "1/16T": 1.0 / 6.0,
+}
+
+ControlCalibrationRole = Literal[
+    "delay_time_ms",
+    "lfo_rate_hz",
+    "feedback",
+    "mix",
+    "crossover_hz",
+    "stereo_mode",
+    "stereo_width",
+]
+
+
+def tempo_subdivision_delay_ms(bpm: float, subdivision: TempoSubdivision) -> float:
+    """Computes target delay time in milliseconds for `(bpm, subdivision)`."""
+    safe_bpm = max(20.0, min(400.0, float(bpm)))
+    return (60_000.0 / safe_bpm) * TEMPO_SUBDIVISION_MULTIPLIERS[subdivision]
+
+
+def tempo_subdivision_freq_hz(bpm: float, subdivision: TempoSubdivision) -> float:
+    """Computes target LFO rate in Hz for `(bpm, subdivision)`."""
+    return 1000.0 / tempo_subdivision_delay_ms(bpm, subdivision)
+
+
+def invert_lobatto_anchors(v_target: float, anchors: tuple[float, float, float]) -> float:
+    """Inverts quadratic Lobatto anchors `[v_min, v_mid, v_max]` at `u in {-1, 0, +1}`."""
+    v_min, v_mid, v_max = float(anchors[0]), float(anchors[1]), float(anchors[2])
+    c1 = 0.5 * (v_max - v_min)
+    c2 = 0.5 * (v_max + v_min) - v_mid
+    dv = float(v_target) - v_mid
+    if abs(c2) < 1e-6:
+        if abs(c1) < 1e-9:
+            return 0.0
+        return max(-1.0, min(1.0, dv / c1))
+    disc = max(0.0, c1 * c1 + 4.0 * c2 * dv)
+    sqrt_disc = math.sqrt(disc)
+    denom = c1 + sqrt_disc if c1 >= 0.0 else c1 - sqrt_disc
+    if abs(denom) < 1e-9:
+        return 0.0
+    return max(-1.0, min(1.0, (2.0 * dv) / denom))
+
+
+class TempoSyncResolution(StrictModel):
+    """Result of resolving a tempo-synced target against `ControlCalibration`."""
+
+    target_physical: float
+    normalized_u: float
+    switch_selection: tuple[str, str] | None = None
+    was_clamped: bool = False
+
+
+class ControlCalibration(StrictModel):
+    """Cryptographically signed physical calibration metadata (`controls_schema[*].calibration`)."""
+
+    role: ControlCalibrationRole
+    lobatto_physical_anchors: tuple[float, float, float] | None = None
+    conditional_physical_anchors: dict[str, tuple[float, float, float]] = Field(
+        default_factory=dict
+    )
+    tempo_sync_default_subdivision: TempoSubdivision | None = None
+
+    @model_validator(mode="after")
+    def _validate_calibration(self) -> ControlCalibration:
+        if self.lobatto_physical_anchors is not None:
+            a0, a1, a2 = self.lobatto_physical_anchors
+            if (
+                not (math.isfinite(a0) and math.isfinite(a1) and math.isfinite(a2))
+                or abs(a2 - a0) <= 1e-6
+            ):
+                raise DnamValidationError(
+                    "lobatto_physical_anchors must be finite with non-zero span"
+                )
+        for cond_key, (c0, c1, c2) in self.conditional_physical_anchors.items():
+            if "=" not in cond_key:
+                raise DnamValidationError(
+                    f"conditional_physical_anchors key '{cond_key}' must have "
+                    "format 'switch_id=option_id'"
+                )
+            if (
+                not (math.isfinite(c0) and math.isfinite(c1) and math.isfinite(c2))
+                or abs(c2 - c0) <= 1e-6
+            ):
+                raise DnamValidationError(
+                    f"conditional_physical_anchors['{cond_key}'] must be finite with non-zero span"
+                )
+        return self
+
+    def resolve_conditional_target(
+        self, v_target: float, *, fold_octave: bool = False
+    ) -> TempoSyncResolution | None:
+        """Resolves a target physical value across conditional or Lobatto anchors."""
+        if self.conditional_physical_anchors:
+            best_cond: tuple[str, tuple[float, float, float], float, bool] | None = None
+            best_dist = float("inf")
+            for cond_key, anchors in self.conditional_physical_anchors.items():
+                lo = min(anchors[0], anchors[2])
+                hi = max(anchors[0], anchors[2])
+                v = float(v_target)
+                folded = False
+                if fold_octave and lo > 0.0:
+                    while v > hi and v * 0.5 >= lo:
+                        v *= 0.5
+                        folded = True
+                    while v < lo and v * 2.0 <= hi:
+                        v *= 2.0
+                        folded = True
+                if lo <= v <= hi:
+                    dist = 0.0
+                    clamped = folded
+                    v_eff = v
+                elif v < lo:
+                    dist = lo - v
+                    clamped = True
+                    v_eff = lo
+                else:
+                    dist = v - hi
+                    clamped = True
+                    v_eff = hi
+                if dist < best_dist:
+                    best_dist = dist
+                    best_cond = (cond_key, anchors, v_eff, clamped)
+                    if dist == 0.0 and not folded:
+                        break
+            if best_cond is not None:
+                cond_key, anchors, v_eff, clamped = best_cond
+                u = invert_lobatto_anchors(v_eff, anchors)
+                sw_id, opt_id = cond_key.split("=", 1)
+                return TempoSyncResolution(
+                    target_physical=v_eff,
+                    normalized_u=u,
+                    switch_selection=(sw_id, opt_id),
+                    was_clamped=clamped,
+                )
+        if self.lobatto_physical_anchors is not None:
+            anchors = self.lobatto_physical_anchors
+            lo = min(anchors[0], anchors[2])
+            hi = max(anchors[0], anchors[2])
+            v = float(v_target)
+            clamped = False
+            if fold_octave and lo > 0.0:
+                while v > hi and v * 0.5 >= lo:
+                    v *= 0.5
+                    clamped = True
+                while v < lo and v * 2.0 <= hi:
+                    v *= 2.0
+                    clamped = True
+            if v < lo or v > hi:
+                clamped = True
+                v = max(lo, min(hi, v))
+            return TempoSyncResolution(
+                target_physical=v,
+                normalized_u=invert_lobatto_anchors(v, anchors),
+                switch_selection=None,
+                was_clamped=clamped,
+            )
+        return None
+
+    def resolve_tempo_sync(
+        self,
+        bpm: float,
+        subdivision_override: TempoSubdivision | None = None,
+        *,
+        fold_octave: bool = False,
+    ) -> TempoSyncResolution | None:
+        """Resolves a host BPM and subdivision into a `TempoSyncResolution`."""
+        sub = subdivision_override or self.tempo_sync_default_subdivision or "1/4"
+        if self.role == "delay_time_ms":
+            target = tempo_subdivision_delay_ms(bpm, sub)
+        elif self.role == "lfo_rate_hz":
+            target = tempo_subdivision_freq_hz(bpm, sub)
+        else:
+            return None
+        return self.resolve_conditional_target(target, fold_octave=fold_octave)
+
+    def stereo_width_for_option(self, option_label: str) -> float | None:
+        """Maps a `stereo_mode` switch option label (`'Mono'` / `'Stereo'`) to `[0.0, 1.0]`."""
+        if self.role != "stereo_mode":
+            return None
+        norm = option_label.strip().lower()
+        if norm in ("mono", "m", "0", "sum"):
+            return 0.0
+        if norm in ("stereo", "st", "1", "wide", "full"):
+            return 1.0
+        return None
 
 
 class ControlUiHints(StrictModel):
@@ -81,6 +294,7 @@ class ControlSchemaDef(StrictModel):
     declared_options: list[str] | None = None
     active_options: list[str] | None = None
     clamp_warning: str | None = None
+    calibration: ControlCalibration | None = None
     ui_hints: ControlUiHints = Field(default_factory=ControlUiHints)
     user_metadata: dict[str, Any] = Field(default_factory=dict)
 

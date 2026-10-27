@@ -169,12 +169,12 @@ impl<'a, B: MathBackend> ModulatedUfdn<'a, B> {
         }
     }
 
-    /// Creates a [`ModulatedUfdn`] pre-allocated with `max_ring_log2` capacity (`0` or `8..=15`)
+    /// Creates a [`ModulatedUfdn`] pre-allocated with `max_ring_log2` capacity (`0` or `8..=18`)
     /// so subsequent `reload_from_arena` calls never allocate heap memory.
     pub fn with_max_capacity(max_ring_log2: u8) -> Self {
         let mut s = Self::new_inactive();
         if max_ring_log2 >= 8 {
-            let clamped_log2 = max_ring_log2.min(15);
+            let clamped_log2 = max_ring_log2.min(18);
             let ring_len = 1_usize << clamped_log2;
             // Each sample frame across 8 FDN lines is 8 x u16 = 16 bytes; 4 frames = 64 bytes (1 AlignedFp16Block)
             let num_blocks = (ring_len * 8) / 32;
@@ -189,7 +189,7 @@ impl<'a, B: MathBackend> ModulatedUfdn<'a, B> {
     pub fn with_borrowed_scratch(scratch: &'a mut [AlignedFp16Block], ring_log2: u8) -> Self {
         let mut s = Self::new_inactive();
         s.delay_scratch = DelayScratchStorage::Borrowed(scratch);
-        s.max_capacity_log2 = ring_log2.min(15);
+        s.max_capacity_log2 = ring_log2.min(18);
         s
     }
 
@@ -210,7 +210,7 @@ impl<'a, B: MathBackend> ModulatedUfdn<'a, B> {
             return;
         }
 
-        let target_log2 = ring_log2.clamp(8, 15);
+        let target_log2 = ring_log2.clamp(8, 18);
         if target_log2 > self.max_capacity_log2 {
             let ring_len = 1_usize << target_log2;
             let num_blocks = (ring_len * 8) / 32;

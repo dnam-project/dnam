@@ -91,6 +91,7 @@ fn make_bench_container(core2_active: bool) -> AlignedBuffer<CacheLine64> {
                 active_options: None,
                 clamp_warning: None,
                 ui_hints: ControlUiHints::default(),
+                calibration: None,
                 user_metadata: BTreeMap::new(),
             },
             ControlSchemaDef {
@@ -109,6 +110,7 @@ fn make_bench_container(core2_active: bool) -> AlignedBuffer<CacheLine64> {
                 active_options: Some(vec!["a".to_string(), "b".to_string(), "c".to_string()]),
                 clamp_warning: None,
                 ui_hints: ControlUiHints::default(),
+                calibration: None,
                 user_metadata: BTreeMap::new(),
             },
         ],

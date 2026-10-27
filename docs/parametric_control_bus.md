@@ -55,3 +55,11 @@ where $z_i$ is the primary coordinate of control $i$ ($u_p - u_{p,1}$ for ranges
 
 ### 2.6 Zero-MAC Runtime Caching at $48\text{ kHz}$
 When user controls are static ($\mathbf{u}[k] == \mathbf{u}[k-1]$ and $\mathbf{s}[k] == \mathbf{s}[k-1]$), a dirty-bit check at $3\text{ kHz}$ skips the entire parametric polynomial evaluation and keeps the collapsed $2 \times 16C$ stereo output head $\mathbf{W}_{\text{head}}(\mathbf{u}, \mathbf{s}) = \mathbf{W}_{\text{head},0} + \sum_{k=1}^{D_h} z_{\text{head},k}(\mathbf{u}, \mathbf{s})\,\mathbf{W}_{\text{head},k}$ cached in L1 memory—costing **$0\text{ extra MACs/sample}$ at $48\text{ kHz}$**!
+
+### 2.7 Multi-Range Conditional Tempo Sync & Stereo Mode Calibration (`controls_schema[*].calibration`)
+1. **12 Canonical Tempo Subdivisions (`1/2.` to `1/16T`):**
+   $$\tau_{\text{target\_ms}}(\text{BPM}, \text{sub}) = \frac{60,000}{\text{BPM}} \cdot \mu_{\text{sub}}, \qquad \mu_{\text{sub}} \in \left\{3, 2, \frac{4}{3}, \frac{3}{2}, 1, \frac{2}{3}, \frac{3}{4}, \frac{1}{2}, \frac{1}{3}, \frac{3}{8}, \frac{1}{4}, \frac{1}{6}\right\}$$
+2. **Multi-Range Delay / Switch Inversion (e.g., Darkglass Anagram `Time` + `Range`):**
+   When `calibration.conditional_physical_anchors` maps `"range=0.01-0.1s" -> [10, 55, 100]`, `"range=0.1-1s" -> [100, 550, 1000]`, and `"range=1-2s" -> [1000, 1500, 2000]`, `DnamEngine::sync_tempo(bpm, sub, fold_octave)` selects the matching switch throw $s_q^*$ and inverts the quadratic Lobatto polynomial $[v_{\min}, v_{\text{mid}}, v_{\max}]$ in closed form to set both `Range` and `Time` simultaneously.
+3. **Reverb `Mode (Mono/Stereo)` Mid/Side Projection (`role = "stereo_mode"`):**
+   A discrete switch with `calibration.role = "stereo_mode"` maps `"Mono"` to $\alpha_{\text{width}} = 0.0$ ($M = \frac{1}{2}(L + R)$) and `"Stereo"` to $\alpha_{\text{width}} = 1.0$, allowing a single set of `Stereo` stems to unlock both `"Mono"` and `"Stereo"` in `run_phase1_preflight_audit` without `[CLAMP-SWITCH]` warnings.

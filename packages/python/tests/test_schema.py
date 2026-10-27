@@ -22,10 +22,14 @@ from dnam_engine import (
 )
 from dnam_engine.exceptions import translate_native_error
 from dnam_engine.schema import (
+    TEMPO_SUBDIVISION_MULTIPLIERS,
+    ControlCalibration,
     ControlSchemaDef,
     ControlUiHints,
     DnamJsonHeader,
+    LevelingConfig,
     LobattoParams,
+    ModelCapabilities,
     MufdnParams,
     OpenMetadataModel,
     PolyAdaaParams,
@@ -35,6 +39,8 @@ from dnam_engine.schema import (
     TensorSliceEntry,
     TierProfile,
     WatermarkParams,
+    tempo_subdivision_delay_ms,
+    tempo_subdivision_freq_hz,
 )
 
 
@@ -221,3 +227,61 @@ def test_symbolic_crosshair_poly_adaa_resting_equilibrium(
 
     mufdn = MufdnParams(delay_samples=64, g_lin=0.85, sigma_knee=0.35, v_ceil=0.985)
     assert 0.0 <= mufdn.g_lin <= 0.9990
+
+
+def test_control_calibration_tempo_subdivisions_capabilities_and_leveling() -> None:
+    assert len(TEMPO_SUBDIVISION_MULTIPLIERS) == 12
+    assert abs(tempo_subdivision_delay_ms(120.0, "1/2.") - 1500.0) < 1e-4
+    assert abs(tempo_subdivision_delay_ms(120.0, "1/4") - 500.0) < 1e-4
+    assert abs(tempo_subdivision_delay_ms(120.0, "1/8.") - 375.0) < 1e-4
+    assert abs(tempo_subdivision_delay_ms(120.0, "1/16T") - 83.3333) < 1e-2
+    assert abs(tempo_subdivision_freq_hz(120.0, "1/4") - 2.0) < 1e-4
+
+    cal = ControlCalibration(
+        role="delay_time_ms",
+        conditional_physical_anchors={
+            "range=0.01-0.1s": (10.0, 55.0, 100.0),
+            "range=0.1-1s": (100.0, 550.0, 1000.0),
+            "range=1-2s": (1000.0, 1500.0, 2000.0),
+        },
+        tempo_sync_default_subdivision="1/8.",
+    )
+    res = cal.resolve_tempo_sync(120.0, "1/8.", fold_octave=False)
+    assert res is not None
+    assert res.switch_selection == ("range", "0.1-1s")
+    assert abs(res.target_physical - 375.0) < 1e-3
+    assert not res.was_clamped
+
+    stereo_cal = ControlCalibration(role="stereo_mode")
+    assert stereo_cal.stereo_width_for_option("Mono") == 0.0
+    assert stereo_cal.stereo_width_for_option("Stereo") == 1.0
+    assert stereo_cal.stereo_width_for_option("Unknown") is None
+
+    caps = ModelCapabilities(
+        blend_mode="host_parallel",
+        default_blend=0.5,
+        wet_polarity_inverted=True,
+        supports_trails=True,
+        tempo_sync_capable=True,
+    )
+    lvl = LevelingConfig(
+        auto_unity_enabled=True,
+        leveling_metric="rms_dbfs",
+        reference_input_level_db=-20.5,
+        measured_default_output_level_db=-14.5,
+        unity_gain_offset_db=-6.0,
+        target_gain_db=1.5,
+        calibrated_trim_db=-4.5,
+    )
+    hdr = DnamJsonHeader.default_reference(core2_active=True)
+    assert hdr.io_config.leveling.leveling_metric == "rms_dbfs"
+    assert caps.wet_polarity_inverted is True
+    assert abs(lvl.calibrated_trim_db - (-4.5)) < 1e-6
+
+    with pytest.raises(DnamValidationError):
+        ControlCalibration(role="delay_time_ms", lobatto_physical_anchors=(10.0, 10.0, 10.0))
+    with pytest.raises(DnamValidationError):
+        ControlCalibration(
+            role="delay_time_ms",
+            conditional_physical_anchors={"bad_key": (10.0, 50.0, 100.0)},
+        )

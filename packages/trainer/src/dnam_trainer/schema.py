@@ -18,6 +18,8 @@ from dnam_engine.schema import (
     AuditReport,
     ClampedControlsResult,
     ControlBusConfig,
+    ControlCalibration,
+    ControlCalibrationRole,
     ControlKind,
     ControlSchemaDef,
     ControlUiHints,
@@ -28,8 +30,10 @@ from dnam_engine.schema import (
     DnamJsonHeader,
     ExtractedPhysics,
     IoConfig,
+    LevelingConfig,
     LobattoParams,
     MarketplaceReceipt,
+    ModelCapabilities,
     ModelMetadata,
     ModelSignatures,
     OpenMetadataModel,
@@ -38,6 +42,8 @@ from dnam_engine.schema import (
     StemProvenance,
     StemRegistryEntry,
     StrictModel,
+    TempoSubdivision,
+    TempoSyncResolution,
     TensorSliceEntry,
     Tier,
     TierProfile,
@@ -345,6 +351,12 @@ class TrainingConfig(StrictModel):
     barrier_weight: float = Field(default=10.0, ge=0.0)
     group_lasso_weight: float = Field(default=1.0e-4, ge=0.0)
     tier2_esr_threshold_db: float = Field(default=-30.0, le=0.0)
+    auto_unity_leveling: bool = True
+    leveling_metric: Literal["rms_dbfs", "k_weighted_lufs"] = "rms_dbfs"
+    target_gain_db: float = 0.0
+    blend_mode: Literal["auto", "none", "host_parallel", "modeled_control"] = "auto"
+    default_blend: float = Field(default=1.0, ge=0.0, le=1.0)
+    supports_trails: bool | None = None
     seed: int = 42
     backend: TrainingBackendConfig = Field(default_factory=TrainingBackendConfig)
 
@@ -555,6 +567,8 @@ __all__ = [
     "CaptureBackendConfig",
     "ClampedControlsResult",
     "ControlBusConfig",
+    "ControlCalibration",
+    "ControlCalibrationRole",
     "ControlCoords",
     "ControlKind",
     "ControlSchemaDef",
@@ -569,9 +583,11 @@ __all__ = [
     "ExtractedPhysics",
     "InMemoryPcmRef",
     "IoConfig",
+    "LevelingConfig",
     "LobattoParams",
     "LocalWavPathRef",
     "MarketplaceReceipt",
+    "ModelCapabilities",
     "ModelMetadata",
     "ModelSignatures",
     "OutputMode",
@@ -588,6 +604,8 @@ __all__ = [
     "StemRegistryEntry",
     "StrictModel",
     "TargetExcitationProfile",
+    "TempoSubdivision",
+    "TempoSyncResolution",
     "TensorSliceEntry",
     "Tier",
     "TierProfile",

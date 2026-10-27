@@ -4,7 +4,7 @@ use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use crate::schema::{DnamError, DnamJsonHeader, MarketplaceReceipt};
+use crate::schema::{DnamError, DnamJsonHeader, MarketplaceReceipt, SchemaVersion};
 
 use super::provider::{CryptoProvider, VerificationStatus};
 use super::sha256::{decode_hex_array, sha256_digest};
@@ -56,15 +56,14 @@ fn canonicalize_jcs_value(val: &serde_json::Value, out: &mut String) {
     }
 }
 
-/// Computes the preset-safe RFC 8785 JCS `immutable_header_sha256` digest over a [`DnamJsonHeader`].
-///
-/// Excludes mutable fields (`presets`, `user_metadata`, `metadata.signatures`,
-/// `slimmable_tiers.*.prefix_crc32c`, `controls_schema[*].user_metadata`, and
-/// `stems_registry[*].user_metadata`) so users can save DAW presets and tags in-place
-/// (`0x40..0x1000`) without invalidating `creator_signature` or `marketplace_receipt`.
-pub fn compute_immutable_header_sha256(header: &DnamJsonHeader) -> Result<[u8; 32], DnamError> {
-    let mut val = serde_json::to_value(header)
-        .map_err(|e| DnamError::InvalidJsonHeader(alloc::format!("{e}")))?;
+/// Projects a serialized [`DnamJsonHeader`] `serde_json::Value` onto the canonical immutable
+/// field set for `schema_version`, stripping mutable DAW/user fields and any additive fields
+/// introduced in minor schema versions newer than `schema_version`.
+pub fn project_immutable_header_for_schema_version(
+    val: &mut serde_json::Value,
+    schema_version: SchemaVersion,
+) -> Result<(), DnamError> {
+    schema_version.ensure_supported()?;
 
     if let Some(obj) = val.as_object_mut() {
         obj.remove("presets");
@@ -100,11 +99,48 @@ pub fn compute_immutable_header_sha256(header: &DnamJsonHeader) -> Result<[u8; 3
                 }
             }
         }
+
+        // Future minor-version projection hooks (e.g. `if schema_version.minor < 1 { ... }`)
+        // strip additive `#[serde(default)]` fields introduced after `schema_version` so
+        // containers signed under an earlier `1.x` minor version retain their exact JCS digest.
     }
+
+    Ok(())
+}
+
+/// Computes the preset-safe RFC 8785 JCS `immutable_header_sha256` digest over a [`DnamJsonHeader`]
+/// projected to a specific [`SchemaVersion`].
+pub fn compute_immutable_header_sha256_for_version(
+    header: &DnamJsonHeader,
+    schema_version: SchemaVersion,
+) -> Result<[u8; 32], DnamError> {
+    let mut val = serde_json::to_value(header)
+        .map_err(|e| DnamError::InvalidJsonHeader(alloc::format!("{e}")))?;
+    project_immutable_header_for_schema_version(&mut val, schema_version)?;
 
     let mut canonical = String::with_capacity(2048);
     canonicalize_jcs_value(&val, &mut canonical);
     Ok(sha256_digest(canonical.as_bytes()))
+}
+
+/// Computes the preset-safe RFC 8785 JCS `immutable_header_sha256` digest over a [`DnamJsonHeader`]
+/// using the header's declared [`SchemaVersion`].
+///
+/// Excludes mutable fields (`presets`, `user_metadata`, `metadata.signatures`,
+/// `slimmable_tiers.*.prefix_crc32c`, `controls_schema[*].user_metadata`, and
+/// `stems_registry[*].user_metadata`) so users can save DAW presets and tags in-place
+/// (`0x40..0x1000`) without invalidating `creator_signature` or `marketplace_receipt`.
+pub fn compute_immutable_header_sha256(header: &DnamJsonHeader) -> Result<[u8; 32], DnamError> {
+    let schema_version = header.schema_version()?;
+    compute_immutable_header_sha_inner(header, schema_version)
+}
+
+#[inline]
+fn compute_immutable_header_sha_inner(
+    header: &DnamJsonHeader,
+    schema_version: SchemaVersion,
+) -> Result<[u8; 32], DnamError> {
+    compute_immutable_header_sha256_for_version(header, schema_version)
 }
 
 /// Builds the canonical 64-byte message signed by the creator's `Ed25519` key:
@@ -330,6 +366,25 @@ mod tests {
             // Tampered header must fail
             h1.metadata.name = String::from("Tampered");
             assert!(verify_container_provenance(&h1, true, &arena, &crypto).is_err());
+
+            // Unsupported future schema version must fail validation and JCS projection
+            let mut h_future = DnamJsonHeader::default_reference(false);
+            h_future.version = String::from("1.99.0");
+            assert!(h_future.validate().is_err());
+            assert!(compute_immutable_header_sha256(&h_future).is_err());
+            assert!(
+                compute_immutable_header_sha256_for_version(&h1, SchemaVersion::new(2, 0, 0))
+                    .is_err()
+            );
+
+            // SchemaVersion parsing and preamble matching
+            let v1 = SchemaVersion::parse("1.0.0").unwrap();
+            assert_eq!(v1, SchemaVersion::V1_0_0);
+            assert!(v1.is_supported());
+            assert!(v1.ensure_matches_preamble(1, 0).is_ok());
+            assert!(v1.ensure_matches_preamble(1, 1).is_err());
+            assert!(SchemaVersion::parse("invalid").is_err());
+            assert!(SchemaVersion::parse("1.0.0.1").is_err());
         }
     }
 }

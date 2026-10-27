@@ -70,6 +70,9 @@ pub fn build_training_request_json(
             if let Some(u) = &r.unit {
                 obj["unit"] = json!(u);
             }
+            if let Some(cal) = &r.calibration {
+                obj["calibration"] = serde_json::to_value(cal).unwrap_or(Value::Null);
+            }
             obj
         })
         .chain(model.switches.iter().map(|s| {
@@ -81,14 +84,18 @@ pub fn build_training_request_json(
                 .or_else(|| s.options.first())
                 .map(|o| o.label.clone())
                 .unwrap_or_else(|| "default".to_string());
-            json!({
+            let mut obj = json!({
                 "id": s.id,
                 "name": s.label,
                 "kind": "switch",
                 "declared_options": labels,
                 "active_options": labels,
                 "default": default_label,
-            })
+            });
+            if let Some(cal) = &s.calibration {
+                obj["calibration"] = serde_json::to_value(cal).unwrap_or(Value::Null);
+            }
+            obj
         }))
         .collect();
 
@@ -216,6 +223,29 @@ pub fn build_training_request_json(
         model.output_mode.as_str()
     };
 
+    let mut config_obj = json!({
+        "sample_rate_train_hz": workspace.project.sample_rate_hz,
+        "topology": topology,
+        "output_mode": output_mode,
+        "epochs": epochs,
+        "auto_unity_leveling": model.capture.auto_unity_leveling,
+        "leveling_metric": if model.capture.leveling_metric.is_empty() {
+            "rms_dbfs"
+        } else {
+            model.capture.leveling_metric.as_str()
+        },
+        "target_gain_db": model.capture.target_gain_db,
+        "blend_mode": if model.capture.blend_mode.is_empty() {
+            "auto"
+        } else {
+            model.capture.blend_mode.as_str()
+        },
+        "default_blend": model.capture.default_blend,
+    });
+    if let Some(trails) = model.capture.supports_trails {
+        config_obj["supports_trails"] = json!(trails);
+    }
+
     json!({
         "model_id": model.model_id,
         "model_name": model.title,
@@ -223,12 +253,7 @@ pub fn build_training_request_json(
         "description": model.description,
         "controls_schema": controls_schema,
         "presets": presets,
-        "config": {
-            "sample_rate_train_hz": workspace.project.sample_rate_hz,
-            "topology": topology,
-            "output_mode": output_mode,
-            "epochs": epochs,
-        },
+        "config": config_obj,
         "stem_descriptors": stem_descriptors,
     })
 }
@@ -482,6 +507,7 @@ mod tests {
                 max: 10.0,
                 default_value: 5.0,
                 unit: Some("dB".to_string()),
+                calibration: None,
             }],
             switches: vec![ControlSwitchSpec {
                 id: "bright".to_string(),
@@ -497,6 +523,7 @@ mod tests {
                     },
                 ],
                 default_index: 0,
+                calibration: None,
             }],
             presets: vec![PresetSpec {
                 id: "lead".to_string(),

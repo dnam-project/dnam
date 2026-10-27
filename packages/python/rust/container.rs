@@ -217,6 +217,7 @@ pub fn native_build_reference_container<'py>(
                 option_labels: BTreeMap::new(),
                 color_hex: Some("#F59E0B".to_string()),
             },
+            calibration: None,
             user_metadata: BTreeMap::new(),
         },
         ControlSchemaDef {
@@ -244,6 +245,7 @@ pub fn native_build_reference_container<'py>(
                 widget: Some("toggle".to_string()),
                 ..Default::default()
             },
+            calibration: None,
             user_metadata: BTreeMap::new(),
         },
     ];

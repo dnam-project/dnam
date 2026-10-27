@@ -91,6 +91,7 @@ fn make_bench_container(core2_active: bool) -> AlignedBuffer<CacheLine64> {
             active_options: None,
             clamp_warning: None,
             ui_hints: ControlUiHints::default(),
+            calibration: None,
             user_metadata: BTreeMap::new(),
         }],
         presets: Vec::new(),

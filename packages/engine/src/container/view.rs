@@ -13,11 +13,10 @@ use crate::schema::{DnamError, DnamJsonHeader};
 
 use super::preamble::DnamPreamble;
 use super::{
-    ARENA_OFFSET_FULL_END, ARENA_OFFSET_LITE_END, ARENA_OFFSET_ULTRA_END, CONTAINER_VERSION_MAJOR,
-    CONTAINER_VERSION_MINOR, DNAM_MAGIC, DNCK_MAGIC, FLAG_CORE2_ACTIVE, FLAG_DEFAULT_ANCHORED,
-    FLAG_ENCRYPTED_ARENA, FLAG_EXEC_ORDER_SOA, FLAG_HAS_CKPT_STEMS, FLAG_HAS_FULL_DELTA,
-    FLAG_HAS_LITE, FLAG_HAS_SIGNATURES, FLAG_HAS_ULTRA_DELTA, FLAG_LFO_ENV_ACTIVE, FLAG_STEREO_OUT,
-    crc32c_update,
+    ARENA_OFFSET_FULL_END, ARENA_OFFSET_LITE_END, ARENA_OFFSET_ULTRA_END, DNAM_MAGIC, DNCK_MAGIC,
+    FLAG_CORE2_ACTIVE, FLAG_DEFAULT_ANCHORED, FLAG_ENCRYPTED_ARENA, FLAG_EXEC_ORDER_SOA,
+    FLAG_HAS_CKPT_STEMS, FLAG_HAS_FULL_DELTA, FLAG_HAS_LITE, FLAG_HAS_SIGNATURES,
+    FLAG_HAS_ULTRA_DELTA, FLAG_LFO_ENV_ACTIVE, FLAG_STEREO_OUT, crc32c_update,
 };
 
 /// Computes `header_crc32c` over `container_bytes[0..tensor_arena_offset]` with
@@ -73,6 +72,8 @@ impl<'a> DnamContainerView<'a> {
         let header: DnamJsonHeader = serde_json::from_slice(json_slice)
             .map_err(|e| DnamError::InvalidJsonHeader(e.to_string()))?;
         header.validate()?;
+        let schema_ver = header.schema_version()?;
+        schema_ver.ensure_matches_preamble(preamble.version_major, preamble.version_minor)?;
 
         // 3. Prepare or decrypt Arena 0..2
         let raw_arena = &bytes[arena_off..arena_off + arena_len];
@@ -266,12 +267,13 @@ pub fn build_dnam_container(
         flags |= FLAG_ENCRYPTED_ARENA;
     }
 
+    let schema_ver = header.schema_version()?;
     let num_ckpt_stems = header.stems_registry.as_ref().map_or(0, |s| s.len() as u16);
 
     let mut preamble = DnamPreamble {
         magic,
-        version_major: CONTAINER_VERSION_MAJOR,
-        version_minor: CONTAINER_VERSION_MINOR,
+        version_major: schema_ver.major,
+        version_minor: schema_ver.minor,
         flags,
         num_controls: header.controls_schema.len() as u8,
         ring_buffer_pow2_log2: if header.core2_mufdn.active {

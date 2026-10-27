@@ -156,10 +156,27 @@ DNAM keeps the core `metadata` schema strictly to the **minimal essentials**, in
    - **`switch` Control Interaction (`widget`, `option_labels`):**
      - `widget`: `"toggle"` (2-way switch) | `"segmented"` (inline pill selector) | `"rotary_select"` (stepped rotary selector) | `"footswitch"` (stomp switch).
      - `option_labels` (`dict[str, str]`, default `{}`): Maps machine option IDs in `declared_options` to human-readable UI labels (e.g., `{"off": "Bypass", "on": "Vintage +6 dB", "ultra": "Hi-Gain +12 dB"}`).
-3. **Built-In `presets` Array (Parametric Control Snapshots):**
+3. **Per-Control Physical Calibration (`controls_schema[*].calibration`, Signed by `immutable_header_sha256`):**
+   - `role`: `"delay_time_ms" | "lfo_rate_hz" | "feedback" | "mix" | "crossover_hz" | "stereo_mode" | "stereo_width"`.
+   - `lobatto_physical_anchors`: Optional `[v_min, v_mid, v_max]` physical values at $u \in \{-1, 0, +1\}$ for single-range controls.
+   - `conditional_physical_anchors`: Map of `"switch_id=option_id" -> [v_min, v_mid, v_max]` for multi-range controls (e.g., Darkglass Anagram Delay's `Time (0..10)` paired with `Range ("0.01-0.1s", "0.1-1s", "1-2s")`).
+   - `tempo_sync_default_subdivision`: One of the **12 canonical `TempoSubdivision` variants** from `1/2` to `1/16` with straight, dotted (`.`), and triplet (`T`) for each (`"1/2."`, `"1/2"`, `"1/2T"`, `"1/4."`, `"1/4"`, `"1/4T"`, `"1/8."`, `"1/8"`, `"1/8T"`, `"1/16."`, `"1/16"`, `"1/16T"`).
+4. **Model-Level Capabilities & Auto Unity Leveling (`io_config.capabilities` & `io_config.leveling`, Signed by `immutable_header_sha256`):**
+   - `io_config.capabilities`:
+     - `blend_mode`: `"none" | "host_parallel" | "modeled_control"`.
+     - `default_blend`: `float` in `[0.0, 1.0]` (default `1.0`).
+     - `wet_polarity_inverted`: `bool` (when `true`, `DnamEngine::configure_host_mix_and_leveling` inverts `wet_g *= -1.0` with linear voltage mixing `dry = 1 - b, wet = b` so `0%` blend matches bypass polarity and `50%` blend sums constructively without phase cancellation).
+     - `supports_trails`: `bool` (backed by `DnamEngine::set_bypass(bypassed, trails)` spillover execution).
+     - `tempo_sync_capable`: `bool`.
+   - `io_config.leveling`:
+     - Anchored **strictly at the default control settings (`controls_schema[*].default`, normalized $\mathbf{u} = \mathbf{0}$ / $\mathbf{z}_{\text{head}} = \mathbf{0}$)**—never `presets[0]`.
+     - `auto_unity_enabled`: `bool` (default `true`).
+     - `leveling_metric`: `"rms_dbfs" | "k_weighted_lufs"` (defaults to gated unweighted broadband `"rms_dbfs"` for electrical `Vrms` pedal-to-pedal gain staging).
+     - `reference_input_level_db`, `measured_default_output_level_db`, `unity_gain_offset_db`, `target_gain_db`, and `calibrated_trim_db`.
+5. **Built-In `presets` Array (Parametric Control Snapshots):**
    - Stores named snapshots of `controls_schema` settings (`id`: `str`, `name`: `str`, `description`: `str | null`, `controls`: `dict[str, float | str]`, `user_metadata`: `dict[str, JsonValue]`) directly inside the `.dnam` header.
    - Every preset's `controls` map is validated against `controls_schema` (`safe_clamped_range`, `active_options`, and `conditional_max`) and preserved across `dnam-train --resume` runs.
-4. **Open `user_metadata: dict[str, JsonValue]`:**
+6. **Open `user_metadata: dict[str, JsonValue]`:**
    - Top-level `user_metadata` (plus optional per-control `controls_schema[*].user_metadata`, per-preset `presets[*].user_metadata`, and per-stem `stems_registry[*].user_metadata`) accepts any valid JSON object.
    - Automatically preserved and merged across `dnam-train --resume` runs, and editable in $< 1\text{ ms}$ without retraining by updating only the JSON header at `0x40` and recomputing `header_crc32c`.
 
@@ -222,7 +239,23 @@ The UTF-8 JSON header at byte offset `0x40` contains the model configuration, es
     "inputs": 2,
     "output_mode": "stereo",
     "latency_samples": 0,
-    "tail_time_ms": 1850.0
+    "tail_time_ms": 1850.0,
+    "capabilities": {
+      "blend_mode": "host_parallel",
+      "default_blend": 1.0,
+      "wet_polarity_inverted": false,
+      "supports_trails": true,
+      "tempo_sync_capable": true
+    },
+    "leveling": {
+      "auto_unity_enabled": true,
+      "leveling_metric": "rms_dbfs",
+      "reference_input_level_db": -20.5,
+      "measured_default_output_level_db": -20.5,
+      "unity_gain_offset_db": 0.0,
+      "target_gain_db": 0.0,
+      "calibrated_trim_db": 0.0
+    }
   },
   "slimmable_tiers": {
     "lite": {

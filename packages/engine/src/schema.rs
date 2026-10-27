@@ -11,12 +11,16 @@ pub mod error;
 pub mod header;
 pub mod signatures;
 
-pub use controls::{ControlKind, ControlSchemaDef, ControlUiHints, PresetDef};
+pub use controls::{
+    ControlCalibration, ControlCalibrationRole, ControlKind, ControlSchemaDef, ControlUiHints,
+    PresetDef, TempoSubdivision, TempoSyncResolution,
+};
 pub use error::{DnamError, cold_exp_f64, cold_ln_f64, cold_pow_f64, cold_sqrt_f64};
 pub use header::{
-    AuditReport, ControlBusConfig, Core1Config, Core2Config, DnamJsonHeader, ExtractedPhysics,
-    IoConfig, ModelMetadata, SlimmableTiersConfig, StemProvenance, StemRegistryEntry,
-    TensorSliceEntry, TierProfile,
+    AuditReport, BlendMode, ControlBusConfig, Core1Config, Core2Config, DnamJsonHeader,
+    ExtractedPhysics, IoConfig, LevelingConfig, LevelingMetric, ModelCapabilities, ModelMetadata,
+    SchemaVersion, SlimmableTiersConfig, StemProvenance, StemRegistryEntry, TensorSliceEntry,
+    TierProfile,
 };
 pub use signatures::{
     AuthorizedDevice, CreatorSignature, DatasetProvenance, MarketplaceReceipt, ModelSignatures,

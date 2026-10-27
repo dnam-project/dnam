@@ -92,6 +92,7 @@ fn build_demo_dnam_container() -> AlignedBuffer<CacheLine64> {
                 active_options: None,
                 clamp_warning: None,
                 ui_hints: ControlUiHints::default(),
+                calibration: None,
                 user_metadata: BTreeMap::new(),
             },
             ControlSchemaDef {
@@ -110,6 +111,7 @@ fn build_demo_dnam_container() -> AlignedBuffer<CacheLine64> {
                 active_options: Some(vec!["normal".to_string(), "bright".to_string()]),
                 clamp_warning: None,
                 ui_hints: ControlUiHints::default(),
+                calibration: None,
                 user_metadata: BTreeMap::new(),
             },
         ],

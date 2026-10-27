@@ -228,6 +228,7 @@ pub fn build_reference_container_core(
                 option_labels: BTreeMap::new(),
                 color_hex: Some("#F59E0B".to_string()),
             },
+            calibration: None,
             user_metadata: BTreeMap::new(),
         },
         ControlSchemaDef {
@@ -255,6 +256,7 @@ pub fn build_reference_container_core(
                 widget: Some("toggle".to_string()),
                 ..Default::default()
             },
+            calibration: None,
             user_metadata: BTreeMap::new(),
         },
     ];

@@ -29,7 +29,8 @@ pub use provider::{
 pub use sha256::{decode_hex_array, encode_hex, sha256_digest};
 pub use verify::{
     build_creator_signing_message, build_marketplace_receipt_signing_message,
-    compute_immutable_header_sha256, verify_container_provenance,
+    compute_immutable_header_sha256, compute_immutable_header_sha256_for_version,
+    project_immutable_header_for_schema_version, verify_container_provenance,
 };
 pub use watermark::{
     apply_isometric_gauge_watermark, apply_tardos_watermark_4608, extract_structural_hash_160d,

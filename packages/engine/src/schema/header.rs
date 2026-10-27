@@ -13,8 +13,126 @@ use super::controls::{ControlKind, ControlSchemaDef, PresetDef};
 use super::error::DnamError;
 use super::signatures::{DatasetProvenance, ModelSignatures};
 
+/// Semantic version (`major.minor.patch`) of the `.dnam` and `.dnam-ckpt` container schema.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct SchemaVersion {
+    /// Breaking container wire format or tensor layout version (`CONTAINER_VERSION_MAJOR`).
+    pub major: u16,
+    /// Backwards-compatible additive schema version (`CONTAINER_VERSION_MINOR`).
+    pub minor: u16,
+    /// Backwards-compatible patch version (`0`).
+    pub patch: u16,
+}
+
+impl SchemaVersion {
+    /// Initial `1.0.0` schema release.
+    pub const V1_0_0: Self = Self::new(1, 0, 0);
+
+    /// Current container schema version supported by this engine build.
+    pub const CURRENT: Self = Self::new(
+        crate::container::CONTAINER_VERSION_MAJOR,
+        crate::container::CONTAINER_VERSION_MINOR,
+        0,
+    );
+
+    /// Constructs a new [`SchemaVersion`].
+    #[inline]
+    pub const fn new(major: u16, minor: u16, patch: u16) -> Self {
+        Self {
+            major,
+            minor,
+            patch,
+        }
+    }
+
+    /// Parses a semantic version string (`"major.minor.patch"` or `"major.minor"`).
+    pub fn parse(version_str: &str) -> Result<Self, DnamError> {
+        let mut parts = version_str.trim().split('.');
+        let major_str = parts.next().ok_or_else(|| {
+            DnamError::SchemaValidationError(alloc::format!(
+                "invalid schema version '{version_str}': expected 'major.minor.patch'"
+            ))
+        })?;
+        let minor_str = parts.next().ok_or_else(|| {
+            DnamError::SchemaValidationError(alloc::format!(
+                "invalid schema version '{version_str}': expected 'major.minor.patch'"
+            ))
+        })?;
+        let patch_str = parts.next().unwrap_or("0");
+        if parts.next().is_some() {
+            return Err(DnamError::SchemaValidationError(alloc::format!(
+                "invalid schema version '{version_str}': too many dot-separated segments"
+            )));
+        }
+        let major = major_str.parse::<u16>().map_err(|_| {
+            DnamError::SchemaValidationError(alloc::format!(
+                "invalid schema major version in '{version_str}'"
+            ))
+        })?;
+        let minor = minor_str.parse::<u16>().map_err(|_| {
+            DnamError::SchemaValidationError(alloc::format!(
+                "invalid schema minor version in '{version_str}'"
+            ))
+        })?;
+        let patch = patch_str.parse::<u16>().map_err(|_| {
+            DnamError::SchemaValidationError(alloc::format!(
+                "invalid schema patch version in '{version_str}'"
+            ))
+        })?;
+        Ok(Self {
+            major,
+            minor,
+            patch,
+        })
+    }
+
+    /// Formats the schema version as `"major.minor.patch"`.
+    pub fn as_semver_string(&self) -> String {
+        alloc::format!("{}.{}.{}", self.major, self.minor, self.patch)
+    }
+
+    /// Returns `true` if this schema version is supported by the current engine build.
+    #[inline]
+    #[allow(clippy::absurd_extreme_comparisons)]
+    pub const fn is_supported(&self) -> bool {
+        self.major == crate::container::CONTAINER_VERSION_MAJOR
+            && self.minor <= crate::container::CONTAINER_VERSION_MINOR
+    }
+
+    /// Fails with [`DnamError::UnsupportedVersion`] if this schema version is not supported.
+    #[inline]
+    pub fn ensure_supported(&self) -> Result<(), DnamError> {
+        if !self.is_supported() {
+            return Err(DnamError::UnsupportedVersion {
+                major: self.major,
+                minor: self.minor,
+            });
+        }
+        Ok(())
+    }
+
+    /// Verifies that the 64-byte binary preamble `(version_major, version_minor)` matches this JSON header version.
+    pub fn ensure_matches_preamble(
+        &self,
+        preamble_major: u16,
+        preamble_minor: u16,
+    ) -> Result<(), DnamError> {
+        if self.major != preamble_major || self.minor != preamble_minor {
+            return Err(DnamError::SchemaValidationError(alloc::format!(
+                "JSON header version '{}.{}.{}' does not match binary preamble version '{}.{}'",
+                self.major,
+                self.minor,
+                self.patch,
+                preamble_major,
+                preamble_minor
+            )));
+        }
+        Ok(())
+    }
+}
+
 fn default_version() -> String {
-    "1.0.0".to_string()
+    SchemaVersion::CURRENT.as_semver_string()
 }
 
 fn default_container_kind() -> String {
@@ -123,7 +241,113 @@ pub struct ModelMetadata {
     pub signatures: Option<ModelSignatures>,
 }
 
-/// Audio I/O topology and host PDC / tail configuration.
+const fn default_true() -> bool {
+    true
+}
+
+const fn default_blend_one() -> f32 {
+    1.0
+}
+
+/// Host dry/wet blend capability mode (`IoConfig::capabilities.blend_mode`).
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum BlendMode {
+    /// No separate host parallel dry/wet blend control should be exposed.
+    #[default]
+    None,
+    /// Host/UI should expose a parallel Dry/Wet `Blend` knob driving `DnamEngine`'s `mix_dry_gain` / `mix_wet_gain`.
+    HostParallel,
+    /// Dry/Wet `Blend` or `Mix` is already modeled as a parametric control in `controls_schema`.
+    ModeledControl,
+}
+
+/// Model-level physical capabilities (`IoConfig::capabilities`, covered by `immutable_header_sha256`).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ModelCapabilities {
+    /// Dry/Wet parallel blend configuration (`"none"`, `"host_parallel"`, or `"modeled_control"`).
+    #[serde(default)]
+    pub blend_mode: BlendMode,
+    /// Default wet blend ratio $b \in [0.0, 1.0]$ when `blend_mode == "host_parallel"` (`1.0` = 100% wet).
+    #[serde(default = "default_blend_one")]
+    pub default_blend: f32,
+    /// `true` if the modeled hardware inverts signal polarity (`-1`) relative to the dry input.
+    /// When `true`, `DnamEngine::configure_host_mix_and_leveling` inverts `wet_g` (`wet_g *= -1.0`)
+    /// so `0%` blend matches bypass polarity and `50%` blend sums constructively without phase cancellation.
+    #[serde(default)]
+    pub wet_polarity_inverted: bool,
+    /// `true` if spillover bypass (`DnamEngine::set_bypass(true, true)`) is supported.
+    #[serde(default)]
+    pub supports_trails: bool,
+    /// `true` if one or more controls in `controls_schema` carry `DelayTimeMs` or `LfoRateHz` calibration for MIDI tempo sync.
+    #[serde(default)]
+    pub tempo_sync_capable: bool,
+}
+
+impl Default for ModelCapabilities {
+    fn default() -> Self {
+        Self {
+            blend_mode: BlendMode::None,
+            default_blend: 1.0,
+            wet_polarity_inverted: false,
+            supports_trails: false,
+            tempo_sync_capable: false,
+        }
+    }
+}
+
+/// Loudness measurement metric used for auto-unity leveling (`LevelingConfig::leveling_metric`).
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum LevelingMetric {
+    /// Gated unweighted broadband RMS in dBFS (`"rms_dbfs"`, default for pedal-to-pedal `Vrms` gain staging).
+    #[default]
+    RmsDbfs,
+    /// Gated ITU-R BS.1770-4 K-weighted LUFS (`"k_weighted_lufs"`, optional for full-rig + cab models).
+    KWeightedLufs,
+}
+
+/// Auto-unity gain leveling calibration anchored at the default control settings (`controls_schema[*].default`, $\mathbf{u} = \mathbf{0}$).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct LevelingConfig {
+    /// Whether auto-unity leveling is enabled by default for this model.
+    #[serde(default = "default_true")]
+    pub auto_unity_enabled: bool,
+    /// Loudness metric used to compute `unity_gain_offset_db` (`"rms_dbfs"` default or `"k_weighted_lufs"`).
+    #[serde(default)]
+    pub leveling_metric: LevelingMetric,
+    /// Measured dry excitation reference level in dB (`dBFS` RMS or `LUFS`).
+    #[serde(default = "default_input_ref_dbfs", alias = "dry_reference_db")]
+    pub reference_input_level_db: f32,
+    /// Measured model wet output level in dB at the default control settings ($\mathbf{u} = \mathbf{0}$).
+    #[serde(default = "default_input_ref_dbfs", alias = "default_controls_wet_db")]
+    pub measured_default_output_level_db: f32,
+    /// Gain offset in dB required to match unity at default control settings (`reference_input_level_db - measured_default_output_level_db`).
+    #[serde(default)]
+    pub unity_gain_offset_db: f32,
+    /// Creator-configured target gain offset in dB relative to unity (`0.0` = exact unity; e.g. `+3.0` for a boost).
+    #[serde(default)]
+    pub target_gain_db: f32,
+    /// Total calibrated output trim in dB (`unity_gain_offset_db + target_gain_db` when `auto_unity_enabled`, else `target_gain_db`).
+    #[serde(default)]
+    pub calibrated_trim_db: f32,
+}
+
+impl Default for LevelingConfig {
+    fn default() -> Self {
+        Self {
+            auto_unity_enabled: true,
+            leveling_metric: LevelingMetric::RmsDbfs,
+            reference_input_level_db: default_input_ref_dbfs(),
+            measured_default_output_level_db: default_input_ref_dbfs(),
+            unity_gain_offset_db: 0.0,
+            target_gain_db: 0.0,
+            calibrated_trim_db: 0.0,
+        }
+    }
+}
+
+/// Audio I/O topology, host PDC / tail configuration, model capabilities, and auto-unity leveling.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct IoConfig {
     /// Number of input channels (`1` or `2`).
@@ -138,6 +362,12 @@ pub struct IoConfig {
     /// Estimated $T_{60}$ reverb/delay tail time in milliseconds for DAW sleep management.
     #[serde(default)]
     pub tail_time_ms: f32,
+    /// Model-level capabilities (parallel blend, polarity inversion, trails, tempo sync).
+    #[serde(default)]
+    pub capabilities: ModelCapabilities,
+    /// Auto-unity leveling calibration anchored at default control settings ($\mathbf{u} = \mathbf{0}$).
+    #[serde(default)]
+    pub leveling: LevelingConfig,
 }
 
 impl Default for IoConfig {
@@ -147,6 +377,8 @@ impl Default for IoConfig {
             output_mode: default_output_mode(),
             latency_samples: 0,
             tail_time_ms: 0.0,
+            capabilities: ModelCapabilities::default(),
+            leveling: LevelingConfig::default(),
         }
     }
 }
@@ -530,8 +762,16 @@ impl DnamJsonHeader {
         }
     }
 
+    /// Parses and validates the header's semantic [`SchemaVersion`].
+    pub fn schema_version(&self) -> Result<SchemaVersion, DnamError> {
+        let ver = SchemaVersion::parse(&self.version)?;
+        ver.ensure_supported()?;
+        Ok(ver)
+    }
+
     /// Validates all structural, alignment, and safety invariants of the JSON header.
     pub fn validate(&self) -> Result<(), DnamError> {
+        let _ = self.schema_version()?;
         if self.container_kind != "dnam" && self.container_kind != "dnam-ckpt" {
             return Err(DnamError::SchemaValidationError(
                 "container_kind must be 'dnam' or 'dnam-ckpt'".to_string(),
@@ -835,6 +1075,7 @@ mod tests {
             active_options: None,
             clamp_warning: None,
             ui_hints: ControlUiHints::default(),
+            calibration: None,
             user_metadata: BTreeMap::new(),
         }];
         assert!(h.validate().is_err());
@@ -855,5 +1096,15 @@ mod tests {
         h.controls_schema = vec![h.controls_schema[0].clone(); 17];
         assert!(h.validate().is_err());
         assert!(h.compile_clamp_descriptors().is_err());
+
+        // Capabilities & Leveling defaults and validation
+        assert_eq!(h.io_config.capabilities.blend_mode, BlendMode::None);
+        assert_eq!(h.io_config.capabilities.default_blend, 1.0);
+        assert!(!h.io_config.capabilities.wet_polarity_inverted);
+        assert_eq!(
+            h.io_config.leveling.leveling_metric,
+            LevelingMetric::RmsDbfs
+        );
+        assert!(h.io_config.leveling.auto_unity_enabled);
     }
 }

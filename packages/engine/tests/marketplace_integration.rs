@@ -18,8 +18,9 @@ use dnam_engine::provenance::{
 };
 use dnam_engine::schema::{
     AuthorizedDevice, ControlBusConfig, ControlKind, ControlSchemaDef, ControlUiHints, Core1Config,
-    Core2Config, CreatorSignature, DatasetProvenance, DnamJsonHeader, IoConfig, MarketplaceReceipt,
-    ModelMetadata, ModelSignatures, PresetDef, SlimmableTiersConfig, TierProfile,
+    Core2Config, CreatorSignature, DatasetProvenance, DnamJsonHeader, IoConfig, LevelingConfig,
+    MarketplaceReceipt, ModelCapabilities, ModelMetadata, ModelSignatures, PresetDef,
+    SlimmableTiersConfig, TierProfile,
 };
 use dnam_engine::{DnamEngine, Tier};
 
@@ -47,6 +48,7 @@ fn build_reference_header_and_arena(core2_active: bool) -> (DnamJsonHeader, Vec<
                 midpoint: Some(4.0),
                 ..Default::default()
             },
+            calibration: None,
             user_metadata: BTreeMap::new(),
         },
         ControlSchemaDef {
@@ -65,6 +67,7 @@ fn build_reference_header_and_arena(core2_active: bool) -> (DnamJsonHeader, Vec<
             active_options: None,
             clamp_warning: Some("CLAMP-STABILITY: <= 9.37 when boost=on".to_string()),
             ui_hints: ControlUiHints::default(),
+            calibration: None,
             user_metadata: BTreeMap::new(),
         },
         ControlSchemaDef {
@@ -87,6 +90,7 @@ fn build_reference_header_and_arena(core2_active: bool) -> (DnamJsonHeader, Vec<
             active_options: Some(vec!["off".to_string(), "on".to_string()]),
             clamp_warning: Some("CLAMP-SWITCH: disabled ['ultra']".to_string()),
             ui_hints: ControlUiHints::default(),
+            calibration: None,
             user_metadata: BTreeMap::new(),
         },
     ];
@@ -122,6 +126,8 @@ fn build_reference_header_and_arena(core2_active: bool) -> (DnamJsonHeader, Vec<
             output_mode: "stereo".to_string(),
             latency_samples: 0,
             tail_time_ms: if core2_active { 1250.0 } else { 0.0 },
+            capabilities: ModelCapabilities::default(),
+            leveling: LevelingConfig::default(),
         },
         slimmable_tiers: SlimmableTiersConfig {
             lite: TierProfile {

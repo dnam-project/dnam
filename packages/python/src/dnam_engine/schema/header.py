@@ -25,13 +25,42 @@ class ModelMetadata(StrictModel):
     signatures: ModelSignatures | None = None
 
 
+class ModelCapabilities(StrictModel):
+    """Model-level host integration capabilities (`io_config.capabilities`)."""
+
+    blend_mode: Literal["none", "host_parallel", "modeled_control"] = "none"
+    default_blend: float = Field(default=1.0, ge=0.0, le=1.0)
+    wet_polarity_inverted: bool = False
+    supports_trails: bool = False
+    tempo_sync_capable: bool = False
+
+
+class LevelingConfig(StrictModel):
+    """Auto unity gain-staging and loudness calibration metadata (`io_config.leveling`).
+
+    Evaluated strictly at default control settings (`controls_schema[*].default`, normalized
+    `u = 0`), never `presets[0]`. Defaults to gated unweighted broadband RMS (`rms_dbfs`) for
+    electrical Vrms pedal-to-pedal gain staging.
+    """
+
+    auto_unity_enabled: bool = True
+    leveling_metric: Literal["rms_dbfs", "k_weighted_lufs"] = "rms_dbfs"
+    reference_input_level_db: float = -20.5
+    measured_default_output_level_db: float = -20.5
+    unity_gain_offset_db: float = 0.0
+    target_gain_db: float = 0.0
+    calibrated_trim_db: float = 0.0
+
+
 class IoConfig(StrictModel):
-    """Audio I/O topology and host PDC / tail configuration."""
+    """Audio I/O topology, host capabilities, and default-controls unity leveling configuration."""
 
     inputs: int = Field(default=2, ge=1, le=2)
     output_mode: Literal["stereo", "mono"] = "stereo"
     latency_samples: int = Field(default=0, ge=0)
     tail_time_ms: float = Field(default=0.0, ge=0.0)
+    capabilities: ModelCapabilities = Field(default_factory=ModelCapabilities)
+    leveling: LevelingConfig = Field(default_factory=LevelingConfig)
 
 
 class TierProfile(StrictModel):
@@ -99,7 +128,7 @@ class Core2Config(StrictModel):
 
     active: bool = False
     delay_storage: str = "fp16"
-    ring_buffer_pow2_log2: int = Field(default=0, ge=0, le=16)
+    ring_buffer_pow2_log2: int = Field(default=0, ge=0, le=18)
     interp: str = "cubic_lagrange_4tap"
     tzf_reference_tap_samples: float = Field(default=64.0, ge=0.0)
     switch_xfade_samples: int = Field(default=128, ge=0)
@@ -180,10 +209,39 @@ class AuditReport(StrictModel):
     prescriptions: list[str] = Field(default_factory=list)
 
 
+CURRENT_SCHEMA_VERSION: str = "1.0.0"
+SUPPORTED_SCHEMA_MAJOR: int = 1
+MAX_SUPPORTED_SCHEMA_MINOR: int = 0
+
+
+def parse_schema_version(version_str: str) -> tuple[int, int, int]:
+    """Parses and validates a `'major.minor.patch'` container schema version."""
+    parts = version_str.strip().split(".")
+    if len(parts) not in (2, 3):
+        raise DnamValidationError(
+            f"Invalid schema version '{version_str}': expected 'major.minor.patch'"
+        )
+    try:
+        major = int(parts[0])
+        minor = int(parts[1])
+        patch = int(parts[2]) if len(parts) == 3 else 0
+    except ValueError as err:
+        raise DnamValidationError(
+            f"Invalid numeric segments in schema version '{version_str}'"
+        ) from err
+    if major != SUPPORTED_SCHEMA_MAJOR or minor > MAX_SUPPORTED_SCHEMA_MINOR or patch < 0:
+        max_ver = f"{SUPPORTED_SCHEMA_MAJOR}.{MAX_SUPPORTED_SCHEMA_MINOR}"
+        raise DnamValidationError(
+            f"Unsupported schema version '{version_str}' "
+            f"(supported: {SUPPORTED_SCHEMA_MAJOR}.0..{max_ver})"
+        )
+    return (major, minor, patch)
+
+
 class DnamJsonHeader(StrictModel):
     """Top-level UTF-8 JSON header at byte offset `0x40` of a `.dnam` or `.dnam-ckpt` container."""
 
-    version: str = "1.0.0"
+    version: str = CURRENT_SCHEMA_VERSION
     container_kind: Literal["dnam", "dnam-ckpt"] = "dnam"
     architecture: str = "DNAM_TriPhysics"
     sample_rate_train_hz: int = 48_000
@@ -199,6 +257,12 @@ class DnamJsonHeader(StrictModel):
     tensor_directory: dict[str, TensorSliceEntry] = Field(default_factory=dict)
     stems_registry: list[StemRegistryEntry] | None = None
     audit_report: AuditReport | None = None
+
+    @field_validator("version")
+    @classmethod
+    def _validate_version(cls, v: str) -> str:
+        parse_schema_version(v)
+        return v
 
     @field_validator("sample_rate_train_hz")
     @classmethod

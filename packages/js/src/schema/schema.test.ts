@@ -6,6 +6,7 @@ import {
   AuditReportSchema,
   AuthorizedDeviceSchema,
   ClampResultSnapshotSchema,
+  ControlCalibrationSchema,
   ControlSchemaDefSchema,
   ControlUiHintsSchema,
   CreatorSignatureSchema,
@@ -15,7 +16,9 @@ import {
   DnamJsonHeaderSchema,
   dnamJsonHeaderToWire,
   ExtractedPhysicsSchema,
+  LevelingConfigSchema,
   MarketplaceReceiptSchema,
+  ModelCapabilitiesSchema,
   ModelSignaturesSchema,
   ModulatedUfdnParamsSchema,
   normalizedToPhysical,
@@ -25,11 +28,14 @@ import {
   parseTier,
   physicalToNormalized,
   RoyaltySplitSchema,
+  resolveTempoSyncTarget,
   SelectiveRgLruParamsSchema,
   StemProvenanceSchema,
   StemRegistryEntrySchema,
+  TEMPO_SUBDIVISIONS,
   TelemetrySnapshotSchema,
   TierSchema,
+  tempoSubdivisionDelayMs,
   tierToName,
   validateStandardSchema,
   ZohParamsSnapshotSchema,
@@ -246,5 +252,47 @@ describe("Schema Suite", () => {
     expect(() => SelectiveRgLruParamsSchema.parse({ rLow: 0.98, drSpan: 0.05 })).toThrow();
     expect(ModulatedUfdnParamsSchema.parse({ gLin: 0.85, vCeil: 0.985 })).toBeDefined();
     expect(TelemetrySnapshotSchema).toBeDefined();
+  });
+
+  it("parses ControlCalibration, 12 tempo subdivisions, ModelCapabilities, and LevelingConfig", () => {
+    expect(TEMPO_SUBDIVISIONS).toHaveLength(12);
+    expect(tempoSubdivisionDelayMs(120, "1/2.")).toBeCloseTo(1500, 3);
+    expect(tempoSubdivisionDelayMs(120, "1/8.")).toBeCloseTo(375, 3);
+    expect(tempoSubdivisionDelayMs(120, "1/16T")).toBeCloseTo(83.3333, 2);
+
+    const cal = ControlCalibrationSchema.parse({
+      role: "delay_time_ms",
+      conditional_physical_anchors: {
+        "range=0.01-0.1s": [10, 55, 100],
+        "range=0.1-1s": [100, 550, 1000],
+        "range=1-2s": [1000, 1500, 2000],
+      },
+      tempo_sync_default_subdivision: "1/8.",
+    });
+    const res = resolveTempoSyncTarget(cal, 120, "1/2.", false);
+    expect(res?.switchSelection).toEqual(["range", "1-2s"]);
+    expect(res?.targetPhysical).toBeCloseTo(1500, 3);
+    expect(res?.normalizedU).toBeCloseTo(0, 4);
+
+    const caps = ModelCapabilitiesSchema.parse({
+      blend_mode: "host_parallel",
+      default_blend: 0.5,
+      wet_polarity_inverted: true,
+      supports_trails: true,
+      tempo_sync_capable: true,
+    });
+    expect(caps.wetPolarityInverted).toBe(true);
+
+    const lvl = LevelingConfigSchema.parse({
+      auto_unity_enabled: true,
+      leveling_metric: "rms_dbfs",
+      reference_input_level_db: -20.5,
+      measured_default_output_level_db: -14.5,
+      unity_gain_offset_db: -6.0,
+      target_gain_db: 1.5,
+      calibrated_trim_db: -4.5,
+    });
+    expect(lvl.levelingMetric).toBe("rms_dbfs");
+    expect(lvl.calibratedTrimDb).toBeCloseTo(-4.5, 4);
   });
 });

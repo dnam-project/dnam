@@ -65,11 +65,94 @@ export const ModelMetadataSchema: z.ZodType<ModelMetadata, unknown> =
     };
   });
 
+export type BlendMode = "none" | "host_parallel" | "modeled_control";
+
+export interface ModelCapabilities {
+  blendMode: BlendMode;
+  defaultBlend: number;
+  wetPolarityInverted: boolean;
+  supportsTrails: boolean;
+  tempoSyncCapable: boolean;
+}
+
+const RawModelCapabilitiesSchema = z
+  .object({
+    blend_mode: z.enum(["none", "host_parallel", "modeled_control"]).optional(),
+    blendMode: z.enum(["none", "host_parallel", "modeled_control"]).optional(),
+    default_blend: z.number().min(0).max(1).optional(),
+    defaultBlend: z.number().min(0).max(1).optional(),
+    wet_polarity_inverted: z.boolean().optional(),
+    wetPolarityInverted: z.boolean().optional(),
+    supports_trails: z.boolean().optional(),
+    supportsTrails: z.boolean().optional(),
+    tempo_sync_capable: z.boolean().optional(),
+    tempoSyncCapable: z.boolean().optional(),
+  })
+  .strict();
+
+export const ModelCapabilitiesSchema: z.ZodType<ModelCapabilities, unknown> =
+  RawModelCapabilitiesSchema.transform(
+    (raw): ModelCapabilities => ({
+      blendMode: raw.blendMode ?? raw.blend_mode ?? "none",
+      defaultBlend: raw.defaultBlend ?? raw.default_blend ?? 1.0,
+      wetPolarityInverted: raw.wetPolarityInverted ?? raw.wet_polarity_inverted ?? false,
+      supportsTrails: raw.supportsTrails ?? raw.supports_trails ?? false,
+      tempoSyncCapable: raw.tempoSyncCapable ?? raw.tempo_sync_capable ?? false,
+    }),
+  );
+
+export type LevelingMetric = "rms_dbfs" | "k_weighted_lufs";
+
+export interface LevelingConfig {
+  autoUnityEnabled: boolean;
+  levelingMetric: LevelingMetric;
+  referenceInputLevelDb: number;
+  measuredDefaultOutputLevelDb: number;
+  unityGainOffsetDb: number;
+  targetGainDb: number;
+  calibratedTrimDb: number;
+}
+
+const RawLevelingConfigSchema = z
+  .object({
+    auto_unity_enabled: z.boolean().optional(),
+    autoUnityEnabled: z.boolean().optional(),
+    leveling_metric: z.enum(["rms_dbfs", "k_weighted_lufs"]).optional(),
+    levelingMetric: z.enum(["rms_dbfs", "k_weighted_lufs"]).optional(),
+    reference_input_level_db: z.number().optional(),
+    referenceInputLevelDb: z.number().optional(),
+    measured_default_output_level_db: z.number().optional(),
+    measuredDefaultOutputLevelDb: z.number().optional(),
+    unity_gain_offset_db: z.number().optional(),
+    unityGainOffsetDb: z.number().optional(),
+    target_gain_db: z.number().optional(),
+    targetGainDb: z.number().optional(),
+    calibrated_trim_db: z.number().optional(),
+    calibratedTrimDb: z.number().optional(),
+  })
+  .strict();
+
+export const LevelingConfigSchema: z.ZodType<LevelingConfig, unknown> =
+  RawLevelingConfigSchema.transform(
+    (raw): LevelingConfig => ({
+      autoUnityEnabled: raw.autoUnityEnabled ?? raw.auto_unity_enabled ?? true,
+      levelingMetric: raw.levelingMetric ?? raw.leveling_metric ?? "rms_dbfs",
+      referenceInputLevelDb: raw.referenceInputLevelDb ?? raw.reference_input_level_db ?? -20.5,
+      measuredDefaultOutputLevelDb:
+        raw.measuredDefaultOutputLevelDb ?? raw.measured_default_output_level_db ?? -20.5,
+      unityGainOffsetDb: raw.unityGainOffsetDb ?? raw.unity_gain_offset_db ?? 0.0,
+      targetGainDb: raw.targetGainDb ?? raw.target_gain_db ?? 0.0,
+      calibratedTrimDb: raw.calibratedTrimDb ?? raw.calibrated_trim_db ?? 0.0,
+    }),
+  );
+
 export interface IoConfig {
   inputs: number;
   outputMode: "stereo" | "mono";
   latencySamples: number;
   tailTimeMs: number;
+  capabilities?: ModelCapabilities | undefined;
+  leveling?: LevelingConfig | undefined;
 }
 
 const RawIoConfigSchema = z
@@ -81,6 +164,8 @@ const RawIoConfigSchema = z
     latencySamples: z.number().int().nonnegative().optional(),
     tail_time_ms: z.number().nonnegative().optional(),
     tailTimeMs: z.number().nonnegative().optional(),
+    capabilities: ModelCapabilitiesSchema.optional(),
+    leveling: LevelingConfigSchema.optional(),
   })
   .strict();
 
@@ -90,6 +175,22 @@ export const IoConfigSchema: z.ZodType<IoConfig, unknown> = RawIoConfigSchema.tr
     outputMode: raw.outputMode ?? raw.output_mode ?? "stereo",
     latencySamples: raw.latencySamples ?? raw.latency_samples ?? 0,
     tailTimeMs: raw.tailTimeMs ?? raw.tail_time_ms ?? 0,
+    capabilities: raw.capabilities ?? {
+      blendMode: "none",
+      defaultBlend: 1.0,
+      wetPolarityInverted: false,
+      supportsTrails: false,
+      tempoSyncCapable: false,
+    },
+    leveling: raw.leveling ?? {
+      autoUnityEnabled: true,
+      levelingMetric: "rms_dbfs",
+      referenceInputLevelDb: -20.5,
+      measuredDefaultOutputLevelDb: -20.5,
+      unityGainOffsetDb: 0.0,
+      targetGainDb: 0.0,
+      calibratedTrimDb: 0.0,
+    },
   }),
 );
 
@@ -483,6 +584,38 @@ export const AuditReportSchema: z.ZodType<AuditReport, unknown> = RawAuditReport
   }),
 );
 
+export const CURRENT_SCHEMA_VERSION = "1.0.0";
+export const SUPPORTED_SCHEMA_MAJOR = 1;
+export const MAX_SUPPORTED_SCHEMA_MINOR = 0;
+
+export function parseSchemaVersion(versionStr: string): {
+  major: number;
+  minor: number;
+  patch: number;
+} {
+  const parts = versionStr.trim().split(".");
+  if (parts.length !== 2 && parts.length !== 3) {
+    throw new Error(`Invalid schema version '${versionStr}': expected 'major.minor.patch'`);
+  }
+  const major = Number(parts[0]);
+  const minor = Number(parts[1]);
+  const patch = parts.length === 3 ? Number(parts[2]) : 0;
+  if (
+    !Number.isInteger(major) ||
+    !Number.isInteger(minor) ||
+    !Number.isInteger(patch) ||
+    major !== SUPPORTED_SCHEMA_MAJOR ||
+    minor < 0 ||
+    minor > MAX_SUPPORTED_SCHEMA_MINOR ||
+    patch < 0
+  ) {
+    throw new Error(
+      `Unsupported schema version '${versionStr}' (supported: ${SUPPORTED_SCHEMA_MAJOR}.0..${SUPPORTED_SCHEMA_MAJOR}.${MAX_SUPPORTED_SCHEMA_MINOR})`,
+    );
+  }
+  return { major, minor, patch };
+}
+
 export interface DnamJsonHeader {
   version: string;
   containerKind: "dnam" | "dnam-ckpt";
@@ -535,6 +668,16 @@ const RawDnamJsonHeaderSchema = z
   })
   .strict()
   .superRefine((val, ctx) => {
+    if (val.version !== undefined) {
+      try {
+        parseSchemaVersion(val.version);
+      } catch (err) {
+        ctx.addIssue({
+          code: "custom",
+          message: err instanceof Error ? err.message : "Invalid schema version",
+        });
+      }
+    }
     const tiers = val.slimmableTiers ?? val.slimmable_tiers;
     if (!tiers) {
       ctx.addIssue({
@@ -692,6 +835,31 @@ export function dnamJsonHeaderToWire(header: DnamJsonHeader): Record<string, unk
       output_mode: header.ioConfig.outputMode,
       latency_samples: header.ioConfig.latencySamples,
       tail_time_ms: header.ioConfig.tailTimeMs,
+      ...(header.ioConfig.capabilities !== undefined
+        ? {
+            capabilities: {
+              blend_mode: header.ioConfig.capabilities.blendMode,
+              default_blend: header.ioConfig.capabilities.defaultBlend,
+              wet_polarity_inverted: header.ioConfig.capabilities.wetPolarityInverted,
+              supports_trails: header.ioConfig.capabilities.supportsTrails,
+              tempo_sync_capable: header.ioConfig.capabilities.tempoSyncCapable,
+            },
+          }
+        : {}),
+      ...(header.ioConfig.leveling !== undefined
+        ? {
+            leveling: {
+              auto_unity_enabled: header.ioConfig.leveling.autoUnityEnabled,
+              leveling_metric: header.ioConfig.leveling.levelingMetric,
+              reference_input_level_db: header.ioConfig.leveling.referenceInputLevelDb,
+              measured_default_output_level_db:
+                header.ioConfig.leveling.measuredDefaultOutputLevelDb,
+              unity_gain_offset_db: header.ioConfig.leveling.unityGainOffsetDb,
+              target_gain_db: header.ioConfig.leveling.targetGainDb,
+              calibrated_trim_db: header.ioConfig.leveling.calibratedTrimDb,
+            },
+          }
+        : {}),
     },
     slimmable_tiers: {
       lite: tierProfileToWire(header.slimmableTiers.lite),

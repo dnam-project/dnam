@@ -185,6 +185,18 @@ def run_phase1_preflight_audit(
             if not obs_opts:
                 obs_opts = [str(ctrl.default)]
 
+            if (
+                ctrl.calibration is not None
+                and ctrl.calibration.role == "stereo_mode"
+                and stem_records
+            ):
+                for opt in dec_opts:
+                    if (
+                        ctrl.calibration.stereo_width_for_option(opt) is not None
+                        and opt not in obs_opts
+                    ):
+                        obs_opts.append(opt)
+
             missing_opts = [o for o in dec_opts if o not in obs_opts]
             sw_warning: str | None = None
             if missing_opts:

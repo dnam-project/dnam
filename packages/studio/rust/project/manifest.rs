@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 
+use dnam_engine::schema::ControlCalibration;
 use serde::{Deserialize, Serialize};
 
 use crate::capture::TargetExcitationProfile;
@@ -16,6 +17,22 @@ fn default_topology() -> String {
 
 fn default_noise_floor_dbfs() -> f32 {
     -96.0
+}
+
+const fn default_true() -> bool {
+    true
+}
+
+fn default_leveling_metric() -> String {
+    "rms_dbfs".to_string()
+}
+
+fn default_blend_mode() -> String {
+    "auto".to_string()
+}
+
+const fn default_blend_one() -> f32 {
+    1.0
 }
 
 /// Top-level `dnam.toml` workspace manifest.
@@ -65,6 +82,24 @@ pub struct CaptureSettings {
     /// Probed target device excitation profile used to synthesize `models/<id>/stems/input.wav`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub excitation_profile: Option<TargetExcitationProfile>,
+    /// Whether auto-unity leveling at default controls (`u = 0`) is enabled (`true` default).
+    #[serde(default = "default_true")]
+    pub auto_unity_leveling: bool,
+    /// Loudness metric for auto-unity leveling (`"rms_dbfs"` default or `"k_weighted_lufs"`).
+    #[serde(default = "default_leveling_metric")]
+    pub leveling_metric: String,
+    /// Target gain offset in dB relative to unity at default controls (`0.0` default).
+    #[serde(default)]
+    pub target_gain_db: f32,
+    /// Dry/Wet blend capability mode (`"auto"`, `"none"`, `"host_parallel"`, or `"modeled_control"`).
+    #[serde(default = "default_blend_mode")]
+    pub blend_mode: String,
+    /// Default wet blend ratio in `[0.0, 1.0]` (`1.0` default).
+    #[serde(default = "default_blend_one")]
+    pub default_blend: f32,
+    /// Optional explicit override for spillover bypass trails support.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supports_trails: Option<bool>,
 }
 
 impl Default for CaptureSettings {
@@ -77,6 +112,12 @@ impl Default for CaptureSettings {
             send_gain_db: 0.0,
             unity_ref_dbfs: 0.0,
             excitation_profile: None,
+            auto_unity_leveling: true,
+            leveling_metric: "rms_dbfs".to_string(),
+            target_gain_db: 0.0,
+            blend_mode: "auto".to_string(),
+            default_blend: 1.0,
+            supports_trails: None,
         }
     }
 }
@@ -96,6 +137,9 @@ pub struct ControlRangeSpec {
     pub default_value: f32,
     /// Optional engineering unit (`"dB"`, `"%"`, etc.).
     pub unit: Option<String>,
+    /// Optional physical calibration and tempo-sync metadata.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub calibration: Option<ControlCalibration>,
 }
 
 /// Single throw option of a discrete switch.
@@ -118,6 +162,9 @@ pub struct ControlSwitchSpec {
     pub options: Vec<ControlSwitchOptionSpec>,
     /// Default zero-based option index.
     pub default_index: usize,
+    /// Optional physical calibration (`"stereo_mode"`, etc.).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub calibration: Option<ControlCalibration>,
 }
 
 /// Named preset snapshot in `models/<id>/model.toml`.

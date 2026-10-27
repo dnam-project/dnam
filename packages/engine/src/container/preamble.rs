@@ -5,8 +5,8 @@ use core::mem::{align_of, size_of};
 use crate::schema::DnamError;
 
 use super::{
-    CONTAINER_VERSION_MAJOR, DNAM_MAGIC, DNCK_MAGIC, FLAG_CORE2_ACTIVE, FLAG_ENCRYPTED_ARENA,
-    FLAG_HAS_SIGNATURES, FLAG_LFO_ENV_ACTIVE, FLAG_STEREO_OUT,
+    CONTAINER_VERSION_MAJOR, CONTAINER_VERSION_MINOR, DNAM_MAGIC, DNCK_MAGIC, FLAG_CORE2_ACTIVE,
+    FLAG_ENCRYPTED_ARENA, FLAG_HAS_SIGNATURES, FLAG_LFO_ENV_ACTIVE, FLAG_STEREO_OUT,
 };
 
 /// Fixed 64-byte binary preamble (`#[repr(C, align(64))]`, `<4s3H2B10IH2BfI`) at byte offset `0x0000`.
@@ -75,7 +75,7 @@ impl DnamPreamble {
         }
         let version_major = u16::from_le_bytes([bytes[4], bytes[5]]);
         let version_minor = u16::from_le_bytes([bytes[6], bytes[7]]);
-        if version_major != CONTAINER_VERSION_MAJOR {
+        if version_major != CONTAINER_VERSION_MAJOR || version_minor > CONTAINER_VERSION_MINOR {
             return Err(DnamError::UnsupportedVersion {
                 major: version_major,
                 minor: version_minor,

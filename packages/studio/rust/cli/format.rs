@@ -600,6 +600,7 @@ mod tests {
                 max: 10.0,
                 default_value: 5.0,
                 unit: None,
+                calibration: None,
             }],
             switches: vec![ControlSwitchSpec {
                 id: "bright".to_string(),
@@ -615,6 +616,7 @@ mod tests {
                     },
                 ],
                 default_index: 0,
+                calibration: None,
             }],
             presets: Vec::new(),
             stems: Vec::new(),
