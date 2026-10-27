@@ -292,6 +292,9 @@ def _compute_intrinsic_control_modulators(
                 idx = opts.index(raw_s) if raw_s in opts else 0
                 u_val = 0.0 if len(opts) <= 1 else float(2.0 * idx / (len(opts) - 1) - 1.0)
                 coords.append(u_val)
+        if len(coords) == 2 and all(getattr(c, "kind", None) == "range" for c in ctrl_list):
+            u0, u1 = coords[0], coords[1]
+            coords.append(0.65 * u0 * u1 + 0.85 * (u0 * u0) * (u1 * u1))
         while len(coords) < 3:
             coords.append(0.0)
         return (coords[0], coords[1], coords[2])

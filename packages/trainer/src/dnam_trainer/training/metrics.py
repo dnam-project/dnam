@@ -123,6 +123,11 @@ def compute_band_split_esr_db(
         p = p[:, None]
     if t.ndim == 1:
         t = t[:, None]
+    if p.shape[1] != t.shape[1]:
+        if t.shape[1] == 1:
+            t = np.repeat(t, p.shape[1], axis=1)
+        elif p.shape[1] == 1:
+            p = np.repeat(p, t.shape[1], axis=1)
     n_frames = p.shape[0]
     if n_frames < 8:
         return 0.0, 0.0, 0.0

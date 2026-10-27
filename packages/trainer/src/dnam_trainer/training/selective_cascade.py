@@ -220,7 +220,27 @@ def measure_and_shift_usb_jitter(
     best_lag = int(lags[best_idx])
     best_corr = float(vals[best_idx])
     if abs(best_corr) < 0.35:
-        return y.copy(), 0.0, best_corr
+        # Fallback for extreme high-gain fuzz / comparator / synth stems where fundamental linear
+        # correlation with x_pre is < 0.35: correlate against causal clipped fuzz proxy
+        # LPF_800(tanh(10 * HPF_80(x))).
+        x_t = torch.as_tensor(x, dtype=torch.float32)
+        x_hp = x_t - fast_1pole_lpf(x_t, 80.0, sr=48_000.0)
+        proxy = (
+            fast_1pole_lpf(torch.tanh(10.0 * x_hp), 800.0, sr=48_000.0).numpy().astype(np.float64)
+        )
+        P_fuzz = np.fft.rfft(proxy, n=n_fft)
+        Y_raw = np.fft.rfft(y, n=n_fft)
+        cc_f = np.fft.irfft(Y_raw * np.conj(P_fuzz), n=n_fft)
+        denom_f = float(np.linalg.norm(proxy) * np.linalg.norm(y)) + 1e-12
+        vals_f = np.array([cc_f[lag % n_fft] / denom_f for lag in lags], dtype=np.float64)
+        idx_f = int(np.argmax(np.abs(vals_f)))
+        if abs(float(vals_f[idx_f])) >= 0.45:
+            vals = vals_f
+            best_idx = idx_f
+            best_lag = int(lags[best_idx])
+            best_corr = float(vals[best_idx])
+        else:
+            return y.copy(), 0.0, best_corr
 
     frac = 0.0
     if 0 < best_idx < len(vals) - 1:
@@ -507,38 +527,70 @@ def solve_selective_stage_3band(
 
     k_a = ya_full.shape[1]
     u_sub0 = u_stage[::stride_a]
-    n_sub_a = u_sub0.shape[0]
-    u_pre0 = u_stage[1::stride_a] - 0.85 * u_stage[:-1:stride_a]
-    n_pre_a = u_pre0.shape[0]
+    n_pre_a = (l_tot - 1 + stride_a - 1) // stride_a
 
-    def _slice_shifted_sub_and_pre(shift: int) -> tuple[torch.Tensor, torch.Tensor]:
+    def _chunk_shifted_sub(qs: int, qe: int, shift: int) -> torch.Tensor:
+        if shift == 0:
+            return u_stage[qs * stride_a : qe * stride_a : stride_a]
         if shift > 0:
-            sub = u_stage[shift::stride_a]
-            if sub.shape[0] < n_sub_a:
-                sub = F.pad(sub.unsqueeze(0), (0, 0, 0, n_sub_a - sub.shape[0])).squeeze(0)
-            else:
-                sub = sub[:n_sub_a]
-            s1 = u_stage[shift + 1 :: stride_a]
-            s0 = u_stage[shift : l_tot - 1 : stride_a]
-            m_len = min(s1.shape[0], s0.shape[0], n_pre_a)
-            pre = torch.zeros((n_pre_a, c_u), dtype=u_stage.dtype, device=u_stage.device)
-            pre[:m_len] = s1[:m_len] - 0.85 * s0[:m_len]
-            return sub, pre
+            sub = u_stage[qs * stride_a + shift : qe * stride_a + shift : stride_a]
+            if sub.shape[0] < (qe - qs):
+                sub = F.pad(sub.unsqueeze(0), (0, 0, 0, (qe - qs) - sub.shape[0])).squeeze(0)
+            return sub[: qe - qs]
         sh_neg = -shift
-        sliced = u_stage[: l_tot - sh_neg : stride_a]
-        pad_rows = max(0, n_sub_a - sliced.shape[0])
-        u_delayed = F.pad(sliced.unsqueeze(0), (0, 0, pad_rows, 0)).squeeze(0)
-        sub = u_delayed[:n_sub_a]
-        s1 = u_stage[max(0, 1 - sh_neg) : l_tot - sh_neg : stride_a]
-        s0 = u_stage[: l_tot - 1 - sh_neg : stride_a]
-        m_len = min(s1.shape[0], s0.shape[0], n_pre_a)
-        pre = torch.zeros((n_pre_a, c_u), dtype=u_stage.dtype, device=u_stage.device)
-        if m_len > 0:
-            pre[n_pre_a - m_len :] = s1[:m_len] - 0.85 * s0[:m_len]
-        return sub, pre
+        start_idx = qs * stride_a - sh_neg
+        end_idx = qe * stride_a - sh_neg
+        if start_idx >= 0:
+            return u_stage[start_idx:end_idx:stride_a]
+        pad_rows = (-start_idx + stride_a - 1) // stride_a
+        rem_start = start_idx + pad_rows * stride_a
+        sliced = u_stage[rem_start : max(rem_start, end_idx) : stride_a]
+        padded = F.pad(sliced.unsqueeze(0), (0, 0, pad_rows, 0)).squeeze(0)
+        return padded[: qe - qs]
 
-    u_sub_p2, u_pre_p2 = _slice_shifted_sub_and_pre(2)
-    u_sub_m2, u_pre_m2 = _slice_shifted_sub_and_pre(-2)
+    def _chunk_shifted_pre(qs: int, qe: int, shift: int) -> torch.Tensor:
+        if shift == 0:
+            s1 = u_stage[qs * stride_a + 1 : qe * stride_a + 1 : stride_a]
+            s0 = u_stage[qs * stride_a : min(l_tot - 1, qe * stride_a) : stride_a]
+            m_len = min(s1.shape[0], s0.shape[0], qe - qs)
+            if m_len == qe - qs:
+                return s1[:m_len] - 0.85 * s0[:m_len]
+            pre = torch.zeros((qe - qs, c_u), dtype=u_stage.dtype, device=u_stage.device)
+            pre[:m_len] = s1[:m_len] - 0.85 * s0[:m_len]
+            return pre
+        if shift > 0:
+            s1 = u_stage[qs * stride_a + shift + 1 : qe * stride_a + shift + 1 : stride_a]
+            s0 = u_stage[qs * stride_a + shift : min(l_tot - 1, qe * stride_a + shift) : stride_a]
+            m_len = min(s1.shape[0], s0.shape[0], qe - qs)
+            if m_len == qe - qs:
+                return s1[:m_len] - 0.85 * s0[:m_len]
+            pre = torch.zeros((qe - qs, c_u), dtype=u_stage.dtype, device=u_stage.device)
+            if m_len > 0:
+                pre[:m_len] = s1[:m_len] - 0.85 * s0[:m_len]
+            return pre
+        sh_neg = -shift
+        start_0 = qs * stride_a - sh_neg
+        end_0 = min(l_tot - 1 - sh_neg, qe * stride_a - sh_neg)
+        if start_0 >= 0:
+            s1 = u_stage[start_0 + 1 : end_0 + 1 : stride_a]
+            s0 = u_stage[start_0:end_0:stride_a]
+            m_len = min(s1.shape[0], s0.shape[0], qe - qs)
+            if m_len == qe - qs:
+                return s1[:m_len] - 0.85 * s0[:m_len]
+            pre = torch.zeros((qe - qs, c_u), dtype=u_stage.dtype, device=u_stage.device)
+            if m_len > 0:
+                pre[:m_len] = s1[:m_len] - 0.85 * s0[:m_len]
+            return pre
+        pad_rows = (-start_0 + stride_a - 1) // stride_a
+        rem_0 = start_0 + pad_rows * stride_a
+        s1 = u_stage[rem_0 + 1 : max(rem_0 + 1, end_0 + 1) : stride_a]
+        s0 = u_stage[rem_0 : max(rem_0, end_0) : stride_a]
+        m_len = min(s1.shape[0], s0.shape[0], max(0, (qe - qs) - pad_rows))
+        pre = torch.zeros((qe - qs, c_u), dtype=u_stage.dtype, device=u_stage.device)
+        if m_len > 0:
+            pre[pad_rows : pad_rows + m_len] = s1[:m_len] - 0.85 * s0[:m_len]
+        return pre
+
     u_sub_l80, u_pre_l80 = _subsampled_lpf_and_pre(u_stage, 80.0, stride_a, sr=sr)
     u_sub_l400, u_pre_l400 = _subsampled_lpf_and_pre(u_stage, 400.0, stride_a, sr=sr)
     u_sub_l2000, u_pre_l2000 = _subsampled_lpf_and_pre(u_stage, 2000.0, stride_a, sr=sr)
@@ -600,12 +652,12 @@ def solve_selective_stage_3band(
             qe = min(q1, qs + 4096)
             pa_s = torch.cat(
                 [
-                    u_sub0[qs:qe],
+                    _chunk_shifted_sub(qs, qe, 0),
                     u_sub_l80[qs:qe],
                     u_sub_l400[qs:qe],
                     u_sub_l2000[qs:qe],
-                    u_sub_p2[qs:qe],
-                    u_sub_m2[qs:qe],
+                    _chunk_shifted_sub(qs, qe, 2),
+                    _chunk_shifted_sub(qs, qe, -2),
                 ],
                 dim=-1,
             ).to(torch.float64)
@@ -618,12 +670,12 @@ def solve_selective_stage_3band(
             qe = min(q1_pre, qs + 4096)
             pa_p = torch.cat(
                 [
-                    u_pre0[qs:qe],
+                    _chunk_shifted_pre(qs, qe, 0),
                     u_pre_l80[qs:qe],
                     u_pre_l400[qs:qe],
                     u_pre_l2000[qs:qe],
-                    u_pre_p2[qs:qe],
-                    u_pre_m2[qs:qe],
+                    _chunk_shifted_pre(qs, qe, 2),
+                    _chunk_shifted_pre(qs, qe, -2),
                 ],
                 dim=-1,
             ).to(torch.float64)
@@ -650,7 +702,7 @@ def solve_selective_stage_3band(
     ra_gl = max(1e-9, 2e-6 * float(torch.diagonal(g_a_gl).mean().item()))
     la_gl = torch.linalg.cholesky(g_a_gl + ra_gl * torch.eye(p_a, dtype=torch.float64))
     wa_gl = torch.linalg.solve(la_gl.T, torch.linalg.solve(la_gl, c_a_gl)).to(torch.float32)
-    del u_sub0, u_pre0, u_sub_p2, u_pre_p2, u_sub_m2, u_pre_m2
+    del u_sub0
     del u_sub_l80, u_pre_l80, u_sub_l400, u_pre_l400, u_sub_l2000, u_pre_l2000
     del y_multi_a_sub, y_multi_a_pre, g_a_gl, la_gl
 
@@ -915,7 +967,7 @@ def build_interstage_basis(
         sub_unw = z_norm[::svd_st].to(torch.float64)
         _, _, vt_unw = torch.linalg.svd(sub_unw, full_matrices=False)
         n_lin = min(14, z_norm.shape[1])
-        n_nl = min(8, z_norm.shape[1])
+        n_nl = 7 if z_norm.shape[1] <= 14 else min(8, z_norm.shape[1])
         if res_weights is not None:
             w_row = res_weights.to(torch.float64).view(1, -1)
             _, _, vt_res = torch.linalg.svd(sub_unw * w_row, full_matrices=False)
@@ -1257,6 +1309,335 @@ def _rms_balance_cols(mat: torch.Tensor, target_rms: float = 0.12) -> torch.Tens
 
 
 @torch.no_grad()
+def project_fft_band(
+    sig: torch.Tensor,
+    f_lo: float,
+    f_hi: float,
+    *,
+    sr: float = 48_000.0,
+) -> torch.Tensor:
+    """Exact idempotent orthogonal frequency-band projector in `float32`, chunked to `< 75 MB`."""
+    was_1d = sig.ndim == 1
+    if was_1d:
+        sig = sig.unsqueeze(-1)
+    l_seq, c_ch = sig.shape
+    freqs = torch.fft.rfftfreq(l_seq, d=1.0 / sr, device=sig.device)
+    if f_lo <= 0.0:
+        mask = (freqs <= f_hi).to(torch.float32).unsqueeze(-1)
+    elif f_hi >= sr * 0.5:
+        mask = (freqs > f_lo).to(torch.float32).unsqueeze(-1)
+    else:
+        mask = ((freqs > f_lo) & (freqs <= f_hi)).to(torch.float32).unsqueeze(-1)
+    del freqs
+
+    out = torch.empty_like(sig)
+    for c0 in range(0, c_ch, 16):
+        c1 = min(c_ch, c0 + 16)
+        spec = torch.fft.rfft(sig[:, c0:c1].to(torch.float32), n=l_seq, dim=0)
+        spec.mul_(mask)
+        out[:, c0:c1] = torch.fft.irfft(spec, n=l_seq, dim=0).to(sig.dtype)
+        del spec
+    return out.squeeze(-1) if was_1d else out
+
+
+@torch.no_grad()
+def parseval_inband_projectors(
+    u_st: torch.Tensor,
+    max_lf: int,
+    max_mf: int,
+    max_hf: int,
+    *,
+    sr: float = 48_000.0,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Computes in-band orthonormal projection matrices `(P_lf, P_mf, P_hf)` simultaneously via
+    Parseval's theorem on 16 multi-window blocks (`< 90 MB` RAM).
+    """
+    l_seq, c_in = u_st.shape
+    blk_len = min(4096, l_seq)
+    n_blks = min(16, max(1, l_seq // blk_len))
+    step = max(1, (l_seq - blk_len) // max(1, n_blks - 1)) if n_blks > 1 else 0
+    blocks = torch.stack([u_st[i * step : i * step + blk_len] for i in range(n_blks)], dim=0)
+    spec = torch.fft.rfft(blocks.to(torch.float32), n=blk_len, dim=1)
+    del blocks
+    freqs = torch.fft.rfftfreq(blk_len, d=1.0 / sr, device=u_st.device)
+
+    def _proj_from_mask(spec_t: torch.Tensor, mask: torch.Tensor, k_max: int) -> torch.Tensor:
+        sb = spec_t[:, mask, :].reshape(-1, c_in).to(torch.complex128)
+        gram_raw = torch.real(sb.H @ sb)
+        del sb
+        col_std = torch.sqrt(torch.clamp(torch.diagonal(gram_raw), min=1e-18)).unsqueeze(0)
+        gram_n = gram_raw / (col_std.T @ col_std)
+        _, eigvecs = torch.linalg.eigh(gram_n)
+        k_use = min(k_max, c_in)
+        top_v = eigvecs[:, -k_use:]
+        return (top_v / col_std.T).to(u_st.dtype)
+
+    p_lf = _proj_from_mask(spec, freqs <= 250.0, max_lf)
+    p_mf = _proj_from_mask(spec, (freqs > 250.0) & (freqs <= 2500.0), max_mf)
+    p_hf = _proj_from_mask(spec, freqs > 2500.0, max_hf)
+    del spec
+    return p_lf, p_mf, p_hf
+
+
+@torch.no_grad()
+def solve_3band_decoupled_window_stage(
+    u_st: torch.Tensor,
+    cur_lf: torch.Tensor,
+    cur_mf: torch.Tensor,
+    cur_hf: torch.Tensor,
+    y_lf_fft: torch.Tensor,
+    y_mf_fft: torch.Tensor,
+    y_hf_fft: torch.Tensor,
+    bspline_weights: torch.Tensor,
+    win_bounds: Sequence[tuple[int, int]],
+    *,
+    shifts: tuple[int, ...] = (-6, -3, -1, 1, 3, 6),
+    max_cols_lf: int = 140,
+    max_cols_mf: int = 180,
+    max_cols_hf: int = 250,
+    ridge_scale: float = 1e-5,
+    overlap: int = 128,
+    free_u_st: bool = True,
+    sr: float = 48_000.0,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Memory-bounded (`< 1.0 GB` working buffer) sequential 3-band orthogonal FFT decoupled
+    window solver with Parseval commuted column reduction.
+    """
+    l_tot, m_col = y_lf_fft.shape
+    n_wins = len(win_bounds)
+    pad = max(abs(d) for d in shifts) + 2
+
+    p_lf, p_mf, p_hf = parseval_inband_projectors(
+        u_st, max_cols_lf, max_cols_mf, max_cols_hf, sr=sr
+    )
+    u_lf_pre = u_st @ p_lf
+    u_mf_pre = u_st @ p_mf
+    k_hf = p_hf.shape[1]
+    if free_u_st and k_hf <= u_st.shape[1]:
+        for r0 in range(0, l_tot, 65_536):
+            r1 = min(l_tot, r0 + 65_536)
+            u_st[r0:r1, :k_hf] = u_st[r0:r1].clone() @ p_hf
+        u_hf_pre = u_st[:, :k_hf].contiguous()
+        u_st.resize_(0)
+    else:
+        u_hf_pre = u_st @ p_hf
+        if free_u_st:
+            u_st.resize_(0)
+    del p_lf, p_mf, p_hf
+    gc.collect()
+
+    def _solve_single_band(
+        u_band: torch.Tensor,
+        cur_band: torch.Tensor,
+        y_band: torch.Tensor,
+        f_lo: float,
+        f_hi: float,
+        stride: int,
+    ) -> torch.Tensor:
+        out_band = torch.zeros((l_tot, m_col), dtype=torch.float32)
+        has_cur = float(torch.sum(cur_band**2).item()) > 1e-12
+        for w_idx, (k0, k1) in enumerate(win_bounds):
+            s_w = 0 if w_idx == 0 else max(0, k0 - overlap)
+            e_w = l_tot if w_idx == n_wins - 1 else min(l_tot, k1 + overlap)
+            sl = e_w - s_w
+
+            p0 = max(0, s_w - pad)
+            p1 = min(l_tot, e_w + pad)
+            left_pad = max(0, pad - s_w)
+            right_pad = max(0, (e_w + pad) - l_tot)
+            u_sh_slice = u_band[p0:p1]
+            if left_pad > 0 or right_pad > 0:
+                u_sh_pad = F.pad(u_sh_slice.unsqueeze(0), (0, 0, left_pad, right_pad)).squeeze(0)
+            else:
+                u_sh_pad = u_sh_slice
+            base_off = (s_w - p0) + left_pad
+
+            parts = [u_band[s_w:e_w]]
+            for d in shifts:
+                parts.append(u_sh_pad[base_off - d : base_off - d + sl])
+            if has_cur:
+                parts.insert(0, cur_band[s_w:e_w])
+            b_win = torch.cat(parts, dim=-1)
+            del parts, u_sh_pad
+
+            b_sub = b_win[::stride].to(torch.float64)
+            y_sub = y_band[s_w:e_w:stride].to(torch.float64)
+            g_w = b_sub.T @ b_sub
+            c_w = b_sub.T @ y_sub
+            del b_sub, y_sub
+
+            diag_mean = float(torch.diagonal(g_w).mean().item())
+            reg = max(1e-9, ridge_scale * diag_mean)
+            eye = torch.eye(g_w.shape[0], dtype=torch.float64)
+            try:
+                l_mat = torch.linalg.cholesky(g_w + reg * eye)
+                w_mat = torch.linalg.solve(l_mat.T, torch.linalg.solve(l_mat, c_w)).to(
+                    torch.float32
+                )
+                del l_mat
+            except RuntimeError:
+                w_mat = torch.linalg.lstsq(g_w + reg * eye, c_w).solution.to(torch.float32)
+            del g_w, c_w, eye
+
+            bw_slice = bspline_weights[s_w:e_w, w_idx : w_idx + 1]
+            out_band[s_w:e_w] += bw_slice * (b_win @ w_mat)
+            del b_win, w_mat
+        return project_fft_band(out_band, f_lo, f_hi, sr=sr)
+
+    u_lf = project_fft_band(u_lf_pre, 0.0, 250.0, sr=sr)
+    del u_lf_pre
+    new_lf = _solve_single_band(u_lf, cur_lf, y_lf_fft, 0.0, 250.0, stride=4)
+    del u_lf
+
+    u_mf = project_fft_band(u_mf_pre, 250.0, 2500.0, sr=sr)
+    del u_mf_pre
+    new_mf = _solve_single_band(u_mf, cur_mf, y_mf_fft, 250.0, 2500.0, stride=2)
+    del u_mf
+
+    u_hf = project_fft_band(u_hf_pre, 2500.0, sr * 0.5, sr=sr)
+    del u_hf_pre
+    new_hf = _solve_single_band(u_hf, cur_hf, y_hf_fft, 2500.0, sr * 0.5, stride=1)
+    del u_hf
+
+    return new_lf, new_mf, new_hf
+
+
+@torch.no_grad()
+def apply_ltas_hf_tilt_balance(
+    z_hf: torch.Tensor,
+    y_hf: torch.Tensor,
+    *,
+    sr: float = 48_000.0,
+) -> torch.Tensor:
+    """Applies a mild 1/3-octave LTAS energy balance (`[0.85, 1.18]`, max +/- 1.4 dB) above 2500 Hz
+    to compensate for least-squares attenuation ($r^2 < 1$) in low-energy high-frequency bands.
+    """
+    l_seq = z_hf.shape[0]
+    freqs = torch.fft.rfftfreq(l_seq, d=1.0 / sr, device=z_hf.device)
+    centers_hz = (2500.0, 3150.0, 4000.0, 5000.0, 6300.0, 8000.0, 10000.0, 12500.0, 16000.0)
+    two_1_6 = 2.0 ** (1.0 / 6.0)
+
+    spec_p = torch.fft.rfft(z_hf.to(torch.float32), n=l_seq, dim=0)
+    spec_t = torch.fft.rfft(y_hf.to(torch.float32), n=l_seq, dim=0)
+    pow_p = torch.abs(spec_p).to(torch.float64) ** 2
+    pow_t = torch.abs(spec_t).to(torch.float64) ** 2
+
+    gain_curve = torch.ones_like(pow_p, dtype=torch.float32)
+    for fc in centers_hz:
+        f_lo = fc / two_1_6
+        f_hi = fc * two_1_6
+        mask = (freqs >= f_lo) & (freqs < f_hi)
+        if not torch.any(mask):
+            continue
+        ep = torch.sum(pow_p[mask], dim=0) + 1e-18
+        et = torch.sum(pow_t[mask], dim=0) + 1e-18
+        g = torch.clamp((et / ep) ** 0.45, 0.85, 1.18).to(torch.float32)
+        gain_curve[mask] = g.unsqueeze(0)
+
+    spec_p.mul_(gain_curve)
+    del spec_t, pow_p, pow_t, gain_curve
+    out = torch.fft.irfft(spec_p, n=l_seq, dim=0).to(z_hf.dtype)
+    return project_fft_band(out, 2500.0, sr * 0.5, sr=sr)
+
+
+@torch.no_grad()
+def build_stage1_fuzz_basis(x: torch.Tensor, sr: float = 48_000.0) -> torch.Tensor:
+    """Builds Stage-1 broadband + envelope-normalized comparator basis on `x`."""
+    cutoffs = (12.0, 30.0, 70.0, 160.0, 380.0, 900.0, 2200.0, 5000.0)
+    hpfs = [x - fast_1pole_lpf(x, fc, sr=sr) for fc in cutoffs]
+    lpfs = [fast_1pole_lpf(hpfs[0], fc, sr=sr) for fc in (100.0, 220.0, 480.0, 1100.0)]
+    env_f = fast_1pole_lpf(torch.abs(x), 35.0, sr=sr)
+    env_s = fast_1pole_lpf(torch.abs(x), 8.0, sr=sr)
+
+    pre_sigs = [x, *hpfs, *lpfs]
+    for h in (hpfs[0], hpfs[2], hpfs[4], lpfs[0], lpfs[1]):
+        env_h = fast_1pole_lpf(torch.abs(h), 20.0, sr=sr)
+        pre_sigs.append(0.15 * h / (env_h + 0.004))
+        pre_sigs.append(0.15 * (h - 0.35 * env_h) / (env_h + 0.004))
+        pre_sigs.append(h - 0.35 * env_f)
+        pre_sigs.append(h + 0.35 * env_f)
+        pre_sigs.append(h - 0.75 * env_s)
+
+    nl_cols = [x, *hpfs[:6], *lpfs]
+    for sig in pre_sigs:
+        for g in (1.2, 4.0, 14.0, 50.0, 180.0):
+            tg = torch.tanh(g * sig)
+            nl_cols.append(tg)
+            nl_cols.append(tg * tg - fast_1pole_lpf(tg * tg, 10.0, sr=sr))
+    return torch.stack(nl_cols, dim=-1)
+
+
+@torch.no_grad()
+def build_refinement_fuzz_basis(
+    cur_lf: torch.Tensor,
+    cur_mf: torch.Tensor,
+    cur_hf: torch.Tensor,
+    *,
+    include_wavefolder: bool = True,
+    n_modes: int = 8,
+    sr: float = 48_000.0,
+) -> torch.Tensor:
+    """Pre-allocated in-place refinement basis builder (avoids doubling RAM in `torch.cat`)."""
+    z_prev = cur_lf + cur_mf + cur_hf
+    z_lm = cur_lf + cur_mf
+    l_seq, m_col = z_prev.shape
+
+    z_glob = z_prev / (torch.sqrt(torch.mean(z_prev**2, dim=0, keepdim=True) + 1e-12)) * 0.20
+    z_lm_glob = z_lm / (torch.sqrt(torch.mean(z_lm**2, dim=0, keepdim=True) + 1e-12)) * 0.20
+    del z_prev, z_lm
+
+    if m_col > n_modes:
+        svd_st = max(1, l_seq // 32_768)
+        _, _, vt = torch.linalg.svd(z_glob[::svd_st].to(torch.float64), full_matrices=False)
+        proj = vt[:n_modes, :].T.to(torch.float32)
+        zg = z_glob @ proj
+        z_lmg = z_lm_glob @ proj
+        del z_glob, z_lm_glob, proj
+    else:
+        zg = z_glob
+        z_lmg = z_lm_glob
+
+    k_m = zg.shape[1]
+    env_loc = torch.sqrt(fast_1pole_lpf(zg * zg, 6.0, sr=sr) + 1e-6)
+    z_loc = 0.20 * zg / (env_loc + 0.015)
+    del env_loc
+    env_lmloc = torch.sqrt(fast_1pole_lpf(z_lmg * z_lmg, 6.0, sr=sr) + 1e-6)
+    z_lmloc = 0.20 * z_lmg / (env_lmloc + 0.015)
+    del env_lmloc
+
+    z_hp300 = zg - fast_1pole_lpf(zg, 300.0, sr=sr)
+    z_hp1200 = zg - fast_1pole_lpf(zg, 1200.0, sr=sr)
+    ez = fast_1pole_lpf(torch.abs(zg), 25.0, sr=sr)
+
+    sigs = (zg, z_lmg, z_loc, z_lmloc, z_hp300, zg - 0.35 * ez)
+    n_per_sig = 10 + (3 if include_wavefolder else 0)
+    n_blocks = 6 + len(sigs) * n_per_sig
+    out = torch.empty((l_seq, n_blocks * k_m), dtype=torch.float32)
+
+    idx = 0
+    for base_b in (zg, z_lmg, z_loc, z_lmloc, z_hp300, z_hp1200):
+        out[:, idx : idx + k_m] = base_b
+        idx += k_m
+    del z_hp1200
+
+    for sig_s in sigs:
+        for g in (1.5, 5.0, 18.0, 65.0, 250.0):
+            tg = torch.tanh(g * sig_s)
+            out[:, idx : idx + k_m] = tg
+            idx += k_m
+            tg_sq = tg * tg
+            del tg
+            out[:, idx : idx + k_m] = tg_sq - fast_1pole_lpf(tg_sq, 15.0, sr=sr)
+            del tg_sq
+            idx += k_m
+        if include_wavefolder:
+            for g_wf in (2.5, 8.0, 25.0):
+                out[:, idx : idx + k_m] = torch.sin(g_wf * sig_s)
+                idx += k_m
+    return out
+
+
+@torch.no_grad()
 def calibrate_3stage_selective_cascade(
     x_mono: NDArray[np.float32],
     targets_list: Sequence[NDArray[np.float32]],
@@ -1378,245 +1759,411 @@ def calibrate_3stage_selective_cascade(
     del z_lti_lf_list, z_lti_mf_list, z_lti_hf_list
     gc.collect()
 
-    if l_tot >= 500_000:
-        win_bounds = [(w * 24_000, (w + 1) * 24_000 if w < 22 else l_tot) for w in range(23)]
-        win_bounds48 = [(w * 12_000, (w + 1) * 12_000 if w < 47 else l_tot) for w in range(48)]
-        regimes = [
-            (0, 140_000),
-            (140_000, 260_000),
-            (260_000, 380_000),
-            (380_000, 440_000),
-            (440_000, 500_000),
-            (500_000, l_tot),
-        ]
-    elif l_tot >= 48_000:
-        win_len = 24_000
-        n_wins = max(1, (l_tot + win_len - 1) // win_len)
-        win_bounds = [(w * win_len, min(l_tot, (w + 1) * win_len)) for w in range(n_wins)]
-        win_len48 = 12_000
-        n_wins48 = max(1, (l_tot + win_len48 - 1) // win_len48)
-        win_bounds48 = [(w * win_len48, min(l_tot, (w + 1) * win_len48)) for w in range(n_wins48)]
-        step_r = max(win_len, l_tot // 6)
-        regimes = [
-            (r * step_r, l_tot if r == 5 else min(l_tot, (r + 1) * step_r)) for r in range(6)
-        ]
-        regimes = [(r0, r1) for (r0, r1) in regimes if r1 > r0]
+    if l_tot >= 48_000 and m_col <= 16 and z_lti_bands is None:
+        # 4-Stage Parseval Commuted 3-Band Orthogonal FFT Decoupled Comparator & Wavefolder Cascade
+        def _make_active_windows(step_len: int) -> list[tuple[int, int]]:
+            if l_tot >= 500_000:
+                starts = [0, *range(36_000, 540_000, step_len)]
+            else:
+                starts = list(range(0, l_tot, step_len))
+            bounds_w: list[tuple[int, int]] = []
+            for idx_s, s0 in enumerate(starts):
+                s1 = l_tot if idx_s == len(starts) - 1 else starts[idx_s + 1]
+                if s1 > s0:
+                    bounds_w.append((s0, s1))
+            return bounds_w
+
+        def _split_bezout_3band(
+            sig_full: torch.Tensor,
+        ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+            b_lf = fast_1pole_lpf(sig_full, 250.0, sr=sr, bezout_order4=True)
+            b_l2500 = fast_1pole_lpf(sig_full, 2500.0, sr=sr, bezout_order4=True)
+            b_mf = b_l2500 - b_lf
+            b_hf = sig_full - b_l2500
+            return b_lf, b_mf, b_hf
+
+        y_lf_fft = project_fft_band(y_full, 0.0, 250.0, sr=sr)
+        y_mf_fft = project_fft_band(y_full, 250.0, 2500.0, sr=sr)
+        y_hf_fft = project_fft_band(y_full, 2500.0, sr * 0.5, sr=sr)
+        del y_full
+
+        win12 = _make_active_windows(12_000)
+        win8 = _make_active_windows(8_000)
+        win6 = _make_active_windows(6_000)
+        win4 = _make_active_windows(4_000)
+
+        bw12 = build_causal_bspline_window_weights(x, win12, overlap=192, sr=sr)
+        bw8 = build_causal_bspline_window_weights(x, win8, overlap=160, sr=sr)
+        bw6 = build_causal_bspline_window_weights(x, win6, overlap=128, sr=sr)
+        bw4 = build_causal_bspline_window_weights(x, win4, overlap=96, sr=sr)
+
+        cur_lf = torch.zeros_like(y_lf_fft)
+        cur_mf = torch.zeros_like(y_mf_fft)
+        cur_hf = torch.zeros_like(y_hf_fft)
+
+        if on_stage_progress is not None:
+            on_stage_progress(
+                1, "Calibrating Stage 1 (V1A Preamp, Comparator & 3-Band Orthogonal Cascade)"
+            )
+        u1 = build_stage1_fuzz_basis(x, sr=sr)
+        cur_lf, cur_mf, cur_hf = solve_3band_decoupled_window_stage(
+            u1,
+            cur_lf,
+            cur_mf,
+            cur_hf,
+            y_lf_fft,
+            y_mf_fft,
+            y_hf_fft,
+            bw12,
+            win12,
+            max_cols_lf=140,
+            max_cols_mf=180,
+            max_cols_hf=240,
+            overlap=192,
+            sr=sr,
+        )
+        del u1, bw12
+        gc.collect()
+        z1_full = cur_lf + cur_mf + cur_hf
+        z1_b_lf, z1_b_mf, z1_b_hf = _split_bezout_3band(z1_full)
+        _report_cascade_step(1, z1_b_lf, z1_b_mf, z1_b_hf)
+        del z1_b_lf, z1_b_mf, z1_b_hf
+
+        if on_stage_progress is not None:
+            on_stage_progress(2, "Calibrating Stage 2 (Interstage Comparator & Wavefolder Cascade)")
+        u2 = build_refinement_fuzz_basis(
+            cur_lf, cur_mf, cur_hf, include_wavefolder=True, n_modes=8, sr=sr
+        )
+        cur_lf, cur_mf, cur_hf = solve_3band_decoupled_window_stage(
+            u2,
+            cur_lf,
+            cur_mf,
+            cur_hf,
+            y_lf_fft,
+            y_mf_fft,
+            y_hf_fft,
+            bw8,
+            win8,
+            max_cols_lf=140,
+            max_cols_mf=190,
+            max_cols_hf=250,
+            overlap=160,
+            sr=sr,
+        )
+        del u2, bw8
+        gc.collect()
+        z2_full = cur_lf + cur_mf + cur_hf
+        z2_b_lf, z2_b_mf, z2_b_hf = _split_bezout_3band(z2_full)
+        _report_cascade_step(2, z2_b_lf, z2_b_mf, z2_b_hf)
+        del z2_b_lf, z2_b_mf, z2_b_hf
+
+        if on_stage_progress is not None:
+            on_stage_progress(
+                3, "Calibrating Stage 3 (Power Section, Wavefolder & 48 kHz Reference Polish)"
+            )
+        u3 = build_refinement_fuzz_basis(
+            cur_lf, cur_mf, cur_hf, include_wavefolder=True, n_modes=8, sr=sr
+        )
+        cur_lf, cur_mf, cur_hf = solve_3band_decoupled_window_stage(
+            u3,
+            cur_lf,
+            cur_mf,
+            cur_hf,
+            y_lf_fft,
+            y_mf_fft,
+            y_hf_fft,
+            bw6,
+            win6,
+            max_cols_lf=150,
+            max_cols_mf=200,
+            max_cols_hf=260,
+            overlap=128,
+            sr=sr,
+        )
+        del u3, bw6
+        gc.collect()
+        z3_full = cur_lf + cur_mf + cur_hf
+        z3_lf, z3_mf, z3_hf = _split_bezout_3band(z3_full)
+        _report_cascade_step(3, z3_lf, z3_mf, z3_hf)
+        del z3_lf, z3_mf
+
+        # Stage 4: 4k-window full-rate 3-band orthogonal FFT polish + 1/3-octave LTAS balance
+        u4 = build_refinement_fuzz_basis(
+            cur_lf, cur_mf, cur_hf, include_wavefolder=True, n_modes=8, sr=sr
+        )
+        cur_lf, cur_mf, cur_hf = solve_3band_decoupled_window_stage(
+            u4,
+            cur_lf,
+            cur_mf,
+            cur_hf,
+            y_lf_fft,
+            y_mf_fft,
+            y_hf_fft,
+            bw4,
+            win4,
+            max_cols_lf=150,
+            max_cols_mf=210,
+            max_cols_hf=270,
+            overlap=96,
+            sr=sr,
+        )
+        del u4, bw4, y_lf_fft, y_mf_fft
+        gc.collect()
+        cur_hf = apply_ltas_hf_tilt_balance(cur_hf, y_hf_fft, sr=sr)
+        del y_hf_fft
+        z4_full_tot = cur_lf + cur_mf + cur_hf
+        del cur_lf, cur_mf, cur_hf
+        d4_tot = z4_full_tot - z3_full
+        z4_lf, z4_mf, z4_hf = _split_bezout_3band(z4_full_tot)
+        del z4_full_tot
+        _report_cascade_step(4, z4_lf, z4_mf, z4_hf)
+        del y_lf, y_mf, y_hf
+        gc.collect()
     else:
-        win_bounds = [(0, l_tot)]
-        win_bounds48 = [(0, l_tot)]
-        regimes = [(0, l_tot)]
+        if l_tot >= 500_000:
+            win_bounds = [(w * 24_000, (w + 1) * 24_000 if w < 22 else l_tot) for w in range(23)]
+            win_bounds48 = [(w * 12_000, (w + 1) * 12_000 if w < 47 else l_tot) for w in range(48)]
+            regimes = [
+                (0, 140_000),
+                (140_000, 260_000),
+                (260_000, 380_000),
+                (380_000, 440_000),
+                (440_000, 500_000),
+                (500_000, l_tot),
+            ]
+        elif l_tot >= 48_000:
+            win_len = 24_000
+            n_wins = max(1, (l_tot + win_len - 1) // win_len)
+            win_bounds = [(w * win_len, min(l_tot, (w + 1) * win_len)) for w in range(n_wins)]
+            win_len48 = 12_000
+            n_wins48 = max(1, (l_tot + win_len48 - 1) // win_len48)
+            win_bounds48 = [
+                (w * win_len48, min(l_tot, (w + 1) * win_len48)) for w in range(n_wins48)
+            ]
+            step_r = max(win_len, l_tot // 6)
+            regimes = [
+                (r * step_r, l_tot if r == 5 else min(l_tot, (r + 1) * step_r)) for r in range(6)
+            ]
+            regimes = [(r0, r1) for (r0, r1) in regimes if r1 > r0]
+        else:
+            win_bounds = [(0, l_tot)]
+            win_bounds48 = [(0, l_tot)]
+            regimes = [(0, l_tot)]
 
-    bspline_weights_win = build_causal_bspline_window_weights(
-        x, win_bounds, overlap=256 if l_tot >= 48_000 else 0, sr=sr
-    )
-    bspline_weights_win48 = (
-        build_causal_bspline_window_weights(
-            x, win_bounds48, overlap=256 if l_tot >= 48_000 else 0, sr=sr
+        bspline_weights_win = build_causal_bspline_window_weights(
+            x, win_bounds, overlap=256 if l_tot >= 48_000 else 0, sr=sr
         )
-        if len(win_bounds48) != len(win_bounds)
-        else bspline_weights_win
-    )
-    bspline_weights_reg = build_causal_bspline_window_weights(
-        x, regimes, overlap=512 if l_tot >= 48_000 else 0, sr=sr
-    )
-    ref_gates = build_fast_refinement_gates(x, sr=sr)
-
-    # Stage 1 (`V1A` Preamp + Baxandall Tone Stack + LTI Reference)
-    if on_stage_progress is not None:
-        on_stage_progress(
-            1, "Calibrating Stage 1 (V1A Preamp, Tone-Stack & LTI Cabinet/Space Cascade)"
+        bspline_weights_win48 = (
+            build_causal_bspline_window_weights(
+                x, win_bounds48, overlap=256 if l_tot >= 48_000 else 0, sr=sr
+            )
+            if len(win_bounds48) != len(win_bounds)
+            else bspline_weights_win
         )
-    cutoffs = (8.0, 18.0, 35.0, 65.0, 120.0, 240.0, 500.0, 1100.0, 2400.0, 5000.0)
-    hpfs = [x - fast_1pole_lpf(x, fc, sr=sr) for fc in cutoffs]
-    hpfs_t = torch.stack(hpfs, dim=-1)
-    hpfs_2nd = [hpfs[i] - fast_1pole_lpf(hpfs[i], cutoffs[i], sr=sr) for i in range(6)]
-    bp_src = torch.cat([hpfs_t[:, :8], torch.stack(hpfs_2nd, dim=-1)], dim=-1)
-    bp_8k_t = fast_1pole_lpf(bp_src, 9000.0, sr=sr)
-    bp_2k2_t = fast_1pole_lpf(hpfs_t[:, :5], 2200.0, sr=sr)
-
-    x_hp12 = hpfs[0]
-    x_low150 = fast_1pole_lpf(x_hp12, 150.0, sr=sr)
-    x_high900 = x - fast_1pole_lpf(x, 900.0, sr=sr)
-    x_high2k = x - fast_1pole_lpf(x, 2200.0, sr=sr)
-    bax_pre = [
-        2.8 * x_low150 + x_hp12,
-        4.5 * x_low150 + 2.0 * x_hp12,
-        2.5 * x_low150 + 2.0 * x_hp12 + 2.5 * x_high900,
-        0.75 * x_hp12 + 2.5 * x_high900,
-        0.50 * x_hp12 + 4.5 * x_high900,
-        x_hp12 + 3.0 * x_high2k,
-        fast_1pole_lpf(x_hp12, 550.0, sr=sr),
-    ]
-    env_fast = fast_1pole_lpf(torch.abs(x), 40.0, sr=sr)
-    env_med = fast_1pole_lpf(torch.abs(x), 10.0, sr=sr)
-    biased_bands: list[torch.Tensor] = []
-    for h in (hpfs[0], hpfs[2], bax_pre[0], bax_pre[1], bax_pre[3]):
-        biased_bands.append(h + 0.30 * env_fast)
-        biased_bands.append(h - 0.30 * env_fast)
-        biased_bands.append(h - 0.45 * env_med)
-
-    drives_s1 = (0.6, 2.0, 6.5, 22.0, 80.0)
-    adaa_s1_t = torch.cat(
-        [
-            x.unsqueeze(-1),
-            hpfs_t[:, :6],
-            bp_8k_t[:, :8],
-            bp_2k2_t,
-            torch.stack(bax_pre, dim=-1),
-            torch.stack(biased_bands, dim=-1),
-        ],
-        dim=-1,
-    )
-    inst_s1_t = torch.stack(
-        [
-            x,
-            hpfs[0],
-            hpfs[2],
-            hpfs[4],
-            hpfs[6],
-            hpfs[8],
-            bax_pre[0],
-            bax_pre[1],
-            bax_pre[2],
-            bax_pre[3],
-            bax_pre[4],
-            bax_pre[5],
-        ],
-        dim=-1,
-    )
-    del hpfs, hpfs_t, hpfs_2nd, bp_src, bp_8k_t, bp_2k2_t, bax_pre, biased_bands
-    adaa_s1_out = fast_poly_adaa_batch(adaa_s1_t, drives_s1, sr=sr)
-    del adaa_s1_t
-    if m_col > 14 and adaa_s1_out.shape[1] > 300:
-        adaa_s1_out = project_orthonormal_basis(adaa_s1_out, 300)
-    inst_s1_out = fast_poly_inst_batch(inst_s1_t, drives_s1, sr=sr)
-    del inst_s1_t
-    if m_col > 14 and inst_s1_out.shape[1] > 110:
-        inst_s1_out = project_orthonormal_basis(inst_s1_out, 110)
-    u_s1 = torch.cat([x.unsqueeze(-1), adaa_s1_out, inst_s1_out], dim=-1)
-    del adaa_s1_out, inst_s1_out
-    gc.collect()
-
-    z1_full, z1_lf, z1_mf, z1_hf = solve_selective_stage_3band(
-        u_s1,
-        y_full,
-        y_lf,
-        y_mf,
-        y_hf,
-        bspline_weights_win,
-        bspline_weights_reg,
-        ref_gates,
-        win_bounds,
-        regimes,
-        z_lti_bands=z_lti_bands,
-        free_u_stage=True,
-        sr=sr,
-    )
-    del u_s1
-    gc.collect()
-    res_w1 = _report_cascade_step(1, z1_lf, z1_mf, z1_hf)
-    del z1_lf, z1_mf, z1_hf
-
-    # Stage 2 (`V1B` Driver + Grid-Leak Coupling)
-    if on_stage_progress is not None:
-        on_stage_progress(2, "Calibrating Stage 2 (V1B Interstage Coupling & Grid-Leak Cascade)")
-    u_s2 = build_interstage_basis(
-        z1_full,
-        None,
-        (15.0, 60.0, 220.0, 800.0),
-        20.0,
-        35.0,
-        8.0,
-        (0.8, 2.5, 8.0, 25.0, 75.0),
-        res_weights=res_w1,
-        use_power_sag=False,
-        sr=sr,
-    )
-    z2_full, z2_lf, z2_mf, z2_hf = solve_selective_stage_3band(
-        u_s2,
-        y_full,
-        y_lf,
-        y_mf,
-        y_hf,
-        bspline_weights_win,
-        bspline_weights_reg,
-        ref_gates,
-        win_bounds,
-        regimes,
-        res_weights=res_w1,
-        z_lti_bands=z_lti_bands,
-        free_u_stage=True,
-        sr=sr,
-    )
-    del u_s2, res_w1
-    gc.collect()
-    res_w2 = _report_cascade_step(2, z2_lf, z2_mf, z2_hf)
-    del z2_lf, z2_mf, z2_hf
-
-    # Stage 3 (`6L6GC` Power Tube + Output Transformer + 3-Band Decoupled Polish)
-    if on_stage_progress is not None:
-        on_stage_progress(
-            3, "Calibrating Stage 3 (Power Section, Output Transformer & 48 kHz Reference Polish)"
+        bspline_weights_reg = build_causal_bspline_window_weights(
+            x, regimes, overlap=512 if l_tot >= 48_000 else 0, sr=sr
         )
-    u_s3 = build_interstage_basis(
-        z2_full,
-        z1_full,
-        (12.0, 45.0, 180.0, 650.0),
-        18.0,
-        25.0,
-        4.0,
-        (0.6, 2.0, 6.5, 20.0, 60.0),
-        res_weights=res_w2,
-        use_power_sag=True,
-        sr=sr,
-    )
-    z3_full, z3_lf, z3_mf, z3_hf = solve_selective_stage_3band(
-        u_s3,
-        y_full,
-        y_lf,
-        y_mf,
-        y_hf,
-        bspline_weights_win48 if m_col > 14 else bspline_weights_win,
-        bspline_weights_reg,
-        ref_gates,
-        win_bounds48 if m_col > 14 else win_bounds,
-        regimes,
-        res_weights=res_w2,
-        z_lti_bands=z_lti_bands,
-        free_u_stage=True,
-        sr=sr,
-    )
-    del u_s3, res_w2, z_lti_bands
-    gc.collect()
-    _report_cascade_step(3, z3_lf, z3_mf, z3_hf)
+        ref_gates = build_fast_refinement_gates(x, sr=sr)
 
-    # Stage 4: 48-Window 3-Band Quadrature Hysteresis & Wavefolder Polish
-    r3_lf = y_lf - z3_lf
-    r3_mf = y_mf - z3_mf
-    r3_hf = y_hf - z3_hf
-    d4_tot, d4_lf, d4_mf, d4_hf = solve_fullrate_hf_residual_polish(
-        z3_full,
-        z2_full,
-        r3_lf,
-        r3_mf,
-        r3_hf,
-        sig_lf_all,
-        sig_mf_all,
-        sig_hf_all,
-        bspline_weights_win48,
-        ref_gates,
-        win_bounds48,
-        z1_full=z1_full,
-        sr=sr,
-    )
-    del r3_lf, r3_mf, r3_hf, bspline_weights_win, bspline_weights_win48, bspline_weights_reg
-    del ref_gates, y_full
-    z4_lf = z3_lf + d4_lf
-    z4_mf = z3_mf + d4_mf
-    z4_hf = z3_hf + d4_hf
-    del z3_lf, z3_mf, d4_lf, d4_mf, d4_hf
-    _report_cascade_step(4, z4_lf, z4_mf, z4_hf)
-    gc.collect()
+        # Stage 1 (`V1A` Preamp + Baxandall Tone Stack + LTI Reference)
+        if on_stage_progress is not None:
+            on_stage_progress(
+                1, "Calibrating Stage 1 (V1A Preamp, Tone-Stack & LTI Cabinet/Space Cascade)"
+            )
+        cutoffs = (8.0, 18.0, 35.0, 65.0, 120.0, 240.0, 500.0, 1100.0, 2400.0, 5000.0)
+        hpfs = [x - fast_1pole_lpf(x, fc, sr=sr) for fc in cutoffs]
+        hpfs_t = torch.stack(hpfs, dim=-1)
+        hpfs_2nd = [hpfs[i] - fast_1pole_lpf(hpfs[i], cutoffs[i], sr=sr) for i in range(6)]
+        bp_src = torch.cat([hpfs_t[:, :8], torch.stack(hpfs_2nd, dim=-1)], dim=-1)
+        bp_8k_t = fast_1pole_lpf(bp_src, 9000.0, sr=sr)
+        bp_2k2_t = fast_1pole_lpf(hpfs_t[:, :5], 2200.0, sr=sr)
+
+        x_hp12 = hpfs[0]
+        x_low150 = fast_1pole_lpf(x_hp12, 150.0, sr=sr)
+        x_high900 = x - fast_1pole_lpf(x, 900.0, sr=sr)
+        x_high2k = x - fast_1pole_lpf(x, 2200.0, sr=sr)
+        bax_pre = [
+            2.8 * x_low150 + x_hp12,
+            4.5 * x_low150 + 2.0 * x_hp12,
+            2.5 * x_low150 + 2.0 * x_hp12 + 2.5 * x_high900,
+            0.75 * x_hp12 + 2.5 * x_high900,
+            0.50 * x_hp12 + 4.5 * x_high900,
+            x_hp12 + 3.0 * x_high2k,
+            fast_1pole_lpf(x_hp12, 550.0, sr=sr),
+        ]
+        env_fast = fast_1pole_lpf(torch.abs(x), 40.0, sr=sr)
+        env_med = fast_1pole_lpf(torch.abs(x), 10.0, sr=sr)
+        biased_bands: list[torch.Tensor] = []
+        for h in (hpfs[0], hpfs[2], bax_pre[0], bax_pre[1], bax_pre[3]):
+            biased_bands.append(h + 0.30 * env_fast)
+            biased_bands.append(h - 0.30 * env_fast)
+            biased_bands.append(h - 0.45 * env_med)
+
+        drives_s1 = (0.6, 2.0, 6.5, 22.0, 80.0)
+        adaa_s1_t = torch.cat(
+            [
+                x.unsqueeze(-1),
+                hpfs_t[:, :6],
+                bp_8k_t[:, :8],
+                bp_2k2_t,
+                torch.stack(bax_pre, dim=-1),
+                torch.stack(biased_bands, dim=-1),
+            ],
+            dim=-1,
+        )
+        inst_s1_t = torch.stack(
+            [
+                x,
+                hpfs[0],
+                hpfs[2],
+                hpfs[4],
+                hpfs[6],
+                hpfs[8],
+                bax_pre[0],
+                bax_pre[1],
+                bax_pre[2],
+                bax_pre[3],
+                bax_pre[4],
+                bax_pre[5],
+            ],
+            dim=-1,
+        )
+        del hpfs, hpfs_t, hpfs_2nd, bp_src, bp_8k_t, bp_2k2_t, bax_pre, biased_bands
+        adaa_s1_out = fast_poly_adaa_batch(adaa_s1_t, drives_s1, sr=sr)
+        del adaa_s1_t
+        if m_col > 14 and adaa_s1_out.shape[1] > 300:
+            adaa_s1_out = project_orthonormal_basis(adaa_s1_out, 300)
+        inst_s1_out = fast_poly_inst_batch(inst_s1_t, drives_s1, sr=sr)
+        del inst_s1_t
+        if m_col > 14 and inst_s1_out.shape[1] > 110:
+            inst_s1_out = project_orthonormal_basis(inst_s1_out, 110)
+        u_s1 = torch.cat([x.unsqueeze(-1), adaa_s1_out, inst_s1_out], dim=-1)
+        del adaa_s1_out, inst_s1_out
+        gc.collect()
+
+        z1_full, z1_lf, z1_mf, z1_hf = solve_selective_stage_3band(
+            u_s1,
+            y_full,
+            y_lf,
+            y_mf,
+            y_hf,
+            bspline_weights_win,
+            bspline_weights_reg,
+            ref_gates,
+            win_bounds,
+            regimes,
+            z_lti_bands=z_lti_bands,
+            free_u_stage=True,
+            sr=sr,
+        )
+        del u_s1
+        gc.collect()
+        res_w1 = _report_cascade_step(1, z1_lf, z1_mf, z1_hf)
+        del z1_lf, z1_mf, z1_hf
+
+        # Stage 2 (`V1B` Driver + Grid-Leak Coupling)
+        if on_stage_progress is not None:
+            on_stage_progress(
+                2, "Calibrating Stage 2 (V1B Interstage Coupling & Grid-Leak Cascade)"
+            )
+        u_s2 = build_interstage_basis(
+            z1_full,
+            None,
+            (15.0, 60.0, 220.0, 800.0),
+            20.0,
+            35.0,
+            8.0,
+            (0.8, 2.5, 8.0, 25.0, 75.0),
+            res_weights=res_w1,
+            use_power_sag=False,
+            sr=sr,
+        )
+        z2_full, z2_lf, z2_mf, z2_hf = solve_selective_stage_3band(
+            u_s2,
+            y_full,
+            y_lf,
+            y_mf,
+            y_hf,
+            bspline_weights_win,
+            bspline_weights_reg,
+            ref_gates,
+            win_bounds,
+            regimes,
+            res_weights=res_w1,
+            z_lti_bands=z_lti_bands,
+            free_u_stage=True,
+            sr=sr,
+        )
+        del u_s2, res_w1
+        gc.collect()
+        res_w2 = _report_cascade_step(2, z2_lf, z2_mf, z2_hf)
+        del z2_lf, z2_mf, z2_hf
+
+        # Stage 3 (`6L6GC` Power Tube + Output Transformer + 3-Band Decoupled Polish)
+        if on_stage_progress is not None:
+            on_stage_progress(
+                3,
+                "Calibrating Stage 3 (Power Section, Output Transformer & 48 kHz Reference Polish)",
+            )
+        u_s3 = build_interstage_basis(
+            z2_full,
+            z1_full,
+            (12.0, 45.0, 180.0, 650.0),
+            18.0,
+            25.0,
+            4.0,
+            (0.6, 2.0, 6.5, 20.0, 60.0),
+            res_weights=res_w2,
+            use_power_sag=True,
+            sr=sr,
+        )
+        z3_full, z3_lf, z3_mf, z3_hf = solve_selective_stage_3band(
+            u_s3,
+            y_full,
+            y_lf,
+            y_mf,
+            y_hf,
+            bspline_weights_win48 if m_col > 14 else bspline_weights_win,
+            bspline_weights_reg,
+            ref_gates,
+            win_bounds48 if m_col > 14 else win_bounds,
+            regimes,
+            res_weights=res_w2,
+            z_lti_bands=z_lti_bands,
+            free_u_stage=True,
+            sr=sr,
+        )
+        del u_s3, res_w2, z_lti_bands
+        gc.collect()
+        _report_cascade_step(3, z3_lf, z3_mf, z3_hf)
+
+        # Stage 4: 48-Window 3-Band Quadrature Hysteresis & Wavefolder Polish
+        r3_lf = y_lf - z3_lf
+        r3_mf = y_mf - z3_mf
+        r3_hf = y_hf - z3_hf
+        d4_tot, d4_lf, d4_mf, d4_hf = solve_fullrate_hf_residual_polish(
+            z3_full,
+            z2_full,
+            r3_lf,
+            r3_mf,
+            r3_hf,
+            sig_lf_all,
+            sig_mf_all,
+            sig_hf_all,
+            bspline_weights_win48,
+            ref_gates,
+            win_bounds48,
+            z1_full=z1_full,
+            sr=sr,
+        )
+        del r3_lf, r3_mf, r3_hf, bspline_weights_win, bspline_weights_win48, bspline_weights_reg
+        del ref_gates, y_full
+        z4_lf = z3_lf + d4_lf
+        z4_mf = z3_mf + d4_mf
+        z4_hf = z3_hf + d4_hf
+        del z3_lf, z3_mf, d4_lf, d4_mf, d4_hf
+        _report_cascade_step(4, z4_lf, z4_mf, z4_hf)
+        gc.collect()
 
     # Inverse-shift calibrated stem columns by `-stem_lags[s]` so predictions match the exact
     # fractional sample phase of `targets_list[s]` on disk with zero WAV file modifications:
@@ -1675,27 +2222,18 @@ def calibrate_3stage_selective_cascade(
         )
     elif m_col <= 16:
         rem = max(1, 16 - m_col)
-        d4_n = d4_tot / (torch.sqrt(torch.mean(d4_tot**2, dim=0, keepdim=True)) + 1e-12)
-        _, _, vt_d4 = torch.linalg.svd(d4_n[::svd_stride].to(torch.float64), full_matrices=False)
-        d4_top = (d4_tot.to(torch.float64) @ vt_d4[:rem, :].T).to(torch.float32)
-
-        z4hf_n = z4_hf / (torch.sqrt(torch.mean(z4_hf**2, dim=0, keepdim=True)) + 1e-12)
-        _, _, vt_hf = torch.linalg.svd(z4hf_n[::svd_stride].to(torch.float64), full_matrices=False)
-        z4_hf_top = (z4_hf.to(torch.float64) @ vt_hf[:rem, :].T).to(torch.float32)
-
-        z4mf_n = z4_mf / (torch.sqrt(torch.mean(z4_mf**2, dim=0, keepdim=True)) + 1e-12)
-        _, _, vt_mf = torch.linalg.svd(z4mf_n[::svd_stride].to(torch.float64), full_matrices=False)
-        z4_mf_top = (z4_mf.to(torch.float64) @ vt_mf[:rem, :].T).to(torch.float32)
-
-        b_lite_t = torch.cat([_rms_balance_cols(z3_full), _rms_balance_cols(d4_top)], dim=-1)[
-            :, :16
-        ]
-        b_full_t = torch.cat([_rms_balance_cols(d4_tot), _rms_balance_cols(z4_hf_top)], dim=-1)[
-            :, :16
-        ]
-        b_ultra_t = torch.cat([_rms_balance_cols(z4_lf), _rms_balance_cols(z4_mf_top)], dim=-1)[
-            :, :16
-        ]
+        z4_full = z3_full + d4_tot
+        bb_scale = 0.12 / torch.clamp(
+            torch.sqrt(torch.mean(z4_full * z4_full, dim=0, keepdim=True) + 1e-18), min=1e-7
+        )
+        zf_s = z4_full * bb_scale
+        zh_s = z4_hf * bb_scale
+        zm_s = z4_mf * bb_scale
+        zl_s = z4_lf * bb_scale
+        b_lite_t = torch.cat([zf_s, zh_s[:, :rem]], dim=-1)[:, :16]
+        b_full_t = torch.cat([zh_s, zm_s[:, :rem]], dim=-1)[:, :16]
+        b_ultra_t = torch.cat([zm_s, zl_s[:, :rem]], dim=-1)[:, :16]
+        del z4_full, zf_s, zh_s, zm_s, zl_s
     else:
         rem = max(1, 32 - m_col)
         d23_n = d23_full / (torch.sqrt(torch.mean(d23_full**2, dim=0, keepdim=True)) + 1e-12)
@@ -1783,9 +2321,12 @@ def modulate_tier_blocks_with_controls(
 
 
 __all__ = [
+    "apply_ltas_hf_tilt_balance",
     "build_causal_bspline_window_weights",
     "build_fast_refinement_gates",
     "build_interstage_basis",
+    "build_refinement_fuzz_basis",
+    "build_stage1_fuzz_basis",
     "calibrate_3stage_selective_cascade",
     "compute_tier32_modulator_vectors",
     "fast_1pole_lpf",
@@ -1794,8 +2335,11 @@ __all__ = [
     "fast_wavefolder_inst_batch",
     "measure_and_shift_usb_jitter",
     "modulate_tier_blocks_with_controls",
+    "parseval_inband_projectors",
+    "project_fft_band",
     "project_orthonormal_basis",
     "shift_signal_fft_1d",
+    "solve_3band_decoupled_window_stage",
     "solve_lti_cabinet_and_space_stage",
     "solve_selective_stage_3band",
 ]

@@ -38,9 +38,12 @@ from dnam_trainer.training.pipeline import (
     _compute_intrinsic_control_modulators,
 )
 from dnam_trainer.training.selective_cascade import (
+    apply_ltas_hf_tilt_balance,
     build_causal_bspline_window_weights,
     build_fast_refinement_gates,
     build_interstage_basis,
+    build_refinement_fuzz_basis,
+    build_stage1_fuzz_basis,
     calibrate_3stage_selective_cascade,
     fast_1pole_lpf,
     fast_poly_adaa_batch,
@@ -48,8 +51,11 @@ from dnam_trainer.training.selective_cascade import (
     fast_wavefolder_inst_batch,
     measure_and_shift_usb_jitter,
     modulate_tier_blocks_with_controls,
+    parseval_inband_projectors,
+    project_fft_band,
     project_orthonormal_basis,
     shift_signal_fft_1d,
+    solve_3band_decoupled_window_stage,
     solve_lti_cabinet_and_space_stage,
 )
 from dnam_trainer.training.wav_io import read_wav, write_wav_32bit_float
@@ -535,3 +541,141 @@ def test_30stem_10control_tier32_usb_jitter_and_quadratic_besr() -> None:
         stats_20[0], z_head_stems[0], sol, targets_20[0]
     )
     assert abs(besr_direct - besr_quad) < 1e-3
+
+
+def test_duality_fuzz_orthogonal_fft_cascade_and_2control_lobatto_grid() -> None:
+    """Verifies:
+    1. `compute_band_split_esr_db` channel-count broadcasting invariance when comparing a 2-channel
+       prediction `(T, 2)` against a 1-channel mono target `(T,)` or `(T, 1)`.
+    2. `_compute_intrinsic_control_modulators` rank-9 cross-term on a 2-range-control 3x3 Lobatto
+       grid (`duality_fuzz`).
+    3. `measure_and_shift_usb_jitter` clipped fuzz proxy fallback when linear correlation `< 0.35`.
+    4. Exact orthogonal FFT band projectors (`project_fft_band`), Parseval commuted in-band
+       eigenvectors (`parseval_inband_projectors`), `build_stage1_fuzz_basis`,
+       `build_refinement_fuzz_basis`, `solve_3band_decoupled_window_stage`, and
+       `apply_ltas_hf_tilt_balance`.
+    """
+    rng = np.random.default_rng(20261026)
+    sr = 48_000
+
+    # 1. Verify mono (T,) vs stereo (T, 2) target broadcasting in compute_band_split_esr_db
+    t_mono = (0.3 * rng.standard_normal(2048)).astype(np.float64)
+    p_mono = t_mono + 0.01 * rng.standard_normal(2048)
+    p_stereo = np.column_stack([p_mono, p_mono])
+    t_stereo = np.column_stack([t_mono, t_mono])
+    esr_vs_1d = compute_band_split_esr_db(p_stereo, t_mono, sample_rate_hz=sr)
+    esr_vs_2d_1ch = compute_band_split_esr_db(p_stereo, t_mono[:, None], sample_rate_hz=sr)
+    esr_vs_2d_2ch = compute_band_split_esr_db(p_stereo, t_stereo, sample_rate_hz=sr)
+    np.testing.assert_allclose(esr_vs_1d, esr_vs_2d_2ch, rtol=1e-12, atol=1e-12)
+    np.testing.assert_allclose(esr_vs_2d_1ch, esr_vs_2d_2ch, rtol=1e-12, atol=1e-12)
+
+    # 2. Verify 2-range-control 3x3 Lobatto grid rank-9 Kronecker head (duality_fuzz schema)
+    ctrls2 = [
+        parse_compact_range_spec("duality=0..10:5"),
+        parse_compact_range_spec("filter=0..10:5"),
+    ]
+    stems_9_meta: list[dict[str, float | str]] = [
+        {"duality": d_val, "filter": f_val}
+        for d_val in (0.0, 5.0, 10.0)
+        for f_val in (0.0, 5.0, 10.0)
+    ]
+    hyper2 = ParametricControlHyperBus(ctrls2)
+    psi9 = hyper2.encode_batch_coords(stems_9_meta).detach().cpu().numpy()
+    _, _, active_rank2, z_head9 = compute_svd_control_projector(psi9)
+    assert active_rank2 == 4
+    k9_rows: list[np.ndarray] = []
+    for s_idx, meta in enumerate(stems_9_meta):
+        u_mod = _compute_intrinsic_control_modulators(ctrls2, meta)
+        psi_tilde = np.concatenate([[1.0], z_head9[s_idx]])
+        m_vec = np.array([1.0, u_mod[0], u_mod[1], u_mod[2]], dtype=np.float64)
+        k9_rows.append(np.kron(psi_tilde, m_vec))
+    k9_mat = np.vstack(k9_rows)  # (9, 20)
+    assert np.linalg.matrix_rank(k9_mat, tol=1e-4) == 9
+
+    # 3. Verify clipped fuzz proxy fallback in measure_and_shift_usb_jitter when linear corr < 0.35
+    x_fuzz = (0.35 * rng.standard_normal(2048)).astype(np.float64)
+    # Construct a heavily clipped + folded fuzz signal with low linear correlation to x_fuzz
+    x_f32_t = torch.as_tensor(x_fuzz, dtype=torch.float32)
+    x_hp80 = x_f32_t - fast_1pole_lpf(x_f32_t, 80.0, sr=float(sr))
+    y_fuzz_clean = (
+        fast_1pole_lpf(
+            torch.tanh(12.0 * x_hp80) - 0.85 * torch.abs(torch.tanh(8.0 * x_hp80)),
+            800.0,
+            sr=float(sr),
+        )
+        .to(torch.float64)
+        .numpy()
+    )
+    y_fuzz_delayed = shift_signal_fft_1d(
+        torch.as_tensor(y_fuzz_clean, dtype=torch.float64), -2.5
+    ).numpy()
+    _, delta_fuzz, corr_fuzz = measure_and_shift_usb_jitter(x_fuzz, y_fuzz_delayed, min_len=64)
+    assert 1.5 < delta_fuzz < 3.5
+    assert abs(corr_fuzz) > 0.25
+
+    # 4. Verify orthogonal FFT projectors, Parseval in-band projectors, and 3-band decoupled solver
+    l_len = 1024
+    x_t = torch.as_tensor((0.3 * rng.standard_normal(l_len)).astype(np.float32))
+    u1 = build_stage1_fuzz_basis(x_t, sr=float(sr))
+    assert u1.shape[0] == l_len
+    assert u1.shape[1] > 200
+
+    p_lf, p_mf, p_hf = parseval_inband_projectors(u1, 24, 32, 40, sr=float(sr))
+    assert p_lf.shape == (u1.shape[1], 24)
+    assert p_mf.shape == (u1.shape[1], 32)
+    assert p_hf.shape == (u1.shape[1], 40)
+
+    # Verify idempotence & completeness of project_fft_band: P_lf + P_mf + P_hf == I, P_b^2 == P_b
+    y_raw = torch.stack(
+        [
+            torch.tanh(6.0 * x_t) + 0.3 * torch.sin(10.0 * x_t),
+            torch.tanh(12.0 * x_t) - 0.2 * torch.cos(14.0 * x_t),
+        ],
+        dim=-1,
+    )
+    y_lf = project_fft_band(y_raw, 0.0, 250.0, sr=float(sr))
+    y_mf = project_fft_band(y_raw, 250.0, 2500.0, sr=float(sr))
+    y_hf = project_fft_band(y_raw, 2500.0, sr * 0.5, sr=float(sr))
+    torch.testing.assert_close(y_lf + y_mf + y_hf, y_raw, rtol=1e-5, atol=1e-5)
+    torch.testing.assert_close(
+        project_fft_band(y_mf, 250.0, 2500.0, sr=float(sr)), y_mf, rtol=1e-5, atol=1e-5
+    )
+
+    wins = [(0, 512), (512, l_len)]
+    bw = build_causal_bspline_window_weights(x_t, wins, overlap=32, sr=float(sr))
+    cur_lf = torch.zeros_like(y_lf)
+    cur_mf = torch.zeros_like(y_mf)
+    cur_hf = torch.zeros_like(y_hf)
+    cur_lf, cur_mf, cur_hf = solve_3band_decoupled_window_stage(
+        u1,
+        cur_lf,
+        cur_mf,
+        cur_hf,
+        y_lf,
+        y_mf,
+        y_hf,
+        bw,
+        wins,
+        max_cols_lf=24,
+        max_cols_mf=32,
+        max_cols_hf=40,
+        overlap=32,
+        sr=float(sr),
+    )
+    u2 = build_refinement_fuzz_basis(
+        cur_lf, cur_mf, cur_hf, include_wavefolder=True, n_modes=2, sr=float(sr)
+    )
+    assert u2.shape[0] == l_len
+    cur_hf_bal = apply_ltas_hf_tilt_balance(cur_hf, y_hf, sr=float(sr))
+    assert cur_hf_bal.shape == y_hf.shape
+    pred_tot = (cur_lf + cur_mf + cur_hf_bal).numpy().astype(np.float64)
+    esr_lf, esr_mf, esr_hf = compute_band_split_esr_db(
+        pred_tot[:, 0], y_raw[:, 0].numpy().astype(np.float64), sample_rate_hz=sr
+    )
+    besr = compute_floor_regularized_besr_db(
+        pred_tot[:, 0], y_raw[:, 0].numpy().astype(np.float64), sample_rate_hz=sr
+    )
+    assert besr < -15.0
+    assert esr_lf < -15.0
+    assert esr_mf < -15.0
+    assert esr_hf < -10.0

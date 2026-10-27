@@ -207,6 +207,27 @@ pub fn apply_subsample_shift_fft(wet: &[f32], lag_samples: f32) -> Vec<f32> {
     time_out
 }
 
+/// Builds a causal clipped fuzz proxy `LPF_800(tanh(10 * HPF_80(dry)))` so extreme comparator/fuzz
+/// pedals with `< 0.35` linear correlation still lock sub-sample USB stream startup jitter.
+fn build_clipped_fuzz_proxy(dry: &[f32], sample_rate_hz: u32) -> Vec<f32> {
+    let sr = (sample_rate_hz.max(8_000)) as f32;
+    let a_hp = (-TAU * 80.0 / sr).exp();
+    let b_hp = 1.0 - a_hp;
+    let a_lp = (-TAU * 800.0 / sr).exp();
+    let b_lp = 1.0 - a_lp;
+    let mut s_hp = 0.0_f32;
+    let mut s_lp = 0.0_f32;
+    let mut out = Vec::with_capacity(dry.len());
+    for &x in dry {
+        s_hp = a_hp * s_hp + b_hp * x;
+        let x_hp = x - s_hp;
+        let clipped = (10.0 * x_hp).tanh();
+        s_lp = a_lp * s_lp + b_lp * clipped;
+        out.push(s_lp);
+    }
+    out
+}
+
 /// Aligns `wet` to `dry` using $O(N \log N)$ `realfft` normalized cross-correlation + parabolic
 /// sub-sample refinement, or locks to `fixed_latency_samples` when calibrated via Step-1 Bypass Reference.
 pub fn align_hardware_latency(
@@ -262,13 +283,35 @@ pub fn align_hardware_latency(
                 }
             }
         }
+        let mut active_map = corr_map;
+        if local_best_corr <= 0.35 {
+            let dry_fuzz = build_clipped_fuzz_proxy(dry, sample_rate_hz);
+            let fuzz_map = fft_normalized_cross_correlation(&dry_fuzz, wet, max_lag);
+            let mut fuzz_best_lag = locked;
+            let mut fuzz_best_corr = f32::NEG_INFINITY;
+            for lag in (locked - 24)..=(locked + 24) {
+                let idx_i32 = lag + (max_lag as i32);
+                if idx_i32 >= 0 && (idx_i32 as usize) < fuzz_map.len() {
+                    let abs_c = fuzz_map[idx_i32 as usize].abs();
+                    if abs_c > fuzz_best_corr {
+                        fuzz_best_corr = abs_c;
+                        fuzz_best_lag = lag;
+                    }
+                }
+            }
+            if fuzz_best_corr > local_best_corr {
+                local_best_corr = fuzz_best_corr;
+                local_best_lag = fuzz_best_lag;
+                active_map = fuzz_map;
+            }
+        }
         if local_best_corr > 0.35 {
             let local_idx = (local_best_lag + (max_lag as i32)) as usize;
             let mut local_frac = 0.0_f32;
-            if local_idx > 0 && local_idx + 1 < corr_map.len() {
-                let y_prev = corr_map[local_idx - 1].abs();
-                let y_curr = corr_map[local_idx].abs();
-                let y_next = corr_map[local_idx + 1].abs();
+            if local_idx > 0 && local_idx + 1 < active_map.len() {
+                let y_prev = active_map[local_idx - 1].abs();
+                let y_curr = active_map[local_idx].abs();
+                let y_next = active_map[local_idx + 1].abs();
                 let denom = y_prev - 2.0 * y_curr + y_next;
                 if denom.abs() > 1e-9 {
                     local_frac = (0.5 * (y_prev - y_next) / denom).clamp(-0.5, 0.5);
@@ -277,8 +320,12 @@ pub fn align_hardware_latency(
             (local_best_lag, local_frac, local_best_corr.clamp(0.0, 1.0))
         } else {
             let clamped_idx =
-                (locked + (max_lag as i32)).clamp(0, (corr_map.len() as i32) - 1) as usize;
-            (locked, 0.0_f32, corr_map[clamped_idx].abs().clamp(0.0, 1.0))
+                (locked + (max_lag as i32)).clamp(0, (active_map.len() as i32) - 1) as usize;
+            (
+                locked,
+                0.0_f32,
+                active_map[clamped_idx].abs().clamp(0.0, 1.0),
+            )
         }
     } else {
         (best_lag, best_frac, best_corr.clamp(0.0, 1.0))
@@ -424,6 +471,26 @@ mod tests {
                 .expect("jittered align");
         assert_eq!(jitter_res.coarse_lag_samples, jittered_lag as i32);
         assert!(jitter_res.peak_correlation > 0.35);
+
+        // Extreme comparator fuzz where linear dry correlation < 0.35 falls back to clipped fuzz proxy
+        let dry_fuzz: Vec<f32> = (0..4_096)
+            .map(|i| {
+                let env = 0.5 + 0.5 * ((i as f32) * 0.019).sin() * ((i as f32) * 0.007).cos();
+                let carrier = match i % 3 {
+                    0 => 0.8_f32,
+                    _ => -0.4_f32,
+                };
+                env * carrier
+            })
+            .collect();
+        let fuzz_proxy = build_clipped_fuzz_proxy(&dry_fuzz, 48_000);
+        let mut wet_fuzz = vec![0.0_f32; dry_fuzz.len()];
+        wet_fuzz[jittered_lag..dry_fuzz.len()]
+            .copy_from_slice(&fuzz_proxy[..(dry_fuzz.len() - jittered_lag)]);
+        let fuzz_res = align_hardware_latency(&dry_fuzz, &wet_fuzz, 64, Some(hw_lag), 48_000, None)
+            .expect("fuzz proxy align");
+        assert_eq!(fuzz_res.coarse_lag_samples, jittered_lag as i32);
+        assert!(fuzz_res.peak_correlation > 0.35);
 
         // Error on empty or mismatched lengths
         assert!(align_hardware_latency(&[], &[], 16, None, 48_000, None).is_err());

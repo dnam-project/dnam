@@ -211,6 +211,34 @@ pub fn build_capture_plan_with_prescriptions(
                 default_switches.clone(),
                 None,
             ));
+
+            // When the primary control is a dual-circuit morph control (`duality`, `mod`, `morph`)
+            // where both `0.0` (Circuit A) and `1.0` (Circuit B) are active nonlinear engines,
+            // schedule the remaining 3 corners of `(primary, secondary)` in 1-knob-at-a-time
+            // Gray-code order immediately after `(1.0, 1.0)`.
+            if is_dual_engine_morph_control(primary) {
+                for &(p_tag, p_val, s_tag, s_val) in &[
+                    ("max", 1.0_f32, "min", 0.0_f32),
+                    ("min", 0.0_f32, "min", 0.0_f32),
+                    ("min", 0.0_f32, "max", 1.0_f32),
+                ] {
+                    let mut morph_coords = default_ranges.clone();
+                    morph_coords.insert(primary.id.clone(), p_val);
+                    morph_coords.insert(secondary.id.clone(), s_val);
+                    let morph_id = format!(
+                        "stem_corner_{}_{}_{}_{}",
+                        primary.id, p_tag, secondary.id, s_tag
+                    );
+                    steps.push(make_step(
+                        model,
+                        morph_id,
+                        CaptureTier::CornerAnchor,
+                        morph_coords,
+                        default_switches.clone(),
+                        None,
+                    ));
+                }
+            }
         }
 
         // 3a. Cascaded gain/drive saturation corners (e.g. `Gain=max` × `Drive=max`)
@@ -429,6 +457,8 @@ fn is_gain_like_control(r: &ControlRangeSpec) -> bool {
         "drive",
         "dist",
         "fuzz",
+        "duality",
+        "morph",
         "overdrive",
         "preamp",
         "saturat",
@@ -439,6 +469,16 @@ fn is_gain_like_control(r: &ControlRangeSpec) -> bool {
     KEYWORDS
         .iter()
         .any(|kw| id.contains(kw) || label.contains(kw))
+}
+
+fn is_dual_engine_morph_control(r: &ControlRangeSpec) -> bool {
+    let id = r.id.to_ascii_lowercase();
+    let label = r.label.to_ascii_lowercase();
+    id == "duality"
+        || id == "mod"
+        || id == "morph"
+        || label.contains("duality")
+        || label.contains("morph")
 }
 
 fn is_tone_body_control(r: &ControlRangeSpec) -> bool {
@@ -806,6 +846,53 @@ mod tests {
             assert!(
                 plan.steps.iter().any(|s| s.stem_id == expected_id),
                 "missing parametric EQ corner stem {expected_id}"
+            );
+        }
+    }
+
+    #[test]
+    fn planner_schedules_dual_engine_morph_2x2_corners() {
+        let model = ModelManifest {
+            model_id: "duality_fuzz".to_string(),
+            title: "Duality Fuzz".to_string(),
+            tier: "Full".to_string(),
+            description: String::new(),
+            output_mode: "stereo".to_string(),
+            topology: "auto".to_string(),
+            capture: CaptureSettings::default(),
+            ranges: vec![
+                ControlRangeSpec {
+                    id: "duality".to_string(),
+                    label: "Duality".to_string(),
+                    min: 0.0,
+                    max: 10.0,
+                    default_value: 5.0,
+                    unit: None,
+                },
+                ControlRangeSpec {
+                    id: "filter".to_string(),
+                    label: "Filter".to_string(),
+                    min: 0.0,
+                    max: 10.0,
+                    default_value: 5.0,
+                    unit: None,
+                },
+            ],
+            switches: Vec::new(),
+            presets: Vec::new(),
+            stems: Vec::new(),
+        };
+        let plan = build_capture_plan(&model, true);
+        assert_eq!(plan.steps.len(), 9);
+        for expected_id in [
+            "stem_corner_high_pair",
+            "stem_corner_duality_max_filter_min",
+            "stem_corner_duality_min_filter_min",
+            "stem_corner_duality_min_filter_max",
+        ] {
+            assert!(
+                plan.steps.iter().any(|s| s.stem_id == expected_id),
+                "missing dual-engine morph corner stem {expected_id}"
             );
         }
     }
