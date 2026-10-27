@@ -197,10 +197,15 @@ dynamic-neural-audio-modeler/
     │   │       │   ├── __init__.py
     │   │       │   ├── basis.py
     │   │       │   └── audit.py
-    │   │       ├── training/        # Hardware runtime, Surrogate Delay, Kronecker .dnam-ckpt Solver, `wav_io.py` & TrainingBackend (CL-18)
+    │   │       ├── training/        # Hardware runtime, Cascade solvers, Kronecker .dnam-ckpt Solver, `wav_io.py` & TrainingBackend (CL-18)
     │   │       │   ├── AGENTS.md    # Scoped router (< 2,500 B)
     │   │       │   ├── __init__.py
     │   │       │   ├── hardware.py
+    │   │       │   ├── metrics.py
+    │   │       │   ├── selective_cascade.py
+    │   │       │   ├── cascade_primitives.py
+    │   │       │   ├── cascade_orthogonal_fft.py
+    │   │       │   ├── cascade_selective_stages.py
     │   │       │   ├── surrogate_delay.py
     │   │       │   ├── kronecker_head.py
     │   │       │   ├── arena.py
