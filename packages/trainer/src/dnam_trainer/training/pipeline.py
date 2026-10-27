@@ -176,6 +176,8 @@ def _extract_job_stems(
                 )
             x_2 = _to_frames_2ch(st.input_audio)
             y_2 = _to_frames_2ch(st.target_audio)
+            if y_2.shape[0] > x_2.shape[0]:
+                x_2 = np.pad(x_2, ((0, y_2.shape[0] - x_2.shape[0]), (0, 0)), mode="constant")
             n = min(x_2.shape[0], y_2.shape[0])
             stem_ids.append(st.stem_id)
             controls_list.append(dict(st.controls_meta))
@@ -193,6 +195,8 @@ def _extract_job_stems(
                 f"Stem '{desc.stem_id}' sample rate ({sr_in}/{sr_tg} Hz) "
                 f"does not match training sample rate ({expected_sr} Hz)"
             )
+        if y_2.shape[0] > x_2.shape[0]:
+            x_2 = np.pad(x_2, ((0, y_2.shape[0] - x_2.shape[0]), (0, 0)), mode="constant")
         n = min(x_2.shape[0], y_2.shape[0])
         stem_ids.append(desc.stem_id)
         controls_list.append(dict(desc.controls_meta))

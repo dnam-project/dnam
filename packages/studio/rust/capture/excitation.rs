@@ -14,8 +14,10 @@ pub const ALIGNMENT_SETTLE_SILENCE_SEC: f32 = 0.10;
 /// Total duration of the leading alignment header (`0.45s`).
 pub const ALIGNMENT_HEADER_TOTAL_SEC: f32 =
     ALIGNMENT_PULSE_DURATION_SEC + ALIGNMENT_SETTLE_SILENCE_SEC;
-/// Duration of the trailing silent window for delay/reverb tail decay and noise-floor estimation (`3.00s`).
+/// Duration of the baseline trailing silent window for delay/reverb tail decay and noise-floor estimation (`3.00s`).
 pub const TRAILING_NOISE_WINDOW_SEC: f32 = 3.00;
+/// Maximum additional live recording tail duration in seconds when a long reverb/delay tail (`> 10s`) is still decaying (`15.00s`).
+pub const MAX_DYNAMIC_TAIL_EXTRA_SEC: f32 = 15.00;
 /// Canonical duration in seconds for hardware stem excitation (`30.0s` = `1,440,000` samples @ `48 kHz`).
 pub const DEFAULT_HARDWARE_EXCITATION_SEC: usize = 30;
 /// Canonical duration in seconds for Step-1/Step-2 hardware calibration probes (`6.0s` = `288,000` samples @ `48 kHz`).
@@ -258,10 +260,10 @@ pub fn analyze_probe_for_excitation(
             .sqrt()
             .max(1e-7);
         let dt_ms = 1_000.0 * (half as f32) / fs;
-        let decay_db = (20.0 * (rms_early / rms_late).max(1.05).log10()).max(1.5);
+        let decay_db = (20.0 * (rms_early / rms_late).max(1.02).log10()).max(0.4);
         (dt_ms * (60.0 / decay_db))
             .max(estimated_max_delay_ms * 3.5)
-            .clamp(80.0, 5_000.0)
+            .clamp(80.0, 20_000.0)
     } else {
         0.0
     };
@@ -381,9 +383,11 @@ pub fn analyze_probe_for_excitation(
 ///    - **Section 5 (`88..100%`, `~3.17s`):** Broadband high-crest harmonic cluster (`0..60%`,
 ///      `sat -> 0.98`) + isolated full-scale (`0.98`) chord/transient tail probe (`60..68%`) +
 ///      pre-tail decay silence (`68..100%`, `~1.02s`).
-/// 3. **Trailing Decay & Silent Noise-Floor Window (`27.00s – 30.00s`, `3.00s`):** Uninterrupted
-///    decay window (`~4.02s` total after the Section 5B impulse) for long delay/reverb tails ($T_{60}$
-///    up to `4.0s`) and per-stem `noise_floor_dbfs` estimation.
+/// 3. **Trailing Decay & Silent Noise-Floor Window (`27.00s – 30.00s`, `3.00s`):** Baseline
+///    uninterrupted decay window (`~4.02s` total after the Section 5B impulse); if a stem's wet
+///    reverb/delay return is still ringing above the noise floor at `30.0s`, live hardware capture
+///    (`cpal_play_and_record`) automatically continues recording up to [`MAX_DYNAMIC_TAIL_EXTRA_SEC`]
+///    without inflating the dry `input.wav` file on disk.
 pub fn generate_excitation_signal_with_profile(
     sample_rate_hz: u32,
     num_samples: usize,
@@ -922,5 +926,6 @@ mod tests {
             "Expected >= 5% of body samples in [-54 dBFS, -24 dBFS] for envelope-filter threshold & release probing, got {}",
             frac_low_ballistic
         );
+        assert!((MAX_DYNAMIC_TAIL_EXTRA_SEC - 15.00).abs() < 1e-6);
     }
 }

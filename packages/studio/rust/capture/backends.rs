@@ -16,8 +16,8 @@ use crate::capture::alignment::{
     measure_silent_window_noise_floor,
 };
 use crate::capture::excitation::{
-    DEFAULT_HARDWARE_PROBE_SEC, TargetExcitationProfile, analyze_probe_for_excitation,
-    generate_calibration_probe,
+    DEFAULT_HARDWARE_PROBE_SEC, MAX_DYNAMIC_TAIL_EXTRA_SEC, TargetExcitationProfile,
+    analyze_probe_for_excitation, generate_calibration_probe,
 };
 use crate::error::{StudioError, StudioResult};
 
@@ -362,7 +362,64 @@ fn resolve_cpal_device(device_query: Option<&str>, want_input: bool) -> StudioRe
     })
 }
 
-/// Executes full-duplex hardware playback and capture via `cpal`.
+/// Evaluates whether a recorded hardware capture still contains an active reverb/delay decay tail
+/// in its final `100 ms` window relative to the initial `40 ms` pre-roll silence baseline.
+pub fn should_extend_live_tail_window(recorded_prefix: &[f32], sample_rate_hz: u32) -> bool {
+    if recorded_prefix.len() < 128 {
+        return false;
+    }
+    let fs = sample_rate_hz.max(8_000) as f32;
+    let lead_len = ((0.040 * fs).round() as usize).clamp(16, recorded_prefix.len() / 16);
+    let win_len = ((0.100 * fs).round() as usize).clamp(32, recorded_prefix.len() / 8);
+    let lead_rms = (recorded_prefix[..lead_len]
+        .iter()
+        .map(|&x| x * x)
+        .sum::<f32>()
+        / (lead_len as f32))
+        .sqrt()
+        .clamp(2.5e-4, 0.01);
+    let tail_slice = &recorded_prefix[recorded_prefix.len() - win_len..];
+    let recent_rms = (tail_slice.iter().map(|&x| x * x).sum::<f32>() / (win_len as f32)).sqrt();
+    recent_rms > (lead_rms * 2.5).max(3.5e-4)
+}
+
+fn compute_max_extra_tail_frames(base_frames: usize, sample_rate_hz: u32) -> usize {
+    if base_frames >= (sample_rate_hz as usize) * 8 {
+        (MAX_DYNAMIC_TAIL_EXTRA_SEC * (sample_rate_hz.max(1) as f32)).round() as usize
+    } else {
+        0
+    }
+}
+
+fn try_extend_live_recording_target(
+    recorded_slots: &[AtomicU32],
+    current_target: usize,
+    max_capacity_frames: usize,
+    step_frames: usize,
+    sample_rate_hz: u32,
+    active_target: &AtomicUsize,
+    timeout: &mut Duration,
+) -> Option<usize> {
+    if current_target >= max_capacity_frames || current_target > recorded_slots.len() {
+        return None;
+    }
+    let prefix: Vec<f32> = recorded_slots[..current_target]
+        .iter()
+        .map(|slot| f32::from_bits(slot.load(Ordering::Relaxed)))
+        .collect();
+    if should_extend_live_tail_window(&prefix, sample_rate_hz) {
+        let next_target = (current_target + step_frames).min(max_capacity_frames);
+        active_target.store(next_target, Ordering::Release);
+        *timeout += Duration::from_secs(1);
+        Some(next_target)
+    } else {
+        None
+    }
+}
+
+/// Executes full-duplex hardware playback and capture via `cpal`, automatically extending
+/// the trailing recording window in `1.0s` increments (up to [`MAX_DYNAMIC_TAIL_WINDOW_SEC`])
+/// when a long reverb/delay tail (`> 10s`) is still decaying above the noise floor.
 pub fn cpal_play_and_record(
     device_query: Option<&str>,
     sample_rate_hz: u32,
@@ -405,14 +462,17 @@ pub fn cpal_play_and_record(
     };
 
     let gain_lin = 10.0_f32.powf(send_gain_db / 20.0);
-    let target_frames = dry_samples.len();
+    let base_frames = dry_samples.len();
+    let max_extra_frames = compute_max_extra_tail_frames(base_frames, sample_rate_hz);
+    let max_capacity_frames = base_frames.saturating_add(max_extra_frames);
+    let active_target = Arc::new(AtomicUsize::new(base_frames));
     let scaled_dry: Arc<[f32]> = dry_samples
         .iter()
         .map(|s| *s * gain_lin)
         .collect::<Vec<_>>()
         .into();
     let play_cursor = Arc::new(AtomicUsize::new(0));
-    let recorded_slots: Arc<[AtomicU32]> = (0..target_frames)
+    let recorded_slots: Arc<[AtomicU32]> = (0..max_capacity_frames)
         .map(|_| AtomicU32::new(0))
         .collect::<Vec<_>>()
         .into();
@@ -454,6 +514,7 @@ pub fn cpal_play_and_record(
     let rec_buf = Arc::clone(&recorded_slots);
     let rec_pos = Arc::clone(&rec_cursor);
     let in_began = Arc::clone(&out_started);
+    let in_target = Arc::clone(&active_target);
     let in_ch_usize = in_channels as usize;
     let in_stream = in_dev
         .build_input_stream(
@@ -462,10 +523,11 @@ pub fn cpal_play_and_record(
                 if !in_began.load(Ordering::Acquire) {
                     return;
                 }
+                let limit = in_target.load(Ordering::Acquire);
                 let mut pos = rec_pos.load(Ordering::Relaxed);
-                if pos < target_frames {
+                if pos < limit {
                     for frame in data.chunks(in_ch_usize) {
-                        if pos >= target_frames {
+                        if pos >= limit {
                             break;
                         }
                         let sample = frame.get(ret_ch_idx).copied().unwrap_or(0.0);
@@ -490,12 +552,26 @@ pub fn cpal_play_and_record(
         .map_err(|e| StudioError::Audio(format!("Failed to start cpal output stream: {e}")))?;
     streams_armed.store(true, Ordering::Release);
 
-    let expected_dur =
-        Duration::from_secs_f64((target_frames as f64) / (sample_rate_hz.max(1) as f64));
-    let timeout = expected_dur + Duration::from_secs(3);
+    let step_frames = (sample_rate_hz.max(1) as usize).max(1);
+    let mut current_target = base_frames;
+    let mut timeout =
+        Duration::from_secs_f64((base_frames as f64) / (sample_rate_hz.max(1) as f64))
+            + Duration::from_secs(3);
     let start = Instant::now();
     while start.elapsed() < timeout {
-        if rec_cursor.load(Ordering::Acquire) >= target_frames {
+        if rec_cursor.load(Ordering::Acquire) >= current_target {
+            if let Some(next_target) = try_extend_live_recording_target(
+                &recorded_slots,
+                current_target,
+                max_capacity_frames,
+                step_frames,
+                sample_rate_hz,
+                &active_target,
+                &mut timeout,
+            ) {
+                current_target = next_target;
+                continue;
+            }
             break;
         }
         std::thread::sleep(Duration::from_millis(5));
@@ -504,7 +580,11 @@ pub fn cpal_play_and_record(
     drop(out_stream);
     drop(in_stream);
 
-    let out: Vec<f32> = recorded_slots
+    let final_len = rec_cursor
+        .load(Ordering::Acquire)
+        .clamp(base_frames, current_target)
+        .min(recorded_slots.len());
+    let out: Vec<f32> = recorded_slots[..final_len]
         .iter()
         .map(|slot| f32::from_bits(slot.load(Ordering::Relaxed)))
         .collect();
@@ -1002,5 +1082,62 @@ mod tests {
             ..DarkglassAnagramBackend::default()
         };
         let _ = anagram_hw.capture_stem(&[0.0; 64], &BTreeMap::new(), &BTreeMap::new());
+
+        // Live dynamic tail window detector (`should_extend_live_tail_window` & `try_extend_live_recording_target`)
+        assert!(!should_extend_live_tail_window(&[0.0; 32], 48_000));
+        let quiet_rec = vec![1e-4_f32; 48_000];
+        assert!(!should_extend_live_tail_window(&quiet_rec, 48_000));
+        let mut ringing_rec = vec![1e-4_f32; 48_000];
+        for sample in &mut ringing_rec[42_000..] {
+            *sample = 0.025;
+        }
+        assert!(should_extend_live_tail_window(&ringing_rec, 48_000));
+        assert_eq!(compute_max_extra_tail_frames(2_048, 48_000), 0);
+        assert_eq!(
+            compute_max_extra_tail_frames(48_000 * 30, 48_000),
+            48_000 * 15
+        );
+        let slots: Vec<AtomicU32> = ringing_rec
+            .iter()
+            .map(|&s| AtomicU32::new(s.to_bits()))
+            .collect();
+        let active_target = AtomicUsize::new(24_000);
+        let mut timeout = Duration::from_secs(1);
+        assert!(
+            try_extend_live_recording_target(
+                &slots,
+                24_000,
+                48_000,
+                8_000,
+                48_000,
+                &active_target,
+                &mut timeout,
+            )
+            .is_none()
+        );
+        assert_eq!(
+            try_extend_live_recording_target(
+                &slots,
+                47_000,
+                48_000,
+                8_000,
+                48_000,
+                &active_target,
+                &mut timeout,
+            ),
+            Some(48_000)
+        );
+        assert!(
+            try_extend_live_recording_target(
+                &slots,
+                48_000,
+                48_000,
+                8_000,
+                48_000,
+                &active_target,
+                &mut timeout,
+            )
+            .is_none()
+        );
     }
 }
