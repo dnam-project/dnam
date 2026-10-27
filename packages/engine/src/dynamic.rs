@@ -2,7 +2,8 @@
 
 use crate::engine::DnamEngine;
 use crate::math::{BackendKind, ScalarBackend};
-use crate::schema::DnamError;
+use crate::provenance::{CryptoProvider, DefaultCryptoProvider};
+use crate::schema::{DnamError, DnamProtectionProfile};
 use crate::types::{DnamTelemetrySnapshot, Tier};
 
 /// Runtime-dispatched wrapper around [`DnamEngine`] supporting block-level backend selection
@@ -44,11 +45,23 @@ impl<'a> DynamicDnamEngine<'a> {
         tier: Tier,
         sample_rate_hz: u32,
     ) -> Result<DynamicDnamEngine<'static>, DnamError> {
-        Self::from_bytes_owned_with_backend(
+        let crypto = DefaultCryptoProvider::default();
+        Self::from_bytes_owned_with_crypto(bytes, tier, sample_rate_hz, &crypto)
+    }
+
+    /// Creates an owned `'static` [`DynamicDnamEngine`] using a custom [`CryptoProvider`] and runtime CPU feature detection.
+    pub fn from_bytes_owned_with_crypto<C: CryptoProvider>(
+        bytes: &[u8],
+        tier: Tier,
+        sample_rate_hz: u32,
+        crypto: &C,
+    ) -> Result<DynamicDnamEngine<'static>, DnamError> {
+        Self::from_bytes_owned_with_backend_and_crypto(
             bytes,
             tier,
             sample_rate_hz,
             crate::math::detect_best_backend(),
+            crypto,
         )
     }
 
@@ -59,34 +72,46 @@ impl<'a> DynamicDnamEngine<'a> {
         sample_rate_hz: u32,
         backend: BackendKind,
     ) -> Result<DynamicDnamEngine<'static>, DnamError> {
+        let crypto = DefaultCryptoProvider::default();
+        Self::from_bytes_owned_with_backend_and_crypto(
+            bytes,
+            tier,
+            sample_rate_hz,
+            backend,
+            &crypto,
+        )
+    }
+
+    /// Creates an owned `'static` [`DynamicDnamEngine`] with an explicit [`BackendKind`] and [`CryptoProvider`].
+    pub fn from_bytes_owned_with_backend_and_crypto<C: CryptoProvider>(
+        bytes: &[u8],
+        tier: Tier,
+        sample_rate_hz: u32,
+        backend: BackendKind,
+        crypto: &C,
+    ) -> Result<DynamicDnamEngine<'static>, DnamError> {
         match backend {
             #[cfg(target_arch = "aarch64")]
-            BackendKind::ArmSme => Ok(DynamicDnamEngine::ArmSme(DnamEngine::from_bytes_owned(
-                bytes,
-                tier,
-                sample_rate_hz,
-            )?)),
+            BackendKind::ArmSme => Ok(DynamicDnamEngine::ArmSme(
+                DnamEngine::from_bytes_owned_with_crypto(bytes, tier, sample_rate_hz, crypto)?,
+            )),
             #[cfg(target_arch = "aarch64")]
             BackendKind::Neon | BackendKind::ArmNeon => Ok(DynamicDnamEngine::Neon(
-                DnamEngine::from_bytes_owned(bytes, tier, sample_rate_hz)?,
+                DnamEngine::from_bytes_owned_with_crypto(bytes, tier, sample_rate_hz, crypto)?,
             )),
             #[cfg(target_arch = "x86_64")]
             BackendKind::X86Simd | BackendKind::X86Avx2Fma | BackendKind::X86Sse42 => {
-                Ok(DynamicDnamEngine::X86Simd(DnamEngine::from_bytes_owned(
-                    bytes,
-                    tier,
-                    sample_rate_hz,
-                )?))
+                Ok(DynamicDnamEngine::X86Simd(
+                    DnamEngine::from_bytes_owned_with_crypto(bytes, tier, sample_rate_hz, crypto)?,
+                ))
             }
             #[cfg(target_arch = "wasm32")]
             BackendKind::WasmSimd128 => Ok(DynamicDnamEngine::WasmSimd128(
-                DnamEngine::from_bytes_owned(bytes, tier, sample_rate_hz)?,
+                DnamEngine::from_bytes_owned_with_crypto(bytes, tier, sample_rate_hz, crypto)?,
             )),
-            _ => Ok(DynamicDnamEngine::Scalar(DnamEngine::from_bytes_owned(
-                bytes,
-                tier,
-                sample_rate_hz,
-            )?)),
+            _ => Ok(DynamicDnamEngine::Scalar(
+                DnamEngine::from_bytes_owned_with_crypto(bytes, tier, sample_rate_hz, crypto)?,
+            )),
         }
     }
 
@@ -142,6 +167,22 @@ impl<'a> DynamicDnamEngine<'a> {
             Self::X86Simd(_) => BackendKind::X86Simd,
             #[cfg(target_arch = "wasm32")]
             Self::WasmSimd128(_) => BackendKind::WasmSimd128,
+        }
+    }
+
+    /// Returns the container's resolved [`DnamProtectionProfile`].
+    #[inline]
+    pub const fn protection_profile(&self) -> DnamProtectionProfile {
+        match self {
+            Self::Scalar(e) => e.protection_profile(),
+            #[cfg(target_arch = "aarch64")]
+            Self::Neon(e) => e.protection_profile(),
+            #[cfg(target_arch = "aarch64")]
+            Self::ArmSme(e) => e.protection_profile(),
+            #[cfg(target_arch = "x86_64")]
+            Self::X86Simd(e) => e.protection_profile(),
+            #[cfg(target_arch = "wasm32")]
+            Self::WasmSimd128(e) => e.protection_profile(),
         }
     }
 

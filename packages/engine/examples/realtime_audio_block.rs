@@ -36,6 +36,7 @@ fn build_demo_dnam_container() -> AlignedBuffer<CacheLine64> {
             created_at: "2026-10-23T00:00:00Z".to_string(),
             input_reference_dbfs: -20.5,
             provenance: DatasetProvenance::default(),
+            distribution_policy: None,
             signatures: None,
         },
         user_metadata: BTreeMap::new(),

@@ -9,6 +9,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DnamError, rethrowDnamError } from "../errors.js";
 import type { PreambleSnapshot, TelemetrySnapshot, ZohParamsSnapshot } from "../schema/runtime.js";
+import type { DnamProtectionProfile } from "../schema/signatures.js";
 import { registerNativeDriver, registerNodeWasmAutoLoader } from "./index.js";
 import type {
   DnamControlSpaceHandle,
@@ -114,6 +115,7 @@ interface NativeValidatedContainerBinding {
   lfoEnvActive: boolean;
   stereoOut: boolean;
   verificationStatus: string;
+  protectionProfile: string;
   headerJson: string;
   arenaBytes: Uint8Array;
 }
@@ -137,7 +139,12 @@ interface NativeAddonExports {
     backend?: string | null,
   ) => NativeEngineInstance;
   NativeControlSpace: new (headerJson: string) => NativeControlSpaceInstance;
-  nativeValidateContainer(containerBytes: Uint8Array): NativeValidatedContainerBinding;
+  nativeValidateContainer(
+    containerBytes: Uint8Array,
+    deviceIdHash?: string | null,
+    deviceSecret32?: Uint8Array | null,
+    trustedMarketplacePubkeyHex?: string | null,
+  ): NativeValidatedContainerBinding;
   nativeBuildContainer(
     headerJson: string,
     arenaBytes: Uint8Array,
@@ -344,6 +351,38 @@ interface NativeAddonExports {
   ): number;
   nativeExtractStructuralHash(arenaBytes: Uint8Array): Float64Array;
   nativeStructuralCosineSimilarity(a: Float64Array, b: Float64Array): number;
+  nativeEd25519PubkeyHex(seed32: Uint8Array): string;
+  nativeEd25519SignHex(seed32: Uint8Array, message: Uint8Array): string;
+  nativeX25519PubkeyHex(secret32: Uint8Array): string;
+  nativeWrapDeviceCekHex(
+    ephemeralSecret32: Uint8Array,
+    devicePubkey32: Uint8Array,
+    deviceIdHash: string,
+    cek32: Uint8Array,
+  ): string;
+  nativeSignOemDeviceCert(
+    oemSeed32: Uint8Array,
+    oemVendor: string,
+    modelCode: string,
+    deviceIdHash: string,
+    pubkeyX25519_32: Uint8Array,
+  ): string;
+  nativeVerifyOemDeviceCert(certJson: string, trustedOemPubkeyHex: string): string;
+  nativeSealContainer(
+    innerDnamBytes: Uint8Array,
+    recipientCertsJson: string,
+    trustedOemPubkeysJson: string,
+    marketplaceSeed32: Uint8Array,
+    ephemeralSecret32: Uint8Array,
+    cek32: Uint8Array,
+    nonce12: Uint8Array,
+  ): Uint8Array;
+  nativeUnsealContainer(
+    sealedBytes: Uint8Array,
+    deviceIdHash?: string | null,
+    deviceSecret32?: Uint8Array | null,
+    trustedMarketplacePubkeyHex?: string | null,
+  ): Uint8Array;
 }
 
 function findDistFile(fileName: string): string {
@@ -586,9 +625,19 @@ export class NativeDriver implements DnamDriver {
     });
   }
 
-  public validateContainer(containerBytes: Uint8Array): ValidatedContainerRaw {
+  public validateContainer(
+    containerBytes: Uint8Array,
+    deviceIdHash?: string,
+    deviceSecret32?: Uint8Array,
+    trustedMarketplacePubkeyHex?: string,
+  ): ValidatedContainerRaw {
     return callNative(() => {
-      const v = this.addon.nativeValidateContainer(containerBytes);
+      const v = this.addon.nativeValidateContainer(
+        containerBytes,
+        deviceIdHash ?? null,
+        deviceSecret32 ?? null,
+        trustedMarketplacePubkeyHex ?? null,
+      );
       const preamble: PreambleSnapshot = {
         magic: v.magic,
         versionMajor: v.versionMajor,
@@ -619,9 +668,14 @@ export class NativeDriver implements DnamDriver {
         v.verificationStatus === "CreatorVerified" || v.verificationStatus === "MarketplaceVerified"
           ? v.verificationStatus
           : "Unsigned";
+      const protectionProfile: DnamProtectionProfile =
+        v.protectionProfile === "device_allowlisted" || v.protectionProfile === "enclave_sealed"
+          ? v.protectionProfile
+          : "open";
       return {
         preamble,
         verificationStatus,
+        protectionProfile,
         headerJson: v.headerJson,
         arenaBytes: v.arenaBytes,
       };
@@ -1008,6 +1062,89 @@ export class NativeDriver implements DnamDriver {
 
   public structuralCosineSimilarity(a: Float64Array, b: Float64Array): number {
     return callNative(() => this.addon.nativeStructuralCosineSimilarity(a, b));
+  }
+
+  public ed25519PubkeyHex(seed32: Uint8Array): string {
+    return callNative(() => this.addon.nativeEd25519PubkeyHex(seed32));
+  }
+
+  public ed25519SignHex(seed32: Uint8Array, message: Uint8Array): string {
+    return callNative(() => this.addon.nativeEd25519SignHex(seed32, message));
+  }
+
+  public x25519PubkeyHex(secret32: Uint8Array): string {
+    return callNative(() => this.addon.nativeX25519PubkeyHex(secret32));
+  }
+
+  public wrapDeviceCekHex(
+    ephemeralSecret32: Uint8Array,
+    devicePubkey32: Uint8Array,
+    deviceIdHash: string,
+    cek32: Uint8Array,
+  ): string {
+    return callNative(() =>
+      this.addon.nativeWrapDeviceCekHex(ephemeralSecret32, devicePubkey32, deviceIdHash, cek32),
+    );
+  }
+
+  public signOemDeviceCert(
+    oemSeed32: Uint8Array,
+    oemVendor: string,
+    modelCode: string,
+    deviceIdHash: string,
+    pubkeyX25519_32: Uint8Array,
+  ): string {
+    return callNative(() =>
+      this.addon.nativeSignOemDeviceCert(
+        oemSeed32,
+        oemVendor,
+        modelCode,
+        deviceIdHash,
+        pubkeyX25519_32,
+      ),
+    );
+  }
+
+  public verifyOemDeviceCert(certJson: string, trustedOemPubkeyHex: string): string {
+    return callNative(() => this.addon.nativeVerifyOemDeviceCert(certJson, trustedOemPubkeyHex));
+  }
+
+  public sealContainer(
+    innerDnamBytes: Uint8Array,
+    recipientCertsJson: string,
+    trustedOemPubkeysJson: string,
+    marketplaceSeed32: Uint8Array,
+    ephemeralSecret32: Uint8Array,
+    cek32: Uint8Array,
+    nonce12: Uint8Array,
+  ): Uint8Array {
+    return callNative(() =>
+      this.addon.nativeSealContainer(
+        innerDnamBytes,
+        recipientCertsJson,
+        trustedOemPubkeysJson,
+        marketplaceSeed32,
+        ephemeralSecret32,
+        cek32,
+        nonce12,
+      ),
+    );
+  }
+
+  public unsealContainer(
+    sealedBytes: Uint8Array,
+    deviceIdHash?: string,
+    deviceSecret32?: Uint8Array,
+    trustedMarketplacePubkeyHex?: string,
+  ): Uint8Array {
+    return callNative(() =>
+      this.addon.nativeUnsealContainer(
+        sealedBytes,
+        deviceIdHash ?? null,
+        deviceSecret32 ?? null,
+        trustedMarketplacePubkeyHex ?? null,
+      ),
+    );
   }
 }
 

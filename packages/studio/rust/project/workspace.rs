@@ -18,7 +18,8 @@ use crate::capture::{
 use crate::error::{StudioError, StudioResult};
 use crate::project::manifest::{
     CaptureSettings, ControlRangeSpec, ControlSwitchOptionSpec, ControlSwitchSpec,
-    DnamProjectManifest, ModelManifest, PresetSpec, ProjectMetadata, StemRecord,
+    DnamProjectManifest, ModelDistributionPolicy, ModelManifest, ModelProtectionProfile,
+    PresetSpec, ProjectMetadata, StemRecord,
 };
 
 const WORKSPACE_GITIGNORE: &str = "\
@@ -559,6 +560,7 @@ impl DnamProject {
             switches: Vec::new(),
             presets: Vec::new(),
             stems: Vec::new(),
+            distribution_policy: None,
         };
         self.save_model(&model)?;
         if !self.manifest.models.iter().any(|m| m == model_id) {
@@ -594,6 +596,47 @@ impl DnamProject {
         if let Some(top) = topology {
             model.topology = top.to_string();
         }
+        self.save_model(&model)?;
+        Ok(model)
+    }
+
+    /// Updates `distribution_policy` (`allowed_protection_profiles`, `allowed_oem_vendors`) on `model_id`.
+    pub fn update_model_distribution_policy(
+        &self,
+        model_id: &str,
+        allowed_profiles: &[String],
+        allowed_oems: &[String],
+    ) -> StudioResult<ModelManifest> {
+        let mut model = self.load_model(model_id)?;
+        let mut policy = model.distribution_policy.take().unwrap_or_default();
+        if !allowed_profiles.is_empty() {
+            let mut parsed = Vec::with_capacity(allowed_profiles.len());
+            for p_str in allowed_profiles {
+                let p = match p_str.trim().to_ascii_lowercase().as_str() {
+                    "open" => ModelProtectionProfile::Open,
+                    "device_allowlisted" => ModelProtectionProfile::DeviceAllowlisted,
+                    "enclave_sealed" => ModelProtectionProfile::EnclaveSealed,
+                    other => {
+                        return Err(StudioError::Validation(format!(
+                            "Unknown protection profile '{other}'; expected 'open', 'device_allowlisted', or 'enclave_sealed'"
+                        )));
+                    }
+                };
+                parsed.push(p);
+            }
+            policy.allowed_protection_profiles = parsed;
+        }
+        if !allowed_oems.is_empty() {
+            policy.allowed_oem_vendors = allowed_oems
+                .iter()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+        }
+        model.distribution_policy = Some(ModelDistributionPolicy {
+            allowed_protection_profiles: policy.allowed_protection_profiles,
+            allowed_oem_vendors: policy.allowed_oem_vendors,
+        });
         self.save_model(&model)?;
         Ok(model)
     }

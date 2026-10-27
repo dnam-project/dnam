@@ -6,10 +6,10 @@ use alloc::vec::Vec;
 
 use crate::memory::{AlignedBuffer, ArenaStorage, CacheLine64};
 use crate::provenance::{
-    CryptoProvider, VerificationStatus, chacha20_xor_arena_blocks, decode_hex_array,
-    verify_container_provenance,
+    CryptoProvider, DNSL_MAGIC, VerificationStatus, chacha20_xor_arena_blocks, decode_hex_array,
+    enforce_distribution_policy, unseal_dnam_container, verify_container_provenance,
 };
-use crate::schema::{DnamError, DnamJsonHeader};
+use crate::schema::{DnamError, DnamJsonHeader, DnamProtectionProfile};
 
 use super::preamble::DnamPreamble;
 use super::{
@@ -27,7 +27,7 @@ pub fn compute_header_crc32c(container_bytes: &[u8], tensor_arena_offset: usize)
     crc32c_update(crc, &container_bytes[64..tensor_arena_offset])
 }
 
-/// Zero-copy or decrypted view over a validated `.dnam` or `.dnam-ckpt` container.
+/// Zero-copy or decrypted view over a validated `.dnam`, `.dnam-ckpt`, or `.dnam-seal` (`b"DNSL"`) container.
 #[derive(Debug)]
 pub struct DnamContainerView<'a> {
     /// 64-byte binary preamble.
@@ -36,15 +36,37 @@ pub struct DnamContainerView<'a> {
     pub header: DnamJsonHeader,
     /// Cryptographic provenance status (`Unsigned`, `CreatorVerified`, or `MarketplaceVerified`).
     pub verification_status: VerificationStatus,
+    /// Resolved container protection profile (`Open`, `DeviceAllowlisted`, or `EnclaveSealed`).
+    pub protection_profile: DnamProtectionProfile,
     /// 64-byte aligned tensor arena storage (`Borrowed` on aligned `mmap`, or `Owned` if decrypted/copied).
     pub arena_storage: ArenaStorage<'a>,
 }
 
 impl<'a> DnamContainerView<'a> {
-    /// Full container loader: verifies `header_crc32c`, parses and validates the UTF-8 JSON header
-    /// via `#![no_std]` `serde` + `alloc`, decrypts `Arena 0..2` if `ENCRYPTED_ARENA == 1`, verifies
-    /// prefix `CRC32C` checksums, and verifies `Ed25519` signatures if `HAS_SIGNATURES == 1`.
+    /// Full container loader: auto-detects `.dnam-seal` (`b"DNSL"`), verifies `header_crc32c`,
+    /// parses and validates the UTF-8 JSON header via `#![no_std]` `serde` + `alloc`, decrypts
+    /// `Arena 0..2` if `ENCRYPTED_ARENA == 1`, enforces the creator's `DistributionPolicy`,
+    /// verifies prefix `CRC32C` checksums, and verifies `Ed25519` signatures if `HAS_SIGNATURES == 1`.
     pub fn from_bytes<C: CryptoProvider>(bytes: &'a [u8], crypto: &C) -> Result<Self, DnamError> {
+        if bytes.len() >= 4 && bytes[0..4] == DNSL_MAGIC {
+            let unsealed = unseal_dnam_container(bytes, crypto)?;
+            let owned_view = DnamContainerView::from_inner_dnam_bytes(&unsealed, crypto, true)?;
+            return Ok(Self {
+                preamble: owned_view.preamble,
+                header: owned_view.header,
+                verification_status: owned_view.verification_status,
+                protection_profile: owned_view.protection_profile,
+                arena_storage: ArenaStorage::from_slice_owned(owned_view.arena_storage.as_bytes()),
+            });
+        }
+        Self::from_inner_dnam_bytes(bytes, crypto, false)
+    }
+
+    fn from_inner_dnam_bytes<C: CryptoProvider>(
+        bytes: &'a [u8],
+        crypto: &C,
+        is_enclave_sealed_wrapper: bool,
+    ) -> Result<Self, DnamError> {
         let preamble = DnamPreamble::from_bytes(bytes)?;
         let arena_off = preamble.tensor_arena_offset as usize;
         let arena_len = preamble.tensor_arena_byte_len as usize;
@@ -117,14 +139,32 @@ impl<'a> DnamContainerView<'a> {
             let ultra_end = (preamble.arena_offset_ultra_end as usize).min(arena_len);
             chacha20_xor_arena_blocks(&mut owned.as_bytes_mut()[..ultra_end], &cek, &nonce_96, 0)?;
             ArenaStorage::from_owned_buffer(owned)
+        } else if is_enclave_sealed_wrapper {
+            ArenaStorage::from_slice_owned(raw_arena)
         } else {
             ArenaStorage::from_slice_or_copy(raw_arena)
         };
 
+        // 4. Resolve protection_profile and enforce creator-signed DistributionPolicy
+        let has_authorized_devices = header
+            .metadata
+            .signatures
+            .as_ref()
+            .and_then(|s| s.marketplace_receipt.as_ref())
+            .is_some_and(|r| !r.authorized_devices.is_empty());
+        let protection_profile = if is_enclave_sealed_wrapper {
+            DnamProtectionProfile::EnclaveSealed
+        } else if preamble.is_encrypted_arena() || has_authorized_devices {
+            DnamProtectionProfile::DeviceAllowlisted
+        } else {
+            DnamProtectionProfile::Open
+        };
+        enforce_distribution_policy(&header, protection_profile)?;
+
         let plain_bytes = arena_storage.as_bytes();
         Self::verify_arena_prefix_crcs(&preamble, plain_bytes)?;
 
-        // 4. Verify split-payload Ed25519 provenance over Arena 0..2
+        // 5. Verify split-payload Ed25519 provenance over Arena 0..2
         let ultra_end = (preamble.arena_offset_ultra_end as usize).min(plain_bytes.len());
         let verification_status = verify_container_provenance(
             &header,
@@ -137,6 +177,7 @@ impl<'a> DnamContainerView<'a> {
             preamble,
             header,
             verification_status,
+            protection_profile,
             arena_storage,
         })
     }
@@ -383,6 +424,7 @@ mod tests {
                 created_at: "2026-10-23T00:00:00Z".to_string(),
                 input_reference_dbfs: -20.5,
                 provenance: DatasetProvenance::default(),
+                distribution_policy: None,
                 signatures: None,
             },
             user_metadata: BTreeMap::new(),

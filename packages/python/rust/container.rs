@@ -8,7 +8,7 @@ use dnam_engine::container::{
     crc32c_compute, pack_uplo_u_f64, unpack_uplo_u_f64, update_header_in_place, uplo_u_packed_len,
 };
 use dnam_engine::control::{ControlClampDescriptor, MAX_CONTROLS};
-use dnam_engine::provenance::DefaultCryptoProvider;
+use dnam_engine::provenance::{RustCryptoProvider, decode_hex_array};
 use dnam_engine::schema::{
     ControlKind, ControlSchemaDef, ControlUiHints, DnamJsonHeader, PresetDef,
 };
@@ -86,14 +86,31 @@ impl NativeControlSpace {
     }
 }
 
-/// Parses and validates a `.dnam` or `.dnam-ckpt` container, returning preamble fields,
-/// canonical JSON header string, verification status, and arena byte offset/length.
+/// Parses and validates a `.dnam`, `.dnam-ckpt`, or `.dnam-seal` (`b"DNSL"`) container, returning
+/// preamble fields, canonical JSON header string, verification status, protection profile, and arena bytes.
 #[pyfunction]
+#[pyo3(signature = (container_bytes, device_id_hash = None, device_secret_32 = None, trusted_marketplace_pubkey_hex = None))]
 pub fn native_validate_container<'py>(
     py: Python<'py>,
     container_bytes: &[u8],
+    device_id_hash: Option<&str>,
+    device_secret_32: Option<&[u8]>,
+    trusted_marketplace_pubkey_hex: Option<&str>,
 ) -> PyResult<Bound<'py, PyDict>> {
-    let crypto = DefaultCryptoProvider::default();
+    let mut crypto = RustCryptoProvider::new();
+    if let (Some(id), Some(sec)) = (device_id_hash, device_secret_32) {
+        let sec_arr: &[u8; 32] = sec.try_into().map_err(|_| {
+            PyValueError::new_err(format!(
+                "[DNAM-VALIDATION] device_secret_32 must be 32 bytes, got {}",
+                sec.len()
+            ))
+        })?;
+        crypto = crypto.with_device_key(id, *sec_arr);
+    }
+    if let Some(mkt_pk_hex) = trusted_marketplace_pubkey_hex {
+        let mkt_pk = decode_hex_array::<32>(mkt_pk_hex).map_err(dnam_err_to_py)?;
+        crypto = crypto.with_marketplace_pubkey(mkt_pk);
+    }
     let view = DnamContainerView::from_bytes(container_bytes, &crypto).map_err(dnam_err_to_py)?;
     let p = &view.preamble;
     let header_json = serde_json::to_string(&view.header)
@@ -126,6 +143,7 @@ pub fn native_validate_container<'py>(
         "verification_status",
         format!("{:?}", view.verification_status),
     )?;
+    dict.set_item("protection_profile", view.protection_profile.as_str())?;
     dict.set_item("header_json", header_json)?;
     dict.set_item(
         "arena_bytes",

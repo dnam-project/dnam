@@ -30,6 +30,9 @@ pub struct ContainerInspectionReport {
     pub author: String,
     /// Cryptographic provenance verification status (`"CreatorVerified"`, `"Unsigned"`, etc.).
     pub verification_status: String,
+    /// Container protection profile (`"open"`, `"device_allowlisted"`, `"enclave_sealed"`).
+    #[serde(default)]
+    pub protection_profile: String,
     /// Whether Core 2 (`M-UFDN`) is active.
     pub core2_active: bool,
     /// Whether $3\text{ kHz}$ LFOs or envelopes are active.
@@ -71,19 +74,78 @@ pub fn detect_native_backend_str() -> &'static str {
     }
 }
 
-/// Inspects a `.dnam` or `.dnam-ckpt` file on disk using `dnam-engine`.
-pub fn inspect_container(path: impl AsRef<Path>) -> StudioResult<ContainerInspectionReport> {
-    let bytes = fs::read(path)?;
-    inspect_container_bytes(&bytes)
+fn decode_hex_32(hex: &str) -> StudioResult<[u8; 32]> {
+    let trimmed = hex.trim();
+    if trimmed.len() != 64 {
+        return Err(StudioError::Validation(format!(
+            "Expected 64 hex chars (32 bytes), got {} chars",
+            trimmed.len()
+        )));
+    }
+    let mut out = [0_u8; 32];
+    for (i, slot) in out.iter_mut().enumerate() {
+        let pair = &trimmed[i * 2..i * 2 + 2];
+        *slot = u8::from_str_radix(pair, 16)
+            .map_err(|_| StudioError::Validation(format!("Invalid hex byte '{pair}'")))?;
+    }
+    Ok(out)
 }
 
-/// Inspects in-memory `.dnam` or `.dnam-ckpt` bytes.
+fn build_crypto_provider(
+    device_id: Option<&str>,
+    device_key_hex: Option<&str>,
+    marketplace_pubkey_hex: Option<&str>,
+) -> StudioResult<DefaultCryptoProvider> {
+    let mut crypto = DefaultCryptoProvider::default();
+    if let (Some(id), Some(key_hex)) = (device_id, device_key_hex) {
+        let secret = decode_hex_32(key_hex)?;
+        crypto = crypto.with_device_key(id.trim(), secret);
+    }
+    if let Some(mkt_hex) = marketplace_pubkey_hex {
+        let pk = decode_hex_32(mkt_hex)?;
+        crypto = crypto.with_marketplace_pubkey(pk);
+    }
+    Ok(crypto)
+}
+
+/// Inspects a `.dnam`, `.dnam-ckpt`, or `.dnam-seal` file on disk using `dnam-engine`.
+pub fn inspect_container(path: impl AsRef<Path>) -> StudioResult<ContainerInspectionReport> {
+    inspect_container_with_crypto(path, None, None, None)
+}
+
+/// Inspects a `.dnam`, `.dnam-ckpt`, or `.dnam-seal` file on disk with optional device/marketplace keys.
+pub fn inspect_container_with_crypto(
+    path: impl AsRef<Path>,
+    device_id: Option<&str>,
+    device_key_hex: Option<&str>,
+    marketplace_pubkey_hex: Option<&str>,
+) -> StudioResult<ContainerInspectionReport> {
+    let bytes = fs::read(path)?;
+    inspect_container_bytes_with_crypto(&bytes, device_id, device_key_hex, marketplace_pubkey_hex)
+}
+
+/// Inspects in-memory `.dnam`, `.dnam-ckpt`, or `.dnam-seal` bytes.
 pub fn inspect_container_bytes(bytes: &[u8]) -> StudioResult<ContainerInspectionReport> {
-    let crypto = DefaultCryptoProvider::default();
+    inspect_container_bytes_with_crypto(bytes, None, None, None)
+}
+
+/// Inspects in-memory `.dnam`, `.dnam-ckpt`, or `.dnam-seal` bytes with optional device/marketplace keys.
+pub fn inspect_container_bytes_with_crypto(
+    bytes: &[u8],
+    device_id: Option<&str>,
+    device_key_hex: Option<&str>,
+    marketplace_pubkey_hex: Option<&str>,
+) -> StudioResult<ContainerInspectionReport> {
+    let crypto = build_crypto_provider(device_id, device_key_hex, marketplace_pubkey_hex)?;
     let view = DnamContainerView::from_bytes(bytes, &crypto)
         .map_err(|e| StudioError::Engine(format!("{e:?}")))?;
     let preamble = &view.preamble;
     let verif = format!("{:?}", view.verification_status);
+    let profile_str = match view.protection_profile {
+        dnam_engine::schema::DnamProtectionProfile::Open => "open",
+        dnam_engine::schema::DnamProtectionProfile::DeviceAllowlisted => "device_allowlisted",
+        dnam_engine::schema::DnamProtectionProfile::EnclaveSealed => "enclave_sealed",
+    };
 
     Ok(ContainerInspectionReport {
         magic: String::from_utf8_lossy(&preamble.magic).into_owned(),
@@ -98,6 +160,7 @@ pub fn inspect_container_bytes(bytes: &[u8]) -> StudioResult<ContainerInspection
             .clone()
             .unwrap_or_else(|| "Unknown".to_string()),
         verification_status: verif,
+        protection_profile: profile_str.to_string(),
         core2_active: (preamble.flags & (1 << 6)) != 0 || view.header.core2_mufdn.active,
         lfo_env_active: (preamble.flags & (1 << 7)) != 0
             || view.header.control_bus.envelopes > 0
@@ -124,8 +187,34 @@ pub fn render_wav_with_options(
     preset_id: Option<&str>,
     control_overrides: &BTreeMap<String, String>,
 ) -> StudioResult<()> {
+    render_wav_with_crypto(
+        container_path,
+        input_wav_path,
+        output_wav_path,
+        tier_str,
+        preset_id,
+        control_overrides,
+        None,
+        None,
+        None,
+    )
+}
+
+/// Renders an input WAV file through a `.dnam` or `.dnam-seal` container with optional device/marketplace keys.
+#[allow(clippy::too_many_arguments)]
+pub fn render_wav_with_crypto(
+    container_path: impl AsRef<Path>,
+    input_wav_path: impl AsRef<Path>,
+    output_wav_path: impl AsRef<Path>,
+    tier_str: &str,
+    preset_id: Option<&str>,
+    control_overrides: &BTreeMap<String, String>,
+    device_id: Option<&str>,
+    device_key_hex: Option<&str>,
+    marketplace_pubkey_hex: Option<&str>,
+) -> StudioResult<()> {
     let container_bytes = fs::read(container_path)?;
-    let crypto = DefaultCryptoProvider::default();
+    let crypto = build_crypto_provider(device_id, device_key_hex, marketplace_pubkey_hex)?;
     let view = DnamContainerView::from_bytes(&container_bytes, &crypto)
         .map_err(|e| StudioError::Engine(format!("{e:?}")))?;
     let input = read_wav(input_wav_path)?;
@@ -134,11 +223,12 @@ pub fn render_wav_with_options(
         "full" => Tier::Full,
         _ => Tier::Ultra,
     };
-    let mut engine = DynamicDnamEngine::from_bytes_owned_with_backend(
+    let mut engine = DynamicDnamEngine::from_bytes_owned_with_backend_and_crypto(
         &container_bytes,
         tier,
         input.sample_rate_hz,
         detect_best_backend(),
+        &crypto,
     )
     .map_err(|e| StudioError::Engine(format!("{e:?}")))?;
 

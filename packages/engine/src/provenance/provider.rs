@@ -1,12 +1,12 @@
 //! Pluggable cryptographic and hardware-enclave provider traits and implementations.
 
-use alloc::string::String;
+use alloc::string::{String, ToString};
 use zeroize::Zeroizing;
 
-use crate::schema::{AuthorizedDevice, DnamError, MarketplaceReceipt};
+use crate::schema::{AuthorizedDevice, DnamError, MarketplaceReceipt, OemDeviceCertificate};
 
 #[cfg(feature = "crypto")]
-use super::sha256::decode_hex_array;
+use super::sha256::{decode_hex_array, encode_hex};
 
 /// Provenance verification status returned when loading a `.dnam` or `.dnam-ckpt` container.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -56,6 +56,40 @@ pub trait CryptoProvider {
         receipt: &MarketplaceReceipt,
         device: &AuthorizedDevice,
     ) -> Result<Zeroizing<[u8; 32]>, DnamError>;
+
+    /// Unwraps a 48-byte `wrapped_cek` from a `.dnam-seal` (`b"DNSL"`) binary recipient slot
+    /// using the 32-byte `ephemeral_pubkey_x25519` and 16-byte raw `device_id_hash`.
+    fn unwrap_seal_slot_cek(
+        &self,
+        ephemeral_pubkey_x25519: &[u8; 32],
+        device_id_hash_16: &[u8; 16],
+        wrapped_cek_48: &[u8; 48],
+    ) -> Result<Zeroizing<[u8; 32]>, DnamError> {
+        let epk_hex = super::sha256::encode_hex(ephemeral_pubkey_x25519);
+        let dev_id_hex = super::sha256::encode_hex(device_id_hash_16);
+        let wrapped_hex = super::sha256::encode_hex(wrapped_cek_48);
+        let dummy_dev = AuthorizedDevice {
+            oem_vendor: String::new(),
+            model_code: String::new(),
+            device_id_hash: dev_id_hex,
+            wrapped_cek: Some(wrapped_hex),
+        };
+        let dummy_receipt = MarketplaceReceipt {
+            marketplace_id: String::new(),
+            license_id: String::new(),
+            buyer_hash: String::new(),
+            license_tier: String::new(),
+            issued_at: String::new(),
+            buyer_arena_sha256: String::new(),
+            encryption_mode: String::from("x25519_chacha20_arena"),
+            arena_nonce_96: None,
+            ephemeral_pubkey_x25519: Some(epk_hex),
+            authorized_devices: alloc::vec![],
+            royalty_splits: alloc::vec![],
+            receipt_sig_ed25519: String::new(),
+        };
+        self.unwrap_device_cek(&dummy_receipt, &dummy_dev)
+    }
 
     /// Optional local hardware `device_id_hash` for automatic selection in `receipt.authorized_devices`.
     fn local_device_id_hash(&self) -> Option<&str> {
@@ -167,6 +201,41 @@ impl RustCryptoProvider {
         use ed25519_dalek::{Signer, SigningKey};
         let sk = SigningKey::from_bytes(seed_32);
         sk.sign(message).to_bytes()
+    }
+
+    /// Derives the 32-byte `X25519` public key from a 32-byte static secret key.
+    #[inline]
+    pub fn x25519_pubkey_from_secret(secret_32: &[u8; 32]) -> [u8; 32] {
+        use x25519_dalek::{PublicKey, StaticSecret};
+        let sk = StaticSecret::from(*secret_32);
+        PublicKey::from(&sk).to_bytes()
+    }
+
+    /// Signs a factory-provisioned [`OemDeviceCertificate`] binding a hardware device's
+    /// `(oem_vendor, model_code, device_id_hash, pubkey_x25519)` to the OEM's root `Ed25519` key.
+    pub fn sign_oem_device_certificate(
+        oem_seed_ed25519: &[u8; 32],
+        oem_vendor: &str,
+        model_code: &str,
+        device_id_hash: &str,
+        pubkey_x25519: &[u8; 32],
+    ) -> Result<OemDeviceCertificate, DnamError> {
+        let raw_id = decode_hex_array::<16>(device_id_hash)?;
+        let normalized_id = encode_hex(&raw_id);
+        let msg = super::verify::build_oem_device_cert_signing_message(
+            oem_vendor,
+            model_code,
+            &normalized_id,
+            pubkey_x25519,
+        );
+        let sig = Self::ed25519_sign(oem_seed_ed25519, &msg);
+        Ok(OemDeviceCertificate {
+            oem_vendor: oem_vendor.to_string(),
+            model_code: model_code.to_string(),
+            device_id_hash: normalized_id,
+            pubkey_x25519: encode_hex(pubkey_x25519),
+            oem_sig_ed25519: encode_hex(&sig),
+        })
     }
 
     /// Wraps a 32-byte Content Encryption Key (`CEK`) for a target device's `X25519` public key
@@ -345,6 +414,10 @@ mod tests {
         };
         assert_eq!(
             open.unwrap_device_cek(&dummy_rcpt, &dummy_dev),
+            Err(DnamError::EncryptedArenaRequiresDeviceKey)
+        );
+        assert_eq!(
+            open.unwrap_seal_slot_cek(&[0u8; 32], &[0u8; 16], &[0u8; 48]),
             Err(DnamError::EncryptedArenaRequiresDeviceKey)
         );
 

@@ -6,6 +6,98 @@
 
 import { z } from "zod";
 
+export type DnamProtectionProfile = "open" | "device_allowlisted" | "enclave_sealed";
+
+export const DnamProtectionProfileSchema = z.enum(["open", "device_allowlisted", "enclave_sealed"]);
+
+export interface DistributionPolicy {
+  allowedProtectionProfiles: DnamProtectionProfile[];
+  allowedOemVendors: string[];
+}
+
+const RawDistributionPolicySchema = z
+  .object({
+    allowed_protection_profiles: z.array(DnamProtectionProfileSchema).optional(),
+    allowedProtectionProfiles: z.array(DnamProtectionProfileSchema).optional(),
+    allowed_oem_vendors: z.array(z.string()).optional(),
+    allowedOemVendors: z.array(z.string()).optional(),
+  })
+  .strict();
+
+export const DistributionPolicySchema: z.ZodType<DistributionPolicy, unknown> =
+  RawDistributionPolicySchema.transform(
+    (raw): DistributionPolicy => ({
+      allowedProtectionProfiles: raw.allowedProtectionProfiles ??
+        raw.allowed_protection_profiles ?? ["open", "device_allowlisted", "enclave_sealed"],
+      allowedOemVendors: raw.allowedOemVendors ?? raw.allowed_oem_vendors ?? [],
+    }),
+  );
+
+export interface OemDeviceCertificate {
+  oemVendor: string;
+  modelCode: string;
+  deviceIdHash: string;
+  pubkeyX25519: string;
+  oemSigEd25519: string;
+}
+
+const RawOemDeviceCertificateSchema = z
+  .object({
+    oem_vendor: z.string().optional(),
+    oemVendor: z.string().optional(),
+    model_code: z.string().optional(),
+    modelCode: z.string().optional(),
+    device_id_hash: z.string().optional(),
+    deviceIdHash: z.string().optional(),
+    pubkey_x25519: z.string().optional(),
+    pubkeyX25519: z.string().optional(),
+    oem_sig_ed25519: z.string().optional(),
+    oemSigEd25519: z.string().optional(),
+  })
+  .strict()
+  .superRefine((val, ctx) => {
+    const vendor = val.oemVendor ?? val.oem_vendor;
+    const model = val.modelCode ?? val.model_code;
+    const devId = val.deviceIdHash ?? val.device_id_hash;
+    const pk = val.pubkeyX25519 ?? val.pubkey_x25519;
+    const sig = val.oemSigEd25519 ?? val.oem_sig_ed25519;
+    if (!vendor || !model || !devId || !pk || !sig) {
+      ctx.addIssue({
+        code: "custom",
+        message:
+          "OemDeviceCertificate requires oemVendor, modelCode, deviceIdHash, pubkeyX25519, and oemSigEd25519",
+      });
+    }
+  });
+
+export const OemDeviceCertificateSchema: z.ZodType<OemDeviceCertificate, unknown> =
+  RawOemDeviceCertificateSchema.transform(
+    (raw): OemDeviceCertificate => ({
+      oemVendor: raw.oemVendor ?? raw.oem_vendor ?? "",
+      modelCode: raw.modelCode ?? raw.model_code ?? "",
+      deviceIdHash: raw.deviceIdHash ?? raw.device_id_hash ?? "",
+      pubkeyX25519: raw.pubkeyX25519 ?? raw.pubkey_x25519 ?? "",
+      oemSigEd25519: raw.oemSigEd25519 ?? raw.oem_sig_ed25519 ?? "",
+    }),
+  );
+
+export function distributionPolicyToWire(policy: DistributionPolicy): Record<string, unknown> {
+  return {
+    allowed_protection_profiles: policy.allowedProtectionProfiles,
+    allowed_oem_vendors: policy.allowedOemVendors,
+  };
+}
+
+export function oemDeviceCertificateToWire(cert: OemDeviceCertificate): Record<string, unknown> {
+  return {
+    oem_vendor: cert.oemVendor,
+    model_code: cert.modelCode,
+    device_id_hash: cert.deviceIdHash,
+    pubkey_x25519: cert.pubkeyX25519,
+    oem_sig_ed25519: cert.oemSigEd25519,
+  };
+}
+
 export interface DatasetProvenance {
   datasetManifestSha256: string;
   configRecipeSha256?: string | undefined;

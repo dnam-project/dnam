@@ -10,7 +10,30 @@ from numpy.typing import NDArray
 from pydantic import Field, PrivateAttr, field_validator
 
 from dnam_engine.exceptions import DnamValidationError
-from dnam_engine.schema.base import StrictModel
+from dnam_engine.schema.base import DnamProtectionProfile, StrictModel
+
+
+class DistributionPolicy(StrictModel):
+    """Creator-signed distribution policy (`metadata.distribution_policy`)."""
+
+    allowed_protection_profiles: list[DnamProtectionProfile] = Field(
+        default_factory=lambda: [
+            DnamProtectionProfile.OPEN,
+            DnamProtectionProfile.DEVICE_ALLOWLISTED,
+            DnamProtectionProfile.ENCLAVE_SEALED,
+        ]
+    )
+    allowed_oem_vendors: list[str] = Field(default_factory=list)
+
+
+class OemDeviceCertificate(StrictModel):
+    """OEM factory-signed device certificate (`Ed25519` attestation of `X25519` public key)."""
+
+    oem_vendor: str = Field(min_length=1)
+    model_code: str = Field(min_length=1)
+    device_id_hash: str = Field(min_length=32, max_length=64)
+    pubkey_x25519: str = Field(min_length=64, max_length=64)
+    oem_sig_ed25519: str = Field(min_length=128, max_length=128)
 
 
 class DatasetProvenance(StrictModel):

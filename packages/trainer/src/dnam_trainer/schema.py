@@ -27,7 +27,9 @@ from dnam_engine.schema import (
     Core2Config,
     CreatorSignature,
     DatasetProvenance,
+    DistributionPolicy,
     DnamJsonHeader,
+    DnamProtectionProfile,
     ExtractedPhysics,
     IoConfig,
     LevelingConfig,
@@ -36,6 +38,7 @@ from dnam_engine.schema import (
     ModelCapabilities,
     ModelMetadata,
     ModelSignatures,
+    OemDeviceCertificate,
     OpenMetadataModel,
     PresetDef,
     SlimmableTiersConfig,
@@ -394,6 +397,7 @@ class TrainingJobRequest(StrictModel):
     config: TrainingConfig = Field(default_factory=TrainingConfig)
     stem_descriptors: list[WireStemDescriptor] = Field(default_factory=list)
     stems: list[TrainingStem] = Field(default_factory=list, exclude=True)
+    distribution_policy: DistributionPolicy | None = None
     user_metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -578,8 +582,10 @@ __all__ = [
     "Core2Config",
     "CreatorSignature",
     "DatasetProvenance",
+    "DistributionPolicy",
     "DnamJsonHeader",
     "DnamProjectManifest",
+    "DnamProtectionProfile",
     "ExtractedPhysics",
     "InMemoryPcmRef",
     "IoConfig",
@@ -590,6 +596,7 @@ __all__ = [
     "ModelCapabilities",
     "ModelMetadata",
     "ModelSignatures",
+    "OemDeviceCertificate",
     "OutputMode",
     "PrecisionPolicy",
     "PresetDef",

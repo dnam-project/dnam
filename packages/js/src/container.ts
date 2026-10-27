@@ -5,6 +5,11 @@
 
 import { type BackendChoice, resolveDriver } from "./drivers/index.js";
 import { DnamValidationError } from "./errors.js";
+import {
+  type SealDnamContainerOptions,
+  sealDnamContainer,
+  type UnsealDnamContainerOptions,
+} from "./provenance.js";
 import { validateStandardSchema } from "./schema/base.js";
 import {
   type DnamJsonHeader,
@@ -12,6 +17,7 @@ import {
   dnamJsonHeaderToWire,
 } from "./schema/header.js";
 import type { PreambleSnapshot, ZohParamsSnapshot } from "./schema/runtime.js";
+import type { DnamProtectionProfile } from "./schema/signatures.js";
 
 export function toUint8Array(input: Uint8Array | ArrayBuffer | ArrayBufferView): Uint8Array {
   if (input instanceof Uint8Array) {
@@ -22,6 +28,12 @@ export function toUint8Array(input: Uint8Array | ArrayBuffer | ArrayBufferView):
   }
   return new Uint8Array(input.buffer, input.byteOffset, input.byteLength);
 }
+
+export interface FromBytesOptions extends UnsealDnamContainerOptions {
+  backend?: BackendChoice | undefined;
+}
+
+export type SealContainerOptions = Omit<SealDnamContainerOptions, "innerDnamBytes">;
 
 export interface BuildContainerOptions {
   header: DnamJsonHeader | Record<string, unknown> | string;
@@ -76,6 +88,7 @@ export class DnamContainer {
   public readonly header: DnamJsonHeader;
   public readonly headerJson: string;
   public readonly verificationStatus: "Unsigned" | "CreatorVerified" | "MarketplaceVerified";
+  public readonly protectionProfile: DnamProtectionProfile;
   public readonly arenaBytes: Uint8Array;
   private readonly defaultBackend?: BackendChoice | undefined;
 
@@ -85,6 +98,7 @@ export class DnamContainer {
     header: DnamJsonHeader,
     headerJson: string,
     verificationStatus: "Unsigned" | "CreatorVerified" | "MarketplaceVerified",
+    protectionProfile: DnamProtectionProfile,
     arenaBytes: Uint8Array,
     defaultBackend?: BackendChoice,
   ) {
@@ -93,6 +107,7 @@ export class DnamContainer {
     this.header = header;
     this.headerJson = headerJson;
     this.verificationStatus = verificationStatus;
+    this.protectionProfile = protectionProfile;
     this.arenaBytes = arenaBytes;
     this.defaultBackend = defaultBackend;
   }
@@ -105,16 +120,26 @@ export class DnamContainer {
   }
 
   /**
-   * Parses and validates a `.dnam` or `.dnam-ckpt` container byte buffer, verifying
-   * 64-byte alignment, Castagnoli `CRC32C` checksums, JSON schema, and `Ed25519` signatures.
+   * Parses and validates a `.dnam`, `.dnam-ckpt`, or `.dnam-seal` (`b"DNSL"`) container byte buffer,
+   * verifying 64-byte alignment, Castagnoli `CRC32C` checksums, JSON schema, `Ed25519` signatures,
+   * and `metadata.distribution_policy`.
    */
   public static fromBytes(
     bytes: Uint8Array | ArrayBuffer | ArrayBufferView,
-    backend?: BackendChoice,
+    backendOrOptions?: BackendChoice | FromBytesOptions,
   ): DnamContainer {
     const u8 = toUint8Array(bytes);
-    const driver = resolveDriver(backend);
-    const raw = driver.validateContainer(u8);
+    const opts: FromBytesOptions =
+      typeof backendOrOptions === "string" || backendOrOptions === undefined
+        ? { backend: backendOrOptions }
+        : backendOrOptions;
+    const driver = resolveDriver(opts.backend);
+    const raw = driver.validateContainer(
+      u8,
+      opts.deviceIdHash,
+      opts.deviceSecretX25519 !== undefined ? toUint8Array(opts.deviceSecretX25519) : undefined,
+      opts.trustedMarketplacePubkeyHex,
+    );
     const parsedHeader: unknown = JSON.parse(raw.headerJson);
     const header = validateStandardSchema(DnamJsonHeaderSchema, parsedHeader, "DnamJsonHeader");
     return new DnamContainer(
@@ -123,28 +148,39 @@ export class DnamContainer {
       header,
       raw.headerJson,
       raw.verificationStatus,
+      raw.protectionProfile,
       raw.arenaBytes,
-      backend,
+      opts.backend,
     );
+  }
+
+  /**
+   * Seals this `.dnam` container into a `.dnam-seal` (`b"DNSL"`) 64-byte aligned outer binary envelope
+   * with nested double encryption (`cek_outer` + `cek_inner`).
+   */
+  public seal(options: SealContainerOptions): Uint8Array {
+    return sealDnamContainer({
+      ...options,
+      innerDnamBytes: this.bytes,
+      backend: options.backend ?? this.defaultBackend,
+    });
+  }
+
+  /**
+   * Unseals a `.dnam-seal` (`b"DNSL"`) outer binary envelope and returns the validated `DnamContainer`.
+   */
+  public static unseal(
+    sealedBytes: Uint8Array | ArrayBuffer | ArrayBufferView,
+    options: FromBytesOptions = {},
+  ): DnamContainer {
+    return DnamContainer.fromBytes(sealedBytes, options);
   }
 
   /**
    * Builds a 4 KB page-aligned `.dnam` or `.dnam-ckpt` container from `header` and `arenaBytes`.
    */
   public static build(options: BuildContainerOptions): DnamContainer {
-    const driver = resolveDriver(options.backend);
-    const headerJson = serializeHeaderInput(options.header);
-    const arenaU8 = toUint8Array(options.arenaBytes);
-    const crcSrc =
-      options.plaintextArenaCrcSource !== undefined
-        ? toUint8Array(options.plaintextArenaCrcSource)
-        : undefined;
-    const builtBytes = driver.buildContainer(
-      headerJson,
-      arenaU8,
-      crcSrc,
-      options.encryptedArena ?? false,
-    );
+    const builtBytes = buildDnamContainer(options);
     return DnamContainer.fromBytes(builtBytes, options.backend);
   }
 
@@ -258,20 +294,27 @@ export class DnamContainer {
 }
 
 /**
- * Validates a `.dnam` or `.dnam-ckpt` byte buffer and returns a `DnamContainer`.
+ * Validates a `.dnam`, `.dnam-ckpt`, or `.dnam-seal` (`b"DNSL"`) byte buffer and returns a `DnamContainer`.
  */
 export function validateDnamModel(
   bytes: Uint8Array | ArrayBuffer | ArrayBufferView,
-  backend?: BackendChoice,
+  backendOrOptions?: BackendChoice | FromBytesOptions,
 ): DnamContainer {
-  return DnamContainer.fromBytes(bytes, backend);
+  return DnamContainer.fromBytes(bytes, backendOrOptions);
 }
 
 /**
  * Builds a 4 KB page-aligned `.dnam` or `.dnam-ckpt` container byte buffer.
  */
 export function buildDnamContainer(options: BuildContainerOptions): Uint8Array {
-  return DnamContainer.build(options).bytes;
+  const driver = resolveDriver(options.backend);
+  const headerJson = serializeHeaderInput(options.header);
+  const arenaU8 = toUint8Array(options.arenaBytes);
+  const crcSrc =
+    options.plaintextArenaCrcSource !== undefined
+      ? toUint8Array(options.plaintextArenaCrcSource)
+      : undefined;
+  return driver.buildContainer(headerJson, arenaU8, crcSrc, options.encryptedArena ?? false);
 }
 
 /**

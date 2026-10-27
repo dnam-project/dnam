@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 import numpy as np
@@ -12,11 +12,11 @@ from numpy.typing import ArrayLike, NDArray
 from dnam_engine import _native, provenance
 from dnam_engine.control import ControlSpace
 from dnam_engine.exceptions import DnamValidationError, call_native
-from dnam_engine.schema.base import VerificationStatus
+from dnam_engine.schema.base import DnamProtectionProfile, VerificationStatus
 from dnam_engine.schema.controls import ClampedControlsResult, ControlSchemaDef, PresetDef
 from dnam_engine.schema.header import DnamJsonHeader
 from dnam_engine.schema.runtime import DnamPreambleInfo, ZohRescaledParams
-from dnam_engine.schema.signatures import WatermarkParams
+from dnam_engine.schema.signatures import OemDeviceCertificate, WatermarkParams
 
 
 class DnamContainer:
@@ -26,10 +26,14 @@ class DnamContainer:
         self,
         raw_bytes: bytes,
         *,
+        device_id_hash: str | None = None,
+        device_secret_x25519: bytes | None = None,
+        trusted_marketplace_pubkey_hex: str | None = None,
         _prevalidated: tuple[
             DnamPreambleInfo,
             DnamJsonHeader,
             VerificationStatus,
+            DnamProtectionProfile,
             bytes,
             ControlSpace,
         ]
@@ -41,12 +45,19 @@ class DnamContainer:
                 self._preamble,
                 self._header,
                 self._verification,
+                self._protection_profile,
                 self._arena_bytes,
                 self._control_space,
             ) = _prevalidated
             return
 
-        info = call_native(_native.native_validate_container, self._raw_bytes)
+        info = call_native(
+            _native.native_validate_container,
+            self._raw_bytes,
+            device_id_hash,
+            device_secret_x25519,
+            trusted_marketplace_pubkey_hex,
+        )
         self._preamble = DnamPreambleInfo._construct_trusted(
             magic=str(info["magic"]),
             version_major=int(info["version_major"]),
@@ -72,18 +83,43 @@ class DnamContainer:
         )
         self._header = DnamJsonHeader.model_validate_json(str(info["header_json"]))
         self._verification = VerificationStatus.from_rust_debug(str(info["verification_status"]))
+        self._protection_profile = DnamProtectionProfile(str(info["protection_profile"]))
         self._arena_bytes: bytes = bytes(info["arena_bytes"])
         self._control_space = ControlSpace(self._header)
 
     @classmethod
-    def from_bytes(cls, data: bytes | bytearray | memoryview) -> DnamContainer:
-        """Parses and validates a `.dnam` or `.dnam-ckpt` container from raw bytes."""
-        return cls(bytes(data))
+    def from_bytes(
+        cls,
+        data: bytes | bytearray | memoryview,
+        *,
+        device_id_hash: str | None = None,
+        device_secret_x25519: bytes | None = None,
+        trusted_marketplace_pubkey_hex: str | None = None,
+    ) -> DnamContainer:
+        """Parses and validates a `.dnam`, `.dnam-ckpt`, or `.dnam-seal` container from bytes."""
+        return cls(
+            bytes(data),
+            device_id_hash=device_id_hash,
+            device_secret_x25519=device_secret_x25519,
+            trusted_marketplace_pubkey_hex=trusted_marketplace_pubkey_hex,
+        )
 
     @classmethod
-    def from_file(cls, path: str | Path) -> DnamContainer:
-        """Loads and validates a `.dnam` or `.dnam-ckpt` container from `path`."""
-        return cls(Path(path).read_bytes())
+    def from_file(
+        cls,
+        path: str | Path,
+        *,
+        device_id_hash: str | None = None,
+        device_secret_x25519: bytes | None = None,
+        trusted_marketplace_pubkey_hex: str | None = None,
+    ) -> DnamContainer:
+        """Loads and validates a `.dnam`, `.dnam-ckpt`, or `.dnam-seal` container from `path`."""
+        return cls(
+            Path(path).read_bytes(),
+            device_id_hash=device_id_hash,
+            device_secret_x25519=device_secret_x25519,
+            trusted_marketplace_pubkey_hex=trusted_marketplace_pubkey_hex,
+        )
 
     @classmethod
     def reference(
@@ -151,6 +187,11 @@ class DnamContainer:
         return self._verification
 
     @property
+    def protection_profile(self) -> DnamProtectionProfile:
+        """Returns the resolved 3-tier container protection profile (`DnamProtectionProfile`)."""
+        return self._protection_profile
+
+    @property
     def is_checkpoint(self) -> bool:
         """Returns `True` if this container is a `.dnam-ckpt` training checkpoint (`DNCK`)."""
         return self._preamble.magic == "DNCK"
@@ -204,6 +245,7 @@ class DnamContainer:
                 new_preamble,
                 updated_header,
                 self._verification,
+                self._protection_profile,
                 self._arena_bytes,
                 new_space,
             ),
@@ -251,6 +293,44 @@ class DnamContainer:
                 update={"metadata": hdr.metadata.model_copy(update={"signatures": None})}
             )
         return DnamContainer.build(hdr, watermarked_arena)
+
+    def seal(
+        self,
+        *,
+        recipient_certs: Sequence[OemDeviceCertificate],
+        trusted_oem_pubkeys: Mapping[str, str],
+        marketplace_seed_32: bytes,
+        ephemeral_secret_32: bytes,
+        cek_32: bytes,
+        nonce_12: bytes,
+    ) -> bytes:
+        """Seals this `.dnam` container into a 64B-aligned `.dnam-seal` (`b"DNSL"`) envelope."""
+        return provenance.seal_container(
+            self._raw_bytes,
+            recipient_certs=recipient_certs,
+            trusted_oem_pubkeys=trusted_oem_pubkeys,
+            marketplace_seed_32=marketplace_seed_32,
+            ephemeral_secret_32=ephemeral_secret_32,
+            cek_32=cek_32,
+            nonce_12=nonce_12,
+        )
+
+    @classmethod
+    def unseal(
+        cls,
+        sealed_bytes: bytes | bytearray | memoryview,
+        *,
+        device_id_hash: str,
+        device_secret_x25519: bytes,
+        trusted_marketplace_pubkey_hex: str | None = None,
+    ) -> DnamContainer:
+        """Unseals a `.dnam-seal` (`b"DNSL"`) envelope and returns the validated `DnamContainer`."""
+        return cls.from_bytes(
+            sealed_bytes,
+            device_id_hash=device_id_hash,
+            device_secret_x25519=device_secret_x25519,
+            trusted_marketplace_pubkey_hex=trusted_marketplace_pubkey_hex,
+        )
 
 
 class GramMatrix:

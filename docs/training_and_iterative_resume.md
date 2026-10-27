@@ -99,7 +99,7 @@ $$\mathbf{G}_{\text{updated}} = \sum_{s=1}^{S + S_{\text{new}}} \mathbf{G}_{\tex
 
 ## 3. Paid Cloud Trainer & Serverless GPU Worker Architecture (`Modal` L4 $\to$ `RunPod` RTX 4090)
 
-`packages/trainer` (`dnam_trainer`) natively supports both local execution (`LocalTrainingBackend`) and cloud execution (`RemoteTrainingBackend`, `prepare_request_for_remote`, and `format_training_event_sse`). The **Paid Cloud Trainer** pairs the **Astro 5 + Cloudflare Workers + R2 + `TiDB Cloud Starter`** control plane ([`digital_marketplace_and_provenance.md` §8](digital_marketplace_and_provenance.md#8-layer-6-cloud-edge-infrastructure-tidb-cloud-starter-schema--r2-storage-topology)) with a **scale-to-zero Serverless GPU Worker** billed strictly per second of active training.
+`packages/trainer` (`dnam_trainer`) natively supports both local execution (`LocalTrainingBackend`) and cloud execution (`RemoteTrainingBackend`, `prepare_request_for_remote`, and `format_training_event_sse`). The **Paid Cloud Trainer** pairs the **Astro 5 + Cloudflare Workers + R2 + `TiDB Cloud Starter`** control plane ([`digital_marketplace_and_provenance.md` §8](digital_marketplace_and_provenance.md#8-cloud-edge-infrastructure-tidb-cloud-starter-schema--oem-sealing-service)) with a **scale-to-zero Serverless GPU Worker** billed strictly per second of active training.
 
 ### 3.1 End-to-End Cloud Training & Iterative Resume Lifecycle
 

@@ -11,6 +11,12 @@ pub mod preamble;
 pub mod view;
 pub mod zoh;
 
+#[cfg(feature = "crypto")]
+pub use crate::provenance::seal_dnam_container;
+pub use crate::provenance::{
+    DNSL_MAGIC, DnamSealEnvelopePreamble, DnamSealRecipientSlot, FLAG_SEAL_CHACHA20_FULL,
+    MAX_SEAL_RECIPIENTS, unseal_dnam_container,
+};
 pub use ckpt::{pack_uplo_u_f64, unpack_uplo_u_f64, uplo_u_packed_len, verify_ckpt_stem_crc32c};
 pub use preamble::DnamPreamble;
 pub use view::{

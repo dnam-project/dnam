@@ -1795,6 +1795,7 @@ class DnamTrainer:
                     ).hexdigest(),
                     epochs_trained=request.config.epochs,
                 ),
+                distribution_policy=request.distribution_policy,
                 signatures=None,
             ),
             user_metadata=dict(request.user_metadata),

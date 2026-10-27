@@ -1,15 +1,16 @@
 //! Provenance, RFC 8785 JCS SHA-256, `Ed25519` signing messages, `ChaCha20` 64B cache-line
 //! arena encryption, Dual-Mechanism Buyer Watermarking (`Test 8H`), and 160-D structural hash FFI.
 
+use dnam_engine::container::{seal_dnam_container, unseal_dnam_container};
 use dnam_engine::provenance::{
     RGLRU_TOTAL_CHANNELS, RustCryptoProvider, STRUCTURAL_HASH_DIM, TARDOS_CONV_WEIGHTS,
     apply_isometric_gauge_watermark, apply_tardos_watermark_4608, build_creator_signing_message,
     build_marketplace_receipt_signing_message, chacha20_xor_arena_blocks,
     compute_immutable_header_sha256, decode_hex_array, encode_hex, extract_structural_hash_160d,
     generate_tardos_code_4608, score_tardos_watermark_4608, sha256_digest,
-    structural_cosine_similarity,
+    structural_cosine_similarity, verify_oem_device_certificate,
 };
-use dnam_engine::schema::{DnamJsonHeader, MarketplaceReceipt};
+use dnam_engine::schema::{DnamJsonHeader, MarketplaceReceipt, OemDeviceCertificate};
 use numpy::{PyArray1, PyReadonlyArray1, PyUntypedArrayMethods};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
@@ -254,6 +255,196 @@ pub fn native_ed25519_sign_hex(seed_32: &[u8], message: &[u8]) -> PyResult<Strin
     Ok(encode_hex(&sig))
 }
 
+/// Derives the 64-character lowercase hex `X25519` public key from a 32-byte secret key.
+#[pyfunction]
+pub fn native_x25519_pubkey_hex(secret_32: &[u8]) -> PyResult<String> {
+    let secret: &[u8; 32] = secret_32.try_into().map_err(|_| {
+        PyValueError::new_err(format!(
+            "[DNAM-VALIDATION] X25519 secret_32 must be 32 bytes, got {}",
+            secret_32.len()
+        ))
+    })?;
+    let pk = RustCryptoProvider::x25519_pubkey_from_secret(secret);
+    Ok(encode_hex(&pk))
+}
+
+/// Wraps a 32-byte Content Encryption Key (`cek_32`) for an OEM device (`X25519` + `HKDF-SHA256` + `ChaCha20`),
+/// returning the 64-character lowercase hex `wrapped_cek`.
+#[pyfunction]
+pub fn native_wrap_device_cek_hex(
+    ephemeral_secret_32: &[u8],
+    device_pubkey_32: &[u8],
+    device_id_hash: &str,
+    cek_32: &[u8],
+) -> PyResult<String> {
+    let eph: &[u8; 32] = ephemeral_secret_32.try_into().map_err(|_| {
+        PyValueError::new_err(format!(
+            "[DNAM-VALIDATION] ephemeral_secret_32 must be 32 bytes, got {}",
+            ephemeral_secret_32.len()
+        ))
+    })?;
+    let dev_pk: &[u8; 32] = device_pubkey_32.try_into().map_err(|_| {
+        PyValueError::new_err(format!(
+            "[DNAM-VALIDATION] device_pubkey_32 must be 32 bytes, got {}",
+            device_pubkey_32.len()
+        ))
+    })?;
+    let cek: &[u8; 32] = cek_32.try_into().map_err(|_| {
+        PyValueError::new_err(format!(
+            "[DNAM-VALIDATION] cek_32 must be 32 bytes, got {}",
+            cek_32.len()
+        ))
+    })?;
+    let wrapped = RustCryptoProvider::wrap_device_cek(eph, dev_pk, device_id_hash, cek)
+        .map_err(dnam_err_to_py)?;
+    Ok(encode_hex(&wrapped))
+}
+
+/// Signs an `OemDeviceCertificate` using the OEM vendor's 32-byte `Ed25519` factory seed,
+/// returning the serialized JSON string of `OemDeviceCertificate`.
+#[pyfunction]
+pub fn native_sign_oem_device_cert(
+    oem_seed_32: &[u8],
+    oem_vendor: &str,
+    model_code: &str,
+    device_id_hash: &str,
+    pubkey_x25519_32: &[u8],
+) -> PyResult<String> {
+    let seed: &[u8; 32] = oem_seed_32.try_into().map_err(|_| {
+        PyValueError::new_err(format!(
+            "[DNAM-VALIDATION] oem_seed_32 must be 32 bytes, got {}",
+            oem_seed_32.len()
+        ))
+    })?;
+    let pk_x25519: &[u8; 32] = pubkey_x25519_32.try_into().map_err(|_| {
+        PyValueError::new_err(format!(
+            "[DNAM-VALIDATION] pubkey_x25519_32 must be 32 bytes, got {}",
+            pubkey_x25519_32.len()
+        ))
+    })?;
+    let cert = RustCryptoProvider::sign_oem_device_certificate(
+        seed,
+        oem_vendor,
+        model_code,
+        device_id_hash,
+        pk_x25519,
+    )
+    .map_err(dnam_err_to_py)?;
+    serde_json::to_string(&cert)
+        .map_err(|e| PyValueError::new_err(format!("[DNAM-VALIDATION] {e}")))
+}
+
+/// Verifies an `OemDeviceCertificate` JSON against a trusted 64-character hex OEM `Ed25519` public key,
+/// returning the verified 64-character lowercase hex `pubkey_x25519`.
+#[pyfunction]
+pub fn native_verify_oem_device_cert(
+    cert_json: &str,
+    trusted_oem_pubkey_hex: &str,
+) -> PyResult<String> {
+    let cert: OemDeviceCertificate = serde_json::from_str(cert_json)
+        .map_err(|e| PyValueError::new_err(format!("[DNAM-VALIDATION] {e}")))?;
+    let oem_pk = decode_hex_array::<32>(trusted_oem_pubkey_hex).map_err(dnam_err_to_py)?;
+    let crypto = RustCryptoProvider::default();
+    let pk_x25519 =
+        verify_oem_device_certificate(&cert, &oem_pk, &crypto).map_err(dnam_err_to_py)?;
+    Ok(encode_hex(&pk_x25519))
+}
+
+/// Seals an inner `.dnam` container into a 64-byte aligned `.dnam-seal` (`b"DNSL"`) hardware-bound envelope.
+#[pyfunction]
+#[allow(clippy::too_many_arguments)]
+pub fn native_seal_container<'py>(
+    py: Python<'py>,
+    inner_dnam_bytes: &[u8],
+    recipient_certs_json: &str,
+    trusted_oem_pubkeys_json: &str,
+    marketplace_seed_32: &[u8],
+    ephemeral_secret_32: &[u8],
+    cek_32: &[u8],
+    nonce_12: &[u8],
+) -> PyResult<Bound<'py, PyBytes>> {
+    let certs: Vec<OemDeviceCertificate> = serde_json::from_str(recipient_certs_json)
+        .map_err(|e| PyValueError::new_err(format!("[DNAM-VALIDATION] {e}")))?;
+    let oem_map: std::collections::BTreeMap<String, String> =
+        serde_json::from_str(trusted_oem_pubkeys_json)
+            .map_err(|e| PyValueError::new_err(format!("[DNAM-VALIDATION] {e}")))?;
+    let mut trusted_owned: Vec<(String, [u8; 32])> = Vec::with_capacity(oem_map.len());
+    for (vendor, pk_hex) in oem_map {
+        let pk = decode_hex_array::<32>(&pk_hex).map_err(dnam_err_to_py)?;
+        trusted_owned.push((vendor, pk));
+    }
+    let trusted_refs: Vec<(&str, [u8; 32])> = trusted_owned
+        .iter()
+        .map(|(v, pk)| (v.as_str(), *pk))
+        .collect();
+
+    let mkt_seed: &[u8; 32] = marketplace_seed_32.try_into().map_err(|_| {
+        PyValueError::new_err(format!(
+            "[DNAM-VALIDATION] marketplace_seed_32 must be 32 bytes, got {}",
+            marketplace_seed_32.len()
+        ))
+    })?;
+    let eph_sec: &[u8; 32] = ephemeral_secret_32.try_into().map_err(|_| {
+        PyValueError::new_err(format!(
+            "[DNAM-VALIDATION] ephemeral_secret_32 must be 32 bytes, got {}",
+            ephemeral_secret_32.len()
+        ))
+    })?;
+    let cek: &[u8; 32] = cek_32.try_into().map_err(|_| {
+        PyValueError::new_err(format!(
+            "[DNAM-VALIDATION] cek_32 must be 32 bytes, got {}",
+            cek_32.len()
+        ))
+    })?;
+    let nonce: &[u8; 12] = nonce_12.try_into().map_err(|_| {
+        PyValueError::new_err(format!(
+            "[DNAM-VALIDATION] nonce_12 must be 12 bytes, got {}",
+            nonce_12.len()
+        ))
+    })?;
+
+    let sealed = seal_dnam_container(
+        inner_dnam_bytes,
+        &certs,
+        &trusted_refs,
+        mkt_seed,
+        eph_sec,
+        cek,
+        nonce,
+    )
+    .map_err(dnam_err_to_py)?;
+    Ok(PyBytes::new(py, &sealed))
+}
+
+/// Unseals a `.dnam-seal` (`b"DNSL"`) hardware-bound envelope using the device's `X25519` secret key,
+/// returning the decrypted inner `.dnam` container bytes.
+#[pyfunction]
+#[pyo3(signature = (sealed_bytes, device_id_hash = None, device_secret_32 = None, trusted_marketplace_pubkey_hex = None))]
+pub fn native_unseal_container<'py>(
+    py: Python<'py>,
+    sealed_bytes: &[u8],
+    device_id_hash: Option<&str>,
+    device_secret_32: Option<&[u8]>,
+    trusted_marketplace_pubkey_hex: Option<&str>,
+) -> PyResult<Bound<'py, PyBytes>> {
+    let mut crypto = RustCryptoProvider::new();
+    if let (Some(id), Some(sec)) = (device_id_hash, device_secret_32) {
+        let sec_arr: &[u8; 32] = sec.try_into().map_err(|_| {
+            PyValueError::new_err(format!(
+                "[DNAM-VALIDATION] device_secret_32 must be 32 bytes, got {}",
+                sec.len()
+            ))
+        })?;
+        crypto = crypto.with_device_key(id, *sec_arr);
+    }
+    if let Some(mkt_pk_hex) = trusted_marketplace_pubkey_hex {
+        let mkt_pk = decode_hex_array::<32>(mkt_pk_hex).map_err(dnam_err_to_py)?;
+        crypto = crypto.with_marketplace_pubkey(mkt_pk);
+    }
+    let unsealed = unseal_dnam_container(sealed_bytes, &crypto).map_err(dnam_err_to_py)?;
+    Ok(PyBytes::new(py, &unsealed))
+}
+
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(native_immutable_header_sha256, m)?)?;
     m.add_function(wrap_pyfunction!(native_sha256_hex, m)?)?;
@@ -271,5 +462,11 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(native_structural_cosine_similarity, m)?)?;
     m.add_function(wrap_pyfunction!(native_ed25519_pubkey_hex, m)?)?;
     m.add_function(wrap_pyfunction!(native_ed25519_sign_hex, m)?)?;
+    m.add_function(wrap_pyfunction!(native_x25519_pubkey_hex, m)?)?;
+    m.add_function(wrap_pyfunction!(native_wrap_device_cek_hex, m)?)?;
+    m.add_function(wrap_pyfunction!(native_sign_oem_device_cert, m)?)?;
+    m.add_function(wrap_pyfunction!(native_verify_oem_device_cert, m)?)?;
+    m.add_function(wrap_pyfunction!(native_seal_container, m)?)?;
+    m.add_function(wrap_pyfunction!(native_unseal_container, m)?)?;
     Ok(())
 }

@@ -5,6 +5,7 @@
 
 import { DnamError, mapTaggedError } from "../errors.js";
 import type { PreambleSnapshot, TelemetrySnapshot, ZohParamsSnapshot } from "../schema/runtime.js";
+import type { DnamProtectionProfile } from "../schema/signatures.js";
 import type {
   DnamControlSpaceHandle,
   DnamDriver,
@@ -87,6 +88,17 @@ export interface DnamWasmExports extends WebAssembly.Exports {
   dnam_wasm_validate_container(
     containerPtr: number,
     containerLen: number,
+    outF64Ptr: number,
+  ): number;
+  dnam_wasm_validate_container_with_key(
+    containerPtr: number,
+    containerLen: number,
+    deviceIdPtr: number,
+    deviceIdLen: number,
+    deviceSecretPtr: number,
+    deviceSecretLen: number,
+    mktPkPtr: number,
+    mktPkLen: number,
     outF64Ptr: number,
   ): number;
   dnam_wasm_build_container(
@@ -317,6 +329,68 @@ export interface DnamWasmExports extends WebAssembly.Exports {
     bPtr: number,
     bLen: number,
     outCosPtr: number,
+  ): number;
+  dnam_wasm_ed25519_pubkey_hex(seedPtr: number, seedLen: number): number;
+  dnam_wasm_ed25519_sign_hex(
+    seedPtr: number,
+    seedLen: number,
+    msgPtr: number,
+    msgLen: number,
+  ): number;
+  dnam_wasm_x25519_pubkey_hex(secretPtr: number, secretLen: number): number;
+  dnam_wasm_wrap_device_cek_hex(
+    ephPtr: number,
+    ephLen: number,
+    devPkPtr: number,
+    devPkLen: number,
+    devIdPtr: number,
+    devIdLen: number,
+    cekPtr: number,
+    cekLen: number,
+  ): number;
+  dnam_wasm_sign_oem_device_cert(
+    oemSeedPtr: number,
+    oemSeedLen: number,
+    vendorPtr: number,
+    vendorLen: number,
+    modelPtr: number,
+    modelLen: number,
+    devIdPtr: number,
+    devIdLen: number,
+    pkX25519Ptr: number,
+    pkX25519Len: number,
+  ): number;
+  dnam_wasm_verify_oem_device_cert(
+    certJsonPtr: number,
+    certJsonLen: number,
+    oemPkPtr: number,
+    oemPkLen: number,
+  ): number;
+  dnam_wasm_seal_container(
+    innerPtr: number,
+    innerLen: number,
+    certsJsonPtr: number,
+    certsJsonLen: number,
+    oemPksJsonPtr: number,
+    oemPksJsonLen: number,
+    mktSeedPtr: number,
+    mktSeedLen: number,
+    ephSecPtr: number,
+    ephSecLen: number,
+    cekPtr: number,
+    cekLen: number,
+    noncePtr: number,
+    nonceLen: number,
+  ): number;
+  dnam_wasm_unseal_container(
+    sealedPtr: number,
+    sealedLen: number,
+    devIdPtr: number,
+    devIdLen: number,
+    devSecPtr: number,
+    devSecLen: number,
+    mktPkPtr: number,
+    mktPkLen: number,
   ): number;
 }
 
@@ -946,52 +1020,83 @@ export class WasmDriver implements DnamDriver {
     });
   }
 
-  public validateContainer(containerBytes: Uint8Array): ValidatedContainerRaw {
-    return this.withBytes(containerBytes, (ptr, len) => {
-      this.checkRc(this.exports.dnam_wasm_validate_container(ptr, len, this.scalarScratchPtr));
-      const v = this.getScalarF64View();
-      const headerJson = textDecoder.decode(this.readLastResultBytes());
-      const arenaBytes = this.readLastArenaBytes();
-      const preamble: PreambleSnapshot = {
-        magic: (v[0] ?? 0) === 1 ? "DNCK" : "DNAM",
-        versionMajor: v[1] ?? 1,
-        versionMinor: v[2] ?? 0,
-        flagsBits: v[3] ?? 0,
-        numControls: v[4] ?? 0,
-        ringBufferPow2Log2: v[5] ?? 0,
-        sampleRateTrainHz: v[6] ?? 48_000,
-        jsonHeaderByteLen: v[7] ?? 0,
-        tensorArenaOffset: v[8] ?? 4096,
-        tensorArenaByteLen: v[9] ?? 0,
-        arenaOffsetLiteEnd: v[10] ?? 10_752,
-        arenaOffsetFullEnd: v[11] ?? 22_336,
-        arenaOffsetUltraEnd: v[12] ?? 36_224,
-        arenaCrc32cLite: (v[13] ?? 0) >>> 0,
-        arenaCrc32cFull: (v[14] ?? 0) >>> 0,
-        arenaCrc32cUltra: (v[15] ?? 0) >>> 0,
-        numCkptStems: v[16] ?? 0,
-        controlDecimation: v[17] ?? 16,
-        headSvdRank: v[18] ?? 4,
-        tailTimeMs: v[19] ?? 0,
-        headerCrc32c: (v[20] ?? 0) >>> 0,
-        core2Active: (v[21] ?? 0) !== 0,
-        lfoEnvActive: (v[22] ?? 0) !== 0,
-        stereoOut: (v[23] ?? 0) !== 0,
-      };
-      const statusCode = v[24] ?? 0;
-      const verificationStatus =
-        statusCode === 1
-          ? "CreatorVerified"
-          : statusCode === 2
-            ? "MarketplaceVerified"
-            : "Unsigned";
-      return {
-        preamble,
-        verificationStatus,
-        headerJson,
-        arenaBytes,
-      };
-    });
+  public validateContainer(
+    containerBytes: Uint8Array,
+    deviceIdHash?: string,
+    deviceSecret32?: Uint8Array,
+    trustedMarketplacePubkeyHex?: string,
+  ): ValidatedContainerRaw {
+    return this.withBytes(containerBytes, (ptr, len) =>
+      this.withString(deviceIdHash ?? "", (devIdPtr, devIdLen) =>
+        this.withBytes(deviceSecret32 ?? new Uint8Array(0), (devSecPtr, devSecLen) =>
+          this.withString(trustedMarketplacePubkeyHex ?? "", (mktPkPtr, mktPkLen) => {
+            this.checkRc(
+              this.exports.dnam_wasm_validate_container_with_key(
+                ptr,
+                len,
+                devIdPtr,
+                devIdLen,
+                devSecPtr,
+                devSecLen,
+                mktPkPtr,
+                mktPkLen,
+                this.scalarScratchPtr,
+              ),
+            );
+            const v = this.getScalarF64View();
+            const headerJson = textDecoder.decode(this.readLastResultBytes());
+            const arenaBytes = this.readLastArenaBytes();
+            const preamble: PreambleSnapshot = {
+              magic: (v[0] ?? 0) === 1 ? "DNCK" : "DNAM",
+              versionMajor: v[1] ?? 1,
+              versionMinor: v[2] ?? 0,
+              flagsBits: v[3] ?? 0,
+              numControls: v[4] ?? 0,
+              ringBufferPow2Log2: v[5] ?? 0,
+              sampleRateTrainHz: v[6] ?? 48_000,
+              jsonHeaderByteLen: v[7] ?? 0,
+              tensorArenaOffset: v[8] ?? 4096,
+              tensorArenaByteLen: v[9] ?? 0,
+              arenaOffsetLiteEnd: v[10] ?? 10_752,
+              arenaOffsetFullEnd: v[11] ?? 22_336,
+              arenaOffsetUltraEnd: v[12] ?? 36_224,
+              arenaCrc32cLite: (v[13] ?? 0) >>> 0,
+              arenaCrc32cFull: (v[14] ?? 0) >>> 0,
+              arenaCrc32cUltra: (v[15] ?? 0) >>> 0,
+              numCkptStems: v[16] ?? 0,
+              controlDecimation: v[17] ?? 16,
+              headSvdRank: v[18] ?? 4,
+              tailTimeMs: v[19] ?? 0,
+              headerCrc32c: (v[20] ?? 0) >>> 0,
+              core2Active: (v[21] ?? 0) !== 0,
+              lfoEnvActive: (v[22] ?? 0) !== 0,
+              stereoOut: (v[23] ?? 0) !== 0,
+            };
+            const statusCode = v[24] ?? 0;
+            const verificationStatus =
+              statusCode === 1
+                ? "CreatorVerified"
+                : statusCode === 2
+                  ? "MarketplaceVerified"
+                  : "Unsigned";
+            const profileCode = v[25] ?? 0;
+            const protectionProfile: DnamProtectionProfile =
+              profileCode === 1
+                ? "device_allowlisted"
+                : profileCode === 2
+                  ? "enclave_sealed"
+                  : "open";
+            return {
+              preamble,
+              verificationStatus,
+              protectionProfile,
+              headerJson,
+              arenaBytes,
+            };
+          }),
+        ),
+      ),
+    );
   }
 
   public buildContainer(
@@ -1673,6 +1778,174 @@ export class WasmDriver implements DnamDriver {
         );
         return this.getScalarF64View()[0] ?? 0;
       }),
+    );
+  }
+
+  public ed25519PubkeyHex(seed32: Uint8Array): string {
+    return this.withBytes(seed32, (ptr, len) => {
+      this.checkRc(this.exports.dnam_wasm_ed25519_pubkey_hex(ptr, len));
+      return textDecoder.decode(this.readLastResultBytes());
+    });
+  }
+
+  public ed25519SignHex(seed32: Uint8Array, message: Uint8Array): string {
+    return this.withBytes(seed32, (sPtr, sLen) =>
+      this.withBytes(message, (mPtr, mLen) => {
+        this.checkRc(this.exports.dnam_wasm_ed25519_sign_hex(sPtr, sLen, mPtr, mLen));
+        return textDecoder.decode(this.readLastResultBytes());
+      }),
+    );
+  }
+
+  public x25519PubkeyHex(secret32: Uint8Array): string {
+    return this.withBytes(secret32, (ptr, len) => {
+      this.checkRc(this.exports.dnam_wasm_x25519_pubkey_hex(ptr, len));
+      return textDecoder.decode(this.readLastResultBytes());
+    });
+  }
+
+  public wrapDeviceCekHex(
+    ephemeralSecret32: Uint8Array,
+    devicePubkey32: Uint8Array,
+    deviceIdHash: string,
+    cek32: Uint8Array,
+  ): string {
+    return this.withBytes(ephemeralSecret32, (ePtr, eLen) =>
+      this.withBytes(devicePubkey32, (dPtr, dLen) =>
+        this.withString(deviceIdHash, (idPtr, idLen) =>
+          this.withBytes(cek32, (cPtr, cLen) => {
+            this.checkRc(
+              this.exports.dnam_wasm_wrap_device_cek_hex(
+                ePtr,
+                eLen,
+                dPtr,
+                dLen,
+                idPtr,
+                idLen,
+                cPtr,
+                cLen,
+              ),
+            );
+            return textDecoder.decode(this.readLastResultBytes());
+          }),
+        ),
+      ),
+    );
+  }
+
+  public signOemDeviceCert(
+    oemSeed32: Uint8Array,
+    oemVendor: string,
+    modelCode: string,
+    deviceIdHash: string,
+    pubkeyX25519_32: Uint8Array,
+  ): string {
+    return this.withBytes(oemSeed32, (sPtr, sLen) =>
+      this.withString(oemVendor, (vPtr, vLen) =>
+        this.withString(modelCode, (mPtr, mLen) =>
+          this.withString(deviceIdHash, (idPtr, idLen) =>
+            this.withBytes(pubkeyX25519_32, (pkPtr, pkLen) => {
+              this.checkRc(
+                this.exports.dnam_wasm_sign_oem_device_cert(
+                  sPtr,
+                  sLen,
+                  vPtr,
+                  vLen,
+                  mPtr,
+                  mLen,
+                  idPtr,
+                  idLen,
+                  pkPtr,
+                  pkLen,
+                ),
+              );
+              return textDecoder.decode(this.readLastResultBytes());
+            }),
+          ),
+        ),
+      ),
+    );
+  }
+
+  public verifyOemDeviceCert(certJson: string, trustedOemPubkeyHex: string): string {
+    return this.withString(certJson, (cPtr, cLen) =>
+      this.withString(trustedOemPubkeyHex, (pPtr, pLen) => {
+        this.checkRc(this.exports.dnam_wasm_verify_oem_device_cert(cPtr, cLen, pPtr, pLen));
+        return textDecoder.decode(this.readLastResultBytes());
+      }),
+    );
+  }
+
+  public sealContainer(
+    innerDnamBytes: Uint8Array,
+    recipientCertsJson: string,
+    trustedOemPubkeysJson: string,
+    marketplaceSeed32: Uint8Array,
+    ephemeralSecret32: Uint8Array,
+    cek32: Uint8Array,
+    nonce12: Uint8Array,
+  ): Uint8Array {
+    return this.withBytes(innerDnamBytes, (inPtr, inLen) =>
+      this.withString(recipientCertsJson, (cPtr, cLen) =>
+        this.withString(trustedOemPubkeysJson, (oPtr, oLen) =>
+          this.withBytes(marketplaceSeed32, (mPtr, mLen) =>
+            this.withBytes(ephemeralSecret32, (ePtr, eLen) =>
+              this.withBytes(cek32, (kPtr, kLen) =>
+                this.withBytes(nonce12, (nPtr, nLen) => {
+                  this.checkRc(
+                    this.exports.dnam_wasm_seal_container(
+                      inPtr,
+                      inLen,
+                      cPtr,
+                      cLen,
+                      oPtr,
+                      oLen,
+                      mPtr,
+                      mLen,
+                      ePtr,
+                      eLen,
+                      kPtr,
+                      kLen,
+                      nPtr,
+                      nLen,
+                    ),
+                  );
+                  return this.readLastResultBytes();
+                }),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  public unsealContainer(
+    sealedBytes: Uint8Array,
+    deviceIdHash?: string,
+    deviceSecret32?: Uint8Array,
+    trustedMarketplacePubkeyHex?: string,
+  ): Uint8Array {
+    return this.withBytes(sealedBytes, (sPtr, sLen) =>
+      this.withString(deviceIdHash ?? "", (idPtr, idLen) =>
+        this.withBytes(deviceSecret32 ?? new Uint8Array(0), (secPtr, secLen) =>
+          this.withString(trustedMarketplacePubkeyHex ?? "", (mPtr, mLen) => {
+            this.checkRc(
+              this.exports.dnam_wasm_unseal_container(
+                sPtr,
+                sLen,
+                idPtr,
+                idLen,
+                secPtr,
+                secLen,
+                mPtr,
+                mLen,
+              ),
+            );
+            return this.readLastResultBytes();
+          }),
+        ),
+      ),
     );
   }
 }

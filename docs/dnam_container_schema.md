@@ -4,6 +4,7 @@ Free from legacy NAM A2 text-JSON weight array constraints and Python `pickle` (
 
 1. **`.dnam` (Magic `b"DNAM"`, Version `1.0`):** The single-file real-time deployment container ($10.5\text{ KB}$ `Lite` / $21.8\text{ KB}$ `Full` / $35.4\text{ KB}$ `Ultra` binary arena) loaded via zero-copy `mmap` or `Float32Array` view by the Rust SIMD engine (`packages/engine`), audio plugin (`packages/plugin`), Python wheel (`packages/python`), and Node.js/WASM runtime (`packages/js`).
 2. **`.dnam-ckpt` (Magic `b"DNCK"`, Version `1.0`):** The deduplicated, `pickle`-free single-file iterative training checkpoint. Its leading tensor arenas (`Arena 0..2`) are **bit-for-bit identical** to the exported `.dnam` model, followed by `Arena 3` containing the tier-ordered **Column-Major Upper-Triangular (`uplo='U'`) `float64` audio sufficient statistics** $\{\operatorname{pack}_{\text{U}}\!\big(\mathbf{G}_{\text{audio}}^{(s)}\big),\; \mathbf{C}_{\text{audio}}^{(s)}\}$ (**$17.25\text{ KB/stem}$ `Lite` / $66.50\text{ KB/stem}$ `Full` / $147.75\text{ KB/stem}$ `Ultra`**—nearly $2\times$ smaller than full matrix storage and $100\%$ 64-byte aligned).
+3. **`.dnam-seal` (Magic `b"DNSL"`, Version `1.0`):** The 100% opaque, immutable 64-byte cache-line aligned OEM hardware wrapper (`DnamSealEnvelope`, `DnamProtectionProfile::EnclaveSealed`) that wraps an inner `ENCRYPTED_ARENA = 1` `.dnam` container (`cek_arena`) inside an outer `ChaCha20` + `X25519` `HPKE` binary envelope (`cek_outer`) for factory-attested hardware TrustZone enclaves (`OemDeviceCertificate`, see [`digital_marketplace_and_provenance.md` §3](digital_marketplace_and_provenance.md#3-pillar-2-hardware-enclave--oem-drm-oemdevicecertificate-attestation--dnam-seal-bdnsl-wrapper)).
 
 ---
 
@@ -521,17 +522,17 @@ In addition to all standard `.dnam` JSON fields (`metadata`, `user_metadata`, `c
 
 ---
 
-## 7. Hardware-Agnostic Marketplace Security, Split-Payload `Ed25519` Signatures & Isometric Gauge-Space Traitor Tracing
+## 7. 4-Pillar Marketplace Security, Creator `DistributionPolicy`, `.dnam-seal` (`DNSL`) Hardware DRM & Isometric Gauge Traitor Tracing
 
 > [!IMPORTANT]
-> **Canonical Marketplace Specification:** See **[`digital_marketplace_and_provenance.md`](digital_marketplace_and_provenance.md)** for the complete marketplace architecture, end-to-end Mermaid workflow, Isometric Gauge-Space & Spread-Spectrum Tardos Traitor-Tracing proofs, 3-Stage Ingestion Scanner, zero-leak browser auditioning, and `royalty_splits` / storefront `user_metadata` conventions.
+> **Canonical Marketplace Specification:** See **[`digital_marketplace_and_provenance.md`](digital_marketplace_and_provenance.md)** for the complete 4-Pillar Security Architecture, 3 Container Protection Profiles (`Open`, `DeviceAllowlisted`, `EnclaveSealed`), creator-signed `DistributionPolicy`, `.dnam-seal` (`b"DNSL"`) 64-byte binary envelope, `OemDeviceCertificate` factory key attestation, Isometric Gauge-Space & Spread-Spectrum Tardos Traitor-Tracing proofs, and `TiDB Cloud Starter` schema.
 
-To support commercial model distribution without hardware dongles or online DRM that breaks offline DAW sessions, `.dnam` defines an optional `metadata.signatures` envelope (`HAS_SIGNATURES` bit `9` in preamble `flags`):
+To support commercial model distribution across open desktop DAWs (`Open`), device-bound desktop/mobile plugins (`DeviceAllowlisted`, `ENCRYPTED_ARENA = 1`), and factory-attested OEM hardware pedalboards (`EnclaveSealed`, `.dnam-seal` `b"DNSL"`), `.dnam` defines an optional creator-signed `metadata.distribution_policy` and `metadata.signatures` envelope (`HAS_SIGNATURES` bit `9` in preamble `flags`):
 
-1. **Preset-Safe `immutable_header_sha256` & 2-Certificate `Ed25519` Delegation Chain (`< 80 µs` Offline UI Verification):**
-   - `immutable_header_sha256` hashes the RFC 8785 canonical JSON header **excluding** `presets`, `user_metadata`, `metadata.signatures`, and `slimmable_tiers.*.prefix_crc32c`, allowing buyers to save custom DAW presets in-place (`0x40..0x1000`) without invalidating either signature.
+1. **Preset-Safe `immutable_header_sha256`, Creator `DistributionPolicy` & 2-Certificate `Ed25519` Delegation Chain (`< 80 µs` Offline UI Verification, See [`digital_marketplace_and_provenance.md` §2](digital_marketplace_and_provenance.md#2-pillar-1-cryptographic-provenance-ed25519-split-payload-chain--creator-signed-distributionpolicy)):**
+   - `immutable_header_sha256` hashes the RFC 8785 canonical JSON header **including** `metadata.distribution_policy` (`allowed_protection_profiles`, `allowed_oem_vendors` supporting `"darkglass"` and `"darkglass:anagram_rk3582"`) while **excluding** `presets`, `user_metadata`, `metadata.signatures`, and `slimmable_tiers.*.prefix_crc32c`, allowing buyers to save custom DAW presets in-place (`0x40..0x1000`) on `.dnam` files without invalidating either signature.
    - **`creator_signature`:** Signed once offline by the creator's `Ed25519` private key over `immutable_header_sha256 || master_arena_sha256`.
-   - **`marketplace_receipt`:** Counter-signed on download (`< 0.1 ms`) by the marketplace's `Ed25519` key binding `master_arena_sha256` $\to$ `buyer_arena_sha256`, `license_id`, `buyer_hash`, `license_tier`, and optional `royalty_splits`:
+   - **`marketplace_receipt`:** Counter-signed on download (`< 0.1 ms`) by the marketplace's `Ed25519` key binding `master_arena_sha256` $\to$ `buyer_arena_sha256`, `license_id`, `buyer_hash`, `license_tier`, `authorized_devices`, and optional `royalty_splits`:
 
 ```json
 {
@@ -569,10 +570,12 @@ To support commercial model distribution without hardware dongles or online DRM 
 }
 ```
 
-2. **Dual-Mechanism Buyer Watermarking in `Arena 0..2` (`< 0.2 ms` Edge Personalization, See [`digital_marketplace_and_provenance.md` §4](digital_marketplace_and_provenance.md#4-layer-2-dual-mechanism-buyer-watermarking--02-ms-edge-personalization)):**
+2. **Dual-Mechanism Buyer Watermarking in `Arena 0..2` (`< 0.2 ms` Edge Personalization, See [`digital_marketplace_and_provenance.md` §4](digital_marketplace_and_provenance.md#4-pillar-3-forensic-traitor-tracing--02-ms-dual-mechanism-buyer-watermarking)):**
    - **Mechanism A (Exact Isometric Gauge Watermark, `0.0000 dB` Audio Distortion):** Applies 48-channel RG-LRU reciprocal scaling ($\kappa_{b,c}$ on $b_{\gamma,b,c}$ and $\kappa_{b,c}^{-1}$ on $(c_{\text{real},b,c}, c_{\text{imag},b,c})$) plus SVD control subspace orthogonal rotation ($\mathbf{Q}_{\text{buyer}} \in SO(D_h)$).
    - **Mechanism B (Coupled Spread-Spectrum Tardos Watermark, `+36.63 dB` Gain across `4,608` Conv Weights):** Survives JSON header stripping, RG-LRU gauge canonicalization, `f32 -> fp16` truncation, and multi-buyer weight-averaging collusion (`min(Z_colluder) >= 24.98 sigma` in `Test 8H`).
-3. **Optional OEM Hardware Device Authorization (`authorized_devices` & `X25519` + `ChaCha20` 64-Byte Block Arena Wrapping, See [`digital_marketplace_and_provenance.md` §7](digital_marketplace_and_provenance.md#7-layer-5-optional-oem-hardware-device-authorization-authorized_devices--x25519--chacha20-64-byte-block-arena-wrapping)):**
-   - Supports both open `authorized_devices` allowlists (`"encryption_mode": "none"`, `ENCRYPTED_ARENA = 0`) and hardware-bound `X25519` + `ChaCha20` 64-byte block stream encryption (`"encryption_mode": "x25519_chacha20_arena"`, `ENCRYPTED_ARENA = 1`) backed by Rockchip RK3582 `OTP`/`OP-TEE` TrustZone keys—preserving exact `Lite` (`168` blocks) / `Full` (`349` blocks) / `Ultra` (`566` blocks) byte lengths (`0` padding overhead), `< 15 µs` prefix decryption on Cortex-A55, and `< 0.1 ms` in-place multi-pedal `wrapped_cek` updates inside the `4 KB` header page (`0x40..0x1000`).
+3. **3-Tier Protection Profiles & `.dnam-seal` (`b"DNSL"`) Hardware Enclave Wrapper (See [`digital_marketplace_and_provenance.md` §3](digital_marketplace_and_provenance.md#3-pillar-2-hardware-enclave--oem-drm-oemdevicecertificate-attestation--dnam-seal-bdnsl-wrapper) & [`§6`](digital_marketplace_and_provenance.md#6-three-container-protection-profiles-dnamprotectionprofile--loader-auto-detection)):**
+   - **`Open` (`"open"`):** Standard `.dnam` (`ENCRYPTED_ARENA = 0`).
+   - **`DeviceAllowlisted` (`"device_allowlisted"`):** `.dnam` (`ENCRYPTED_ARENA = 1`) with plaintext `4 KB` header for DAW/OS indexing and `ChaCha20`-encrypted `Arena 0..2` (`cek_arena`).
+   - **`EnclaveSealed` (`"enclave_sealed"`):** Canonical `.dnam-seal` (`b"DNSL"`) 64-byte aligned binary wrapper (`DnamSealEnvelope`) encrypting 100% of an inner `ENCRYPTED_ARENA = 1` `.dnam` container (`cek_outer` + inner `cek_arena`) for factory-attested OEM hardware TrustZone enclaves (`OemDeviceCertificate`).
 
 

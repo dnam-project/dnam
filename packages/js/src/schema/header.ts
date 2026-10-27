@@ -16,7 +16,10 @@ import {
 import {
   type DatasetProvenance,
   DatasetProvenanceSchema,
+  type DistributionPolicy,
+  DistributionPolicySchema,
   datasetProvenanceToWire,
+  distributionPolicyToWire,
   type ModelSignatures,
   ModelSignaturesSchema,
   modelSignaturesToWire,
@@ -30,6 +33,7 @@ export interface ModelMetadata {
   createdAt: string;
   inputReferenceDbfs: number;
   provenance: DatasetProvenance;
+  distributionPolicy?: DistributionPolicy | undefined;
   signatures?: ModelSignatures | undefined;
 }
 
@@ -44,6 +48,8 @@ const RawModelMetadataSchema = z
     input_reference_dbfs: z.number().optional(),
     inputReferenceDbfs: z.number().optional(),
     provenance: DatasetProvenanceSchema.optional(),
+    distribution_policy: DistributionPolicySchema.nullable().optional(),
+    distributionPolicy: DistributionPolicySchema.nullable().optional(),
     signatures: ModelSignaturesSchema.nullable().optional(),
   })
   .strict();
@@ -61,6 +67,7 @@ export const ModelMetadataSchema: z.ZodType<ModelMetadata, unknown> =
         datasetManifestSha256: "",
         epochsTrained: 0,
       },
+      distributionPolicy: raw.distributionPolicy ?? raw.distribution_policy ?? undefined,
       signatures: raw.signatures ?? undefined,
     };
   });
@@ -825,6 +832,11 @@ export function dnamJsonHeaderToWire(header: DnamJsonHeader): Record<string, unk
       created_at: header.metadata.createdAt,
       input_reference_dbfs: header.metadata.inputReferenceDbfs,
       provenance: datasetProvenanceToWire(header.metadata.provenance),
+      ...(header.metadata.distributionPolicy !== undefined
+        ? {
+            distribution_policy: distributionPolicyToWire(header.metadata.distributionPolicy),
+          }
+        : {}),
       signatures: header.metadata.signatures
         ? modelSignaturesToWire(header.metadata.signatures)
         : null,

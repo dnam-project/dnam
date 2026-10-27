@@ -246,7 +246,7 @@ pub fn build_training_request_json(
         config_obj["supports_trails"] = json!(trails);
     }
 
-    json!({
+    let mut req = json!({
         "model_id": model.model_id,
         "model_name": model.title,
         "author": workspace.project.author,
@@ -255,7 +255,11 @@ pub fn build_training_request_json(
         "presets": presets,
         "config": config_obj,
         "stem_descriptors": stem_descriptors,
-    })
+    });
+    if let Some(policy) = &model.distribution_policy {
+        req["distribution_policy"] = serde_json::to_value(policy).unwrap_or(Value::Null);
+    }
+    req
 }
 
 /// Parses newline-delimited JSONL `TrainingEvent` messages emitted by `dnam-train`.
@@ -561,6 +565,7 @@ mod tests {
                     switches: sw_map,
                 },
             ],
+            distribution_policy: None,
         };
 
         let req = build_training_request_json(&ws, &model, &dir, Some(4));

@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use dnam_engine::schema::ControlCalibration;
+use dnam_engine::schema::{ControlCalibration, DistributionPolicy};
 use serde::{Deserialize, Serialize};
 
 use crate::capture::TargetExcitationProfile;
@@ -242,7 +242,14 @@ pub struct ModelManifest {
     pub presets: Vec<PresetSpec>,
     /// Registered dry/wet stems.
     pub stems: Vec<StemRecord>,
+    /// Optional creator-signed distribution policy (`allowed_protection_profiles`, `allowed_oem_vendors`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub distribution_policy: Option<DistributionPolicy>,
 }
+
+pub use dnam_engine::schema::{
+    DistributionPolicy as ModelDistributionPolicy, DnamProtectionProfile as ModelProtectionProfile,
+};
 
 #[cfg(test)]
 mod tests {

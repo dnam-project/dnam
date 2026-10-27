@@ -634,6 +634,7 @@ mod tests {
                 switches,
                 presets: Vec::new(),
                 stems: Vec::new(),
+                distribution_policy: None,
             };
 
             let plan = build_capture_plan(&model, include_corners);
@@ -712,6 +713,7 @@ mod tests {
             }],
             presets: Vec::new(),
             stems: Vec::new(),
+            distribution_policy: None,
         }
     }
 
@@ -729,6 +731,7 @@ mod tests {
             switches: Vec::new(),
             presets: Vec::new(),
             stems: Vec::new(),
+            distribution_policy: None,
         };
         let unity_plan = build_capture_plan(&empty_model, false);
         assert_eq!(unity_plan.steps.len(), 1);
@@ -890,6 +893,7 @@ mod tests {
             switches: Vec::new(),
             presets: Vec::new(),
             stems: Vec::new(),
+            distribution_policy: None,
         };
         let plan = build_capture_plan(&model, true);
         assert_eq!(plan.steps.len(), 9);

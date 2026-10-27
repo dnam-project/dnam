@@ -7,7 +7,7 @@ use std::slice;
 use crate::container::{
     ControlSpaceCore, build_container_core, build_reference_container_core, compute_zoh_core,
     crc32c_core, pack_uplo_u_core, unpack_uplo_u_core, update_header_in_place_core,
-    validate_container_core,
+    validate_container_with_key_core,
 };
 use crate::dsp::{
     cubic_lagrange_weights_core, eval_chebyshev_lfo_core, eval_chebyshev_lfo_slice_core,
@@ -21,9 +21,11 @@ use crate::engine::{EngineCore, backend_kind_code, backend_kind_from_code};
 use crate::provenance::{
     apply_isometric_gauge_watermark_core, apply_tardos_watermark_core,
     build_creator_signing_message_core, build_marketplace_signing_message_core,
-    chacha20_xor_arena_core, extract_structural_hash_core, generate_tardos_code_core,
-    immutable_header_sha256_core, score_tardos_watermark_core, sha256_hex_core,
-    structural_cosine_similarity_core,
+    chacha20_xor_arena_core, ed25519_pubkey_hex_core, ed25519_sign_hex_core,
+    extract_structural_hash_core, generate_tardos_code_core, immutable_header_sha256_core,
+    score_tardos_watermark_core, seal_container_core, sha256_hex_core, sign_oem_device_cert_core,
+    structural_cosine_similarity_core, unseal_container_core, verify_oem_device_cert_core,
+    wrap_device_cek_hex_core, x25519_pubkey_hex_core,
 };
 
 thread_local! {
@@ -436,16 +438,62 @@ pub extern "C" fn dnam_wasm_validate_container(
     container_len: usize,
     out_f64_ptr: *mut f64,
 ) -> i32 {
+    dnam_wasm_validate_container_with_key(
+        container_ptr,
+        container_len,
+        core::ptr::null(),
+        0,
+        core::ptr::null(),
+        0,
+        core::ptr::null(),
+        0,
+        out_f64_ptr,
+    )
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn dnam_wasm_validate_container_with_key(
+    container_ptr: *const u8,
+    container_len: usize,
+    device_id_ptr: *const u8,
+    device_id_len: usize,
+    device_secret_ptr: *const u8,
+    device_secret_len: usize,
+    mkt_pk_ptr: *const u8,
+    mkt_pk_len: usize,
+    out_f64_ptr: *mut f64,
+) -> i32 {
     if out_f64_ptr.is_null() {
         return set_error("[DNAM-VALIDATION] Null output pointer".to_string());
     }
     let bytes = unsafe { slice_from_raw(container_ptr, container_len) };
-    let info = match validate_container_core(bytes) {
+    let dev_id = if !device_id_ptr.is_null() && device_id_len > 0 {
+        match unsafe { str_from_raw(device_id_ptr, device_id_len) } {
+            Ok(s) => Some(s),
+            Err(e) => return set_error(e),
+        }
+    } else {
+        None
+    };
+    let dev_sec = if !device_secret_ptr.is_null() && device_secret_len > 0 {
+        Some(unsafe { slice_from_raw(device_secret_ptr, device_secret_len) })
+    } else {
+        None
+    };
+    let mkt_pk = if !mkt_pk_ptr.is_null() && mkt_pk_len > 0 {
+        match unsafe { str_from_raw(mkt_pk_ptr, mkt_pk_len) } {
+            Ok(s) => Some(s),
+            Err(e) => return set_error(e),
+        }
+    } else {
+        None
+    };
+    let info = match validate_container_with_key_core(bytes, dev_id, dev_sec, mkt_pk) {
         Ok(i) => i,
         Err(e) => return set_error(e),
     };
     let p = info.preamble;
-    let out = unsafe { slice_from_raw_mut(out_f64_ptr, 25) };
+    let out = unsafe { slice_from_raw_mut(out_f64_ptr, 26) };
     out[0] = if info.magic_str == "DNCK" { 1.0 } else { 0.0 };
     out[1] = f64::from(p.version_major);
     out[2] = f64::from(p.version_minor);
@@ -473,6 +521,11 @@ pub extern "C" fn dnam_wasm_validate_container(
     out[24] = match info.verification_status.as_str() {
         "CreatorVerified" => 1.0,
         "MarketplaceVerified" => 2.0,
+        _ => 0.0,
+    };
+    out[25] = match info.protection_profile.as_str() {
+        "device_allowlisted" => 1.0,
+        "enclave_sealed" => 2.0,
         _ => 0.0,
     };
     LAST_ARENA.with(|a| {
@@ -1160,6 +1213,200 @@ pub extern "C" fn dnam_wasm_structural_cosine_similarity(
             }
             0
         }
+        Err(e) => set_error(e),
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn dnam_wasm_ed25519_pubkey_hex(seed_ptr: *const u8, seed_len: usize) -> i32 {
+    let seed = unsafe { slice_from_raw(seed_ptr, seed_len) };
+    match ed25519_pubkey_hex_core(seed) {
+        Ok(hex) => set_result(hex.into_bytes()),
+        Err(e) => set_error(e),
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn dnam_wasm_ed25519_sign_hex(
+    seed_ptr: *const u8,
+    seed_len: usize,
+    msg_ptr: *const u8,
+    msg_len: usize,
+) -> i32 {
+    let seed = unsafe { slice_from_raw(seed_ptr, seed_len) };
+    let msg = unsafe { slice_from_raw(msg_ptr, msg_len) };
+    match ed25519_sign_hex_core(seed, msg) {
+        Ok(hex) => set_result(hex.into_bytes()),
+        Err(e) => set_error(e),
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn dnam_wasm_x25519_pubkey_hex(secret_ptr: *const u8, secret_len: usize) -> i32 {
+    let secret = unsafe { slice_from_raw(secret_ptr, secret_len) };
+    match x25519_pubkey_hex_core(secret) {
+        Ok(hex) => set_result(hex.into_bytes()),
+        Err(e) => set_error(e),
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn dnam_wasm_wrap_device_cek_hex(
+    eph_ptr: *const u8,
+    eph_len: usize,
+    dev_pk_ptr: *const u8,
+    dev_pk_len: usize,
+    dev_id_ptr: *const u8,
+    dev_id_len: usize,
+    cek_ptr: *const u8,
+    cek_len: usize,
+) -> i32 {
+    let eph = unsafe { slice_from_raw(eph_ptr, eph_len) };
+    let dev_pk = unsafe { slice_from_raw(dev_pk_ptr, dev_pk_len) };
+    let dev_id = match unsafe { str_from_raw(dev_id_ptr, dev_id_len) } {
+        Ok(s) => s,
+        Err(e) => return set_error(e),
+    };
+    let cek = unsafe { slice_from_raw(cek_ptr, cek_len) };
+    match wrap_device_cek_hex_core(eph, dev_pk, dev_id, cek) {
+        Ok(hex) => set_result(hex.into_bytes()),
+        Err(e) => set_error(e),
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn dnam_wasm_sign_oem_device_cert(
+    oem_seed_ptr: *const u8,
+    oem_seed_len: usize,
+    vendor_ptr: *const u8,
+    vendor_len: usize,
+    model_ptr: *const u8,
+    model_len: usize,
+    dev_id_ptr: *const u8,
+    dev_id_len: usize,
+    pk_x25519_ptr: *const u8,
+    pk_x25519_len: usize,
+) -> i32 {
+    let seed = unsafe { slice_from_raw(oem_seed_ptr, oem_seed_len) };
+    let vendor = match unsafe { str_from_raw(vendor_ptr, vendor_len) } {
+        Ok(s) => s,
+        Err(e) => return set_error(e),
+    };
+    let model = match unsafe { str_from_raw(model_ptr, model_len) } {
+        Ok(s) => s,
+        Err(e) => return set_error(e),
+    };
+    let dev_id = match unsafe { str_from_raw(dev_id_ptr, dev_id_len) } {
+        Ok(s) => s,
+        Err(e) => return set_error(e),
+    };
+    let pk_x25519 = unsafe { slice_from_raw(pk_x25519_ptr, pk_x25519_len) };
+    match sign_oem_device_cert_core(seed, vendor, model, dev_id, pk_x25519) {
+        Ok(json_str) => set_result(json_str.into_bytes()),
+        Err(e) => set_error(e),
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn dnam_wasm_verify_oem_device_cert(
+    cert_json_ptr: *const u8,
+    cert_json_len: usize,
+    oem_pk_ptr: *const u8,
+    oem_pk_len: usize,
+) -> i32 {
+    let cert_json = match unsafe { str_from_raw(cert_json_ptr, cert_json_len) } {
+        Ok(s) => s,
+        Err(e) => return set_error(e),
+    };
+    let oem_pk = match unsafe { str_from_raw(oem_pk_ptr, oem_pk_len) } {
+        Ok(s) => s,
+        Err(e) => return set_error(e),
+    };
+    match verify_oem_device_cert_core(cert_json, oem_pk) {
+        Ok(pk_hex) => set_result(pk_hex.into_bytes()),
+        Err(e) => set_error(e),
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn dnam_wasm_seal_container(
+    inner_ptr: *const u8,
+    inner_len: usize,
+    certs_json_ptr: *const u8,
+    certs_json_len: usize,
+    oem_pks_json_ptr: *const u8,
+    oem_pks_json_len: usize,
+    mkt_seed_ptr: *const u8,
+    mkt_seed_len: usize,
+    eph_sec_ptr: *const u8,
+    eph_sec_len: usize,
+    cek_ptr: *const u8,
+    cek_len: usize,
+    nonce_ptr: *const u8,
+    nonce_len: usize,
+) -> i32 {
+    let inner = unsafe { slice_from_raw(inner_ptr, inner_len) };
+    let certs_json = match unsafe { str_from_raw(certs_json_ptr, certs_json_len) } {
+        Ok(s) => s,
+        Err(e) => return set_error(e),
+    };
+    let oem_pks_json = match unsafe { str_from_raw(oem_pks_json_ptr, oem_pks_json_len) } {
+        Ok(s) => s,
+        Err(e) => return set_error(e),
+    };
+    let mkt_seed = unsafe { slice_from_raw(mkt_seed_ptr, mkt_seed_len) };
+    let eph_sec = unsafe { slice_from_raw(eph_sec_ptr, eph_sec_len) };
+    let cek = unsafe { slice_from_raw(cek_ptr, cek_len) };
+    let nonce = unsafe { slice_from_raw(nonce_ptr, nonce_len) };
+    match seal_container_core(
+        inner,
+        certs_json,
+        oem_pks_json,
+        mkt_seed,
+        eph_sec,
+        cek,
+        nonce,
+    ) {
+        Ok(bytes) => set_result(bytes),
+        Err(e) => set_error(e),
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn dnam_wasm_unseal_container(
+    sealed_ptr: *const u8,
+    sealed_len: usize,
+    dev_id_ptr: *const u8,
+    dev_id_len: usize,
+    dev_sec_ptr: *const u8,
+    dev_sec_len: usize,
+    mkt_pk_ptr: *const u8,
+    mkt_pk_len: usize,
+) -> i32 {
+    let sealed = unsafe { slice_from_raw(sealed_ptr, sealed_len) };
+    let dev_id = if !dev_id_ptr.is_null() && dev_id_len > 0 {
+        match unsafe { str_from_raw(dev_id_ptr, dev_id_len) } {
+            Ok(s) => Some(s),
+            Err(e) => return set_error(e),
+        }
+    } else {
+        None
+    };
+    let dev_sec = if !dev_sec_ptr.is_null() && dev_sec_len > 0 {
+        Some(unsafe { slice_from_raw(dev_sec_ptr, dev_sec_len) })
+    } else {
+        None
+    };
+    let mkt_pk = if !mkt_pk_ptr.is_null() && mkt_pk_len > 0 {
+        match unsafe { str_from_raw(mkt_pk_ptr, mkt_pk_len) } {
+            Ok(s) => Some(s),
+            Err(e) => return set_error(e),
+        }
+    } else {
+        None
+    };
+    match unseal_container_core(sealed, dev_id, dev_sec, mkt_pk) {
+        Ok(bytes) => set_result(bytes),
         Err(e) => set_error(e),
     }
 }

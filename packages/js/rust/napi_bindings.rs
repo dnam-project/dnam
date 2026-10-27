@@ -9,7 +9,7 @@ use napi_derive::napi;
 use crate::container::{
     ControlSpaceCore, build_container_core, build_reference_container_core, compute_zoh_core,
     crc32c_core, pack_uplo_u_core, unpack_uplo_u_core, update_header_in_place_core,
-    validate_container_core,
+    validate_container_with_key_core,
 };
 use crate::dsp::{
     cubic_lagrange_weights_core, eval_chebyshev_lfo_core, eval_chebyshev_lfo_slice_core,
@@ -23,9 +23,11 @@ use crate::engine::{EngineCore, backend_kind_str, parse_backend_kind};
 use crate::provenance::{
     apply_isometric_gauge_watermark_core, apply_tardos_watermark_core,
     build_creator_signing_message_core, build_marketplace_signing_message_core,
-    chacha20_xor_arena_core, extract_structural_hash_core, generate_tardos_code_core,
-    immutable_header_sha256_core, score_tardos_watermark_core, sha256_hex_core,
-    structural_cosine_similarity_core,
+    chacha20_xor_arena_core, ed25519_pubkey_hex_core, ed25519_sign_hex_core,
+    extract_structural_hash_core, generate_tardos_code_core, immutable_header_sha256_core,
+    score_tardos_watermark_core, seal_container_core, sha256_hex_core, sign_oem_device_cert_core,
+    structural_cosine_similarity_core, unseal_container_core, verify_oem_device_cert_core,
+    wrap_device_cek_hex_core, x25519_pubkey_hex_core,
 };
 
 fn to_napi_err(msg: String) -> Error {
@@ -449,13 +451,25 @@ pub struct NativeValidatedContainer {
     pub lfo_env_active: bool,
     pub stereo_out: bool,
     pub verification_status: String,
+    pub protection_profile: String,
     pub header_json: String,
     pub arena_bytes: Uint8Array,
 }
 
 #[napi]
-pub fn native_validate_container(container_bytes: &[u8]) -> Result<NativeValidatedContainer> {
-    let info = validate_container_core(container_bytes).map_err(to_napi_err)?;
+pub fn native_validate_container(
+    container_bytes: &[u8],
+    device_id_hash: Option<String>,
+    device_secret_32: Option<&[u8]>,
+    trusted_marketplace_pubkey_hex: Option<String>,
+) -> Result<NativeValidatedContainer> {
+    let info = validate_container_with_key_core(
+        container_bytes,
+        device_id_hash.as_deref(),
+        device_secret_32,
+        trusted_marketplace_pubkey_hex.as_deref(),
+    )
+    .map_err(to_napi_err)?;
     let p = info.preamble;
     Ok(NativeValidatedContainer {
         magic: info.magic_str,
@@ -483,6 +497,7 @@ pub fn native_validate_container(container_bytes: &[u8]) -> Result<NativeValidat
         lfo_env_active: p.is_lfo_env_active(),
         stereo_out: p.is_stereo_out(),
         verification_status: info.verification_status,
+        protection_profile: info.protection_profile,
         header_json: info.header_json,
         arena_bytes: Uint8Array::new(info.arena_bytes),
     })
@@ -1065,4 +1080,102 @@ pub fn native_extract_structural_hash(arena_bytes: &[u8]) -> Result<Float64Array
 #[napi]
 pub fn native_structural_cosine_similarity(a: &[f64], b: &[f64]) -> Result<f64> {
     structural_cosine_similarity_core(a, b).map_err(to_napi_err)
+}
+
+#[napi]
+pub fn native_ed25519_pubkey_hex(seed_32: &[u8]) -> Result<String> {
+    ed25519_pubkey_hex_core(seed_32).map_err(to_napi_err)
+}
+
+#[napi]
+pub fn native_ed25519_sign_hex(seed_32: &[u8], message: &[u8]) -> Result<String> {
+    ed25519_sign_hex_core(seed_32, message).map_err(to_napi_err)
+}
+
+#[napi]
+pub fn native_x25519_pubkey_hex(secret_32: &[u8]) -> Result<String> {
+    x25519_pubkey_hex_core(secret_32).map_err(to_napi_err)
+}
+
+#[napi]
+pub fn native_wrap_device_cek_hex(
+    ephemeral_secret_32: &[u8],
+    device_pubkey_32: &[u8],
+    device_id_hash: String,
+    cek_32: &[u8],
+) -> Result<String> {
+    wrap_device_cek_hex_core(
+        ephemeral_secret_32,
+        device_pubkey_32,
+        &device_id_hash,
+        cek_32,
+    )
+    .map_err(to_napi_err)
+}
+
+#[napi]
+pub fn native_sign_oem_device_cert(
+    oem_seed_32: &[u8],
+    oem_vendor: String,
+    model_code: String,
+    device_id_hash: String,
+    pubkey_x25519_32: &[u8],
+) -> Result<String> {
+    sign_oem_device_cert_core(
+        oem_seed_32,
+        &oem_vendor,
+        &model_code,
+        &device_id_hash,
+        pubkey_x25519_32,
+    )
+    .map_err(to_napi_err)
+}
+
+#[napi]
+pub fn native_verify_oem_device_cert(
+    cert_json: String,
+    trusted_oem_pubkey_hex: String,
+) -> Result<String> {
+    verify_oem_device_cert_core(&cert_json, &trusted_oem_pubkey_hex).map_err(to_napi_err)
+}
+
+#[napi]
+#[allow(clippy::too_many_arguments)]
+pub fn native_seal_container(
+    inner_dnam_bytes: &[u8],
+    recipient_certs_json: String,
+    trusted_oem_pubkeys_json: String,
+    marketplace_seed_32: &[u8],
+    ephemeral_secret_32: &[u8],
+    cek_32: &[u8],
+    nonce_12: &[u8],
+) -> Result<Uint8Array> {
+    let sealed = seal_container_core(
+        inner_dnam_bytes,
+        &recipient_certs_json,
+        &trusted_oem_pubkeys_json,
+        marketplace_seed_32,
+        ephemeral_secret_32,
+        cek_32,
+        nonce_12,
+    )
+    .map_err(to_napi_err)?;
+    Ok(Uint8Array::new(sealed))
+}
+
+#[napi]
+pub fn native_unseal_container(
+    sealed_bytes: &[u8],
+    device_id_hash: Option<String>,
+    device_secret_32: Option<&[u8]>,
+    trusted_marketplace_pubkey_hex: Option<String>,
+) -> Result<Uint8Array> {
+    let unsealed = unseal_container_core(
+        sealed_bytes,
+        device_id_hash.as_deref(),
+        device_secret_32,
+        trusted_marketplace_pubkey_hex.as_deref(),
+    )
+    .map_err(to_napi_err)?;
+    Ok(Uint8Array::new(unsealed))
 }

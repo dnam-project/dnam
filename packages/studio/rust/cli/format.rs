@@ -620,6 +620,7 @@ mod tests {
             }],
             presets: Vec::new(),
             stems: Vec::new(),
+            distribution_policy: None,
         };
         let status = format_workspace_status(&manifest, std::slice::from_ref(&model));
         assert!(status.contains("Workspace: WS"));

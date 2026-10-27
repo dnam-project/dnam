@@ -129,6 +129,14 @@ class ControlKind(StrEnum):
     SWITCH = "switch"
 
 
+class DnamProtectionProfile(StrEnum):
+    """3-Tier container protection profile (`open`, `device_allowlisted`, `enclave_sealed`)."""
+
+    OPEN = "open"
+    DEVICE_ALLOWLISTED = "device_allowlisted"
+    ENCLAVE_SEALED = "enclave_sealed"
+
+
 class VerificationStatus(StrEnum):
     """Cryptographic provenance verification status for a `.dnam` or `.dnam-ckpt` container."""
 

@@ -4,13 +4,20 @@ and 160-D Gauge-Invariant Structural Hashing."""
 
 from __future__ import annotations
 
+import json
+from collections.abc import Mapping, Sequence
+
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
 from dnam_engine import _native
 from dnam_engine.exceptions import DnamValidationError, call_native
 from dnam_engine.schema.header import DnamJsonHeader
-from dnam_engine.schema.signatures import MarketplaceReceipt, WatermarkParams
+from dnam_engine.schema.signatures import (
+    MarketplaceReceipt,
+    OemDeviceCertificate,
+    WatermarkParams,
+)
 
 
 def sha256_hex(data: bytes) -> str:
@@ -183,3 +190,96 @@ def ed25519_sign_hex(seed_32: bytes, message: bytes) -> str:
     Signs `message` using a 32-byte `Ed25519` secret seed, returning the 128-char hex signature.
     """
     return call_native(_native.native_ed25519_sign_hex, seed_32, message)
+
+
+def x25519_pubkey_hex(secret_32: bytes) -> str:
+    """Derives the 64-character lowercase hex `X25519` public key from a 32-byte secret key."""
+    return call_native(_native.native_x25519_pubkey_hex, secret_32)
+
+
+def wrap_device_cek_hex(
+    ephemeral_secret_32: bytes,
+    device_pubkey_32: bytes,
+    device_id_hash: str,
+    cek_32: bytes,
+) -> str:
+    """Wraps a 32-byte Content Encryption Key (`cek_32`) for an OEM device (`X25519` + `HKDF`)."""
+    return call_native(
+        _native.native_wrap_device_cek_hex,
+        ephemeral_secret_32,
+        device_pubkey_32,
+        device_id_hash,
+        cek_32,
+    )
+
+
+def sign_oem_device_certificate(
+    oem_seed_32: bytes,
+    *,
+    oem_vendor: str,
+    model_code: str,
+    device_id_hash: str,
+    pubkey_x25519_32: bytes,
+) -> OemDeviceCertificate:
+    """Signs an `OemDeviceCertificate` using the OEM vendor's 32-byte `Ed25519` factory seed."""
+    cert_json = call_native(
+        _native.native_sign_oem_device_cert,
+        oem_seed_32,
+        oem_vendor,
+        model_code,
+        device_id_hash,
+        pubkey_x25519_32,
+    )
+    return OemDeviceCertificate.model_validate_json(cert_json)
+
+
+def verify_oem_device_certificate(
+    cert: OemDeviceCertificate | str,
+    trusted_oem_pubkey_hex: str,
+) -> str:
+    """Verifies an `OemDeviceCertificate` against a trusted 64-char hex OEM `Ed25519` public key,
+    returning the verified 64-char hex `pubkey_x25519`."""
+    cert_json = cert if isinstance(cert, str) else cert.model_dump_json()
+    return call_native(_native.native_verify_oem_device_cert, cert_json, trusted_oem_pubkey_hex)
+
+
+def seal_container(
+    inner_dnam_bytes: bytes,
+    *,
+    recipient_certs: Sequence[OemDeviceCertificate],
+    trusted_oem_pubkeys: Mapping[str, str],
+    marketplace_seed_32: bytes,
+    ephemeral_secret_32: bytes,
+    cek_32: bytes,
+    nonce_12: bytes,
+) -> bytes:
+    """Seals an inner `.dnam` container into a 64B-aligned `.dnam-seal` (`b"DNSL"`) envelope."""
+    certs_json = json.dumps([c.model_dump(mode="json") for c in recipient_certs])
+    oem_pks_json = json.dumps(dict(trusted_oem_pubkeys))
+    return call_native(
+        _native.native_seal_container,
+        inner_dnam_bytes,
+        certs_json,
+        oem_pks_json,
+        marketplace_seed_32,
+        ephemeral_secret_32,
+        cek_32,
+        nonce_12,
+    )
+
+
+def unseal_container(
+    sealed_bytes: bytes,
+    *,
+    device_id_hash: str | None = None,
+    device_secret_32: bytes | None = None,
+    trusted_marketplace_pubkey_hex: str | None = None,
+) -> bytes:
+    """Unseals a `.dnam-seal` (`b"DNSL"`) envelope using the device's `X25519` secret key."""
+    return call_native(
+        _native.native_unseal_container,
+        sealed_bytes,
+        device_id_hash,
+        device_secret_32,
+        trusted_marketplace_pubkey_hex,
+    )

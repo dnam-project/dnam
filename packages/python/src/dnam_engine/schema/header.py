@@ -9,7 +9,7 @@ from pydantic import Field, field_validator, model_validator
 from dnam_engine.exceptions import DnamSampleRateError, DnamValidationError
 from dnam_engine.schema.base import StrictModel
 from dnam_engine.schema.controls import ControlSchemaDef, PresetDef
-from dnam_engine.schema.signatures import DatasetProvenance, ModelSignatures
+from dnam_engine.schema.signatures import DatasetProvenance, DistributionPolicy, ModelSignatures
 
 
 class ModelMetadata(StrictModel):
@@ -22,6 +22,7 @@ class ModelMetadata(StrictModel):
     created_at: str = Field(min_length=1)
     input_reference_dbfs: float = -20.5
     provenance: DatasetProvenance = Field(default_factory=DatasetProvenance)
+    distribution_policy: DistributionPolicy | None = None
     signatures: ModelSignatures | None = None
 
 

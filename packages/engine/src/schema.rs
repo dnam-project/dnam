@@ -23,6 +23,6 @@ pub use header::{
     TierProfile,
 };
 pub use signatures::{
-    AuthorizedDevice, CreatorSignature, DatasetProvenance, MarketplaceReceipt, ModelSignatures,
-    RoyaltySplit,
+    AuthorizedDevice, CreatorSignature, DatasetProvenance, DistributionPolicy,
+    DnamProtectionProfile, MarketplaceReceipt, ModelSignatures, OemDeviceCertificate, RoyaltySplit,
 };

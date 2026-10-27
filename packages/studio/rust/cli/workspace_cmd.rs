@@ -12,7 +12,10 @@ use crate::ipc::official_tauri_plugins;
 use crate::project::{
     DnamProject, ModelManifest, parse_compact_range_spec, parse_compact_switch_spec,
 };
-use crate::runner::{detect_native_backend_str, inspect_container, render_wav_with_options};
+use crate::runner::{
+    detect_native_backend_str, inspect_container, inspect_container_with_crypto,
+    render_wav_with_crypto, render_wav_with_options,
+};
 
 /// Subcommands under `dnam model`.
 #[derive(Debug, Subcommand)]
@@ -63,6 +66,12 @@ pub enum ModelAction {
         /// Updated topology (`auto`, `core1_only`, `full`).
         #[arg(long)]
         topology: Option<String>,
+        /// Allowed container protection profiles (`open`, `device_allowlisted`, `enclave_sealed`).
+        #[arg(long = "allow-profile")]
+        allow_profiles: Vec<String>,
+        /// Allowed OEM vendors (`darkglass`, `darkglass:anagram_rk3582`).
+        #[arg(long = "allow-oem")]
+        allow_oems: Vec<String>,
     },
     /// Remove a model from the workspace.
     Remove {
@@ -333,6 +342,22 @@ pub fn run_inspect(container_path: &Path) -> StudioResult<String> {
     Ok(serde_json::to_string_pretty(&report)?)
 }
 
+/// Executes `dnam inspect` with optional device/marketplace keys.
+pub fn run_inspect_with_crypto(
+    container_path: &Path,
+    device_id: Option<&str>,
+    device_key_hex: Option<&str>,
+    marketplace_pubkey_hex: Option<&str>,
+) -> StudioResult<String> {
+    let report = inspect_container_with_crypto(
+        container_path,
+        device_id,
+        device_key_hex,
+        marketplace_pubkey_hex,
+    )?;
+    Ok(serde_json::to_string_pretty(&report)?)
+}
+
 /// Executes `dnam render`.
 pub fn run_render(
     container_path: &Path,
@@ -357,6 +382,45 @@ pub fn run_render(
         tier,
         preset,
         &overrides,
+    )?;
+    Ok(format!(
+        "Rendered 24-bit WAV to {} (tier={})",
+        output_wav.display(),
+        tier
+    ))
+}
+
+/// Executes `dnam render` with optional device/marketplace keys.
+#[allow(clippy::too_many_arguments)]
+pub fn run_render_with_crypto(
+    container_path: &Path,
+    input_wav: &Path,
+    output_wav: &Path,
+    tier: &str,
+    preset: Option<&str>,
+    set_controls: &[String],
+    device_id: Option<&str>,
+    device_key_hex: Option<&str>,
+    marketplace_pubkey_hex: Option<&str>,
+) -> StudioResult<String> {
+    let mut overrides = BTreeMap::new();
+    for item in set_controls {
+        for part in item.split(',') {
+            if let Some((k, v)) = part.trim().split_once('=') {
+                overrides.insert(k.trim().to_string(), v.trim().to_string());
+            }
+        }
+    }
+    render_wav_with_crypto(
+        container_path,
+        input_wav,
+        output_wav,
+        tier,
+        preset,
+        &overrides,
+        device_id,
+        device_key_hex,
+        marketplace_pubkey_hex,
     )?;
     Ok(format!(
         "Rendered 24-bit WAV to {} (tier={})",
@@ -410,8 +474,10 @@ pub fn run_model(workspace: &Path, action: &ModelAction) -> StudioResult<String>
             description,
             output_mode,
             topology,
+            allow_profiles,
+            allow_oems,
         } => {
-            let updated = proj.update_model(
+            let mut updated = proj.update_model(
                 id,
                 title.as_deref(),
                 tier.as_deref(),
@@ -419,6 +485,9 @@ pub fn run_model(workspace: &Path, action: &ModelAction) -> StudioResult<String>
                 output_mode.as_deref(),
                 topology.as_deref(),
             )?;
+            if !allow_profiles.is_empty() || !allow_oems.is_empty() {
+                updated = proj.update_model_distribution_policy(id, allow_profiles, allow_oems)?;
+            }
             Ok(format!("Updated model '{}'", updated.model_id))
         }
         ModelAction::Remove { id, delete_files } => {
@@ -694,6 +763,8 @@ mod tests {
                 description: Some("Updated".to_string()),
                 output_mode: Some("mono".to_string()),
                 topology: Some("core1_only".to_string()),
+                allow_profiles: vec!["enclave_sealed".to_string()],
+                allow_oems: vec!["darkglass:anagram_rk3582".to_string()],
             },
         )
         .expect("model update");

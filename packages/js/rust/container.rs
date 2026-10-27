@@ -9,9 +9,9 @@ use dnam_engine::container::{
     update_header_in_place, uplo_u_packed_len,
 };
 use dnam_engine::control::{ControlClampDescriptor, MAX_CONTROLS};
-use dnam_engine::provenance::DefaultCryptoProvider;
+use dnam_engine::provenance::{RustCryptoProvider, decode_hex_array};
 use dnam_engine::schema::{
-    ControlKind, ControlSchemaDef, ControlUiHints, DnamJsonHeader, PresetDef,
+    ControlKind, ControlSchemaDef, ControlUiHints, DnamJsonHeader, DnamProtectionProfile, PresetDef,
 };
 
 use crate::format_tagged_dnam_error;
@@ -112,17 +112,49 @@ pub struct ValidatedContainerInfo {
     pub preamble: DnamPreamble,
     pub magic_str: String,
     pub verification_status: String,
+    pub protection_profile: String,
     pub header_json: String,
     pub arena_bytes: Vec<u8>,
 }
 
-/// Parses and validates a `.dnam` or `.dnam-ckpt` container byte slice.
+/// Parses and validates a `.dnam`, `.dnam-ckpt`, or `.dnam-seal` (`b"DNSL"`) container byte slice.
 pub fn validate_container_core(container_bytes: &[u8]) -> Result<ValidatedContainerInfo, String> {
-    let crypto = DefaultCryptoProvider::default();
+    validate_container_with_key_core(container_bytes, None, None, None)
+}
+
+/// Parses and validates a `.dnam`, `.dnam-ckpt`, or `.dnam-seal` (`b"DNSL"`) container byte slice
+/// with optional OEM device key and trusted marketplace public key.
+pub fn validate_container_with_key_core(
+    container_bytes: &[u8],
+    device_id_hash: Option<&str>,
+    device_secret_32: Option<&[u8]>,
+    trusted_marketplace_pubkey_hex: Option<&str>,
+) -> Result<ValidatedContainerInfo, String> {
+    let mut crypto = RustCryptoProvider::new();
+    if let (Some(id), Some(sec)) = (device_id_hash, device_secret_32)
+        && !id.is_empty()
+        && !sec.is_empty()
+    {
+        let sec_arr: &[u8; 32] = sec.try_into().map_err(|_| {
+            format!(
+                "[DNAM-VALIDATION] deviceSecret32 must be 32 bytes, got {}",
+                sec.len()
+            )
+        })?;
+        crypto = crypto.with_device_key(id, *sec_arr);
+    }
+    if let Some(mkt_pk_hex) = trusted_marketplace_pubkey_hex
+        && !mkt_pk_hex.is_empty()
+    {
+        let mkt_pk =
+            decode_hex_array::<32>(mkt_pk_hex).map_err(|e| format_tagged_dnam_error(&e))?;
+        crypto = crypto.with_marketplace_pubkey(mkt_pk);
+    }
     let view = DnamContainerView::from_bytes(container_bytes, &crypto)
         .map_err(|e| format_tagged_dnam_error(&e))?;
     let json_end = 64_usize.saturating_add(view.preamble.json_header_byte_len as usize);
-    let header_json = if container_bytes.len() >= json_end
+    let header_json = if view.protection_profile != DnamProtectionProfile::EnclaveSealed
+        && container_bytes.len() >= json_end
         && let Ok(raw_str) = core::str::from_utf8(&container_bytes[64..json_end])
     {
         raw_str.to_string()
@@ -146,6 +178,7 @@ pub fn validate_container_core(container_bytes: &[u8]) -> Result<ValidatedContai
         preamble: view.preamble,
         magic_str,
         verification_status,
+        protection_profile: view.protection_profile.as_str().to_string(),
         header_json,
         arena_bytes: view.arena_storage.as_bytes().to_vec(),
     })

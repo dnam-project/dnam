@@ -8,7 +8,8 @@ use crate::math::{DefaultMathBackend, MathBackend};
 use crate::memory::{AlignedBuffer, AlignedFp16Block, ArenaStorage, CacheLine64};
 use crate::provenance::{CryptoProvider, DefaultCryptoProvider, VerificationStatus};
 use crate::schema::{
-    ControlCalibrationRole, DnamError, DnamJsonHeader, TempoSubdivision, cold_pow_f64,
+    ControlCalibrationRole, DnamError, DnamJsonHeader, DnamProtectionProfile, TempoSubdivision,
+    cold_pow_f64,
 };
 use crate::types::{DnamTelemetrySnapshot, FtzDazGuard, Tier};
 
@@ -19,6 +20,7 @@ pub struct DnamEngine<'a, B: MathBackend = DefaultMathBackend> {
     preamble: DnamPreamble,
     header: Option<DnamJsonHeader>,
     verification_status: VerificationStatus,
+    protection_profile: DnamProtectionProfile,
     arena_storage: ArenaStorage<'a>,
     tier: Tier,
     max_available_tier: Tier,
@@ -41,15 +43,26 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
         Self::from_bytes_with_crypto(bytes, tier, sample_rate_hz, &crypto)
     }
 
-    /// Loads a `.dnam` or `.dnam-ckpt` container into a `'static` owned engine by copying the
-    /// 64-byte aligned tensor arena into an owned [`AlignedBuffer`].
+    /// Loads a `.dnam`, `.dnam-ckpt`, or `.dnam-seal` (`b"DNSL"`) container into a `'static` owned engine
+    /// by copying the 64-byte aligned tensor arena into an owned [`AlignedBuffer`].
     pub fn from_bytes_owned(
         bytes: &[u8],
         tier: Tier,
         sample_rate_hz: u32,
     ) -> Result<DnamEngine<'static, B>, DnamError> {
         let crypto = DefaultCryptoProvider::default();
-        let view = DnamContainerView::from_bytes(bytes, &crypto)?;
+        Self::from_bytes_owned_with_crypto(bytes, tier, sample_rate_hz, &crypto)
+    }
+
+    /// Loads a `.dnam`, `.dnam-ckpt`, or `.dnam-seal` (`b"DNSL"`) container into a `'static` owned engine
+    /// using a custom [`CryptoProvider`].
+    pub fn from_bytes_owned_with_crypto<C: CryptoProvider>(
+        bytes: &[u8],
+        tier: Tier,
+        sample_rate_hz: u32,
+        crypto: &C,
+    ) -> Result<DnamEngine<'static, B>, DnamError> {
+        let view = DnamContainerView::from_bytes(bytes, crypto)?;
         let arena_bytes = view.arena_storage.as_bytes();
         let mut owned_arena = AlignedBuffer::<CacheLine64>::new_zeroed(arena_bytes.len() / 64);
         owned_arena.as_bytes_mut().copy_from_slice(arena_bytes);
@@ -58,6 +71,7 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
             preamble: view.preamble,
             header: view.header,
             verification_status: view.verification_status,
+            protection_profile: view.protection_profile,
             arena_storage: ArenaStorage::from_owned_buffer(owned_arena),
         };
         DnamEngine::<'static, B>::from_view(owned_view, tier, sample_rate_hz)
@@ -137,6 +151,7 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
             preamble,
             header: None,
             verification_status: VerificationStatus::Unsigned,
+            protection_profile: DnamProtectionProfile::Open,
             arena_storage: ArenaStorage::from_owned_buffer(owned_arena),
             tier: Tier::Lite,
             max_available_tier: Tier::Lite,
@@ -192,6 +207,7 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
         self.preamble = preamble;
         self.header = None;
         self.verification_status = VerificationStatus::Unsigned;
+        self.protection_profile = DnamProtectionProfile::Open;
         self.max_available_tier = Self::detect_max_tier(&preamble, copy_len);
         self.tier = tier.min(self.max_available_tier);
 
@@ -238,6 +254,7 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
         self.preamble = preamble;
         self.header = None;
         self.verification_status = VerificationStatus::Unsigned;
+        self.protection_profile = DnamProtectionProfile::Open;
         self.max_available_tier = Self::detect_max_tier(&preamble, copy_len);
         self.tier = tier.min(self.max_available_tier);
 
@@ -283,6 +300,7 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
             preamble: view.preamble,
             header: Some(view.header),
             verification_status: view.verification_status,
+            protection_profile: view.protection_profile,
             arena_storage: view.arena_storage,
             tier: active_tier,
             max_available_tier,
@@ -409,6 +427,12 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
     #[inline]
     pub const fn verification_status(&self) -> &VerificationStatus {
         &self.verification_status
+    }
+
+    /// Returns the container's resolved [`DnamProtectionProfile`].
+    #[inline]
+    pub const fn protection_profile(&self) -> DnamProtectionProfile {
+        self.protection_profile
     }
 
     /// Returns the 64-byte [`DnamPreamble`].

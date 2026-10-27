@@ -16,7 +16,37 @@ import {
   type MarketplaceReceipt,
   MarketplaceReceiptSchema,
   marketplaceReceiptToWire,
+  type OemDeviceCertificate,
+  OemDeviceCertificateSchema,
+  oemDeviceCertificateToWire,
 } from "./schema/signatures.js";
+
+export interface SignOemDeviceCertificateOptions {
+  oemSeed32: Uint8Array | ArrayBuffer | ArrayBufferView;
+  oemVendor: string;
+  modelCode: string;
+  deviceIdHash: string;
+  pubkeyX25519_32: Uint8Array | ArrayBuffer | ArrayBufferView;
+  backend?: BackendChoice | undefined;
+}
+
+export interface SealDnamContainerOptions {
+  innerDnamBytes: Uint8Array | ArrayBuffer | ArrayBufferView;
+  recipientCerts: readonly (OemDeviceCertificate | Record<string, unknown>)[];
+  trustedOemPubkeys: Readonly<Record<string, string>>;
+  marketplaceSeed32: Uint8Array | ArrayBuffer | ArrayBufferView;
+  ephemeralSecret32: Uint8Array | ArrayBuffer | ArrayBufferView;
+  cek32: Uint8Array | ArrayBuffer | ArrayBufferView;
+  nonce12: Uint8Array | ArrayBuffer | ArrayBufferView;
+  backend?: BackendChoice | undefined;
+}
+
+export interface UnsealDnamContainerOptions {
+  deviceIdHash?: string | undefined;
+  deviceSecretX25519?: Uint8Array | ArrayBuffer | ArrayBufferView | undefined;
+  trustedMarketplacePubkeyHex?: string | undefined;
+  backend?: BackendChoice | undefined;
+}
 
 /**
  * Computes the preset-safe RFC 8785 JCS `immutable_header_sha256` hex digest over `header`.
@@ -175,4 +205,137 @@ export function structuralCosineSimilarity(
   const a64 = a instanceof Float64Array ? a : new Float64Array(a);
   const b64 = b instanceof Float64Array ? b : new Float64Array(b);
   return driver.structuralCosineSimilarity(a64, b64);
+}
+
+/**
+ * Derives a 64-character lowercase hex `Ed25519` public key from a 32-byte seed.
+ */
+export function ed25519PubkeyHex(
+  seed32: Uint8Array | ArrayBuffer | ArrayBufferView,
+  backend?: BackendChoice,
+): string {
+  const driver = resolveDriver(backend);
+  return driver.ed25519PubkeyHex(toUint8Array(seed32));
+}
+
+/**
+ * Signs `message` with a 32-byte `Ed25519` seed and returns the 128-character lowercase hex signature.
+ */
+export function ed25519SignHex(
+  seed32: Uint8Array | ArrayBuffer | ArrayBufferView,
+  message: Uint8Array | ArrayBuffer | ArrayBufferView,
+  backend?: BackendChoice,
+): string {
+  const driver = resolveDriver(backend);
+  return driver.ed25519SignHex(toUint8Array(seed32), toUint8Array(message));
+}
+
+/**
+ * Derives a 64-character lowercase hex `X25519` Montgomery public key from a 32-byte secret key.
+ */
+export function x25519PubkeyHex(
+  secret32: Uint8Array | ArrayBuffer | ArrayBufferView,
+  backend?: BackendChoice,
+): string {
+  const driver = resolveDriver(backend);
+  return driver.x25519PubkeyHex(toUint8Array(secret32));
+}
+
+/**
+ * Wraps a 32-byte Content Encryption Key (`cek32`) for an OEM device (`devicePubkey32`, `deviceIdHash`)
+ * via `X25519` ECDH + `SHA-256` KDF + `ChaCha20-Poly1305` AEAD, returning the 96-character lowercase hex
+ * `wrapped_cek` (`32B` ciphertext + `16B` tag).
+ */
+export function wrapDeviceCekHex(
+  ephemeralSecret32: Uint8Array | ArrayBuffer | ArrayBufferView,
+  devicePubkey32: Uint8Array | ArrayBuffer | ArrayBufferView,
+  deviceIdHash: string,
+  cek32: Uint8Array | ArrayBuffer | ArrayBufferView,
+  backend?: BackendChoice,
+): string {
+  const driver = resolveDriver(backend);
+  return driver.wrapDeviceCekHex(
+    toUint8Array(ephemeralSecret32),
+    toUint8Array(devicePubkey32),
+    deviceIdHash,
+    toUint8Array(cek32),
+  );
+}
+
+/**
+ * Signs an OEM factory device attestation certificate (`OemDeviceCertificate`) over
+ * `b"DNAM-OEM-CERT-V1:" || oemVendor || b"|" || modelCode || b"|" || deviceIdHash || b"|" || pubkeyX25519_32`.
+ */
+export function signOemDeviceCertificate(
+  options: SignOemDeviceCertificateOptions,
+): OemDeviceCertificate {
+  const driver = resolveDriver(options.backend);
+  const certJson = driver.signOemDeviceCert(
+    toUint8Array(options.oemSeed32),
+    options.oemVendor,
+    options.modelCode,
+    options.deviceIdHash,
+    toUint8Array(options.pubkeyX25519_32),
+  );
+  const parsed: unknown = JSON.parse(certJson);
+  return validateStandardSchema(OemDeviceCertificateSchema, parsed, "OemDeviceCertificate");
+}
+
+/**
+ * Verifies an `OemDeviceCertificate` against `trustedOemPubkeyHex` and returns the verified
+ * 64-character lowercase hex `X25519` device public key.
+ */
+export function verifyOemDeviceCertificate(
+  cert: OemDeviceCertificate | Record<string, unknown> | string,
+  trustedOemPubkeyHex: string,
+  backend?: BackendChoice,
+): string {
+  const driver = resolveDriver(backend);
+  const parsed: unknown = typeof cert === "string" ? JSON.parse(cert) : cert;
+  const validated = validateStandardSchema(
+    OemDeviceCertificateSchema,
+    parsed,
+    "OemDeviceCertificate",
+  );
+  const certJson = JSON.stringify(oemDeviceCertificateToWire(validated));
+  return driver.verifyOemDeviceCert(certJson, trustedOemPubkeyHex);
+}
+
+/**
+ * Seals an inner `.dnam` container into a `.dnam-seal` (`b"DNSL"`) 64-byte aligned outer binary envelope
+ * with nested double encryption (`cek_outer` + `cek_inner`), verifying each `OemDeviceCertificate`
+ * against `trustedOemPubkeys` and enforcing the creator's `metadata.distribution_policy`.
+ */
+export function sealDnamContainer(options: SealDnamContainerOptions): Uint8Array {
+  const driver = resolveDriver(options.backend);
+  const wireCerts = options.recipientCerts.map((c) => {
+    const validated = validateStandardSchema(OemDeviceCertificateSchema, c, "OemDeviceCertificate");
+    return oemDeviceCertificateToWire(validated);
+  });
+  return driver.sealContainer(
+    toUint8Array(options.innerDnamBytes),
+    JSON.stringify(wireCerts),
+    JSON.stringify(options.trustedOemPubkeys),
+    toUint8Array(options.marketplaceSeed32),
+    toUint8Array(options.ephemeralSecret32),
+    toUint8Array(options.cek32),
+    toUint8Array(options.nonce12),
+  );
+}
+
+/**
+ * Unseals a `.dnam-seal` (`b"DNSL"`) outer binary envelope using an authorized device's `X25519` secret key,
+ * returning the decrypted inner `.dnam` byte buffer.
+ */
+export function unsealDnamContainer(
+  sealedBytes: Uint8Array | ArrayBuffer | ArrayBufferView,
+  options: UnsealDnamContainerOptions = {},
+): Uint8Array {
+  const driver = resolveDriver(options.backend);
+  return driver.unsealContainer(
+    toUint8Array(sealedBytes),
+    options.deviceIdHash,
+    options.deviceSecretX25519 !== undefined ? toUint8Array(options.deviceSecretX25519) : undefined,
+    options.trustedMarketplacePubkeyHex,
+  );
 }

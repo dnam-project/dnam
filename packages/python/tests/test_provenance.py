@@ -7,8 +7,22 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from dnam_engine import DnamContainer, DnamValidationError, provenance
-from dnam_engine.schema import MarketplaceReceipt, PresetDef, WatermarkParams
+from dnam_engine import (
+    DistributionPolicy,
+    DnamContainer,
+    DnamProtectionProfile,
+    DnamValidationError,
+    VerificationStatus,
+    provenance,
+)
+from dnam_engine.schema import (
+    AuthorizedDevice,
+    CreatorSignature,
+    MarketplaceReceipt,
+    ModelSignatures,
+    PresetDef,
+    WatermarkParams,
+)
 
 
 def test_jcs_immutable_header_sha256_preset_invariance(
@@ -138,3 +152,157 @@ def test_ed25519_pubkey_and_sign_hex(
         provenance.ed25519_pubkey_hex(b"short")
     with pytest.raises(DnamValidationError):
         provenance.ed25519_sign_hex(b"short", msg)
+
+
+def test_oem_attestation_distribution_policy_and_dnam_seal(
+    ref_container_core2: DnamContainer,
+) -> None:
+    assert ref_container_core2.protection_profile == DnamProtectionProfile.OPEN
+
+    oem_seed = b"\x51" * 32
+    oem_pubkey_hex = provenance.ed25519_pubkey_hex(oem_seed)
+    device_secret = b"\x61" * 32
+    device_pubkey_hex = provenance.x25519_pubkey_hex(device_secret)
+    device_pubkey_bytes = bytes.fromhex(device_pubkey_hex)
+    device_id_hash = "d1" * 16
+
+    cert = provenance.sign_oem_device_certificate(
+        oem_seed,
+        oem_vendor="darkglass",
+        model_code="anagram_rk3582",
+        device_id_hash=device_id_hash,
+        pubkey_x25519_32=device_pubkey_bytes,
+    )
+    assert cert.oem_vendor == "darkglass"
+    assert cert.model_code == "anagram_rk3582"
+    verified_pk = provenance.verify_oem_device_certificate(cert, oem_pubkey_hex)
+    assert verified_pk == device_pubkey_hex
+
+    # Creator signs model restricting to EnclaveSealed + darkglass:anagram_rk3582
+    creator_seed = b"\x11" * 32
+    creator_pk_hex = provenance.ed25519_pubkey_hex(creator_seed)
+    mkt_seed = b"\x22" * 32
+    mkt_pk_hex = provenance.ed25519_pubkey_hex(mkt_seed)
+
+    policy = DistributionPolicy(
+        allowed_protection_profiles=[DnamProtectionProfile.ENCLAVE_SEALED],
+        allowed_oem_vendors=["darkglass:anagram_rk3582"],
+    )
+    hdr_with_policy = ref_container_core2.header.model_copy(
+        update={
+            "metadata": ref_container_core2.header.metadata.model_copy(
+                update={"distribution_policy": policy}
+            )
+        }
+    )
+    hdr_sha = provenance.immutable_header_sha256(hdr_with_policy)
+    arena_plain = bytes(ref_container_core2.arena)
+    master_arena_sha = provenance.sha256_hex(arena_plain)
+    creator_msg = provenance.build_creator_signing_message(hdr_sha, master_arena_sha)
+    creator_sig_hex = provenance.ed25519_sign_hex(creator_seed, creator_msg)
+
+    # Inner arena encryption (ENCRYPTED_ARENA = 1) + marketplace receipt
+    eph_inner_sec = b"\x71" * 32
+    eph_inner_pk_hex = provenance.x25519_pubkey_hex(eph_inner_sec)
+    cek_inner_arena = b"\x81" * 32
+    nonce_inner_arena = b"\x91" * 12
+    wrapped_cek_hex = provenance.wrap_device_cek_hex(
+        eph_inner_sec, device_pubkey_bytes, device_id_hash, cek_inner_arena
+    )
+
+    receipt_unsigned = MarketplaceReceipt(
+        marketplace_id="dnam.store",
+        license_id="0192b8e0-1234-7000-8000-000000000099",
+        buyer_hash="aa" * 32,
+        license_tier="oem_hardware",
+        issued_at="2026-10-27T00:00:00Z",
+        buyer_arena_sha256=master_arena_sha,
+        encryption_mode="chacha20_x25519_v1",
+        arena_nonce_96=nonce_inner_arena.hex(),
+        ephemeral_pubkey_x25519=eph_inner_pk_hex,
+        authorized_devices=[
+            AuthorizedDevice(
+                oem_vendor="darkglass",
+                model_code="anagram_rk3582",
+                device_id_hash=device_id_hash,
+                wrapped_cek=wrapped_cek_hex,
+            )
+        ],
+        receipt_sig_ed25519="00" * 64,
+    )
+    mkt_msg = provenance.build_marketplace_signing_message(
+        hdr_sha, master_arena_sha, receipt_unsigned
+    )
+    mkt_sig_hex = provenance.ed25519_sign_hex(mkt_seed, mkt_msg)
+    receipt = receipt_unsigned.model_copy(update={"receipt_sig_ed25519": mkt_sig_hex})
+
+    hdr_signed = hdr_with_policy.model_copy(
+        update={
+            "metadata": hdr_with_policy.metadata.model_copy(
+                update={
+                    "signatures": ModelSignatures(
+                        immutable_header_sha256=hdr_sha,
+                        master_arena_sha256=master_arena_sha,
+                        creator_signature=CreatorSignature(
+                            signer_id="creator_01",
+                            pubkey_ed25519=creator_pk_hex,
+                            sig_ed25519=creator_sig_hex,
+                        ),
+                        marketplace_receipt=receipt,
+                    )
+                }
+            )
+        }
+    )
+
+    encrypted_arena = provenance.chacha20_xor_arena(
+        arena_plain, key_32=cek_inner_arena, nonce_12=nonce_inner_arena
+    )
+    # Loading inner container directly as DeviceAllowlisted fails due to DistributionPolicy
+    from dnam_engine import _native
+
+    inner_bytes = _native.native_build_container(
+        hdr_signed.model_dump_json(by_alias=True),
+        encrypted_arena,
+        arena_plain,
+        True,
+    )
+    with pytest.raises(DnamValidationError, match="distribution_policy"):
+        DnamContainer.from_bytes(
+            inner_bytes,
+            device_id_hash=device_id_hash,
+            device_secret_x25519=device_secret,
+            trusted_marketplace_pubkey_hex=mkt_pk_hex,
+        )
+
+    # Seal into .dnam-seal (b"DNSL") with EnclaveSealed nested double encryption
+    sealed_bytes = provenance.seal_container(
+        inner_bytes,
+        recipient_certs=[cert],
+        trusted_oem_pubkeys={"darkglass": oem_pubkey_hex},
+        marketplace_seed_32=mkt_seed,
+        ephemeral_secret_32=b"\xa1" * 32,
+        cek_32=b"\xb1" * 32,
+        nonce_12=b"\xc1" * 12,
+    )
+    assert sealed_bytes[:4] == b"DNSL"
+    assert len(sealed_bytes) % 64 == 0
+
+    unsealed_container = DnamContainer.unseal(
+        sealed_bytes,
+        device_id_hash=device_id_hash,
+        device_secret_x25519=device_secret,
+        trusted_marketplace_pubkey_hex=mkt_pk_hex,
+    )
+    assert unsealed_container.protection_profile == DnamProtectionProfile.ENCLAVE_SEALED
+    assert unsealed_container.verification == VerificationStatus.MARKETPLACE_VERIFIED
+    assert bytes(unsealed_container.arena) == arena_plain
+
+    # Unsealing with raw inner bytes returns encrypted_arena until inner unwrap
+    raw_inner = provenance.unseal_container(
+        sealed_bytes,
+        device_id_hash=device_id_hash,
+        device_secret_32=device_secret,
+        trusted_marketplace_pubkey_hex=mkt_pk_hex,
+    )
+    assert raw_inner == inner_bytes

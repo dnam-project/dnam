@@ -70,7 +70,12 @@ class NativeDnamEngine:
     ) -> None: ...
     def telemetry(self) -> dict[str, Any]: ...
 
-def native_validate_container(container_bytes: bytes) -> dict[str, Any]: ...
+def native_validate_container(
+    container_bytes: bytes,
+    device_id_hash: str | None = None,
+    device_secret_32: bytes | None = None,
+    trusted_marketplace_pubkey_hex: str | None = None,
+) -> dict[str, Any]: ...
 def native_build_container(
     header_json: str,
     arena_bytes: bytes,
@@ -264,3 +269,36 @@ def native_structural_cosine_similarity(
 ) -> float: ...
 def native_ed25519_pubkey_hex(seed_32: bytes) -> str: ...
 def native_ed25519_sign_hex(seed_32: bytes, message: bytes) -> str: ...
+def native_x25519_pubkey_hex(secret_32: bytes) -> str: ...
+def native_wrap_device_cek_hex(
+    ephemeral_secret_32: bytes,
+    device_pubkey_32: bytes,
+    device_id_hash: str,
+    cek_32: bytes,
+) -> str: ...
+def native_sign_oem_device_cert(
+    oem_seed_32: bytes,
+    oem_vendor: str,
+    model_code: str,
+    device_id_hash: str,
+    pubkey_x25519_32: bytes,
+) -> str: ...
+def native_verify_oem_device_cert(
+    cert_json: str,
+    trusted_oem_pubkey_hex: str,
+) -> str: ...
+def native_seal_container(
+    inner_dnam_bytes: bytes,
+    recipient_certs_json: str,
+    trusted_oem_pubkeys_json: str,
+    marketplace_seed_32: bytes,
+    ephemeral_secret_32: bytes,
+    cek_32: bytes,
+    nonce_12: bytes,
+) -> bytes: ...
+def native_unseal_container(
+    sealed_bytes: bytes,
+    device_id_hash: str | None = None,
+    device_secret_32: bytes | None = None,
+    trusted_marketplace_pubkey_hex: str | None = None,
+) -> bytes: ...

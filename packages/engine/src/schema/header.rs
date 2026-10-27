@@ -11,7 +11,7 @@ use crate::control::{ConditionalClampRule, ControlClampDescriptor, MAX_CONTROLS}
 
 use super::controls::{ControlKind, ControlSchemaDef, PresetDef};
 use super::error::DnamError;
-use super::signatures::{DatasetProvenance, ModelSignatures};
+use super::signatures::{DatasetProvenance, DistributionPolicy, ModelSignatures};
 
 /// Semantic version (`major.minor.patch`) of the `.dnam` and `.dnam-ckpt` container schema.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -236,6 +236,9 @@ pub struct ModelMetadata {
     /// Content-addressable training dataset provenance.
     #[serde(default)]
     pub provenance: DatasetProvenance,
+    /// Optional creator-signed distribution and OEM hardware exclusivity policy (covered by `immutable_header_sha256`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub distribution_policy: Option<DistributionPolicy>,
     /// Optional split-payload `Ed25519` creator signature and marketplace receipt.
     #[serde(default)]
     pub signatures: Option<ModelSignatures>,
@@ -708,6 +711,7 @@ impl DnamJsonHeader {
                 created_at: "2026-10-23T00:00:00Z".to_string(),
                 input_reference_dbfs: -20.5,
                 provenance: DatasetProvenance::default(),
+                distribution_policy: None,
                 signatures: None,
             },
             user_metadata: BTreeMap::new(),

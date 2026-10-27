@@ -45,14 +45,23 @@ pub enum DnamCommand {
     },
     /// Show workspace, models, capture calibration, and hardware SIMD status.
     Status,
-    /// Inspect a `.dnam` or `.dnam-ckpt` container's preamble, tiers, controls, and provenance.
+    /// Inspect a `.dnam`, `.dnam-ckpt`, or `.dnam-seal` container's preamble, tiers, controls, and provenance.
     Inspect {
-        /// Path to the `.dnam` or `.dnam-ckpt` container.
+        /// Path to the `.dnam`, `.dnam-ckpt`, or `.dnam-seal` container.
         container_path: PathBuf,
+        /// Optional OEM device ID hash for `.dnam-seal` (`enclave_sealed`) or `device_allowlisted` unwrapping.
+        #[arg(long)]
+        device_id: Option<String>,
+        /// Optional 64-character hex `X25519` device secret key for `.dnam-seal` or `device_allowlisted` unwrapping.
+        #[arg(long)]
+        device_key_hex: Option<String>,
+        /// Optional 64-character hex `Ed25519` marketplace public key.
+        #[arg(long)]
+        marketplace_pubkey_hex: Option<String>,
     },
     /// Render `input_wav` through the native Rust SIMD `DnamEngine` and write a 24-bit WAV.
     Render {
-        /// Path to the `.dnam` or `.dnam-ckpt` container.
+        /// Path to the `.dnam`, `.dnam-ckpt`, or `.dnam-seal` container.
         container_path: PathBuf,
         /// Input dry WAV path.
         input_wav: PathBuf,
@@ -67,6 +76,15 @@ pub enum DnamCommand {
         /// Control overrides (`--set drive=7.5 --set voice=Crunch`).
         #[arg(long = "set", short = 'c')]
         set_controls: Vec<String>,
+        /// Optional OEM device ID hash for `.dnam-seal` (`enclave_sealed`) or `device_allowlisted` unwrapping.
+        #[arg(long)]
+        device_id: Option<String>,
+        /// Optional 64-character hex `X25519` device secret key for `.dnam-seal` or `device_allowlisted` unwrapping.
+        #[arg(long)]
+        device_key_hex: Option<String>,
+        /// Optional 64-character hex `Ed25519` marketplace public key.
+        #[arg(long)]
+        marketplace_pubkey_hex: Option<String>,
     },
     /// Manage models in `models/<id>/model.toml` (`add`, `list`, `show`, `update`, `remove`).
     Model {
@@ -160,7 +178,17 @@ pub fn execute_cli(cli: &DnamCli) -> StudioResult<String> {
             model_id,
         }) => workspace_cmd::run_init(&cli.workspace, name, author, model_id.as_deref()),
         Some(DnamCommand::Status) => workspace_cmd::run_status(&cli.workspace),
-        Some(DnamCommand::Inspect { container_path }) => workspace_cmd::run_inspect(container_path),
+        Some(DnamCommand::Inspect {
+            container_path,
+            device_id,
+            device_key_hex,
+            marketplace_pubkey_hex,
+        }) => workspace_cmd::run_inspect_with_crypto(
+            container_path,
+            device_id.as_deref(),
+            device_key_hex.as_deref(),
+            marketplace_pubkey_hex.as_deref(),
+        ),
         Some(DnamCommand::Render {
             container_path,
             input_wav,
@@ -168,13 +196,19 @@ pub fn execute_cli(cli: &DnamCli) -> StudioResult<String> {
             tier,
             preset,
             set_controls,
-        }) => workspace_cmd::run_render(
+            device_id,
+            device_key_hex,
+            marketplace_pubkey_hex,
+        }) => workspace_cmd::run_render_with_crypto(
             container_path,
             input_wav,
             output_wav,
             tier,
             preset.as_deref(),
             set_controls,
+            device_id.as_deref(),
+            device_key_hex.as_deref(),
+            marketplace_pubkey_hex.as_deref(),
         ),
         Some(DnamCommand::Model { action }) => workspace_cmd::run_model(&cli.workspace, action),
         Some(DnamCommand::Control { action }) => workspace_cmd::run_control(&cli.workspace, action),
@@ -259,6 +293,9 @@ mod tests {
             workspace: dir.clone(),
             command: Some(DnamCommand::Inspect {
                 container_path: c_path.clone(),
+                device_id: None,
+                device_key_hex: None,
+                marketplace_pubkey_hex: None,
             }),
         })
         .expect("inspect");
@@ -273,6 +310,9 @@ mod tests {
                 tier: "lite".to_string(),
                 preset: None,
                 set_controls: vec!["gain=5.0".to_string()],
+                device_id: None,
+                device_key_hex: None,
+                marketplace_pubkey_hex: None,
             }),
         })
         .expect("render");

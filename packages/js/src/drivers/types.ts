@@ -5,6 +5,7 @@
  */
 
 import type { PreambleSnapshot, TelemetrySnapshot, ZohParamsSnapshot } from "../schema/runtime.js";
+import type { DnamProtectionProfile } from "../schema/signatures.js";
 
 export type BackendChoice =
   | "auto"
@@ -61,6 +62,7 @@ export interface DnamControlSpaceHandle {
 export interface ValidatedContainerRaw {
   preamble: PreambleSnapshot;
   verificationStatus: "Unsigned" | "CreatorVerified" | "MarketplaceVerified";
+  protectionProfile: DnamProtectionProfile;
   headerJson: string;
   arenaBytes: Uint8Array;
 }
@@ -77,7 +79,12 @@ export interface DnamDriver {
 
   createControlSpace(headerJson: string): DnamControlSpaceHandle;
 
-  validateContainer(containerBytes: Uint8Array): ValidatedContainerRaw;
+  validateContainer(
+    containerBytes: Uint8Array,
+    deviceIdHash?: string,
+    deviceSecret32?: Uint8Array,
+    trustedMarketplacePubkeyHex?: string,
+  ): ValidatedContainerRaw;
 
   buildContainer(
     headerJson: string,
@@ -230,4 +237,37 @@ export interface DnamDriver {
   ): number;
   extractStructuralHash(arenaBytes: Uint8Array): Float64Array;
   structuralCosineSimilarity(a: Float64Array, b: Float64Array): number;
+
+  ed25519PubkeyHex(seed32: Uint8Array): string;
+  ed25519SignHex(seed32: Uint8Array, message: Uint8Array): string;
+  x25519PubkeyHex(secret32: Uint8Array): string;
+  wrapDeviceCekHex(
+    ephemeralSecret32: Uint8Array,
+    devicePubkey32: Uint8Array,
+    deviceIdHash: string,
+    cek32: Uint8Array,
+  ): string;
+  signOemDeviceCert(
+    oemSeed32: Uint8Array,
+    oemVendor: string,
+    modelCode: string,
+    deviceIdHash: string,
+    pubkeyX25519_32: Uint8Array,
+  ): string;
+  verifyOemDeviceCert(certJson: string, trustedOemPubkeyHex: string): string;
+  sealContainer(
+    innerDnamBytes: Uint8Array,
+    recipientCertsJson: string,
+    trustedOemPubkeysJson: string,
+    marketplaceSeed32: Uint8Array,
+    ephemeralSecret32: Uint8Array,
+    cek32: Uint8Array,
+    nonce12: Uint8Array,
+  ): Uint8Array;
+  unsealContainer(
+    sealedBytes: Uint8Array,
+    deviceIdHash?: string,
+    deviceSecret32?: Uint8Array,
+    trustedMarketplacePubkeyHex?: string,
+  ): Uint8Array;
 }
