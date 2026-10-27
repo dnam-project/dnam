@@ -21,7 +21,7 @@ It is engineered for embedded ARMv8.2-A/ARMv9.2-A pedalboards (**Rockchip RK3582
   - [`X86SimdBackend`](src/math/x86_simd.rs): x86_64 AVX2 + FMA + F16C + SSE4.2 hardware `CRC32C`.
   - [`WasmSimd128Backend`](src/math/wasm_simd128.rs): WebAssembly 128-bit SIMD (`v128`).
   - [`ScalarBackend`](src/math/scalar.rs): Portable 100% safe `#![no_std]` IEEE-754 reference backend.
-- **Continuous-Time Zero-Order Hold (ZOH) Sample-Rate Rescaling ($44.1\text{--}96\text{ kHz}$):**
+- **Continuous-Time Zero-Order Hold (ZOH) Sample-Rate Rescaling ($44.1\text{–}96\text{ kHz}$):**
   - Automatically rescales discrete-time poles, delay lengths, and control-bus decimation strides for any host sample rate in $[44.1\text{ kHz}, 96\text{ kHz}]$ ([`src/container/zoh.rs`](src/container/zoh.rs)).
 - **5-Layer Digital Marketplace Provenance & Traitor Tracing (`src/provenance/`):**
   - Preset-safe RFC 8785 JCS `immutable_header_sha256`, 2-certificate `Ed25519` signature verification, `X25519-HKDF-ChaCha20` 64-byte block-aligned arena encryption, zero-distortion Isometric Gauge Watermarking (`0.00 dB` audio error), 4,608-chip Coupled Tardos Traitor-Tracing codes, and 160-D Gauge-Invariant Structural Hashing.
@@ -32,14 +32,14 @@ It is engineered for embedded ARMv8.2-A/ARMv9.2-A pedalboards (**Rockchip RK3582
 
 Measured via `cargo bench -p dnam-engine --bench realtime_wcet`:
 
-| Tier & Subsystem Profile | Backend | Latency / Frame | $\times$ Real-Time | Single-Core CPU |Modulated `P99.9` Block | `Max` / $2,666.67\text{ }\mu\text{s}$ Budget |
+| Tier & Subsystem Profile | Backend | Latency / Frame | `×` Real-Time | Single-Core CPU | Modulated `P99.9` Block | `Max` / `2,666.67 µs` Budget |
 | :--- | :--- | ---: | ---: | ---: | ---: | ---: |
-| **`Lite` ($C=4$, Core 1 + Core 2)** | `ARM64 NEON` | **`354.76 ns`** | **`58.7x`** | **`1.70%`** | `112.12 µs` | **`5.12%`** |
-| **`Full` ($C=8$, Core 1 Only)** | `ARM64 NEON` | **`394.79 ns`** | **`52.8x`** | **`1.90%`** | — | — |
-| **`Full` ($C=8$, Core 1 + Core 2)** | `ARM64 NEON` | **`461.76 ns`** | **`45.1x`** | **`2.22%`** | `158.21 µs` | **`5.96%`** |
-| **`Full` ($C=8$, ARM SME + Core 2)** | `ARM SME` | **`466.36 ns`** | **`44.7x`** | **`2.24%`** | — | — |
-| **`Ultra` ($C=12$, Core 1 + Core 2)** | `ARM64 NEON` | **`555.07 ns`** | **`37.5x`** | **`2.66%`** | `172.75 µs` | **`7.24%`** |
-| **`Full` ($C=8$, Scalar Baseline)** | `Scalar` | **`880.86 ns`** | **`23.7x`** | **`4.23%`** | — | — |
+| **`Lite` (`C=4`, Core 1 + Core 2)** | `ARM64 NEON` | **`354.76 ns`** | **`58.7x`** | **`1.70%`** | `112.12 µs` | **`5.12%`** |
+| **`Full` (`C=8`, Core 1 Only)** | `ARM64 NEON` | **`394.79 ns`** | **`52.8x`** | **`1.90%`** | — | — |
+| **`Full` (`C=8`, Core 1 + Core 2)** | `ARM64 NEON` | **`461.76 ns`** | **`45.1x`** | **`2.22%`** | `158.21 µs` | **`5.96%`** |
+| **`Full` (`C=8`, ARM SME + Core 2)** | `ARM SME` | **`466.36 ns`** | **`44.7x`** | **`2.24%`** | — | — |
+| **`Ultra` (`C=12`, Core 1 + Core 2)** | `ARM64 NEON` | **`555.07 ns`** | **`37.5x`** | **`2.66%`** | `172.75 µs` | **`7.24%`** |
+| **`Full` (`C=8`, Scalar Baseline)** | `Scalar` | **`880.86 ns`** | **`23.7x`** | **`4.23%`** | — | — |
 
 ---
 

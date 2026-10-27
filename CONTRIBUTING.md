@@ -104,9 +104,9 @@ moon check studio
    - Every pole radius ($r_c \le 0.9995$), FDN loop gain ($g_{\text{lin},m} \le 0.9990$), all-pass diffusion coefficient ($|a_{\text{diff},m}| \le 0.75$), fractional delay ($\tau_m \ge 4.0$), and control range must obey the bounds in [`docs/clamp_and_audit_registry.md`](docs/clamp_and_audit_registry.md).
 4. **Fail-Fast Validation:**
    - Never silently substitute default controls, sample rates, or tensor shapes when loading `.dnam` or `.dnam-ckpt` containers; return or raise explicit, typed diagnostic errors (`DnamError`).
-5. **Test-Driven Bug Fixes (TDD), Coverage ($\ge 95\%$) & Performance Benchmarks:**
+5. **Test-Driven Bug Fixes (TDD), Coverage (≥ 95%) & Performance Benchmarks:**
    - Write a failing unit or property-based regression test before fixing a bug.
-   - Maintain $\ge 95\%$ test coverage in both Rust (`cargo llvm-cov`) and Python (`pytest --cov`) and verify zero performance regressions with `cargo bench` and `pytest-benchmark`.
+   - Maintain ≥ 95% test coverage in both Rust (`cargo llvm-cov`) and Python (`pytest --cov`) and verify zero performance regressions with `cargo bench` and `pytest-benchmark`.
 
 ---
 
@@ -128,6 +128,8 @@ DNAM enforces a **Progressive-Disclosure Documentation Architecture** and a **Si
      - **Package architecture invariants, compiler/runtime flags (`#[forbid(unsafe_code)]`, `zerocopy`, `torch.autocast`, `pyrefly`), workbench setup, and verification commands (`moon check <pkg>`)** $\to$ Offload to `packages/<pkg>/CONTRIBUTING.md`.
      - **Public API examples and CLI command/flag references** $\to$ Offload to `packages/<pkg>/README.md`.
      - **Directory-level module growth** $\to$ Delegate file-level routing rows to a subsystem `AGENTS.md` (e.g., `src/<subsystem>/AGENTS.md`) and link the subsystem from the parent `packages/<pkg>/AGENTS.md`.
+4. **Zero Inline LaTeX Math Inside Markdown Tables:**
+   - GitHub's MathJax renderer wraps inline math (`$...$`) inside Markdown table cells (`<th>` / `<td>`) in scrollable containers that display horizontal scrollbars. Never use `$...$` inside Markdown table rows; use plain text, Unicode symbols (`≤`, `≥`, `×`, `→`, `↔`, `Δ`, `σ`, `∈`), or inline code spans (`` `...` ``).
 
 ### 5.2 Single-Source-of-Truth (SSOT) Documentation Map
 

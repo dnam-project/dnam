@@ -13,7 +13,7 @@ This guide covers development, numerical precision, hardware acceleration, and v
 3. **Psychoacoustic `bESR` Quality Tiers (`metrics.py` & `selective_cascade.py` / `cascade_*.py`):**
    - Evaluate models using Floor-Regularized Band-Balanced ESR (`bESR`), Band-Split `ESR_LF`/`ESR_Mid`/`ESR_HF` via the 4th-order-flat Bezout complementary crossover, `MR-STFT`, 1/3-octave `LTAS` spectral tilt, and `SegESR` (`Lite <= -18 dB` Live Grade, `Full <= -23 dB` Studio Quality with `ESR_HF <= -20 dB`, `Ultra <= -30 dB` clean/LTI or `<= -25 dB` high-gain tube Reference Grade).
 4. **Control Bus & 3-Phase Audit Invariants (`control/basis.py` & `control/audit.py`):**
-   - **Zero Old-Stem Perturbation (`CL-13`):** Unlocking higher Lobatto polynomial degrees ($K_p \in \{0, 1, 2, 3\}$) must evaluate to exact `0.000000` at all previously anchored stem coordinates $u_{p,1}, \dots, u_{p,K_p}$.
+   - **Zero Old-Stem Perturbation (`CL-13`):** Unlocking higher Lobatto polynomial degrees ($K_p \in \lbrace 0, 1, 2, 3 \rbrace$) must evaluate to exact `0.000000` at all previously anchored stem coordinates $u_{p,1}, \dots, u_{p,K_p}$.
    - **Stop-Gradient Corner Barrier (`CL-16`):** Always call `.detach()` (`sg`) on 1st-order main effects $\boldsymbol{\theta}_{\text{main}}$ inside $\mathcal{L}_{\text{barrier}}$ so virtual corner penalties only steer 2nd-order Rank-4 FM weights $\Delta\boldsymbol{\theta}_{\text{FM}}$.
 5. **Hardware Accelerator & Pipeline Runtime Rules (`training/hardware.py` & `training/pipeline.py`):**
    - `setup_accelerator_environment` configures ROCm MIOpen (`MIOPEN_FIND_MODE="FAST"`, `cudnn.benchmark = False` on HIP), MPS fast math, and CUDA TF32, resolving accelerators in priority order `tpu` $\to$ `cuda`/`rocm` $\to$ `mps` $\to$ `cpu`.

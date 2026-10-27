@@ -45,7 +45,7 @@ Root [`biome.json`](../../biome.json) and [`tsconfig.json`](tsconfig.json) enfor
 
 ---
 
-## 4. Testing, Coverage ($\ge 95\%$) & Benchmarks (`vitest` v5 + `fast-check`)
+## 4. Testing, Coverage (≥ 95%) & Benchmarks (`vitest` v5 + `fast-check`)
 
 ```bash
 # 1. Run all js quality gates (format-check, lint, typecheck, build, test)

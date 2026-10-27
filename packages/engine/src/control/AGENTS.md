@@ -7,7 +7,7 @@ Implements the $3\text{ kHz}$ Control Bus (`#[forbid(unsafe_code)]`): 64-byte bi
 | File | Responsibility | Canonical Spec (SSOT) |
 | :--- | :--- | :--- |
 | [`descriptor.rs`](descriptor.rs) | 64-byte `ControlClampDescriptor` (`[CLAMP-RANGE]`, `[CLAMP-SWITCH]`) + `proptest` | [`parametric_control_bus.md`](../../../../docs/parametric_control_bus.md) |
-| [`bus.rs`](bus.rs) | `ControlBus<B>`, `tick_3khz`, dirty-flag bypass (`0` MACs @ $48\text{ kHz}$ when static) | [`parametric_control_bus.md`](../../../../docs/parametric_control_bus.md) |
+| [`bus.rs`](bus.rs) | `ControlBus<B>`, `tick_3khz`, dirty-flag bypass (`0` MACs @ 48 kHz when static) | [`parametric_control_bus.md`](../../../../docs/parametric_control_bus.md) |
 | [`reference.rs`](reference.rs) | Reference `f64` Lobatto, Rank-4 FM, Chebyshev LFO, and trust-region kernels | [`clamp_and_audit_registry.md`](../../../../docs/clamp_and_audit_registry.md) |
 
 See [`packages/engine/CONTRIBUTING.md`](../../CONTRIBUTING.md) for `u = 0` preset anchoring invariants.

@@ -15,7 +15,7 @@ Consult [`AGENTS.md`](AGENTS.md) and the submodule `AGENTS.md` files for progres
 - **`src/core1/` ([`src/core1/AGENTS.md`](src/core1/AGENTS.md)):** 12-layer `1x B-Spline PolyADAA` + Radial-Polar Selective Complex RG-LRU stack and 3 kHz Rank-4 SVD output head collapse.
 - **`src/core2/` ([`src/core2/AGENTS.md`](src/core2/AGENTS.md)):** Modulated Unitary Feedback Delay Network (`M-UFDN`), Givens/Householder reflectors, cubic Lagrange delay interpolation, and coercive-saturating Lyapunov loop.
 - **`src/control/` ([`src/control/AGENTS.md`](src/control/AGENTS.md)):** $3\text{ kHz}$ envelopes, 4-FMA + Newton LFO rotors, Node-Anchored Lobatto HDMR, Rank-4 FM, and 3-Phase control clamping.
-- **`src/container/` ([`src/container/AGENTS.md`](src/container/AGENTS.md)):** 64-byte `.dnam` / `.dnam-ckpt` preamble, zero-copy `DnamContainerView`, Continuous-Time ZOH sample-rate rescaler ($44.1\text{--}96\text{ kHz}$), and `uplo='U'` Gram matrix packer.
+- **`src/container/` ([`src/container/AGENTS.md`](src/container/AGENTS.md)):** 64-byte `.dnam` / `.dnam-ckpt` preamble, zero-copy `DnamContainerView`, Continuous-Time ZOH sample-rate rescaler ($44.1\text{–}96\text{ kHz}$), and `uplo='U'` Gram matrix packer.
 - **`src/provenance/` ([`src/provenance/AGENTS.md`](src/provenance/AGENTS.md)):** RFC 8785 JCS SHA-256, `Ed25519` creator/marketplace verification, 64B `ChaCha20` arena encryption, and Dual-Mechanism Buyer Watermarking (`Test 8H`).
 - **`src/schema/` ([`src/schema/AGENTS.md`](src/schema/AGENTS.md)):** `#![no_std]` `serde` JSON header types, UI skew curves, and `DnamError`.
 
@@ -51,7 +51,7 @@ Consult [`AGENTS.md`](AGENTS.md) and the submodule `AGENTS.md` files for progres
 
 ---
 
-## 3. Testing, Coverage ($\ge 95\%$) & Benchmarking Commands
+## 3. Testing, Coverage (≥ 95%) & Benchmarking Commands
 
 Run all commands from the monorepo root via `moon`:
 
@@ -76,5 +76,5 @@ moon run engine:bench
 ## 4. Pre-Commit Checklist for `packages/engine/`
 
 - [ ] `moon check engine` passes all formatting, Clippy (`-D warnings`), build, and unit/`proptest`/integration tests (`tests/realtime_safety.rs` and `tests/backend_parity.rs`).
-- [ ] `moon run engine:coverage` confirms $\ge 95\%$ coverage, including all newly added or modified functions and tier branches.
+- [ ] `moon run engine:coverage` confirms ≥ 95% coverage, including all newly added or modified functions and tier branches.
 - [ ] If any public API or FFI signature changed, `packages/python/rust/` bindings and scoped `AGENTS.md` files (`< 2,500 B`) are updated accordingly.

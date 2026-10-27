@@ -15,4 +15,4 @@
 
 ## 2. Verification
 
-See [`CONTRIBUTING.md`](CONTRIBUTING.md) for strict typing (`pyrefly`), coverage ($\ge 95\%$), and precision rules.
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) for strict typing (`pyrefly`), coverage (≥ 95%), and precision rules.

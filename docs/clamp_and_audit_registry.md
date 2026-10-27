@@ -9,21 +9,21 @@ Because neural audio training can run unattended for extended periods, **DNAM ne
 ### Phase 1 — Pre-Training Step-0 Audit ($< 200\text{ ms}$ Before Epoch 1, Non-Blocking Banner)
 Immediately upon loading the user's `controls_schema` and stem metadata at Step 0:
 1. **`[CLAMP-RANGE]` (Unobserved Range Extrapolation Clamp):**
-   For each continuous `range` control $p$ with `declared_range` $[u_{p,\text{decl\_min}}, u_{p,\text{decl\_max}}]$, computes the observed stem span $[u_{p,\text{obs\_min}}, u_{p,\text{obs\_max}}]$ and clamps the active safe interval to:
-   $$u_{p,\text{safe\_min}} = \max\!\big(u_{p,\text{decl\_min}},\, u_{p,\text{obs\_min}}\big), \qquad u_{p,\text{safe\_max}} = \min\!\big(u_{p,\text{decl\_max}},\, u_{p,\text{obs\_max}}\big)$$
+   For each continuous `range` control $p$ with `declared_range` $[u_{p,\text{decl-min}}, u_{p,\text{decl-max}}]$, computes the observed stem span $[u_{p,\text{obs-min}}, u_{p,\text{obs-max}}]$ and clamps the active safe interval to:
+   $$u_{p,\text{safe-min}} = \max\big(u_{p,\text{decl-min}}, u_{p,\text{obs-min}}\big), \qquad u_{p,\text{safe-max}} = \min\big(u_{p,\text{decl-max}}, u_{p,\text{obs-max}}\big)$$
    If $U_p = 1$ (control never moved across stems), locks polynomial degree $K_p = 0$.
 2. **`[CLAMP-SWITCH]` (Unobserved Switch Option Masking):**
-   For each discrete `switch` control $q$ with `declared_options` $\mathcal{O}_{q,\text{decl}}$, restricts `active_options` to $\mathcal{O}_{q,\text{obs}} = \{o \in \mathcal{O}_{q,\text{decl}} \mid \exists\text{ valid stem with } s_q = o\}$.
+   For each discrete `switch` control $q$ with `declared_options` $\mathcal{O}_{q,\text{decl}}$, restricts `active_options` to $\mathcal{O}_{q,\text{obs}} = \lbrace o \in \mathcal{O}_{q,\text{decl}} \mid \exists\text{ valid stem with } s_q = o \rbrace$.
 3. **`[CLAMP-STABILITY]` (Step-0 Multi-Knob Corner Stability Audit):**
    Evaluates the Step-0 physical parameter fit across all $3^{P_{\text{range}}} \times \prod_q |\mathcal{O}_{q,\text{obs}}|$ corners of `safe_clamped_range` $\times$ `active_options`. If any unrecorded corner (e.g., `feedback = 10.0` + `boost = "on"`) predicts $\hat{r}_c > 0.9995$, $\hat{g}_{\text{lin},m} > 0.9990$, $|\hat{a}_{\text{diff},m}| > 0.75$, or $\hat{\tau}_m < 4.0$, computes the exact conditional ceiling (e.g., `conditional_max: {"boost=on": 9.37}` in `Test 8E`), logs a live warning banner, and **proceeds immediately into Epoch 1**.
 
 ### Phase 2 — During-Training Stop-Gradient Corner Barrier & Periodic Rail-Lockup Check
 1. **Stop-Gradient Corner Barrier Loss ($\mathcal{L}_{\text{barrier}}$ at Every `Adam` Step, `CL-16`):**
-   Evaluating the $3\text{ kHz}$ Control Hyper-Bus at all virtual corner coordinates $\mathcal{V}_{\text{corners}}$ requires zero audio rendering ($< 0.05\text{ ms}$/step). Applying the stop-gradient operator $\operatorname{sg}(\cdot)$ (`detach()`) to the 1st-order main effects $\boldsymbol{\theta}_{\text{main}}(\mathbf{u}_c, \mathbf{s}_c)$:
-   $$\mathcal{L}_{\text{barrier}} = \lambda_{\text{bar}} \sum_{(\mathbf{u}_c, \mathbf{s}_c) \in \mathcal{V}_{\text{corners}}} \operatorname{relu}\!\Big(\operatorname{sg}\!\big(\boldsymbol{\theta}_{\text{main}}(\mathbf{u}_c, \mathbf{s}_c)\big) + \Delta\boldsymbol{\theta}_{\text{FM}}(\mathbf{u}_c, \mathbf{s}_c) - \boldsymbol{\theta}_{\text{safe}}\Big)^2$$
+   Evaluating the $3\text{ kHz}$ Control Hyper-Bus at all virtual corner coordinates $\mathcal{V}_{\text{corners}}$ requires zero audio rendering ($< 0.05\text{ ms}$/step). Applying the stop-gradient operator $\mathrm{sg}(\cdot)$ (`detach()`) to the 1st-order main effects $\boldsymbol{\theta}_{\text{main}}(\mathbf{u}_c, \mathbf{s}_c)$:
+   $$\mathcal{L}_{\text{barrier}} = \lambda_{\text{bar}} \sum_{(\mathbf{u}_c, \mathbf{s}_c) \in \mathcal{V}_{\text{corners}}} \mathrm{relu}\Big(\mathrm{sg}\big(\boldsymbol{\theta}_{\text{main}}(\mathbf{u}_c, \mathbf{s}_c)\big) + \Delta\boldsymbol{\theta}_{\text{FM}}(\mathbf{u}_c, \mathbf{s}_c) - \boldsymbol{\theta}_{\text{safe}}\Big)^2$$
    steers the 2nd-order Factorization Machine interaction weights $\Delta\boldsymbol{\theta}_{\text{FM}}$ away from unstable corners with **exact $0.00 \times 10^0$ gradient interference on the recorded 1st-order stems** (`Test 8F`).
 2. **Periodic Dynamic Rail-Lockup Audit (`[CLAMP-RAIL]`, Every 10 Epochs):**
-   Runs a $2,048$-sample synthetic burst through the corners under `torch.no_grad()`; if cascaded `PolyADAA` stages hit $> 95\%$ hard-rail saturation ($|u_n| = 1.0$), records a conditional gain ceiling.
+   Runs a $2,048$-sample synthetic burst through the corners under `torch.no_grad()`; if cascaded `PolyADAA` stages hit > 95% hard-rail saturation ($|u_n| = 1.0$), records a conditional gain ceiling.
 
 ### Phase 3 — Post-Training & Post-Polish Export Certification Audit (At `.dnam` Export)
 1. **`[CLAMP-DYNAMIC]` (Combined Knob + Learned LFO/Envelope Excursion Clamp, `CL-17`):**
@@ -32,7 +32,7 @@ Immediately upon loading the user's `controls_schema` and stem metadata at Step 
    $$\tau_{m,\text{min}}(\mathbf{u}, \mathbf{s}) = \tau_{0,m}(\mathbf{u}, \mathbf{s}) - |\mathbf{w}_{\tau,m}|^\top \mathbf{m}_{\text{max}} \ge 4.0\text{ samples}$$
    If a wide learned chorus/flanger LFO sweep at `delay = 0.0` would dip below the 4-sample Cubic Lagrange causal margin, tightens `safe_clamped_range` (e.g., `[0.00, 1.00] -> [0.08, 1.00]` in `Test 8F`).
 2. **`[CLAMP-HEAD-GAIN]` (Post-Polish SVD Head Spectral Gain Clamp, `CL-17`):**
-   Evaluates the 32-point FFT of the polished 16-tap stereo head $\mathbf{W}_{\text{head}}(\mathbf{u}, \mathbf{s})$ across all corners; if any unrecorded corner exhibits a $> +6.0\text{ dB}$ spectral peak above the loudest training stem, bakes an ellipsoidal trust-region norm clamp $\|\mathbf{z}_{\text{head}}\|_2 \le \rho_{\text{head}}$ into the `.dnam` file.
+   Evaluates the 32-point FFT of the polished 16-tap stereo head $\mathbf{W}_{\text{head}}(\mathbf{u}, \mathbf{s})$ across all corners; if any unrecorded corner exhibits a $> +6.0\text{ dB}$ spectral peak above the loudest training stem, bakes an ellipsoidal trust-region norm clamp $\Vert \mathbf{z}_{\text{head}}\Vert _2 \le \rho_{\text{head}}$ into the `.dnam` file.
 
 ---
 

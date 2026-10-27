@@ -104,10 +104,10 @@ Creators can restrict their `.dnam` models to specific protection profiles (e.g.
 1. **Creator Master Signature (`creator_signature`):**
    - Let `master_arena_sha256 = SHA256(master_arena_bytes[0..arena_offset_ultra_end])`.
    - The creator signs the 64-byte concatenation `immutable_header_sha256 || master_arena_sha256` offline using `Ed25519`:
-     $$\sigma_{\text{creator}} = \operatorname{Ed25519\_Sign}\!\Big(\text{sk}_{\text{creator}},\; \text{immutable\_header\_sha256} \;\|\; \text{master\_arena\_sha256}\Big)$$
+     $$\sigma_{\text{creator}} = \mathrm{Ed25519-Sign}\Big(\text{sk}_{\text{creator}}, \text{immutable-header-sha256} \Vert \text{master-arena-sha256}\Big)$$
 2. **Marketplace Counter-Signature (`marketplace_receipt`):**
    - Upon licensing, the marketplace generates the buyer-watermarked arena (`buyer_arena_sha256 = SHA256(Plaintext_Buyer_Arena[0..arena_offset_ultra_end])`), optionally encrypts `Arena 0..2` (`ENCRYPTED_ARENA = 1`), updates the binary preamble's `arena_crc32c_{lite,full,ultra}` and `header_crc32c`, and signs the receipt payload:
-     $$\sigma_{\text{market}} = \operatorname{Ed25519\_Sign}\!\Big(\text{sk}_{\text{market}},\; \text{immutable\_header\_sha256} \;\|\; \text{master\_arena\_sha256} \;\|\; \text{buyer\_arena\_sha256} \;\|\; \text{receipt\_meta}\Big)$$
+     $$\sigma_{\text{market}} = \mathrm{Ed25519-Sign}\Big(\text{sk}_{\text{market}}, \text{immutable-header-sha256} \Vert \text{master-arena-sha256} \Vert \text{buyer-arena-sha256} \Vert \text{receipt-meta}\Big)$$
 
 ---
 
@@ -119,7 +119,7 @@ Hardware manufacturers can integrate DNAM DRM at three progressive levels of fac
 
 | OEM Integration Path | Protection Profile | Factory Assembly-Line Changes? | Protects Against Casual File Sharing? | Cryptographically Proves Genuine Hardware Silicon? |
 | :--- | :--- | :--- | :--- | :--- |
-| **Path 1: Self-Registered Device Key** | `DeviceAllowlisted` (`.dnam`, `ENCRYPTED_ARENA = 1`) | **None** (zero OEM attestation infrastructure) | **Yes** (`X25519` + `ChaCha20` bound to $K \le 5$ devices) | **No** (client self-reports `pubkey_x25519`; protected by Pillar 3 buyer watermark) |
+| **Path 1: Self-Registered Device Key** | `DeviceAllowlisted` (`.dnam`, `ENCRYPTED_ARENA = 1`) | **None** (zero OEM attestation infrastructure) | **Yes** (`X25519` + `ChaCha20` bound to `K ≤ 5` devices) | **No** (client self-reports `pubkey_x25519`; protected by Pillar 3 buyer watermark) |
 | **Path 2: Companion-App / OTA Cert Enrollment** | `EnclaveSealed` (`.dnam-seal`, `b"DNSL"`) | **None** (works on already-shipped pedals via firmware update) | **Yes** (double-encrypted `.dnam-seal` + TrustZone) | **Yes** (OEM cloud verifies unit serial/challenge & signs `OemDeviceCertificate`) |
 | **Path 3: Factory-Line HSM Provisioning** | `EnclaveSealed` (`.dnam-seal`, `b"DNSL"`) | **Yes** (bed-of-nails / JTAG station signs cert at PCB test) | **Yes** (double-encrypted `.dnam-seal` + TrustZone) | **Yes** (highest assurance; zero post-factory enrollment needed) |
 
@@ -199,8 +199,8 @@ sequenceDiagram
     Rig->>Flash: 7. Writes OemDeviceCertificate JSON/binary to pedal storage
 ```
 
-In both **Path 2** and **Path 3**, the canonical attestation signing message is identical:
-$$\text{msg}_{\text{oem\_cert}} = \texttt{"DNAM-OEM-CERT-V1:"} \;\|\; \text{oem\_vendor} \;\|\; \texttt{"|"} \;\|\; \text{model\_code} \;\|\; \texttt{"|"} \;\|\; \text{device\_id\_hash\_ascii} \;\|\; \texttt{"|"} \;\|\; \text{pk}_{\text{device\_x25519\_bytes}}$$
+In both **Path 2** and **Path 3**, the canonical attestation signing message (`|`-delimited with `"DNAM-OEM-CERT-V1:"` domain prefix) is identical:
+$$\text{msg}_{\text{oem-cert}} = \text{prefix}_{\text{V1}} \Vert \text{oem-vendor} \Vert \text{model-code} \Vert \text{device-id-hash-ascii} \Vert \text{pk}_{\text{device-x25519-bytes}}$$
 
 Before sealing any `.dnam-seal` container for a target hardware unit, `seal_dnam_container` verifies `oem_sig_ed25519` against the manufacturer's pinned `oem_pubkey_ed25519` and checks `DistributionPolicy::allows_oem_device(oem_vendor, model_code)`.
 
@@ -226,9 +226,9 @@ sequenceDiagram
     App-->>Host: 9. Transfers .dnam-seal to hardware (USB-C / Wi-Fi / BLE / Flash Drive)
     Host->>Host: 10. Verifies DNSL envelope_crc32c & marketplace_sig_ed25519 (< 40 us, 0 JSON/hex parsing)
     Host->>TZ: 11. Passes outer (ephemeral_pubkey_x25519, device_id_hash, wrapped_cek) to TrustZone
-    TZ->>TZ: 12. Unwraps cek_outer & decrypts inner .dnam (< 18 us); Normal World UI can read 4 KB JSON header while Arena 0..2 stays encrypted (ENCRYPTED_ARENA = 1)
+    TZ->>TZ: 12. Unwraps cek_outer & decrypts inner .dnam (< 18 us) - Normal World UI can read 4 KB JSON header while Arena 0..2 stays encrypted (ENCRYPTED_ARENA = 1)
     TZ->>TZ: 13. Unwraps inner cek_arena into TZASC Secure RAM, decrypts Arena 0..2 (< 18 us) & wipes both CEKs
-    Host->>Host: 14. Verifies inner .dnam CRC32C, Ed25519 chain & creator distribution_policy; exposes UI hints to pedal/companion app
+    Host->>Host: 14. Verifies inner .dnam CRC32C, Ed25519 chain & creator distribution_policy, then exposes UI hints to pedal/companion app
     TZ->>DSP: 15. Swaps 64B-aligned Arena 0..2 pointer in Secure RAM (< 50 ns, 0 flops DRM overhead @ 48 kHz)
 ```
 
@@ -303,7 +303,7 @@ Even if an adversary physically decapitates a chip or dumps process memory on a 
 
 1. **48-Channel RG-LRU Reciprocal Scaling Gauge ($\boldsymbol{\kappa} \in [0.985, 1.015]^{48}$):**
    In Core 1B ([`core1_hybrid_ssm_and_polyadaa.md` §2.3](core1_hybrid_ssm_and_polyadaa.md#23-log-octave-pole-initialization--mathcalh_2-norm-input-scaling-cl-04-cl-05)), scaling each resonator channel's input normalizer $b_{\gamma,b,c}$ by $\kappa_{b,c}$ and its output projection $(c_{\text{real},b,c}, c_{\text{imag},b,c})$ by $\kappa_{b,c}^{-1}$:
-   $$b_{\gamma,b,c}^{(\text{buyer})} = \kappa_{b,c} \, b_{\gamma,b,c}^{(\text{master})}, \qquad \big(c_{\text{real},b,c}^{(\text{buyer})},\; c_{\text{imag},b,c}^{(\text{buyer})}\big) = \frac{1}{\kappa_{b,c}} \big(c_{\text{real},b,c}^{(\text{master})},\; c_{\text{imag},b,c}^{(\text{master})}\big)$$
+   $$b_{\gamma,b,c}^{(\text{buyer})} = \kappa_{b,c} b_{\gamma,b,c}^{(\text{master})}, \qquad \big(c_{\text{real},b,c}^{(\text{buyer})}, c_{\text{imag},b,c}^{(\text{buyer})}\big) = \frac{1}{\kappa_{b,c}} \big(c_{\text{real},b,c}^{(\text{master})}, c_{\text{imag},b,c}^{(\text{master})}\big)$$
    cancels out identically ($\kappa_{b,c} \cdot \kappa_{b,c}^{-1} \equiv 1.0$, **$4.00 \times 10^{-15}$ exactness in `Test 8H`**) while preserving all pole radii, angles, selectivity gates, and `CL-01`..`CL-18` stability invariants.
 2. **SVD Control Subspace Orthogonal Rotation Gauge ($\mathbf{Q}_{\text{buyer}} \in SO(D_h)$):**
    In the Parametric Control Bus ([`training_and_iterative_resume.md` §1](training_and_iterative_resume.md#stage-2--step-0-svd-orthonormal-kronecker-float64-wiener-hopf-warm-start-cl-18)), rotating the SVD control projector $\mathbf{P}_{\text{svd}} \in \mathbb{R}^{D_{\text{basis}} \times D_h}$ and the 16-tap SVD stereo head basis $\mathbf{W}_{\text{head},1..D_h}$ by $\mathbf{Q}_{\text{buyer}} \in SO(D_h)$:
@@ -312,16 +312,16 @@ Even if an adversary physically decapitates a chip or dumps process memory on a 
 
 ### 4.2 Mechanism B — Non-Invertible Coupled Spread-Spectrum Tardos Watermarking ($+36.6\text{ dB}$ Matched-Filter Gain)
 
-To defeat gauge canonicalization or multi-buyer collusion averaging, the marketplace embeds a **Tardos Collusion-Resistant Spread-Spectrum Code** $\mathbf{c}^{(\text{buyer})} \in \{-1, +1\}^{4608}$ (seeded via `HMAC-SHA256(marketplace_secret, model_id || license_id)`) across all $N_{\text{conv}} = 4,608$ nonlinear dilated convolution weights (`768` in `Arena 0 Lite`, `1,536` in `Arena 1 Full`, `2,304` in `Arena 2 Ultra`):
+To defeat gauge canonicalization or multi-buyer collusion averaging, the marketplace embeds a **Tardos Collusion-Resistant Spread-Spectrum Code** $\mathbf{c}^{(\text{buyer})} \in \lbrace -1, +1 \rbrace^{4608}$ (seeded via `HMAC-SHA256(marketplace_secret, model_id || license_id)`) across all $N_{\text{conv}} = 4,608$ nonlinear dilated convolution weights (`768` in `Arena 0 Lite`, `1,536` in `Arena 1 Full`, `2,304` in `Arena 2 Ultra`):
 
-$$W_{\text{conv},i}^{(\text{buyer})} = W_{\text{conv},i}^{(\text{master})} + \epsilon \, \sigma_{W,i} \, c_i^{(\text{buyer})}$$
+$$W_{\text{conv},i}^{(\text{buyer})} = W_{\text{conv},i}^{(\text{master})} + \epsilon \sigma_{W,i} c_i^{(\text{buyer})}$$
 
 | Attack Vector Attempted by Pirate | Why the Dual-Mechanism Watermark Survives | Verified Margin (`Test 8H`) |
 | :--- | :--- | :---: |
 | **Strip JSON header / forge new `.dnam` wrapper** | Watermark lives entirely inside the binary `f32` weights of `Arena 0..2` | **100% intact** |
-| **Truncate `Ultra` / `Full` down to `Lite`-only (`10.5 KB`)** | `Arena 0 (Lite)` alone carries `16` gauge ratios $\kappa_{0..3,0..3}$ + `768` Tardos conv weights (`+28.85 dB` gain) | **$Z > 10\sigma$** |
-| **Canonicalize RG-LRU $(b_{\gamma}, c)$ gauge** | Cannot invert the $4,608$ nonlinear `PolyADAA`-coupled convolution weights without $\mathbf{W}_{\text{conv}}^{(\text{master})}$ | **$Z \ge 24.98\sigma$** |
-| **Quantize weights `f32 -> fp16 -> f32` + 4-buyer collusion average** | Spread-spectrum matched filter over $N = 4,608$ weights provides $+36.63\text{ dB}$ processing gain | **$24.98\sigma$ vs. $2.53\sigma$ innocent max** |
+| **Truncate `Ultra` / `Full` down to `Lite`-only (`10.5 KB`)** | `Arena 0 (Lite)` alone carries `16` gauge ratios `κ_{0..3,0..3}` + `768` Tardos conv weights (`+28.85 dB` gain) | **`Z > 10σ`** |
+| **Canonicalize RG-LRU `(b_γ, c)` gauge** | Cannot invert the `4,608` nonlinear `PolyADAA`-coupled convolution weights without `W_conv^(master)` | **`Z ≥ 24.98σ`** |
+| **Quantize weights `f32 -> fp16 -> f32` + 4-buyer collusion average** | Spread-spectrum matched filter over `N = 4,608` weights provides `+36.63 dB` processing gain | **`24.98σ` vs. `2.53σ` innocent max** |
 
 ---
 
@@ -367,7 +367,7 @@ flowchart TD
 
     MagicCheck -- "b'DNSL' (.dnam-seal)" --> Unseal["unseal_dnam_container(bytes, crypto) -> Decrypt Outer Envelope (cek_outer)"]
     Unseal -- "Invalid Key / Tampered" --> ErrSeal["Return Err(DnamError)"]
-    Unseal -- "Success (Inner .dnam)" --> ParseInner["Parse Inner DnamPreamble & JSON Header; Decrypt Inner Arena 0..2 (ENCRYPTED_ARENA = 1, cek_arena)"]
+    Unseal -- "Success (Inner .dnam)" --> ParseInner["Parse Inner DnamPreamble & JSON Header, Decrypt Inner Arena 0..2 (ENCRYPTED_ARENA = 1, cek_arena)"]
     ParseInner --> SetSealed["protection_profile = DnamProtectionProfile::EnclaveSealed"]
 
     MagicCheck -- "b'DNAM' or b'DNCK'" --> ParseDirect["Parse DnamPreamble, Verify header_crc32c & JSON Header"]
@@ -404,7 +404,7 @@ flowchart TD
 ### 7.2 Standardized `license_tier` Values & Automated Split Royalties (`royalty_splits`)
 Inside `metadata.signatures.marketplace_receipt` (see [`dnam_container_schema.md` §7.1](dnam_container_schema.md#71-preset-safe-split-payload-ed25519-certificate-chain--80-s-offline-verification)):
 - **`license_tier`:** `"free"`, `"personal"`, `"commercial_studio"`, or `"oem_bundle"`.
-- **`royalty_splits`:** Array of `{ "recipient_id": str, "role": str, "share_bps": int }` entries (summing to `10000` basis points = $100\%$) enabling automatic marketplace revenue splits across collaborative packs.
+- **`royalty_splits`:** Array of `{ "recipient_id": str, "role": str, "share_bps": int }` entries (summing to `10000` basis points = 100%) enabling automatic marketplace revenue splits across collaborative packs.
 
 ### 7.3 Clean Storefront Taxonomy Isolation via `user_metadata`
 Digital marketplaces store rich storefront discovery attributes inside a namespaced key in `user_metadata` (editable in $< 0.1\text{ ms}$ in-place on `.dnam` containers without invalidating `creator_signature` or `marketplace_receipt`):

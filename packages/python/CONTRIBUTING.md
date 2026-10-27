@@ -55,7 +55,7 @@ moon run python:build
 
 ---
 
-## 4. Testing (`pytest` + `hypothesis`), Coverage ($\ge 95\%$) & Benchmarks (`pytest-benchmark`)
+## 4. Testing (`pytest` + `hypothesis`), Coverage (≥ 95%) & Benchmarks (`pytest-benchmark`)
 
 All test files reside in [`tests/`](tests/) (`test_schema.py`, `test_container.py`, `test_control.py`, `test_dsp.py`, `test_provenance.py`, `test_engine.py`, and `test_benchmarks.py`):
 
@@ -75,5 +75,5 @@ moon run python:bench
 ## 5. Pre-Commit Checklist for `packages/python/`
 
 - [ ] `moon check python` passes all Ruff, Clippy, Pyrefly (`0` diagnostics with `src/dnam_engine/_native.pyi` up to date), build, and test checks.
-- [ ] `moon run python:coverage` passes with $\ge 95\%$ coverage.
+- [ ] `moon run python:coverage` passes with ≥ 95% coverage.
 - [ ] `moon run python:bench` confirms no performance regressions.

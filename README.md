@@ -24,13 +24,13 @@ It unifies **nonlinear amplifier/preamp drive**, **linear, time-invariant (LTI) 
 
 ## Psychoacoustic `bESR` Quality Tiers (`Lite` / `Full` / `Ultra`)
 
-DNAM evaluates models using **Floor-Regularized Band-Balanced ESR (`bESR`)** across **Low ($20\text{--}250\text{ Hz}$)**, **Mid ($250\text{ Hz--}2.5\text{ kHz}$)**, and **High ($2.5\text{--}18\text{ kHz}$)** bands (see [`docs/training_and_iterative_resume.md`](docs/training_and_iterative_resume.md)):
+DNAM evaluates models using **Floor-Regularized Band-Balanced ESR (`bESR`)** across **Low (20–250 Hz)**, **Mid (250 Hz–2.5 kHz)**, and **High (2.5–18 kHz)** bands (see [`docs/training_and_iterative_resume.md`](docs/training_and_iterative_resume.md)):
 
-| DNAM Tier | Target Grade | Composite `bESR` | Per-Band Requirement ($\text{LF}$ / $\text{MF}$ / $\text{HF}$) | Max Spectral Tilt ($\Delta\text{EQ}_{\text{dB}}$) |
+| DNAM Tier | Target Grade | Composite `bESR` | Per-Band Requirement (`LF` / `MF` / `HF`) | Max Spectral Tilt (`ΔEQ_dB`) |
 | :--- | :--- | :---: | :---: | :---: |
-| **`Lite` (`C=4`)** | **Mix-Ready / Live Grade** | **$-18\text{ to }-23\text{ dB}$** ($\le -18\text{ dB}$) | $\text{LF} \le -23\text{ dB}$, $\text{MF} \le -20\text{ dB}$, $\text{HF} \le -15\text{ dB}$ | **$\le 0.75\text{ dB}$** |
-| **`Full` (`C=8`)** | **True Studio Quality** | **$-23\text{ to }-30\text{ dB}$** ($\le -23\text{ dB}$) | $\text{LF} \le -27\text{ dB}$, $\text{MF} \le -25\text{ dB}$, **$\text{HF} \le -20\text{ dB}$** | **$\le 0.35\text{ dB}$** |
-| **`Ultra` (`C=12`)** | **Mastering / Reference Grade** | **$\le -30\text{ dB}$** (clean/mid-gain/LTI) / **$\le -25\text{ dB}$** (high-gain tube) | $\text{LF} \le -34\text{ dB}$, $\text{MF} \le -31\text{ dB}$, $\text{HF} \le -26\text{ dB}$ | **$\le 0.15\text{ dB}$** |
+| **`Lite` (`C=4`)** | **Mix-Ready / Live Grade** | **-18 to -23 dB** (≤ -18 dB) | `LF` ≤ -23 dB, `MF` ≤ -20 dB, `HF` ≤ -15 dB | **≤ 0.75 dB** |
+| **`Full` (`C=8`)** | **True Studio Quality** | **-23 to -30 dB** (≤ -23 dB) | `LF` ≤ -27 dB, `MF` ≤ -25 dB, **`HF` ≤ -20 dB** | **≤ 0.35 dB** |
+| **`Ultra` (`C=12`)** | **Mastering / Reference Grade** | **≤ -30 dB** (clean/mid-gain/LTI) / **≤ -25 dB** (high-gain tube) | `LF` ≤ -34 dB, `MF` ≤ -31 dB, `HF` ≤ -26 dB | **≤ 0.15 dB** |
 
 ---
 

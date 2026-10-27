@@ -65,7 +65,7 @@ const telemetry = controller.telemetry();
 
 | Subpath | Environment | Description |
 | :--- | :--- | :--- |
-| `@dnam-project/engine` | Node.js & Browser | Conditional entry point (`node` $\to$ N-API v8 + WASM; `browser` $\to$ WASM SIMD128) |
+| `@dnam-project/engine` | Node.js & Browser | Conditional entry point (`node` → N-API v8 + WASM; `browser` → WASM SIMD128) |
 | `@dnam-project/engine/node` | Node.js / Bun / Deno | Explicit Node.js N-API v8 + synchronous WASM driver |
 | `@dnam-project/engine/browser` | Browser / Edge | Pure browser entry point (zero `node:*` imports) |
 | `@dnam-project/engine/schema` | Universal | Zod v4 + `@standard-schema/spec` v1 schemas & wire serializers |

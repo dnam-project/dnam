@@ -3,7 +3,7 @@
 Free from legacy NAM A2 text-JSON weight array constraints and Python `pickle` (`torch.save`) checkpoints, DNAM defines two companion **zero-copy, 64-byte cache-line and SIMD-aligned Hybrid Binary Container formats** engineered for **$< 50\text{ ns}$ `#[no_std]` hardware loading**:
 
 1. **`.dnam` (Magic `b"DNAM"`, Version `1.0`):** The single-file real-time deployment container ($10.5\text{ KB}$ `Lite` / $21.8\text{ KB}$ `Full` / $35.4\text{ KB}$ `Ultra` binary arena) loaded via zero-copy `mmap` or `Float32Array` view by the Rust SIMD engine (`packages/engine`), audio plugin (`packages/plugin`), Python wheel (`packages/python`), and Node.js/WASM runtime (`packages/js`).
-2. **`.dnam-ckpt` (Magic `b"DNCK"`, Version `1.0`):** The deduplicated, `pickle`-free single-file iterative training checkpoint. Its leading tensor arenas (`Arena 0..2`) are **bit-for-bit identical** to the exported `.dnam` model, followed by `Arena 3` containing the tier-ordered **Column-Major Upper-Triangular (`uplo='U'`) `float64` audio sufficient statistics** $\{\operatorname{pack}_{\text{U}}\!\big(\mathbf{G}_{\text{audio}}^{(s)}\big),\; \mathbf{C}_{\text{audio}}^{(s)}\}$ (**$17.25\text{ KB/stem}$ `Lite` / $66.50\text{ KB/stem}$ `Full` / $147.75\text{ KB/stem}$ `Ultra`**—nearly $2\times$ smaller than full matrix storage and $100\%$ 64-byte aligned).
+2. **`.dnam-ckpt` (Magic `b"DNCK"`, Version `1.0`):** The deduplicated, `pickle`-free single-file iterative training checkpoint. Its leading tensor arenas (`Arena 0..2`) are **bit-for-bit identical** to the exported `.dnam` model, followed by `Arena 3` containing the tier-ordered **Column-Major Upper-Triangular (`uplo='U'`) `float64` audio sufficient statistics** $\lbrace \mathrm{pack}_{\text{U}}\big(\mathbf{G}_{\text{audio}}^{(s)}\big), \mathbf{C}_{\text{audio}}^{(s)} \rbrace$ (**$17.25\text{ KB/stem}$ `Lite` / $66.50\text{ KB/stem}$ `Full` / $147.75\text{ KB/stem}$ `Ultra`**—nearly $2\times$ smaller than full matrix storage and 100% 64-byte aligned).
 3. **`.dnam-seal` (Magic `b"DNSL"`, Version `1.0`):** The 100% opaque, immutable 64-byte cache-line aligned OEM hardware wrapper (`DnamSealEnvelope`, `DnamProtectionProfile::EnclaveSealed`) that wraps an inner `ENCRYPTED_ARENA = 1` `.dnam` container (`cek_arena`) inside an outer `ChaCha20` + `X25519` `HPKE` binary envelope (`cek_outer`) for factory-attested hardware TrustZone enclaves (`OemDeviceCertificate`, see [`digital_marketplace_and_provenance.md` §3](digital_marketplace_and_provenance.md#3-pillar-2-hardware-enclave--oem-drm-oemdevicecertificate-attestation--dnam-seal-bdnsl-wrapper)).
 
 ---
@@ -47,12 +47,12 @@ All fields are naturally aligned with **zero compiler-inserted padding holes** (
 | `0x00..0x04` | `[u8; 4]` | `magic` | `b"DNAM"` (`0x4D414E44`) for `.dnam`; `b"DNCK"` (`0x4B434E44`) for `.dnam-ckpt` |
 | `0x04..0x06` | `u16` | `version_major` | Schema major version (`1`); reject if `!= 1` |
 | `0x06..0x08` | `u16` | `version_minor` | Schema minor version (`0`) |
-| `0x08..0x0A` | `u16` | `flags` | **Auto-populated by trainer/exporter (except Bit `8`):** Bit `0`: `HAS_LITE` (`1`), Bit `1`: `HAS_FULL_DELTA` (`2`), Bit `2`: `HAS_ULTRA_DELTA` (`4`), Bit `3`: `HAS_CKPT_STEMS` (`8`), Bit `4`: `EXEC_ORDER_SOA` (`16`), Bit `5`: `DEFAULT_ANCHORED` (`32`), Bit `6`: `CORE2_ACTIVE` (`64`, auto-pruned if $0$), Bit `7`: `LFO_ENV_ACTIVE` (`128`, auto-pruned if $0$), Bit `8`: `STEREO_OUT` (`256`, the **only** user-configurable mode flag: `1 = stereo`, `0 = mono`), Bit `9`: `HAS_SIGNATURES` (`512`, auto-set when `metadata.signatures` is present), Bit `10`: `ENCRYPTED_ARENA` (`1024`, auto-set when `Arena 0..2` is `ChaCha20`-wrapped for `authorized_devices`) |
-| `0x0A..0x0B` | `u8` | `num_controls` | Total user controls $P = P_{\text{range}} + P_{\text{switch}} \in [0, 255]$ (`ControlClampDescriptor` count) |
-| `0x0B..0x0C` | `u8` | `ring_buffer_pow2_log2` | Auto-populated by trainer: `0` when `CORE2_ACTIVE == 0`, or $\lceil \log_2(\max_m D_m + \Delta D_{\text{max}} + 8) \rceil \in [8, 15]$ when Core 2 is active |
+| `0x08..0x0A` | `u16` | `flags` | **Auto-populated by trainer/exporter (except Bit `8`):** Bit `0`: `HAS_LITE` (`1`), Bit `1`: `HAS_FULL_DELTA` (`2`), Bit `2`: `HAS_ULTRA_DELTA` (`4`), Bit `3`: `HAS_CKPT_STEMS` (`8`), Bit `4`: `EXEC_ORDER_SOA` (`16`), Bit `5`: `DEFAULT_ANCHORED` (`32`), Bit `6`: `CORE2_ACTIVE` (`64`, auto-pruned if `0`), Bit `7`: `LFO_ENV_ACTIVE` (`128`, auto-pruned if `0`), Bit `8`: `STEREO_OUT` (`256`, the **only** user-configurable mode flag: `1 = stereo`, `0 = mono`), Bit `9`: `HAS_SIGNATURES` (`512`, auto-set when `metadata.signatures` is present), Bit `10`: `ENCRYPTED_ARENA` (`1024`, auto-set when `Arena 0..2` is `ChaCha20`-wrapped for `authorized_devices`) |
+| `0x0A..0x0B` | `u8` | `num_controls` | Total user controls `P = P_range + P_switch ∈ [0, 255]` (`ControlClampDescriptor` count) |
+| `0x0B..0x0C` | `u8` | `ring_buffer_pow2_log2` | Auto-populated by trainer: `0` when `CORE2_ACTIVE == 0`, or `⌈log₂(max_m D_m + ΔD_max + 8)⌉ ∈ [8, 15]` when Core 2 is active |
 | `0x0C..0x10` | `u32` | `sample_rate_train_hz` | Reference training sample rate in Hz (e.g., `48000`) |
 | `0x10..0x14` | `u32` | `json_header_byte_len` | Unpadded UTF-8 byte length of the JSON metadata object starting at fixed offset `0x40` (`64`) |
-| `0x14..0x18` | `u32` | `tensor_arena_offset` | File byte offset of `Arena 0` (`% 64 == 0`, $\ge 64 + L_{\text{json}}$; defaults to `4,096 B` OS page boundary `0x1000` with `0x20` space slack for zero-TLB-split `mmap` and in-place preset/metadata edits) |
+| `0x14..0x18` | `u32` | `tensor_arena_offset` | File byte offset of `Arena 0` (`% 64 == 0`, `≥ 64 + L_json`; defaults to `4,096 B` OS page boundary `0x1000` with `0x20` space slack for zero-TLB-split `mmap` and in-place preset/metadata edits) |
 | `0x18..0x1C` | `u32` | `tensor_arena_byte_len` | Total byte length of all binary tensor arenas (`% 64 == 0`) |
 | `0x1C..0x20` | `u32` | `arena_offset_lite_end` | Arena-relative byte end of `Arena 0 (Lite)` (`10,752`, `% 64 == 0`) |
 | `0x20..0x24` | `u32` | `arena_offset_full_end` | Arena-relative byte end of `Arena 0 + Arena 1 (Full)` (`22,336`, `% 64 == 0`) |
@@ -60,57 +60,57 @@ All fields are naturally aligned with **zero compiler-inserted padding holes** (
 | `0x28..0x2C` | `u32` | `arena_crc32c_lite` | Castagnoli `CRC32C` (`0x1EDC6F41`) over `Arena 0` (`arena[0..arena_offset_lite_end]`) |
 | `0x2C..0x30` | `u32` | `arena_crc32c_full` | Castagnoli `CRC32C` over `Arena 0..1` (`arena[0..arena_offset_full_end]`) |
 | `0x30..0x34` | `u32` | `arena_crc32c_ultra` | Castagnoli `CRC32C` over `Arena 0..2` (`arena[0..arena_offset_ultra_end]`) |
-| `0x34..0x36` | `u16` | `num_ckpt_stems` | `0` for `.dnam`; $S \ge 1$ for `.dnam-ckpt` (number of stem records in `Arena 3`) |
-| `0x36..0x37` | `u8` | `control_decimation` | Control-bus decimation stride $K_{\text{ctrl}}$ at $f_{s,\text{train}}$ (default `16`) |
-| `0x37..0x38` | `u8` | `head_svd_rank` | Active SVD principal control subspace rank $D_h \in [0, 4]$ (`CL-18`) |
-| `0x38..0x3C` | `f32` | `tail_time_ms` | Auto-computed $T_{60}$ decay tail time in milliseconds for DAW host auto-sleep |
+| `0x34..0x36` | `u16` | `num_ckpt_stems` | `0` for `.dnam`; `S ≥ 1` for `.dnam-ckpt` (number of stem records in `Arena 3`) |
+| `0x36..0x37` | `u8` | `control_decimation` | Control-bus decimation stride `K_ctrl` at `f_{s,train}` (default `16`) |
+| `0x37..0x38` | `u8` | `head_svd_rank` | Active SVD principal control subspace rank `D_h ∈ [0, 4]` (`CL-18`) |
+| `0x38..0x3C` | `f32` | `tail_time_ms` | Auto-computed `T₆₀` decay tail time in milliseconds for DAW host auto-sleep |
 | `0x3C..0x40` | `u32` | `header_crc32c` | Castagnoli `CRC32C` (`0x1EDC6F41`) over `bytes[0x00..tensor_arena_offset]` with `bytes[0x3C..0x40]` zeroed |
 
 > [!TIP]
 > **Zero-JSON Prefix-Verifiable `CRC32C` & 4 KB Page-Aligned In-Place Preset Saving:**
 > 1. **100% Zero-JSON `#[no_std]` Integrity:** Storing `arena_crc32c_lite` (`0x28`), `arena_crc32c_full` (`0x2C`), and `arena_crc32c_ultra` (`0x30`) directly inside the 64-byte preamble allows an embedded `#[no_std]` `Lite`-only (`10.5 KB`) or `Full`-only (`21.8 KB`) loader—or a browser HTTP `Range` request—to verify hardware Castagnoli `CRC32C` (`__crc32cd` on ARMv8-A / SSE4.2) over **only the prefix bytes it loaded**, without parsing a single byte of JSON!
-> 2. **4 KB OS Page Alignment & `< 0.1 ms` In-Place Preset Updates:** By aligning `tensor_arena_offset` (`0x14`) to a `4,096 B` (`0x1000`) OS virtual-memory page boundary and padding `[64 + json_header_byte_len .. tensor_arena_offset]` with `0x20` ASCII spaces, `Arena 0` maps onto an exact hardware page boundary (zero TLB split), while reserving $\sim 1.2\text{--}1.8\text{ KB}$ of slack so DAW plugins and platforms can add/edit `presets` and `user_metadata` **100% in-place** inside the first `4 KB` page without moving `Arena 0..3` or invalidating `arena_crc32c_*`.
+> 2. **4 KB OS Page Alignment & `< 0.1 ms` In-Place Preset Updates:** By aligning `tensor_arena_offset` (`0x14`) to a `4,096 B` (`0x1000`) OS virtual-memory page boundary and padding `[64 + json_header_byte_len .. tensor_arena_offset]` with `0x20` ASCII spaces, `Arena 0` maps onto an exact hardware page boundary (zero TLB split), while reserving $\sim 1.2\text{–}1.8\text{ KB}$ of slack so DAW plugins and platforms can add/edit `presets` and `user_metadata` **100% in-place** inside the first `4 KB` page without moving `Arena 0..3` or invalidating `arena_crc32c_*`.
 
 ---
 
 ## 2. Five Hardware-Loading Optimizations (`< 50 ns` Zero-Allocation Load)
 
-### 2.1 Eliminating $33.33\%$ Structural Zeros via Contiguous Tier-Delta Arenas
+### 2.1 Eliminating 33.33% Structural Zeros via Contiguous Tier-Delta Arenas
 
-In a naive dense $C_{\text{max}} \times C_{\text{max}}$ ($12 \times 12$) lower-block-triangular convolution kernel, `Lite` (`0..3`) never reads channels `4..11` ($4 \times 8 = 32$ zeros/tap) and `Full` (`4..7`) never reads channels `8..11` ($4 \times 4 = 16$ zeros/tap)—wasting **$48 / 144 = 33.33\%$ of all convolution weights on structural zeros** and forcing strided cache-line jumps when executing `Lite` or `Full`.
+In a naive dense $C_{\text{max}} \times C_{\text{max}}$ ($12 \times 12$) lower-block-triangular convolution kernel, `Lite` (`0..3`) never reads channels `4..11` ($4 \times 8 = 32$ zeros/tap) and `Full` (`4..7`) never reads channels `8..11` ($4 \times 4 = 16$ zeros/tap)—wasting **48 / 144 = 33.33% of all convolution weights on structural zeros** and forcing strided cache-line jumps when executing `Lite` or `Full`.
 
-DNAM eliminates $100\%$ of structural zeros by partitioning the causal convolution matrix $\mathbf{W}_{\text{conv}}^{(\ell)} \in \mathbb{R}^{K \times 12 \times 12}$ ($K = 6$) and all layer parameters into **three contiguous, 64-byte aligned Tier-Delta Arenas**:
+DNAM eliminates 100% of structural zeros by partitioning the causal convolution matrix $\mathbf{W}_{\text{conv}}^{(\ell)} \in \mathbb{R}^{K \times 12 \times 12}$ ($K = 6$) and all layer parameters into **three contiguous, 64-byte aligned Tier-Delta Arenas**:
 
-$$\mathbf{W}_{\text{conv}}^{(\ell)} = \begin{bmatrix} \mathbf{W}_{\text{Lite}}^{(\ell)} \in \mathbb{R}^{K \times 4 \times 4} & \mathbf{0}_{K \times 4 \times 8} \\ \multicolumn{2}{c}{\mathbf{W}_{\text{Full},\Delta}^{(\ell)} \in \mathbb{R}^{K \times 4 \times 8}} & \mathbf{0}_{K \times 4 \times 4} \\ \multicolumn{3}{c}{\mathbf{W}_{\text{Ultra},\Delta}^{(\ell)} \in \mathbb{R}^{K \times 4 \times 12}} \end{bmatrix}$$
+$$\mathbf{W}_{\text{conv}}^{(\ell)} = \Big[\text{Row}_{\text{Lite}}: \big(\mathbf{W}_{\text{Lite}}^{(\ell)} \in \mathbb{R}^{K \times 4 \times 4}, \mathbf{0}_{K \times 4 \times 8}\big) \Big| \text{Row}_{\text{Full}}: \big(\mathbf{W}_{\text{Full},\Delta}^{(\ell)} \in \mathbb{R}^{K \times 4 \times 8}, \mathbf{0}_{K \times 4 \times 4}\big) \Big| \text{Row}_{\text{Ultra}}: \big(\mathbf{W}_{\text{Ultra},\Delta}^{(\ell)} \in \mathbb{R}^{K \times 4 \times 12}\big)\Big]^\top$$
 
 ### 2.2 Execution-Order Layer Interleaving (`Core1BlockSlice`) for 100% Linear L1D Prefetching
 
 Instead of storing all 8 `conv` layers in one array, all 8 `polyadaa` layers in a second array, and all 4 `rglru` layers in a third array (which forces the CPU to track 3 separate memory streams per block), each Tier Arena interleaves Core 1 weights into **4 contiguous `Core1BlockSlice` structs in exact $48\text{ kHz}$ forward execution order**:
 
-$$\text{Core1BlockSlice}_b = \Big[\underbrace{\mathbf{W}_{\text{conv}}^{(2b)} \;\big|\; \text{PolyADAA}_{\text{SoA}}^{(2b)}}_{\text{Dilated Conv Layer } 2b} \;\Big|\; \underbrace{\mathbf{W}_{\text{conv}}^{(2b+1)} \;\big|\; \text{PolyADAA}_{\text{SoA}}^{(2b+1)}}_{\text{Dilated Conv Layer } 2b+1} \;\Big|\; \underbrace{\text{SelectiveRgLru}_{\text{SoA}}^{(b)}}_{\text{Complex RG-LRU } b}\Big], \quad b \in \{0, 1, 2, 3\}$$
+$$\text{Core1BlockSlice}_b = \Big[\underbrace{\mathbf{W}_{\text{conv}}^{(2b)} \big| \text{PolyADAA}_{\text{SoA}}^{(2b)}}_{\text{Dilated Conv Layer } 2b} \Big| \underbrace{\mathbf{W}_{\text{conv}}^{(2b+1)} \big| \text{PolyADAA}_{\text{SoA}}^{(2b+1)}}_{\text{Dilated Conv Layer } 2b+1} \Big| \underbrace{\text{SelectiveRgLru}_{\text{SoA}}^{(b)}}_{\text{Complex RG-LRU } b}\Big], \quad b \in \lbrace 0, 1, 2, 3 \rbrace$$
 
 During the $48\text{ kHz}$ audio loop, Core 1 walks a **single monotonic pointer (`ptr += 64`)** from the first byte of Block 0 to the last byte of Block 3—achieving a **100% sequential L1D hardware prefetcher hit rate**:
 
-| Tier Arena | Channels / FDN Lines | `Core1BlockSlice` Size (per block $\times$ 4 blocks) | Total Arena Slice Size | Runtime Execution & Cache Behavior |
+| Tier Arena | Channels / FDN Lines | `Core1BlockSlice` Size (per block × 4 blocks) | Total Arena Slice Size | Runtime Execution & Cache Behavior |
 | :--- | :--- | :---: | :---: | :--- |
-| **`Arena 0: Lite`** | `ch 0..3`, `FDN 0..3` | $1,024\text{ B} \times 4 = \mathbf{4,096\text{ B}}$ ($16\text{ CL/blk}$) | **`10,752 B` (`10.5 KB`)** | **100% self-contained `Lite` prefix** (`168 × 64 B` cache lines). |
-| **`Arena 1: Full Delta`** | `ch 4..7`, `FDN 4..7` | $1,792\text{ B} \times 4 = \mathbf{7,168\text{ B}}$ ($28\text{ CL/blk}$) | **`+11,584 B` (`22,336 B` end)** | Appended to `Arena 0` to form **`Full`** (`21.8 KB`); zero `Ultra` bytes enter L1D cache. |
-| **`Arena 2: Ultra Delta`** | `ch 8..11`, `FDN —` | $2,560\text{ B} \times 4 = \mathbf{10,240\text{ B}}$ ($40\text{ CL/blk}$) | **`+13,888 B` (`36,224 B` end)** | Appended to `Arena 0..1` to form **`Ultra`** (`35.4 KB`); maps 1:1 to Pass 2 of **`8 + 4` NEON loop**! |
+| **`Arena 0: Lite`** | `ch 0..3`, `FDN 0..3` | `1,024 B × 4` = **`4,096 B`** (`16 CL/blk`) | **`10,752 B` (`10.5 KB`)** | **100% self-contained `Lite` prefix** (`168 × 64 B` cache lines). |
+| **`Arena 1: Full Delta`** | `ch 4..7`, `FDN 4..7` | `1,792 B × 4` = **`7,168 B`** (`28 CL/blk`) | **`+11,584 B` (`22,336 B` end)** | Appended to `Arena 0` to form **`Full`** (`21.8 KB`); zero `Ultra` bytes enter L1D cache. |
+| **`Arena 2: Ultra Delta`** | `ch 8..11`, `FDN —` | `2,560 B × 4` = **`10,240 B`** (`40 CL/blk`) | **`+13,888 B` (`36,224 B` end)** | Appended to `Arena 0..1` to form **`Ultra`** (`35.4 KB`); maps 1:1 to Pass 2 of **`8 + 4` NEON loop**! |
 
 ### 2.3 Pre-Packed SIMD Structure-of-Arrays (`SoA`), Division-Free `ControlClampDescriptor` & Pop-Free 3-State DC Equilibrium
 
 1. **Zero-JSON Binary Header (`tier_gain_trim_lin`) & 64-Byte `ControlClampDescriptor` (`0 FDIV`, `0` String Parsing at $3\text{ kHz}$):**
-   - `Arena 0` begins with `core1_input_and_head_bias` (`128 B = 2 × 64 B` cache lines): Cache Line 0 holds the `4×4` stereo-to-4-channel input projection (`[x_mid, x_side, 0, 0] -> ch 0..3`); Cache Line 1 holds the stereo SVD head bias $\mathbf{b}_{\text{head}} \in \mathbb{R}^{(1+D_h) \times 2}$ (`10 × f32`), the **pre-computed linear loudness trims** `tier_gain_trim_lin: [f32; 3]` ($10^{\text{output\_trim\_db}/20}$ for `[Lite, Full, Ultra]`, enabling $0.00\text{ dB}$ LUFS tier switching in `#[no_std]` with `0 pow10f` calls), and `[mix_dry_gain, mix_wet_gain, r_ac_train]` (`3 × f32`).
-   - `control_bus_and_clamp_table` begins with the binary `ControlClampDescriptor` array ($64\text{ B} = 1\text{ cache line}$ per control $p \in \{0 \dots P-1\}$), packing normalization and up to **3 binary switch-coupled conditional clamp rules** (`[CLAMP-STABILITY]`, `[CLAMP-DYNAMIC]`) into a single 64-byte L1D cache line:
-     - `0x00..0x04`: `ctrl_kind: u8` (`0=range, 1=switch`), `lobatto_degree: u8` ($K_p \in \{0..3\}$), `active_options_mask: u16` (`[CLAMP-SWITCH]`).
-     - `0x04..0x18`: `default_val: f32`, `safe_min_base: f32`, `safe_max_base: f32`, `scale_norm: f32` ($\frac{2}{u_{\text{decl\_max}} - u_{\text{decl\_min}}}$), `offset_norm: f32` ($-1 - u_{\text{decl\_min}}\text{scale\_norm}$).
+   - `Arena 0` begins with `core1_input_and_head_bias` (`128 B = 2 × 64 B` cache lines): Cache Line 0 holds the `4×4` stereo-to-4-channel input projection (`[x_mid, x_side, 0, 0] -> ch 0..3`); Cache Line 1 holds the stereo SVD head bias $\mathbf{b}_{\text{head}} \in \mathbb{R}^{(1+D_h) \times 2}$ (`10 × f32`), the **pre-computed linear loudness trims** `tier_gain_trim_lin: [f32; 3]` ($10^{\text{output-trim-db}/20}$ for `[Lite, Full, Ultra]`, enabling $0.00\text{ dB}$ LUFS tier switching in `#[no_std]` with `0 pow10f` calls), and `[mix_dry_gain, mix_wet_gain, r_ac_train]` (`3 × f32`).
+   - `control_bus_and_clamp_table` begins with the binary `ControlClampDescriptor` array ($64\text{ B} = 1\text{ cache line}$ per control $p \in \lbrace 0 \dots P-1 \rbrace$), packing normalization and up to **3 binary switch-coupled conditional clamp rules** (`[CLAMP-STABILITY]`, `[CLAMP-DYNAMIC]`) into a single 64-byte L1D cache line:
+     - `0x00..0x04`: `ctrl_kind: u8` (`0=range, 1=switch`), `lobatto_degree: u8` ($K_p \in \lbrace 0..3 \rbrace$), `active_options_mask: u16` (`[CLAMP-SWITCH]`).
+     - `0x04..0x18`: `default_val: f32`, `safe_min_base: f32`, `safe_max_base: f32`, `scale_norm: f32` ($\frac{2}{u_{\text{decl-max}} - u_{\text{decl-min}}}$), `offset_norm: f32` ($-1 - u_{\text{decl-min}}\text{scale-norm}$).
      - `0x18..0x28`: `anchor_nodes_norm: [f32; 4]` ($[u_{p,1}, u_{p,2}, u_{p,3}, 0.0]$ in $[-1, +1]$).
      - `0x28..0x40`: `cond_rules: [ConditionalClampRule; 3]` (`3 × 8 B = 24 B`: `[switch_ctrl_idx: u8, switch_opt_idx: u8, rule_op: u8 (0=none, 1=max_ceil, 2=min_floor), _pad: u8, bound_val: f32]`).
      - Runtime normalization (`CL-12`) and conditional clamping execute in **branchless scalar/SIMD instructions with `0 FDIV` and `0` string parsing**:
-       $$u_p = \operatorname{fma}\!\big(x_{p,\text{clamped}},\; \text{scale\_norm}_p,\; \text{offset\_norm}_p\big)$$
+       $$u_p = \mathrm{fma}\big(x_{p,\text{clamped}}, \text{scale-norm}_p, \text{offset-norm}_p\big)$$
 2. **Exact 3-State `PolyADAA` DC Resting Equilibrium (`[b_conv_c, alpha_c, beta_c, delta_c]`, `64 B`/Layer) for Pop-Free Preset Switching:**
    - Each 4-channel `PolyADAA` `SoA` block (`[b_conv_c (4×f32), alpha_c (4×f32), beta_c (4×f32), delta_c (4×f32)]`, `16 floats = 64 B`) stores the per-channel convolution/grid operating-point bias $b_{\text{conv},c}$ alongside $(\alpha_c, \beta_c, \delta_c)$.
-   - At $48\text{ kHz}$, `vld1q_f32(b_conv_c)` initializes the 6-tap convolution accumulator directly (`0` extra instructions). On model load or preset change, `reset_to_dc_equilibrium()` sets $u_{\text{rest},c} = \operatorname{clamp}(\frac{2}{3} b_{\text{conv},c}, -1.0, +1.0)$ and initializes **all three `PolyADAA` states** to their analytical silence fixed point:
+   - At $48\text{ kHz}$, `vld1q_f32(b_conv_c)` initializes the 6-tap convolution accumulator directly (`0` extra instructions). On model load or preset change, `reset_to_dc_equilibrium()` sets $u_{\text{rest},c} = \mathrm{clamp}(\frac{2}{3} b_{\text{conv},c}, -1.0, +1.0)$ and initializes **all three `PolyADAA` states** to their analytical silence fixed point:
      $$u_c[-1] = u_{\text{rest},c}, \qquad \mathcal{A}_c[-1] = g_{\text{nl},c}(u_{\text{rest},c}), \qquad m_{\text{dc},c}[-1] = g_{\text{nl},c}(u_{\text{rest},c})$$
      eliminating both the 2-sample B-spline step transient and the $30\text{ ms}$ AC-coupling settling transient (**exact `0.000000` DC output from Sample 0, Sample 1, and all subsequent samples**).
 3. **Pre-Baked $f_{s,\text{train}}$ ($48\text{ kHz}$) Discrete Anchors in `SelectiveRgLru` (`128 B`) & Pre-Inverted Reciprocals in `core2_mufdn_soa` (`256 B`):**
@@ -119,7 +119,7 @@ During the $48\text{ kHz}$ audio loop, Core 1 walks a **single monotonic pointer
 4. **Default-Anchored Base Weights ($\mathbf{W}_{\text{head},0}, \boldsymbol{\theta}_0$) for Instant Sample-0 Audio:**
    - Because each control's first Newton/Lobatto node $u_{p,1}$ is anchored at its `default` setting ($u_{p,1} = u_{p,\text{default}} \implies \tilde{\boldsymbol{\psi}}_p(u_{p,\text{default}}) \equiv \mathbf{0}$), the stored base head $\mathbf{W}_{\text{head},0}$ and base physical parameters $\boldsymbol{\theta}_0$ are **already the exact collapsed weights for the default preset at Sample 0**.
 5. **100% Automatic Subsystem Pruning, Dynamic Ring-Buffer Sizing & DAW Tail Reporting (`Zero User Config`):**
-   - **Only 1 User-Configurable Mode Flag (`output_mode`: `"stereo"` | `"mono"`):** The user only ever selects `stereo` or `mono` output (`STEREO_OUT` bit `8`; when `0`, the engine evaluates only channel 0 of the output head, saving $50\%$ of head MACs on mono pedalboard blocks).
+   - **Only 1 User-Configurable Mode Flag (`output_mode`: `"stereo"` | `"mono"`):** The user only ever selects `stereo` or `mono` output (`STEREO_OUT` bit `8`; when `0`, the engine evaluates only channel 0 of the output head, saving 50% of head MACs on mono pedalboard blocks).
    - **Automatic `CORE2_ACTIVE` & `LFO_ENV_ACTIVE` Bypass:** At export, if Stage-3 Group-Lasso ($L_{2,1}$) pruning zeroes out Core 2 (`M-UFDN`) on a pure amp/preamp/drive/pickup model, the trainer automatically clears `CORE2_ACTIVE` (`bit 6 = 0`) and sets `ring_buffer_pow2_log2 = 0`—dropping `Full` compute from $\sim 4,625$ to **$\sim 3,150\text{ MACs/sample}$ ($3.8\times$ faster than NAM A2)** and Core 2 RAM from **$208\text{ KB} \to 0\text{ KB}$** with zero user configuration.
    - **Automatic `ring_buffer_pow2_log2` & `tail_time_ms`:** When Core 2 is active, the trainer automatically sets `ring_buffer_pow2_log2` from the Phase-3 `[CLAMP-DYNAMIC]` worst-case delay excursion (e.g., `10` $\to 1,024$ samples = `16 KB` for Chorus/Flanger vs. `15` $\to 32,768$ samples = `208 KB` for long delay) and computes `tail_time_ms` ($T_{60}$) and `latency_samples: 0` for VST3/CLAP host sleep/PDC management.
 
@@ -148,8 +148,8 @@ DNAM keeps the core `metadata` schema strictly to the **minimal essentials**, in
    - **`range` Control Interaction (`widget`, `polarity`, `midpoint`, `detents`, `step`, `decimals`, `scale_labels`):**
      - `widget`: `"knob"` (default rotary pot) | `"slider"` (linear fader / graphic EQ band) | `"trim"` (compact trimpot).
      - `polarity`: `"unipolar"` (fills from minimum to value, e.g., `Drive`) | `"bipolar"` (fills from center/zero detent, e.g., active EQ `-12..+12 dB` or `Pan`).
-     - `midpoint` (`float | null`): Physical parameter value at $50\%$ ($12\text{ o'clock}$) UI gesture position $t = 0.5$. Unlike logarithmic tapers that break when $x_{\min} \le 0$, anchoring $x(0.5) = x_{\text{mid}} \in (x_{\min}, x_{\max})$ defines a smooth, closed-form invertible power-skew curve across any $[x_{\min}, x_{\max}]$:
-       $$\gamma_{\text{skew}} = \frac{\ln(0.5)}{\ln\!\left(\frac{x_{\text{mid}} - x_{\min}}{x_{\max} - x_{\min}}\right)}, \qquad x(t) = x_{\min} + (x_{\max} - x_{\min})\, t^{1 / \gamma_{\text{skew}}}, \qquad t(x) = \left(\frac{x - x_{\min}}{x_{\max} - x_{\min}}\right)^{\gamma_{\text{skew}}}$$
+     - `midpoint` (`float | null`): Physical parameter value at 50% ($12\text{ o'clock}$) UI gesture position $t = 0.5$. Unlike logarithmic tapers that break when $x_{\min} \le 0$, anchoring $x(0.5) = x_{\text{mid}} \in (x_{\min}, x_{\max})$ defines a smooth, closed-form invertible power-skew curve across any $[x_{\min}, x_{\max}]$:
+       $$\gamma_{\text{skew}} = \frac{\ln(0.5)}{\ln\left(\frac{x_{\text{mid}} - x_{\min}}{x_{\max} - x_{\min}}\right)}, \qquad x(t) = x_{\min} + (x_{\max} - x_{\min}) t^{1 / \gamma_{\text{skew}}}, \qquad t(x) = \left(\frac{x - x_{\min}}{x_{\max} - x_{\min}}\right)^{\gamma_{\text{skew}}}$$
        *(When `midpoint` is `null` or equals $\frac{1}{2}(x_{\min} + x_{\max})$, $\gamma_{\text{skew}} = 1.0$ and the mapping is linear.)*
      - `detents` (`list[float]`, default `[]`): Physical click/snap positions (e.g., `[0.0]` on a bipolar EQ knob or `[50.0]` on a Wet/Dry mix knob).
      - `step` (`float | null`, default `null` for continuous) & `decimals` (`int`, default `1`): UI drag increment and numeric readout precision.
@@ -159,7 +159,7 @@ DNAM keeps the core `metadata` schema strictly to the **minimal essentials**, in
      - `option_labels` (`dict[str, str]`, default `{}`): Maps machine option IDs in `declared_options` to human-readable UI labels (e.g., `{"off": "Bypass", "on": "Vintage +6 dB", "ultra": "Hi-Gain +12 dB"}`).
 3. **Per-Control Physical Calibration (`controls_schema[*].calibration`, Signed by `immutable_header_sha256`):**
    - `role`: `"delay_time_ms" | "lfo_rate_hz" | "feedback" | "mix" | "crossover_hz" | "stereo_mode" | "stereo_width" | "freeze_latch" | "grain_size_ms" | "grain_pitch_semitones" | "grain_spray"`.
-   - `lobatto_physical_anchors`: Optional `[v_min, v_mid, v_max]` physical values at $u \in \{-1, 0, +1\}$ for single-range controls.
+   - `lobatto_physical_anchors`: Optional `[v_min, v_mid, v_max]` physical values at $u \in \lbrace -1, 0, +1 \rbrace$ for single-range controls.
    - `conditional_physical_anchors`: Map of `"switch_id=option_id" -> [v_min, v_mid, v_max]` for multi-range controls (e.g., Darkglass Anagram Delay's `Time (0..10)` paired with `Range ("0.01-0.1s", "0.1-1s", "1-2s")`).
    - `tempo_sync_default_subdivision`: One of the **12 canonical `TempoSubdivision` variants** from `1/2` to `1/16` with straight, dotted (`.`), and triplet (`T`) for each (`"1/2."`, `"1/2"`, `"1/2T"`, `"1/4."`, `"1/4"`, `"1/4T"`, `"1/8."`, `"1/8"`, `"1/8T"`, `"1/16."`, `"1/16"`, `"1/16T"`).
 4. **Model-Level Capabilities & Auto Unity Leveling (`io_config.capabilities` & `io_config.leveling`, Signed by `immutable_header_sha256`):**
@@ -185,22 +185,22 @@ DNAM keeps the core `metadata` schema strictly to the **minimal essentials**, in
 
 ---
 
-## 4. Continuous-Time Zero-Order Hold (ZOH) Sample-Rate Adaptability ($44.1\text{--}96\text{ kHz}$)
+## 4. Continuous-Time Zero-Order Hold (ZOH) Sample-Rate Adaptability ($44.1\text{–}96\text{ kHz}$)
 
-Because `.dnam` stores pre-baked discrete anchors at $f_{s,\text{train}}$ (e.g., $48,000\text{ Hz}$), **loading at $f_{s,\text{host}} == f_{s,\text{train}}$ requires $0$ flops**. When loaded by a DAW or host at a non-native sample rate $f_{s,\text{host}} \in [44,100,\; 96,000]\text{ Hz}$ ($\rho_{\text{sr}} = \frac{f_{s,\text{train}}}{f_{s,\text{host}}} \ne 1.0$), `set_sample_rate()` rescales the anchored parameters in closed form:
+Because `.dnam` stores pre-baked discrete anchors at $f_{s,\text{train}}$ (e.g., $48,000\text{ Hz}$), **loading at $f_{s,\text{host}} == f_{s,\text{train}}$ requires $0$ flops**. When loaded by a DAW or host at a non-native sample rate $f_{s,\text{host}} \in [44,100, 96,000]\text{ Hz}$ ($\rho_{\text{sr}} = \frac{f_{s,\text{train}}}{f_{s,\text{host}}} \ne 1.0$), `set_sample_rate()` rescales the anchored parameters in closed form:
 
 1. **Core 1B Complex Pole Radii & Angles (with `CL-03` & `CL-04` Safety Guards):**
-   $$r_c(f_{s,\text{host}}) = \operatorname{clamp}\!\Big(\big(r_c(f_{s,\text{train}})\big)^{\rho_{\text{sr}}},\; 0.25,\; 0.9995\Big), \qquad \theta_c(f_{s,\text{host}}) = \operatorname{clamp}\!\Big(\rho_{\text{sr}} \, \theta_c(f_{s,\text{train}}),\; 10^{-4},\; \pi - 10^{-4}\Big)$$
+   $$r_c(f_{s,\text{host}}) = \mathrm{clamp}\Big(\big(r_c(f_{s,\text{train}})\big)^{\rho_{\text{sr}}}, 0.25, 0.9995\Big), \qquad \theta_c(f_{s,\text{host}}) = \mathrm{clamp}\Big(\rho_{\text{sr}} \theta_c(f_{s,\text{train}}), 10^{-4}, \pi - 10^{-4}\Big)$$
 2. **Core 1B $\mathcal{H}_2$-Norm Input Normalizer (`CL-04`):**
    $$\gamma_{\text{norm},c}(f_{s,\text{host}}) = \sqrt{1 - \bar{r}_c(f_{s,\text{host}})^2}$$
 3. **Core 2 Fractional Delay Lines, All-Pass Diffusers, TZF Reference Tap & Switch Crossfade (`CL-06`, `CL-07`, `CL-08`):**
-   $$\tau_{0,m}^{\text{samples}}(f_{s,\text{host}}) = \max\!\left(4.0,\; \frac{\tau_{0,m}^{\text{samples}}(f_{s,\text{train}})}{\rho_{\text{sr}}}\right), \qquad D_{\text{ap},m}(f_{s,\text{host}}) = \operatorname{round}\!\left(\frac{D_{\text{ap},m}(f_{s,\text{train}})}{\rho_{\text{sr}}}\right)$$
-   $$\tau_{\text{ref}}^{\text{samples}}(f_{s,\text{host}}) = \frac{\tau_{\text{ref}}^{\text{samples}}(f_{s,\text{train}})}{\rho_{\text{sr}}}, \qquad L_{\text{xfade}}(f_{s,\text{host}}) = \operatorname{round}\!\left(\frac{L_{\text{xfade}}(f_{s,\text{train}})}{\rho_{\text{sr}}}\right)$$
+   $$\tau_{0,m}^{\text{samples}}(f_{s,\text{host}}) = \max\left(4.0, \frac{\tau_{0,m}^{\text{samples}}(f_{s,\text{train}})}{\rho_{\text{sr}}}\right), \qquad D_{\text{ap},m}(f_{s,\text{host}}) = \mathrm{round}\left(\frac{D_{\text{ap},m}(f_{s,\text{train}})}{\rho_{\text{sr}}}\right)$$
+   $$\tau_{\text{ref}}^{\text{samples}}(f_{s,\text{host}}) = \frac{\tau_{\text{ref}}^{\text{samples}}(f_{s,\text{train}})}{\rho_{\text{sr}}}, \qquad L_{\text{xfade}}(f_{s,\text{host}}) = \mathrm{round}\left(\frac{L_{\text{xfade}}(f_{s,\text{train}})}{\rho_{\text{sr}}}\right)$$
 4. **Control-Bus Decimation Stride, LFO/Envelope Rate Compensation, Core 1A AC Coupling & Core 2 DC Blocker (`CL-02`, `CL-09`):**
-   $$K_{\text{ctrl}}(f_{s,\text{host}}) = \max\!\left(8,\; \operatorname{round}\!\left(\frac{f_{s,\text{host}}}{3000.0}\right)\right), \qquad \rho_{\text{ctrl}} = \frac{f_{s,\text{train}} \cdot K_{\text{ctrl}}(f_{s,\text{host}})}{f_{s,\text{host}} \cdot K_{\text{ctrl}}(f_{s,\text{train}})}$$
-   $$\Delta\phi_{\text{lfo},j}(f_{s,\text{host}}) = \rho_{\text{ctrl}} \, \Delta\phi_{\text{lfo},j}(f_{s,\text{train}}), \qquad R_{\text{env},b}(f_{s,\text{host}}) = \big(R_{\text{env},b}(f_{s,\text{train}})\big)^{\rho_{\text{ctrl}}}$$
+   $$K_{\text{ctrl}}(f_{s,\text{host}}) = \max\left(8, \mathrm{round}\left(\frac{f_{s,\text{host}}}{3000.0}\right)\right), \qquad \rho_{\text{ctrl}} = \frac{f_{s,\text{train}} \cdot K_{\text{ctrl}}(f_{s,\text{host}})}{f_{s,\text{host}} \cdot K_{\text{ctrl}}(f_{s,\text{train}})}$$
+   $$\Delta\phi_{\text{lfo},j}(f_{s,\text{host}}) = \rho_{\text{ctrl}} \Delta\phi_{\text{lfo},j}(f_{s,\text{train}}), \qquad R_{\text{env},b}(f_{s,\text{host}}) = \big(R_{\text{env},b}(f_{s,\text{train}})\big)^{\rho_{\text{ctrl}}}$$
    $$R_{\text{ac}}(f_{s,\text{host}}) = \big(R_{\text{ac}}(f_{s,\text{train}})\big)^{\rho_{\text{sr}}}, \qquad R_{\text{dc}}(f_{s,\text{host}}) = \big(R_{\text{dc}}(f_{s,\text{train}})\big)^{\rho_{\text{sr}}}$$
-   *(Rescaling $\Delta\phi_{\text{lfo},j}$ and $R_{\text{env},b}$ by the exact Control-Bus tick ratio $\rho_{\text{ctrl}}$ eliminates the $2\%$ integer-decimation tempo shift at $44.1\text{ kHz}$ and $88.2\text{ kHz}$ where $K_{\text{ctrl}} = 15$ or $29$, keeping LFO frequencies in Hz 100% invariant.)*
+   *(Rescaling $\Delta\phi_{\text{lfo},j}$ and $R_{\text{env},b}$ by the exact Control-Bus tick ratio $\rho_{\text{ctrl}}$ eliminates the 2% integer-decimation tempo shift at $44.1\text{ kHz}$ and $88.2\text{ kHz}$ where $K_{\text{ctrl}} = 15$ or $29$, keeping LFO frequencies in Hz 100% invariant.)*
 
 ---
 
@@ -449,24 +449,24 @@ Unlike legacy checkpoints that store both an exported model dictionary and a red
 
 ### 6.2 Tier-Ordered Column-Major Upper-Triangular Packing (`uplo='U'`) for $\mathbf{G}_{\text{audio}}^{(s)}$
 
-For each recorded training stem $s \in \{1, \dots, S\}$, let $\mathbf{\Phi}_s \in \mathbb{R}^{L_s \times N}$ ($N = 16C \in \{64, 128, 192\}$) be the 16-tap unfolded Core 1 feature matrix, ordered by **Slimmable Tier**:
+For each recorded training stem $s \in \lbrace 1, \dots, S \rbrace$, let $\mathbf{\Phi}_s \in \mathbb{R}^{L_s \times N}$ ($N = 16C \in \lbrace 64, 128, 192 \rbrace$) be the 16-tap unfolded Core 1 feature matrix, ordered by **Slimmable Tier**:
 - Indices `0..63`: `Lite` channels (`ch 0..3` $\times$ 16 taps)
 - Indices `64..127`: `Full` delta channels (`ch 4..7` $\times$ 16 taps)
 - Indices `128..191`: `Ultra` delta channels (`ch 8..11` $\times$ 16 taps)
 
-Because the per-stem audio Gram matrix $\mathbf{G}_{\text{audio}}^{(s)} = \mathbf{\Phi}_s^\top \mathbf{\Phi}_s \in \mathbb{R}^{N \times N}$ is **symmetric positive semi-definite** ($\mathbf{G}_{i,j}^{(s)} = \mathbf{G}_{j,i}^{(s)}$), storing the full $N \times N$ matrix wastes $\frac{N(N-1)}{2}$ redundant `float64` entries ($49.7\%$ of the matrix). Instead, `Arena 3` packs the upper triangle ($0 \le i \le j < N$) in **Column-Major Order (`LAPACK uplo='U'`)**:
+Because the per-stem audio Gram matrix $\mathbf{G}_{\text{audio}}^{(s)} = \mathbf{\Phi}_s^\top \mathbf{\Phi}_s \in \mathbb{R}^{N \times N}$ is **symmetric positive semi-definite** ($\mathbf{G}_{i,j}^{(s)} = \mathbf{G}_{j,i}^{(s)}$), storing the full $N \times N$ matrix wastes $\frac{N(N-1)}{2}$ redundant `float64` entries (49.7% of the matrix). Instead, `Arena 3` packs the upper triangle ($0 \le i \le j < N$) in **Column-Major Order (`LAPACK uplo='U'`)**:
 
-$$\operatorname{pack}_{\text{U}}\!\big(\mathbf{G}_{\text{audio}}^{(s)}\big)\!\left[i + \frac{j(j + 1)}{2}\right] = \mathbf{G}_{\text{audio}}^{(s)}[i, j], \qquad 0 \le i \le j < N$$
+$$\mathrm{pack}_{\text{U}}\big(\mathbf{G}_{\text{audio}}^{(s)}\big)\left[i + \frac{j(j + 1)}{2}\right] = \mathbf{G}_{\text{audio}}^{(s)}[i, j], \qquad 0 \le i \le j < N$$
 
 > [!IMPORTANT]
 > **The Nested Principal Submatrix Prefix Theorem & Exact 64-Byte Cache Alignment:**
-> Because column-major upper-triangular index mapping $\text{idx}(i, j) = i + \frac{j(j+1)}{2}$ depends only on $i \le j$, the packed upper triangle of any leading principal submatrix of dimension $N_{\text{tier}} \in \{64, 128, 192\}$ occupies the **exact contiguous prefix** $\big[0 \dots \frac{N_{\text{tier}}(N_{\text{tier}} + 1)}{2} - 1\big]$ of the `Ultra` packed array! Furthermore, every tier's packed $\operatorname{pack}_{\text{U}}(\mathbf{G}_{\text{audio}}^{(s)})$ and tier-ordered $\mathbf{C}_{\text{audio}}^{(s)} \in \mathbb{R}^{N \times 2}$ are **exact integer multiples of 64 bytes** with zero padding overhead:
+> Because column-major upper-triangular index mapping $\text{idx}(i, j) = i + \frac{j(j+1)}{2}$ depends only on $i \le j$, the packed upper triangle of any leading principal submatrix of dimension $N_{\text{tier}} \in \lbrace 64, 128, 192 \rbrace$ occupies the **exact contiguous prefix** $\big[0 \dots \frac{N_{\text{tier}}(N_{\text{tier}} + 1)}{2} - 1\big]$ of the `Ultra` packed array! Furthermore, every tier's packed $\mathrm{pack}_{\text{U}}(\mathbf{G}_{\text{audio}}^{(s)})$ and tier-ordered $\mathbf{C}_{\text{audio}}^{(s)} \in \mathbb{R}^{N \times 2}$ are **exact integer multiples of 64 bytes** with zero padding overhead:
 
-| Slimmable Tier | Feature Dim $N = 16C$ | Unpacked $\mathbf{G}_{\text{audio}}^{(s)}$ (`f64`) | Packed $\operatorname{pack}_{\text{U}}(\mathbf{G}_{\text{audio}}^{(s)})$ (`f64`) | Cross-Corr $\mathbf{C}_{\text{audio}}^{(s)}$ (`f64`) | Total Per-Stem `Arena 3` Record | 64-Byte Cache Lines |
+| Slimmable Tier | Feature Dim `N = 16C` | Unpacked `G_audio^(s)` (`f64`) | Packed `pack_U(G_audio^(s))` (`f64`) | Cross-Corr `C_audio^(s)` (`f64`) | Total Per-Stem `Arena 3` Record | 64-Byte Cache Lines |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: |
-| **`Lite` ($C=4$)** | $N = 64$ | $32,768\text{ B}$ | $2,080\text{ f64} = \mathbf{16,640\text{ B}}$ | $128\text{ f64} = \mathbf{1,024\text{ B}}$ | **$17,664\text{ B}$ ($17.25\text{ KB/stem}$)** | Exact $276 \times 64\text{ B}$ |
-| **`Full` ($C=8$)** | $N = 128$ | $131,072\text{ B}$ | $8,256\text{ f64} = \mathbf{66,048\text{ B}}$ | $256\text{ f64} = \mathbf{2,048\text{ B}}$ | **$68,096\text{ B}$ ($66.50\text{ KB/stem}$)** | Exact $1,064 \times 64\text{ B}$ |
-| **`Ultra` ($C=12$)** | $N = 192$ | $294,912\text{ B}$ | $18,528\text{ f64} = \mathbf{148,224\text{ B}}$ | $384\text{ f64} = \mathbf{3,072\text{ B}}$ | **$151,296\text{ B}$ ($147.75\text{ KB/stem}$)** | Exact $2,364 \times 64\text{ B}$ |
+| **`Lite` (`C=4`)** | `N = 64` | `32,768 B` | `2,080 f64` = **`16,640 B`** | `128 f64` = **`1,024 B`** | **`17,664 B` (`17.25 KB/stem`)** | Exact `276 × 64 B` |
+| **`Full` (`C=8`)** | `N = 128` | `131,072 B` | `8,256 f64` = **`66,048 B`** | `256 f64` = **`2,048 B`** | **`68,096 B` (`66.50 KB/stem`)** | Exact `1,064 × 64 B` |
+| **`Ultra` (`C=12`)** | `N = 192` | `294,912 B` | `18,528 f64` = **`148,224 B`** | `384 f64` = **`3,072 B`** | **`151,296 B` (`147.75 KB/stem`)** | Exact `2,364 × 64 B` |
 
 ### 6.3 `.dnam-ckpt` JSON Header Extensions (`stems_registry` with Per-Stem PCM Provenance & `Arena 3` `CRC32C`)
 
