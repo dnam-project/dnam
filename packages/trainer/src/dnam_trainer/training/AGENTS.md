@@ -4,7 +4,7 @@
 
 - [`hardware.py`](hardware.py): Accelerator runtime profile & environment setup (`ROCm`/`CUDA`/`MPS`/`TPU`/`CPU`).
 - [`metrics.py`](metrics.py): Psychoacoustic evaluation suite (`bESR`, 4th-order Bezout 3-band `ESR`, `MR-STFT`, `LTAS` tilt, `SegESR`).
-- [`selective_cascade.py`](selective_cascade.py): Causal Wiener LTI (`IR`/space) + 3-stage selective state-space & 3-band cascade + $48\text{ kHz}$ quadrature wavefolder polish.
+- [`selective_cascade.py`](selective_cascade.py), [`cascade_primitives.py`](cascade_primitives.py), [`cascade_orthogonal_fft.py`](cascade_orthogonal_fft.py), [`cascade_selective_stages.py`](cascade_selective_stages.py): Causal Wiener LTI (`IR`/space) + 3-stage selective tube & 4-stage orthogonal FFT decoupled cascade solvers.
 - [`surrogate_delay.py`](surrogate_delay.py): Multi-scale Gaussian derivative envelope surrogate delay readout (`Test 6`).
 - [`kronecker_head.py`](kronecker_head.py): Partitioned SVD control projector, `Base48BandGramCache`, 3-band `bESR` Gram stats, Dual-Ridge `float64` Kronecker solver (`CL-18`), and `.dnam-ckpt` resume.
 - [`wav_io.py`](wav_io.py): 16/24/32-bit PCM & unclipped 32-bit IEEE-754 float WAV reader/writer.
