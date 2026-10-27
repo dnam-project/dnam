@@ -80,6 +80,8 @@ export interface ModelCapabilities {
   wetPolarityInverted: boolean;
   supportsTrails: boolean;
   tempoSyncCapable: boolean;
+  supportsFreeze: boolean;
+  freezeMutesDry: boolean;
 }
 
 const RawModelCapabilitiesSchema = z
@@ -94,6 +96,10 @@ const RawModelCapabilitiesSchema = z
     supportsTrails: z.boolean().optional(),
     tempo_sync_capable: z.boolean().optional(),
     tempoSyncCapable: z.boolean().optional(),
+    supports_freeze: z.boolean().optional(),
+    supportsFreeze: z.boolean().optional(),
+    freeze_mutes_dry: z.boolean().optional(),
+    freezeMutesDry: z.boolean().optional(),
   })
   .strict();
 
@@ -105,6 +111,8 @@ export const ModelCapabilitiesSchema: z.ZodType<ModelCapabilities, unknown> =
       wetPolarityInverted: raw.wetPolarityInverted ?? raw.wet_polarity_inverted ?? false,
       supportsTrails: raw.supportsTrails ?? raw.supports_trails ?? false,
       tempoSyncCapable: raw.tempoSyncCapable ?? raw.tempo_sync_capable ?? false,
+      supportsFreeze: raw.supportsFreeze ?? raw.supports_freeze ?? false,
+      freezeMutesDry: raw.freezeMutesDry ?? raw.freeze_mutes_dry ?? false,
     }),
   );
 
@@ -188,6 +196,8 @@ export const IoConfigSchema: z.ZodType<IoConfig, unknown> = RawIoConfigSchema.tr
       wetPolarityInverted: false,
       supportsTrails: false,
       tempoSyncCapable: false,
+      supportsFreeze: false,
+      freezeMutesDry: false,
     },
     leveling: raw.leveling ?? {
       autoUnityEnabled: true,
@@ -479,6 +489,8 @@ export interface ExtractedPhysics {
   delaysMs: number[];
   lfoFreqsHz: number[];
   decayGainsLin: number[];
+  detectedGrainSizeMs: number;
+  detectedPitchShiftSemitones: number;
 }
 
 const RawExtractedPhysicsSchema = z
@@ -489,6 +501,10 @@ const RawExtractedPhysicsSchema = z
     lfoFreqsHz: z.array(z.number()).optional(),
     decay_gains_lin: z.array(z.number()).optional(),
     decayGainsLin: z.array(z.number()).optional(),
+    detected_grain_size_ms: z.number().optional(),
+    detectedGrainSizeMs: z.number().optional(),
+    detected_pitch_shift_semitones: z.number().optional(),
+    detectedPitchShiftSemitones: z.number().optional(),
   })
   .strict();
 
@@ -498,6 +514,9 @@ export const ExtractedPhysicsSchema: z.ZodType<ExtractedPhysics, unknown> =
       delaysMs: raw.delaysMs ?? raw.delays_ms ?? [],
       lfoFreqsHz: raw.lfoFreqsHz ?? raw.lfo_freqs_hz ?? [],
       decayGainsLin: raw.decayGainsLin ?? raw.decay_gains_lin ?? [],
+      detectedGrainSizeMs: raw.detectedGrainSizeMs ?? raw.detected_grain_size_ms ?? 0.0,
+      detectedPitchShiftSemitones:
+        raw.detectedPitchShiftSemitones ?? raw.detected_pitch_shift_semitones ?? 0.0,
     }),
   );
 
@@ -803,6 +822,8 @@ function stemRegistryEntryToWire(entry: StemRegistryEntry): Record<string, unkno
       delays_ms: entry.extractedPhysics.delaysMs,
       lfo_freqs_hz: entry.extractedPhysics.lfoFreqsHz,
       decay_gains_lin: entry.extractedPhysics.decayGainsLin,
+      detected_grain_size_ms: entry.extractedPhysics.detectedGrainSizeMs,
+      detected_pitch_shift_semitones: entry.extractedPhysics.detectedPitchShiftSemitones,
     };
   }
   out["g_audio_uplo_u_f64"] = tensorSliceEntryToWire(entry.gAudioUploUF64);
@@ -855,6 +876,8 @@ export function dnamJsonHeaderToWire(header: DnamJsonHeader): Record<string, unk
               wet_polarity_inverted: header.ioConfig.capabilities.wetPolarityInverted,
               supports_trails: header.ioConfig.capabilities.supportsTrails,
               tempo_sync_capable: header.ioConfig.capabilities.tempoSyncCapable,
+              supports_freeze: header.ioConfig.capabilities.supportsFreeze,
+              freeze_mutes_dry: header.ioConfig.capabilities.freezeMutesDry,
             },
           }
         : {}),

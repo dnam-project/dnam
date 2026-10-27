@@ -593,7 +593,7 @@ pub trait MathBackend: Copy + Clone + Send + Sync + 'static {
         let vq = Self::Vec4::load(q_ac);
         let vin = Self::Vec4::load(input_drive);
         let vg_lin =
-            Self::Vec4::load(g_lin).clamp(Self::Vec4::splat(0.0), Self::Vec4::splat(0.9990));
+            Self::Vec4::load(g_lin).clamp(Self::Vec4::splat(0.0), Self::Vec4::splat(1.0050));
         let vg_regen = Self::Vec4::load(g_regen);
         let vinv_sigma = Self::Vec4::load(inv_sigma_knee);
         let vscale_sat = Self::Vec4::load(two_over_3v_ceil);
@@ -863,7 +863,7 @@ pub trait MathBackend: Copy + Clone + Send + Sync + 'static {
         vy_dc.store(dc_y_prev);
 
         let vg_lin =
-            Self::Vec4::load(g_lin).clamp(Self::Vec4::splat(0.0), Self::Vec4::splat(0.9990));
+            Self::Vec4::load(g_lin).clamp(Self::Vec4::splat(0.0), Self::Vec4::splat(1.0050));
         let vinv_sigma = Self::Vec4::load(inv_sigma_knee);
         let vscale_sat = Self::Vec4::load(two_over_3v_ceil);
         let vv_ceil =

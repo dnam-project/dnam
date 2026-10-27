@@ -159,6 +159,14 @@ pub enum ControlCalibrationRole {
     StereoMode,
     /// Continuous stereo width spread control (`0.0 = Mono` to `1.0 = Full Stereo`).
     StereoWidth,
+    /// Spectral freeze latch / sustain hold switch or continuous freeze amount (`0.0 = Normal` to `1.0 = Infinite Freeze`).
+    FreezeLatch,
+    /// Granular window length control calibrated in milliseconds (`10..500 ms`, supports MIDI tempo sync).
+    GrainSizeMs,
+    /// Granular / pitch-shifter / shimmer interval control calibrated in semitones (`-24..+24 st`).
+    GrainPitchSemitones,
+    /// Granular random delay jitter / spray depth control (`0..1` normalized or milliseconds).
+    GrainSpray,
 }
 
 /// Result of resolving a physical target or MIDI tempo sync against a [`ControlCalibration`].
@@ -264,6 +272,17 @@ impl ControlCalibration {
         (u.clamp(-1.0, 1.0) as f32, false)
     }
 
+    /// Evaluates the 3-point Lobatto quadratic $v(u) = v_{\text{mid}} + c_1 u + c_2 u^2$ for $u \in [-1, 1]$
+    /// when `lobatto_physical_anchors` is present.
+    #[inline]
+    pub fn evaluate_lobatto_anchors(&self, u: f32) -> Option<f32> {
+        let [v_min, v_mid, v_max] = self.lobatto_physical_anchors?;
+        let u_clamped = u.clamp(-1.0, 1.0);
+        let c1 = 0.5 * (v_max - v_min);
+        let c2 = 0.5 * (v_max + v_min) - v_mid;
+        Some(v_mid + c1 * u_clamped + c2 * u_clamped * u_clamped)
+    }
+
     /// Maps `target_val` to normalized $u \in [-1, 1]$ using `lobatto_physical_anchors`.
     pub fn physical_value_to_normalized_u(
         &self,
@@ -359,7 +378,7 @@ impl ControlCalibration {
     }
 
     /// Resolves a MIDI/Host `(bpm, subdivision)` into a [`TempoSyncResolution`] when `role` is
-    /// `DelayTimeMs` or `LfoRateHz`.
+    /// `DelayTimeMs`, `GrainSizeMs`, or `LfoRateHz`.
     pub fn resolve_tempo_sync(
         &self,
         bpm: f32,
@@ -370,7 +389,9 @@ impl ControlCalibration {
             .or(self.tempo_sync_default_subdivision)
             .unwrap_or(TempoSubdivision::Quarter);
         let target_val = match self.role {
-            ControlCalibrationRole::DelayTimeMs => sub.delay_ms_at_bpm(bpm),
+            ControlCalibrationRole::DelayTimeMs | ControlCalibrationRole::GrainSizeMs => {
+                sub.delay_ms_at_bpm(bpm)
+            }
             ControlCalibrationRole::LfoRateHz => sub.lfo_hz_at_bpm(bpm),
             _ => return None,
         };
@@ -387,6 +408,34 @@ impl ControlCalibration {
         if lower.eq_ignore_ascii_case("mono") || lower == "0" {
             Some(0.0)
         } else if lower.eq_ignore_ascii_case("stereo") || lower == "1" {
+            Some(1.0)
+        } else {
+            None
+        }
+    }
+
+    /// Maps a `FreezeLatch` switch option label (`"Off"` vs `"On"` / `"Freeze"` / `"Hold"`) to
+    /// freeze amount $\alpha_{\text{freeze}} \in [0.0, 1.0]$.
+    #[inline]
+    pub fn freeze_amount_for_option(&self, option_label: &str) -> Option<f32> {
+        if self.role != ControlCalibrationRole::FreezeLatch {
+            return None;
+        }
+        let lower = option_label.trim();
+        if lower.eq_ignore_ascii_case("off")
+            || lower.eq_ignore_ascii_case("false")
+            || lower.eq_ignore_ascii_case("normal")
+            || lower.eq_ignore_ascii_case("bypass")
+            || lower == "0"
+        {
+            Some(0.0)
+        } else if lower.eq_ignore_ascii_case("on")
+            || lower.eq_ignore_ascii_case("true")
+            || lower.eq_ignore_ascii_case("freeze")
+            || lower.eq_ignore_ascii_case("hold")
+            || lower.eq_ignore_ascii_case("latch")
+            || lower == "1"
+        {
             Some(1.0)
         } else {
             None

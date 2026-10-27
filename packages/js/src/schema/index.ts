@@ -24,6 +24,8 @@ export {
   controlCalibrationToWire,
   controlSchemaDefToWire,
   controlUiHintsToWire,
+  evaluateLobattoAnchors,
+  freezeAmountForOption,
   invertLobattoAnchors,
   normalizedToPhysical,
   type PresetDef,

@@ -1,6 +1,6 @@
 # Dynamic Neural Audio Modeler (DNAM) — Architecture Specification ("Tri-Physics" Selective-SSM, DFDN & Parametric Control Architecture)
 
-**Target Capabilities:** True-Stereo Amp/Preamp Drive, User-Definable Continuous (`range`) & Discrete (`switch`) Controls trained from Multi-Stem Captures, Instantaneous Blocking Distortion & Power-Supply Sag, Optical/Bias & Harmonic Tremolo, 3D Leslie Rotary Speaker (Doppler + Beaming), Pre- & Post-Drive Phasers/Wah/Uni-Vibe, Dense Acoustic & Cabinet IRs, True Through-Zero & Resonant Jet Flangers, Stereo Chorus, Tape Echoes (with Wow/Flutter), Ping-Pong Delays, Spring Reverb Drip, and Lush Modulated Reverbs  
+**Target Capabilities:** True-Stereo Amp/Preamp Drive, User-Definable Continuous (`range`) & Discrete (`switch`) Controls trained from Multi-Stem Captures, Instantaneous Blocking Distortion & Power-Supply Sag, Optical/Bias & Harmonic Tremolo, 3D Leslie Rotary Speaker (Doppler + Beaming), Pre- & Post-Drive Phasers/Wah/Uni-Vibe, Dense Acoustic & Cabinet IRs, True Through-Zero & Resonant Jet Flangers, Stereo Chorus, Tape Echoes (with Wow/Flutter), Ping-Pong Delays, Spring Reverb Drip, Lush Modulated Reverbs, **Asynchronous Granular Clouds, Octave/Fifth Shimmer Pitch-Shifting, Reverse/Micro-Looper Grains, and Infinite Unitary Spectral Freeze (`WT-UFDN`)**  
 **Target Embedded Silicon:** Co-designed for **Rockchip RK3582** (Darkglass Anagram: 2× ARM Cortex-A76 isolated DSP cores + 4× Cortex-A55 system/UI cores, 128-bit NEON) and desktop/mobile SIMD — **100% 16-byte vector aligned (`C=4` Lite / `C=8` Full / `C=12` Ultra), zero `FSQRT`, zero `FDIV`, and zero transcendentals at both $48\text{ kHz}$ and $3\text{ kHz}$**  
 **Hardware Footprint:** **$2.6\times$ FASTER than NAM A2** in `Full` ($\sim 4,625\text{ MACs/sample}$ vs. A2's $12,146\text{ MACs/sample}$) and **$1.22\times$ FASTER with $50\%$ more channels** in `Ultra` (`C=12`, $\sim 9,950\text{ MACs/sample}$), **$0\text{ extra MACs/sample}$ at $48\text{ kHz}$ when user knobs are static**, **$94\text{--}96\%$ smaller L1 cache footprint**, and **native $44.1\text{--}96\text{ kHz}$ sample-rate adaptability**  
 **Core Stability Guarantee:** Unconditional BIBO, Lyapunov, $\mathcal{H}_2$-Norm, and Zero-DC stability across all internal states and user knob/switch combinations, backed by **Non-Stop 3-Phase Control-Space Clamping & Single-Checkpoint (`.dnam-ckpt`) Iterative Stem Expansion**  
@@ -24,7 +24,7 @@ DNAM preserves the proven insights of **NAM A2** (co-prime dilations, 16-tap out
 | **8** | **Givens + Householder Orthogonal Stereo Matrix (`U(ψ, v) = H(v)R(ψ)`)** | Fixed ping-pong permutation OR dense `M × M` matrix | Pairs a learnable 2×2 Givens stereo rotation `R(ψ)` with an `O(M)` Householder reflection `H(v)`—smoothly spanning **Dual-Mono (`ψ=0`), Stereo Reverb (`ψ=π/4`), and Ping-Pong Delay (`ψ=π/2`)** with `< 10⁻¹⁴` orthogonality error |
 | **9** | **Passband-Normalized DC-Blocking Damping Filter (`α_dc = (1 + R_dc)/2`)** | Unconstrained DC gain OR unnormalized high-pass (`> 1.0` at Nyquist) | Scaling `(1 - z⁻¹)/(1 - R_dc z⁻¹)` by `(1 + R_dc)/2` guarantees strict passivity (`|H_dc(e^{iω})| ≤ 1.0000`) and **exact 0.0000 DC loop gain** (`1.03 × 10⁻⁶` DC under +20 dBFS self-oscillation) |
 | **10** | **Unity-Slope Normalized Coercive-Saturating Loop Law** | Artificial on/off switch OR unnormalized 1.5× cubic slope | Scaling `v_sat = clamp((2 / (3 V_ceil)) u_m, -1, 1)` enforces **exact unity slope `S'(0) ≡ 1.0000`** at the origin so silence decays monotonically (`g_lin < 1`), while active signals above `σ_m` smoothly swell and saturate below `V_ceil` |
-| **11** | **Unified `M-UFDN` with Through-Zero Flanging & Spring Drip** | Separate Chorus, Flanger, Spring & Room Reverb modules | Static 64-sample reference tap enables **True Through-Zero Flanging (`Δτ = 0.0 ms`)** on causal buffers, while negative in-loop Schroeder all-pass coefficients (`a_{diff,m} < 0`) model **dispersive Spring Reverb "drip"** |
+| **11** | **Unified `M-UFDN` / `WT-UFDN` with TZF, Spring Drip, Granular Shimmer & Spectral Freeze** | Separate Chorus, Flanger, Spring, Room, Granular & Freeze modules | Static 64-sample TZF tap (`Δτ = 0.0 ms`), negative all-pass dispersion (`a_{diff,m} < 0`) for **Spring Drip**, self-activating **Complementary Hermite-Hann Grain Reader (`H(φ_A)+H(φ_B)≡1`)**, **3-Tier Pre-Head Kronecker Routing**, and **Unitary Spectral Freeze (`α_freeze ∈ [0,1]`)** |
 | **12** | **Control-Rate Stereo Tremolo & Leslie Rotary Beaming Gate** | Static post-mix gains incapable of AM/Tremolo | Adds a 3 kHz control-rate multiplicative stereo gain gate `(A_L[n], A_R[n]) = 1 + w_{trem,L/R}^T m[n]` (`1 FMUL/ch`) to model **Optical/Bias Tremolo, Harmonic Tremolo, Stereo Auto-Pan, and Leslie Rotary Horn/Drum Beaming** |
 | **13** | **Blind Phase-Locked Teacher Extractor → 4-Harmonic Fourier LFO** | Naive fixed-frequency sine LFO during training | Tracks analog RC oscillator thermal drift during training (discarded at export) and learns **triangle, sawtooth, asymmetric Uni-Vibe lamp, or rotary LFO shapes** via a 4-harmonic Chebyshev shaper |
 | **14** | **Node-Anchored Newton/Lobatto HDMR-FM Control Bus (`Range` & `Switch`)** | 48 kHz FiLM concatenation & dense MLP corner hallucination | Evaluates user knobs/switches at 3 kHz (**0 MACs/sample at 48 kHz when static**) via a Node-Anchored Newton/Lobatto basis `ψ_{p,k}(u_p)` (`K_p = min(U_p-1, 3)`) + `O(P·R)` Factorization Machine, achieving **-38.46 dB ESR** on unseen 3-way combinations |
@@ -125,16 +125,18 @@ flowchart TD
     MS --> B1
     Head --> Core2
 
-    subgraph Core2 ["Core 2: Unified Stereo In-Loop Diffusive Modulated Unitary FDN (M-UFDN)"]
+    subgraph Core2 ["Core 2: Mode-Free Windowed Time-Warped Modulated Unitary FDN (M-UFDN / WT-UFDN)"]
         direction TB
-        Lines["M fp16 Delay Buffers (M=4 Lite / M=8 Full & Ultra) + 8-Tap Shared-Buffer Early & TZF Reference Reader<br/>• Micro (0.2-8 ms): Through-Zero / Resonant Jet Flanger & Comb Doubling<br/>• Short (8-45 ms): Quadrature Stereo Chorus, Leslie Doppler & Slapback<br/>• Long (45-500+ ms): Analog Tape Echo (Wow/Flutter), Spring Drip & Lush Reverb"]
-        Lagrange["Click-Free 4-Tap Cubic Lagrange Reader + 128-Sample Dual-Pointer Switch Crossfader"]
+        Lines["M fp16 Delay Buffers (M=4 Lite / M=8 Full & Ultra) + 8-Tap Shared-Buffer Early & TZF Reference Reader<br/>• Micro (0.2-8 ms): Through-Zero / Resonant Jet Flanger & Comb Doubling<br/>• Short (8-45 ms): Quadrature Stereo Chorus, Leslie Doppler & Slapback<br/>• Long (45-5000+ ms): Tape Echo, Spring Drip, Lush Reverb, Granular Shimmer & Unitary Spectral Freeze"]
+        Lagrange["Click-Free 4-Tap Cubic Lagrange + Self-Activating Dual-Tap Complementary Hermite-Hann Grain Reader"]
         InLoopAP["In-Loop Fixed-Integer Schroeder All-Pass Diffuser per Line (Crisp Echo / Spring Drip / 2^k Hall)"]
         House["O(M) Givens + Householder Orthogonal Stereo Matrix U(psi, v) + Passband-Normalized 5 Hz DC Blocker"]
-        Law["Unity-Slope Normalized Cubic Coercive-Saturating Lyapunov Loop Law"]
+        Law["Unity-Slope Normalized Cubic Coercive-Saturating Lyapunov Loop Law + Unitary Freeze Gate"]
         Lines --> Lagrange --> InLoopAP --> House --> Law --> Lines
     end
 
+    MS --> Core2
+    InLoopAP -->|"3-Tier Pre-Head Kronecker Tap (Lite/Full/Ultra)"| Head
     Head --> Mix["Final Stereo Mid/Side, Tremolo/Rotary Gate, Log-Master Volume & Wet/Dry Mixer"]
     Core2 --> Mix
     MS --> Mix
@@ -256,12 +258,15 @@ All 8 mathematical, optimization, and PyTorch verification suites in [`test_dnam
 | :--- | :---: | :---: | :---: | :---: | :---: |
 | **Channels (`C`) / FDN Lines (`M`)** | `C = 3` (Unaligned) | **`C = 4` (1 NEON reg), `M = 4`** | `C = 8`, No FDN | **`C = 8` (2 NEON regs), `M = 8`** | **`C = 12` (3 NEON regs), `M = 8`** |
 | **Core 1 Architecture** | 23 Dilated Conv | **8 Conv + 4 Selective RG-LRU** | 23 Dilated Conv | **8 Conv + 4 Selective RG-LRU** | **8 Conv + 4 Selective RG-LRU** |
+| **Core 2 Architecture** | None | **Mode-Free `WT-UFDN` + 3-Tier Pre-Head Routing** | None | **Mode-Free `WT-UFDN` + 3-Tier Pre-Head Routing** | **Mode-Free `WT-UFDN` + 3-Tier Pre-Head Routing** |
 | **User Controls (`range` & `switch`)** | None (Static Snapshot) | **Unlimited (0 MACs @ 48 kHz static)** | None (Static Snapshot) | **Unlimited (0 MACs @ 48 kHz static)** | **Unlimited (0 MACs @ 48 kHz static)** |
+| **Granular, Pitch Shimmer & Freeze** | None | **Hermite-Hann `WT-UFDN` + Sound-on-Sound Freeze** | None | **Hermite-Hann `WT-UFDN` + Sound-on-Sound Freeze** | **Hermite-Hann `WT-UFDN` + Sound-on-Sound Freeze** |
+| **Auto-Unity, Blend & Tempo Sync** | None | **Gated `rms_dbfs` (`u=0`), `Trails` & 12-Sub Sync** | None | **Gated `rms_dbfs` (`u=0`), `Trails` & 12-Sub Sync** | **Gated `rms_dbfs` (`u=0`), `Trails` & 12-Sub Sync** |
 | **48 kHz `FSQRT` / `FDIV` Instructions** | 0 | **0 (100% `FMAX`/`FMIN`/`FMLA`)** | 0 | **0 (100% `FMAX`/`FMIN`/`FMLA`)** | **0 (100% `FMAX`/`FMIN`/`FMLA`)** |
 | **NEON SIMD Lane Utilization** | 75% (3/4 lanes) | **100% (4/4 lanes)** | 100% (8/8 lanes) | **100% (8/8 lanes)** | **100% (12/12 lanes, `8+4` tiled)** |
 | **Core 1 L1 Cache State RAM** | 76.2 KB | **3.7 KB (-95%)** | 203.1 KB | **7.5 KB (-96%)** | **11.2 KB (-94%)** |
-| **Core 2 Delay Ring Buffer RAM** | 0 KB | **96 KB (`fp16`)** | 0 KB | **208 KB (`fp16`)** | **208 KB (`fp16`)** |
-| **Effective Receptive Field** | 132.2 ms (Hard cutoff) | **∞ (Core 1 SSM + Core 2 FDN)** | 132.2 ms (Hard cutoff) | **∞ (Core 1 SSM + Core 2 FDN)** | **∞ (Core 1 SSM + Core 2 FDN)** |
+| **Core 2 Delay Ring Buffer RAM** | 0 KB | **`0 KB` (Amp) / `16 KB–2.0 MB` (`fp16`, ≤ 5.46 s)** | 0 KB | **`0 KB` (Amp) / `32 KB–4.0 MB` (`fp16`, ≤ 5.46 s)** | **`0 KB` (Amp) / `32 KB–4.0 MB` (`fp16`, ≤ 5.46 s)** |
+| **Effective Receptive Field** | 132.2 ms (Hard cutoff) | **∞ (Core 1 SSM + Core 2 `WT-UFDN` + Freeze)** | 132.2 ms (Hard cutoff) | **∞ (Core 1 SSM + Core 2 `WT-UFDN` + Freeze)** | **∞ (Core 1 SSM + Core 2 `WT-UFDN` + Freeze)** |
 | **Total Compute (MACs / Sample)** | 1,871 MACs | **~1,245 MACs (1.5× faster + 33% wider!)** | 12,146 MACs | **~4,625 MACs (2.6× faster!)** | **~9,950 MACs (1.22× faster + 50% wider!)** |
 | **Sample-Rate Support** | Fixed 48 kHz | **Native 44.1–96 kHz (ZOH)** | Fixed 48 kHz | **Native 44.1–96 kHz (ZOH)** | **Native 44.1–96 kHz (ZOH)** |
 | **Audio I/O Topology** | Mono (1 → 1) | **True Stereo (1 → 2 or 2 → 2)** | Mono (1 → 1) | **True Stereo (1 → 2 or 2 → 2)** | **True Stereo (1 → 2 or 2 → 2)** |

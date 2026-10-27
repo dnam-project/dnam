@@ -104,3 +104,19 @@ def test_phase3_export_certification_and_prescription_report() -> None:
     )
     assert "DNAM NON-STOP 3-PHASE CONTROL-SPACE AUDIT" in formatted
     assert "[CLAMP-DYNAMIC]" in formatted
+
+
+def test_phase1_preflight_audit_unlocks_freeze_latch_switch() -> None:
+    from dnam_trainer.schema import ControlCalibration
+
+    freeze_sw = parse_compact_switch_spec("freeze=Off,Latch:Off").model_copy(
+        update={"calibration": ControlCalibration(role="freeze_latch")}
+    )
+    stems = [
+        {"controls": {"freeze": "Off"}},
+    ]
+    res = run_phase1_preflight_audit([freeze_sw], stems)
+    freeze_up = res.updated_controls[0]
+    assert freeze_up.active_options == ["Off", "Latch"]
+    assert freeze_up.clamp_warning is None
+    assert not any("[CLAMP-SWITCH]" in c for c in res.audit_report.phase1_clamps)

@@ -49,6 +49,10 @@ ControlCalibrationRole = Literal[
     "crossover_hz",
     "stereo_mode",
     "stereo_width",
+    "freeze_latch",
+    "grain_size_ms",
+    "grain_pitch_semitones",
+    "grain_spray",
 ]
 
 
@@ -196,6 +200,20 @@ class ControlCalibration(StrictModel):
             )
         return None
 
+    def evaluate_lobatto_anchors(self, u: float) -> float | None:
+        """Evaluates quadratic Lobatto anchors `[v_min, v_mid, v_max]` at `u in [-1.0, +1.0]`."""
+        if self.lobatto_physical_anchors is None:
+            return None
+        v_min, v_mid, v_max = (
+            float(self.lobatto_physical_anchors[0]),
+            float(self.lobatto_physical_anchors[1]),
+            float(self.lobatto_physical_anchors[2]),
+        )
+        u_c = max(-1.0, min(1.0, float(u)))
+        c1 = 0.5 * (v_max - v_min)
+        c2 = 0.5 * (v_max + v_min) - v_mid
+        return v_mid + c1 * u_c + c2 * u_c * u_c
+
     def resolve_tempo_sync(
         self,
         bpm: float,
@@ -205,7 +223,7 @@ class ControlCalibration(StrictModel):
     ) -> TempoSyncResolution | None:
         """Resolves a host BPM and subdivision into a `TempoSyncResolution`."""
         sub = subdivision_override or self.tempo_sync_default_subdivision or "1/4"
-        if self.role == "delay_time_ms":
+        if self.role in ("delay_time_ms", "grain_size_ms"):
             target = tempo_subdivision_delay_ms(bpm, sub)
         elif self.role == "lfo_rate_hz":
             target = tempo_subdivision_freq_hz(bpm, sub)
@@ -221,6 +239,17 @@ class ControlCalibration(StrictModel):
         if norm in ("mono", "m", "0", "sum"):
             return 0.0
         if norm in ("stereo", "st", "1", "wide", "full"):
+            return 1.0
+        return None
+
+    def freeze_amount_for_option(self, option_label: str) -> float | None:
+        """Maps a `freeze_latch` switch option label (`'Off'` / `'Freeze'`) to `[0.0, 1.0]`."""
+        if self.role != "freeze_latch":
+            return None
+        norm = option_label.strip().lower()
+        if norm in ("off", "false", "normal", "bypass", "0"):
+            return 0.0
+        if norm in ("on", "true", "freeze", "hold", "latch", "1"):
             return 1.0
         return None
 

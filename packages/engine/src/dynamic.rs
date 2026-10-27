@@ -266,6 +266,54 @@ impl<'a> DynamicDnamEngine<'a> {
         }
     }
 
+    /// Engages or disengages Core 2 Unitary Spectral Freeze (`alpha = 1.0` vs `0.0`).
+    #[inline]
+    pub fn set_freeze(&mut self, freeze: bool) {
+        match self {
+            Self::Scalar(e) => e.set_freeze(freeze),
+            #[cfg(target_arch = "aarch64")]
+            Self::Neon(e) => e.set_freeze(freeze),
+            #[cfg(target_arch = "aarch64")]
+            Self::ArmSme(e) => e.set_freeze(freeze),
+            #[cfg(target_arch = "x86_64")]
+            Self::X86Simd(e) => e.set_freeze(freeze),
+            #[cfg(target_arch = "wasm32")]
+            Self::WasmSimd128(e) => e.set_freeze(freeze),
+        }
+    }
+
+    /// Sets the continuous Core 2 Unitary Spectral Freeze amount $\alpha_{\text{freeze}} \in [0.0, 1.0]$.
+    #[inline]
+    pub fn set_freeze_amount(&mut self, alpha: f32) {
+        match self {
+            Self::Scalar(e) => e.set_freeze_amount(alpha),
+            #[cfg(target_arch = "aarch64")]
+            Self::Neon(e) => e.set_freeze_amount(alpha),
+            #[cfg(target_arch = "aarch64")]
+            Self::ArmSme(e) => e.set_freeze_amount(alpha),
+            #[cfg(target_arch = "x86_64")]
+            Self::X86Simd(e) => e.set_freeze_amount(alpha),
+            #[cfg(target_arch = "wasm32")]
+            Self::WasmSimd128(e) => e.set_freeze_amount(alpha),
+        }
+    }
+
+    /// Returns `true` if Core 2 Unitary Spectral Freeze is currently engaged ($\alpha_{\text{freeze}} > 0.5$).
+    #[inline]
+    pub fn is_frozen(&self) -> bool {
+        match self {
+            Self::Scalar(e) => e.is_frozen(),
+            #[cfg(target_arch = "aarch64")]
+            Self::Neon(e) => e.is_frozen(),
+            #[cfg(target_arch = "aarch64")]
+            Self::ArmSme(e) => e.is_frozen(),
+            #[cfg(target_arch = "x86_64")]
+            Self::X86Simd(e) => e.is_frozen(),
+            #[cfg(target_arch = "wasm32")]
+            Self::WasmSimd128(e) => e.is_frozen(),
+        }
+    }
+
     /// Processes a stereo audio block (`Stereo -> Stereo`).
     #[inline]
     pub fn process_block(
@@ -392,6 +440,10 @@ mod tests {
             dyn_eng.set_sample_rate(44_100).unwrap();
             dyn_eng.set_control_value(0, 5.0);
             dyn_eng.set_control_immediate(0, 5.0);
+            dyn_eng.set_freeze(true);
+            assert!(dyn_eng.is_frozen());
+            dyn_eng.set_freeze_amount(0.0);
+            assert!(!dyn_eng.is_frozen());
             dyn_eng.reset_to_dc_equilibrium();
 
             let l_in = [0.1f32; 32];

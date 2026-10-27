@@ -506,6 +506,8 @@ mod tests {
                 delays_ms: vec![10.0],
                 lfo_freqs_hz: vec![0.5],
                 decay_gains_lin: vec![0.7],
+                detected_grain_size_ms: 0.0,
+                detected_pitch_shift_semitones: 0.0,
             }),
             g_audio_uplo_u_f64: dummy_slice.clone(),
             c_audio_tier_f64: dummy_slice,

@@ -47,8 +47,16 @@ pub struct ControlBus<B: MathBackend> {
     pub core1_mod_offsets: [f32; 12],
     /// Core 2 per-line delay modulation offsets in samples ($\Delta D_m[k] \in \mathbb{R}^8$).
     pub core2_delay_mod_samples: [f32; 8],
-    /// Core 2 per-line quiet-state feedback gain targets ($g_{\text{lin},m}[k] \in [0, 0.9990]^8$).
+    /// Core 2 per-line quiet-state feedback gain modulation offsets ($\Delta g_{\text{lin},m}[k] \in \mathbb{R}^8$).
     pub core2_gain_targets: [f32; 8],
+    /// Core 2 per-line time-warp / pitch-shift rate modulation offsets ($\Delta\nu_m[k] \in \mathbb{R}^8$).
+    pub core2_warp_mod: [f32; 8],
+    /// Core 2 per-group grain window length scale offsets ($\Delta L_m / L_{0,m} \in \mathbb{R}^4$).
+    pub core2_grain_len_scale: [f32; 4],
+    /// Core 2 global state modulation offsets (`[delta_freeze_alpha, delta_window_mix, delta_feedback_mix, delta_spray_samples]`).
+    pub core2_state_mod: [f32; 4],
+    /// Whether Core 2 modulation outputs were updated on the most recent $3\text{ kHz}$ tick.
+    pub core2_mod_dirty: bool,
     /// Trust-region radius $M_h$ (`CL-15`, default `2.5`).
     pub trust_radius_mh: f32,
     /// Pre-computed reciprocal square $M_h^{-2}$ for division-free $3\text{ kHz}$ trust-region evaluation (`0 FDIV`).
@@ -79,6 +87,10 @@ impl<B: MathBackend> ControlBus<B> {
             core1_mod_offsets: [0.0; 12],
             core2_delay_mod_samples: [0.0; 8],
             core2_gain_targets: [0.0; 8],
+            core2_warp_mod: [0.0; 8],
+            core2_grain_len_scale: [0.0; 4],
+            core2_state_mod: [0.0; 4],
+            core2_mod_dirty: false,
             trust_radius_mh: 2.5,
             inv_trust_radius_mh2: 1.0 / (2.5 * 2.5),
             _backend: PhantomData,
@@ -160,6 +172,11 @@ impl<B: MathBackend> ControlBus<B> {
         self.z_head = [0.0; SVD_HEAD_RANK];
         self.core1_mod_offsets = [0.0; 12];
         self.core2_delay_mod_samples = [0.0; 8];
+        self.core2_gain_targets = [0.0; 8];
+        self.core2_warp_mod = [0.0; 8];
+        self.core2_grain_len_scale = [0.0; 4];
+        self.core2_state_mod = [0.0; 4];
+        self.core2_mod_dirty = false;
         self.lfo_phasors = [[1.0, 0.0], [1.0, 0.0]];
         self.env_states = [0.0; 4];
         self.is_dirty = false;
@@ -238,6 +255,8 @@ impl<B: MathBackend> ControlBus<B> {
                 let pole = self.env_poles[b];
                 self.env_states[b] = pole * self.env_states[b] + (1.0 - pole) * audio_abs_energy;
             }
+            // Causal attack onset detector (fast high-band envelope minus slow low-band envelope)
+            self.env_states[3] = (self.env_states[2] - self.env_states[0]).max(0.0);
             for j in 0..2 {
                 let c_prev = self.lfo_phasors[j][0];
                 let s_prev = self.lfo_phasors[j][1];
@@ -266,6 +285,11 @@ impl<B: MathBackend> ControlBus<B> {
         }
 
         if !self.is_dirty {
+            if lfo_env_active {
+                self.evaluate_core2_modulation(arena_bytes);
+            } else {
+                self.core2_mod_dirty = false;
+            }
             return false;
         }
 
@@ -367,9 +391,66 @@ impl<B: MathBackend> ControlBus<B> {
             1.0 - (1.0 / 3.0) * t * t * (3.0 - 2.0 * t)
         };
         self.z_head = z_raw.mul(B::Vec4::splat(radial_scale)).to_array();
+        self.evaluate_core2_modulation(arena_bytes);
 
         self.is_dirty = still_slewing;
         true
+    }
+
+    /// Evaluates the $3\text{ kHz}$ `8 × 32` Control/LFO/Envelope $\to$ Core 2 state-space projection
+    /// matrix `W_ctrl_core2` (`bytes 9216..10240` in `Arena 0`, `0 FDIV`, `0 FSQRT`).
+    #[inline]
+    fn evaluate_core2_modulation(&mut self, arena_bytes: &[u8]) {
+        const W_CTRL_CORE2_BASE: usize = 9216;
+        if arena_bytes.len() < W_CTRL_CORE2_BASE + 1024 {
+            self.core2_mod_dirty = false;
+            return;
+        }
+
+        let lfo0 =
+            self.lfo_harmonics[0] + 0.35 * self.lfo_harmonics[1] + 0.15 * self.lfo_harmonics[2];
+        let lfo1 =
+            self.lfo_harmonics[4] + 0.35 * self.lfo_harmonics[5] + 0.15 * self.lfo_harmonics[6];
+        let env_sustain = 0.5 * (self.env_states[0] + self.env_states[1]);
+        let env_onset = self.env_states[3];
+        let q8 = [
+            self.z_head[0],
+            self.z_head[1],
+            self.z_head[2],
+            self.z_head[3],
+            lfo0,
+            lfo1,
+            env_sustain,
+            env_onset,
+        ];
+
+        let mut acc = [B::Vec4::zero(); 8];
+        for (row, &q_val) in q8.iter().enumerate() {
+            if q_val.abs() > 1e-12 {
+                let q_vec = B::Vec4::splat(q_val);
+                let row_off = W_CTRL_CORE2_BASE + row * 128;
+                for (c, acc_c) in acc.iter_mut().enumerate() {
+                    let w_vec = read_vec4_le::<B>(arena_bytes, row_off + c * 16);
+                    *acc_c = acc_c.fma(q_vec, w_vec);
+                }
+            }
+        }
+
+        let d0 = acc[0].to_array();
+        let d1 = acc[1].to_array();
+        self.core2_delay_mod_samples = [d0[0], d0[1], d0[2], d0[3], d1[0], d1[1], d1[2], d1[3]];
+
+        let g0 = acc[2].to_array();
+        let g1 = acc[3].to_array();
+        self.core2_gain_targets = [g0[0], g0[1], g0[2], g0[3], g1[0], g1[1], g1[2], g1[3]];
+
+        let w0 = acc[4].to_array();
+        let w1 = acc[5].to_array();
+        self.core2_warp_mod = [w0[0], w0[1], w0[2], w0[3], w1[0], w1[1], w1[2], w1[3]];
+
+        self.core2_grain_len_scale = acc[6].to_array();
+        self.core2_state_mod = acc[7].to_array();
+        self.core2_mod_dirty = true;
     }
 }
 

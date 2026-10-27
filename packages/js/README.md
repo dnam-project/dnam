@@ -5,7 +5,7 @@
 1. **Node.js / Bun / Deno Native N-API v8 (`napi-rs` v3):** Zero-copy `Float32Array`, `Float64Array`, and `Uint8Array` slices backed by hardware `ARM64 NEON` / `x86_64 AVX2+FMA` SIMD and libuv worker-pool `processAsync(...)`.
 2. **Browser / Edge WebAssembly SIMD128 (`dnam_engine.wasm`):** Zero-dependency `wasm32-unknown-unknown` `+simd128` execution with persistent pre-allocated linear-memory audio arenas and `FinalizationRegistry` + `Symbol.dispose` deterministic cleanup.
 3. **WebAudio `AudioWorklet` Integration (`@dnam-project/engine/worklet`):** Real-time 128-sample quantum processing via `DnamAudioWorkletProcessor` and `DnamWorkletController<TControls>`, using a lock-free 256-byte `SharedArrayBuffer` (`Atomics`) control/telemetry bridge when `crossOriginIsolated === true` and automatic `MessagePort` fallback when `crossOriginIsolated === false`.
-4. **Zod v4 + Standard Schema v1 (`@dnam-project/engine/schema`):** Bidirectional `.dnam` wire `snake_case` $\leftrightarrow$ idiomatic TypeScript `camelCase` validation implementing `@standard-schema/spec`.
+4. **Zod v4 + Standard Schema v1 (`@dnam-project/engine/schema`):** Bidirectional `.dnam` wire `snake_case` $\leftrightarrow$ idiomatic TypeScript `camelCase` validation implementing `@standard-schema/spec` (including `ModelCapabilities` `supportsFreeze`/`freezeMutesDry`, `ControlCalibrationRole` granular/freeze roles, and `.dnam-ckpt` `ExtractedPhysics` grain/pitch telemetry).
 
 ---
 

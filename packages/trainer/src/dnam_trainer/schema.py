@@ -360,6 +360,8 @@ class TrainingConfig(StrictModel):
     blend_mode: Literal["auto", "none", "host_parallel", "modeled_control"] = "auto"
     default_blend: float = Field(default=1.0, ge=0.0, le=1.0)
     supports_trails: bool | None = None
+    supports_freeze: bool | None = None
+    freeze_mutes_dry: bool = False
     seed: int = 42
     backend: TrainingBackendConfig = Field(default_factory=TrainingBackendConfig)
 

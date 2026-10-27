@@ -34,6 +34,8 @@ class ModelCapabilities(StrictModel):
     wet_polarity_inverted: bool = False
     supports_trails: bool = False
     tempo_sync_capable: bool = False
+    supports_freeze: bool = False
+    freeze_mutes_dry: bool = False
 
 
 class LevelingConfig(StrictModel):
@@ -186,6 +188,8 @@ class ExtractedPhysics(StrictModel):
     delays_ms: list[float] = Field(default_factory=list)
     lfo_freqs_hz: list[float] = Field(default_factory=list)
     decay_gains_lin: list[float] = Field(default_factory=list)
+    detected_grain_size_ms: float = 0.0
+    detected_pitch_shift_semitones: float = 0.0
 
 
 class StemRegistryEntry(StrictModel):

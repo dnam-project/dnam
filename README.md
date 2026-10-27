@@ -2,7 +2,7 @@
 
 **Dynamic Neural Audio Modeler (DNAM)** is a real-time true-stereo neural audio modeling, differentiable DSP, and parametric system-identification platform co-designed for embedded ARMv8.2-A NEON processors (**Rockchip RK3582 / Darkglass Anagram**), desktop **VST3/CLAP/AU** audio plugins, and browser/Node.js **WebAssembly (`AudioWorklet`)** runtimes.
 
-It unifies **nonlinear amplifier/preamp drive**, **linear, time-invariant (LTI) systems (speaker cabinet `IR`s, parametric EQs, and acoustic spaces)**, **selective state-space filters (Wah, Phaser, Uni-Vibe, power-amp sag)**, **modulated delay-line effects (Through-Zero Flanger, Stereo Chorus, Tape Echo, Spring Reverb Drip, Lush Hall Reverb, Leslie Rotary)**, and **user-definable continuous (`range`) and discrete (`switch`) controls** trained from multi-stem captures—running **2.6× faster than NAM A2** in `Full` (`C=8`, ~4,625 MACs/sample vs. 12,146 MACs/sample) and **1.22× faster with 50% more channels** in `Ultra` (`C=12`, ~9,950 MACs/sample), with **0 extra MACs/sample at 48 kHz when user knobs are static**.
+It unifies **nonlinear amplifier/preamp drive**, **linear, time-invariant (LTI) systems (speaker cabinet `IR`s, parametric EQs, and acoustic spaces)**, **selective state-space filters (Wah, Phaser, Uni-Vibe, power-amp sag)**, **modulated & time-warped delay-line effects (`M-UFDN` / `WT-UFDN`: Through-Zero Flanger, Stereo Chorus, Tape Echo, Spring Reverb Drip, Lush Hall Reverb, Leslie Rotary, Granular Clouds, Octave/Fifth Shimmer Pitch-Shifting, and Infinite Unitary Spectral Freeze)**, and **user-definable continuous (`range`) and discrete (`switch`) controls** trained from multi-stem captures—running **2.6× faster than NAM A2** in `Full` (`C=8`, ~4,625 MACs/sample vs. 12,146 MACs/sample) and **1.22× faster with 50% more channels** in `Ultra` (`C=12`, ~9,950 MACs/sample), with **0 extra MACs/sample at 48 kHz when user knobs are static**.
 
 ---
 
@@ -40,12 +40,15 @@ DNAM evaluates models using **Floor-Regularized Band-Balanced ESR (`bESR`)** acr
 | :--- | :---: | :---: | :---: | :---: | :---: |
 | **Channels (`C`) / FDN Lines (`M`)** | `C = 3` (Unaligned) | **`C = 4` (1 NEON reg), `M = 4`** | `C = 8`, No FDN | **`C = 8` (2 NEON regs), `M = 8`** | **`C = 12` (3 NEON regs), `M = 8`** |
 | **Core 1 Architecture** | 23 Dilated Conv | **8 Conv + 4 Selective RG-LRU** | 23 Dilated Conv | **8 Conv + 4 Selective RG-LRU** | **8 Conv + 4 Selective RG-LRU** |
+| **Core 2 Architecture** | None | **Mode-Free `WT-UFDN` + 3-Tier Pre-Head Routing** | None | **Mode-Free `WT-UFDN` + 3-Tier Pre-Head Routing** | **Mode-Free `WT-UFDN` + 3-Tier Pre-Head Routing** |
 | **User Controls (`range` & `switch`)** | None (Static Snapshot) | **Unlimited (0 MACs @ 48 kHz static)** | None (Static Snapshot) | **Unlimited (0 MACs @ 48 kHz static)** | **Unlimited (0 MACs @ 48 kHz static)** |
+| **Granular, Pitch Shimmer & Freeze** | None | **Hermite-Hann `WT-UFDN` + Sound-on-Sound Freeze** | None | **Hermite-Hann `WT-UFDN` + Sound-on-Sound Freeze** | **Hermite-Hann `WT-UFDN` + Sound-on-Sound Freeze** |
+| **Auto-Unity, Blend & Tempo Sync** | None | **Gated `rms_dbfs` (`u=0`), `Trails` & 12-Sub Sync** | None | **Gated `rms_dbfs` (`u=0`), `Trails` & 12-Sub Sync** | **Gated `rms_dbfs` (`u=0`), `Trails` & 12-Sub Sync** |
 | **48 kHz `FSQRT` / `FDIV` Instructions** | 0 | **0 (100% `FMAX`/`FMIN`/`FMLA`)** | 0 | **0 (100% `FMAX`/`FMIN`/`FMLA`)** | **0 (100% `FMAX`/`FMIN`/`FMLA`)** |
 | **NEON SIMD Lane Utilization** | 75% (3/4 lanes) | **100% (4/4 lanes)** | 100% (8/8 lanes) | **100% (8/8 lanes)** | **100% (12/12 lanes, `8+4` tiled)** |
 | **Core 1 L1 Cache State RAM** | 76.2 KB | **3.7 KB (-95%)** | 203.1 KB | **7.5 KB (-96%)** | **11.2 KB (-94%)** |
-| **Core 2 Delay Ring Buffer RAM** | 0 KB | **96 KB (`fp16`)** | 0 KB | **208 KB (`fp16`)** | **208 KB (`fp16`)** |
-| **Effective Receptive Field** | 132.2 ms (Hard cutoff) | **∞ (Core 1 SSM + Core 2 FDN)** | 132.2 ms (Hard cutoff) | **∞ (Core 1 SSM + Core 2 FDN)** | **∞ (Core 1 SSM + Core 2 FDN)** |
+| **Core 2 Delay Ring Buffer RAM** | 0 KB | **`0 KB` (Amp) / `16 KB–2.0 MB` (`fp16`, ≤ 5.46 s)** | 0 KB | **`0 KB` (Amp) / `32 KB–4.0 MB` (`fp16`, ≤ 5.46 s)** | **`0 KB` (Amp) / `32 KB–4.0 MB` (`fp16`, ≤ 5.46 s)** |
+| **Effective Receptive Field** | 132.2 ms (Hard cutoff) | **∞ (Core 1 SSM + Core 2 `WT-UFDN` + Freeze)** | 132.2 ms (Hard cutoff) | **∞ (Core 1 SSM + Core 2 `WT-UFDN` + Freeze)** | **∞ (Core 1 SSM + Core 2 `WT-UFDN` + Freeze)** |
 | **Total Compute (MACs / Sample)** | 1,871 MACs | **~1,245 MACs (1.5× faster + 33% wider)** | 12,146 MACs | **~4,625 MACs (2.6× faster)** | **~9,950 MACs (1.22× faster + 50% wider)** |
 | **Sample-Rate Support** | Fixed 48 kHz | **Native 44.1–96 kHz (ZOH)** | Fixed 48 kHz | **Native 44.1–96 kHz (ZOH)** | **Native 44.1–96 kHz (ZOH)** |
 | **Audio I/O Topology** | Mono (1 → 1) | **True Stereo (1 → 2 or 2 → 2)** | Mono (1 → 1) | **True Stereo (1 → 2 or 2 → 2)** | **True Stereo (1 → 2 or 2 → 2)** |
@@ -58,11 +61,13 @@ See [`docs/architecture_overview.md` §3](docs/architecture_overview.md#3-compar
 
 | Capability | **GuitarML PROTEUS** | **NAM ParametricOD** | **DNAM ("Tri-Physics")** |
 | :--- | :---: | :---: | :---: |
-| **Backbone** | 1-layer LSTM (`hidden=40`) | Conditional WaveNet / LSTM | **Core 1 (`PolyADAA` + Selective RG-LRU) + Core 2 (`M-UFDN`)** |
+| **Backbone** | 1-layer LSTM (`hidden=40`) | Conditional WaveNet / LSTM | **Core 1 (`PolyADAA` + Selective RG-LRU) + Core 2 (`WT-UFDN` + 3-Tier Pre-Head Routing)** |
 | **Control Schema** | 1–2 continuous knobs | Hardcoded pedal layout | **Unlimited user-defined `range` knobs & `switch` selectors** |
 | **Control Rate & Static Overhead** | 48 kHz (∝ `P` MACs/sample) | 48 kHz (∝ `P` MACs/sample) | **3 kHz Lobatto HDMR-FM (0 MACs/sample @ 48 kHz when static)** |
 | **Anti-Aliasing** | None (`tanh` at 1× rate) | None (`tanh`/`ReLU` at 1× rate) | **1× B-Spline Division-Free Algebraic `PolyADAA` (38.87 dB reduction)** |
-| **Time-Varying Delay / Reverb / LFOs** | No (double-echo ghosting) | No (FIR < 30 ms) | **Yes (Autonomous Chebyshev LFO + Order-Statistic Transport on `M-UFDN`)** |
+| **Time-Varying Delay / Reverb / LFOs** | No (double-echo ghosting) | No (FIR < 30 ms) | **Yes (Autonomous Chebyshev LFO + Order-Statistic Transport + 12-Subdivision Tempo Sync)** |
+| **Granular, Pitch Shimmer & Freeze** | No | No | **Yes (Self-Activating Hermite-Hann `WT-UFDN` + Sound-on-Sound Unitary Freeze)** |
+| **Auto-Unity, Blend & Spillover `Trails`** | None | None | **Yes (Gated `rms_dbfs` Auto-Unity at `u=0`, Polarity-Corrected Blend & `Trails`)** |
 | **Control-Space Safety & Clamping** | None | Hardcoded plugin bounds | **Non-Stop 3-Phase Clamping (`RANGE`, `SWITCH`, `STABILITY`, `DYNAMIC`)** |
 | **Iterative Stem Addition** | Retrain from scratch | Retrain from scratch | **Single `.dnam-ckpt` Factorized-Kronecker Resume (< 5 s, 0.00 old-stem drift)** |
 

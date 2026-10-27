@@ -354,7 +354,7 @@ def _estimate_core2_ring_buffer_log2(
     max_cal_ms = 0.0
     for ctrl in controls_schema:
         cal = getattr(ctrl, "calibration", None)
-        if cal is not None and getattr(cal, "role", None) == "delay_time_ms":
+        if cal is not None and getattr(cal, "role", None) in ("delay_time_ms", "grain_size_ms"):
             lob = getattr(cal, "lobatto_physical_anchors", None)
             if lob is not None:
                 max_cal_ms = max(max_cal_ms, float(max(lob)))
@@ -408,9 +408,17 @@ def _calibrate_capabilities_and_leveling(
     cfg_trails = getattr(config, "supports_trails", None)
     supports_trails = core2_active if cfg_trails is None else bool(cfg_trails)
     tempo_sync_capable = any(
-        getattr(getattr(c, "calibration", None), "role", None) in ("delay_time_ms", "lfo_rate_hz")
+        getattr(getattr(c, "calibration", None), "role", None)
+        in ("delay_time_ms", "lfo_rate_hz", "grain_size_ms")
         for c in controls_schema
     )
+    cfg_freeze = getattr(config, "supports_freeze", None)
+    has_freeze_ctrl = any(
+        getattr(getattr(c, "calibration", None), "role", None) == "freeze_latch"
+        for c in controls_schema
+    )
+    supports_freeze = has_freeze_ctrl if cfg_freeze is None else bool(cfg_freeze)
+    freeze_mutes_dry = bool(getattr(config, "freeze_mutes_dry", False))
     wet_pol_inv = detect_wet_polarity_inverted(inputs_list, targets_list)
 
     capabilities = ModelCapabilities(
@@ -419,6 +427,8 @@ def _calibrate_capabilities_and_leveling(
         wet_polarity_inverted=wet_pol_inv,
         supports_trails=supports_trails,
         tempo_sync_capable=tempo_sync_capable,
+        supports_freeze=supports_freeze,
+        freeze_mutes_dry=freeze_mutes_dry,
     )
 
     metric = str(getattr(config, "leveling_metric", "rms_dbfs"))
@@ -786,10 +796,16 @@ class DnamTriPhysicsModel(nn.Module):
                 dil_feats[2] + 0.5 * dil_feats[3],
             ]
             feat_64 = torch.cat(raw_16, dim=-1)  # (B, T, 64)
-            if self.core2_ufdn is not None and tier_idx < 2:
-                ufdn_b2l = self.core2_ufdn(u_base_bcl[:, :2, :])  # (B, 2, T)
-                ufdn_bt2 = ufdn_b2l.transpose(1, 2)
-                feat_64 = feat_64 + F.pad(ufdn_bt2, (0, 62)) * 0.1
+            if self.core2_ufdn is not None:
+                tank_12_bcl, wet_2_bcl = self.core2_ufdn.forward_tank_lines(u_base_bcl[:, :2, :])
+                tank_g_bt4 = tank_12_bcl[:, 4 * tier_idx : 4 * (tier_idx + 1), :].transpose(1, 2)
+                wet_bt2 = wet_2_bcl.transpose(1, 2)
+                inject_gain = torch.sigmoid(self.core2_ufdn.head_tap_inject_gain) * 0.1
+                feat_64 = (
+                    feat_64
+                    + tank_g_bt4.repeat(1, 1, 16) * inject_gain
+                    + F.pad(wet_bt2, (0, 62)) * 0.1
+                )
             tier_features.append(feat_64)
 
         return torch.cat(tier_features, dim=-1)  # (B, T, 192)
@@ -1011,6 +1027,44 @@ class DnamTriPhysicsModel(nn.Module):
                 taus, _, _, _, _ = self.core2_ufdn.clamped_loop_params()
                 taus_np = taus.detach().cpu().numpy().astype(np.float32)
                 layout.mufdn_delays_8[: len(taus_np)] = taus_np[:8]
+                grain_len_t, grain_warp_t, win_mix_t, spray_t, fb_mix_t = (
+                    self.core2_ufdn.clamped_grain_params()
+                )
+                grain_len_np = grain_len_t.detach().cpu().numpy().astype(np.float32)
+                grain_warp_np = grain_warp_t.detach().cpu().numpy().astype(np.float32)
+                layout.mufdn_grain_len_8[: len(grain_len_np)] = grain_len_np[:8]
+                layout.mufdn_grain_warp_8[: len(grain_warp_np)] = grain_warp_np[:8]
+                head_inj_val = float(
+                    torch.sigmoid(self.core2_ufdn.head_tap_inject_gain).detach().cpu().item()
+                )
+                layout.mufdn_grain_meta_0[:] = np.array(
+                    [
+                        float(win_mix_t.detach().cpu().item()),
+                        float(spray_t.detach().cpu().item()),
+                        float(fb_mix_t.detach().cpu().item()),
+                        head_inj_val,
+                    ],
+                    dtype=np.float32,
+                )
+                layout.mufdn_grain_meta_1[:] = np.array(
+                    [
+                        float(
+                            torch.clamp(self.core2_ufdn.freeze_alpha_default, 0.0, 1.0)
+                            .detach()
+                            .cpu()
+                            .item()
+                        ),
+                        float(
+                            torch.clamp(self.core2_ufdn.onset_sync_thresh, 0.0, 1.0)
+                            .detach()
+                            .cpu()
+                            .item()
+                        ),
+                        0.0,
+                        0.0,
+                    ],
+                    dtype=np.float32,
+                )
         return layout
 
 

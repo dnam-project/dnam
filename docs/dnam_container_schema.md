@@ -115,7 +115,7 @@ During the $48\text{ kHz}$ audio loop, Core 1 walks a **single monotonic pointer
      eliminating both the 2-sample B-spline step transient and the $30\text{ ms}$ AC-coupling settling transient (**exact `0.000000` DC output from Sample 0, Sample 1, and all subsequent samples**).
 3. **Pre-Baked $f_{s,\text{train}}$ ($48\text{ kHz}$) Discrete Anchors in `SelectiveRgLru` (`128 B`) & Pre-Inverted Reciprocals in `core2_mufdn_soa` (`256 B`):**
    - `SelectiveRgLru` `SoA` (`32 floats = 128 B`) stores `[r_low_train, dr_span_train, theta0_rad_train, b_gamma_norm_train, w_sel, c_real, c_imag, u_rot_init_cos_sin]` where $\Delta r_c = r_{\text{high},c} - r_{\text{low},c}$ and $b_{\gamma,c} = b_c \sqrt{1 - \bar{r}_c^2}$.
-   - `core2_mufdn_soa` (`64 floats = 256 B` per 4 FDN lines) pre-stores `inv_sigma_knee = 1.0 / sigma_m` (`CL-10`), `two_over_3v_ceil = 2.0 / (3.0 * V_ceil_m)` (`CL-11`), `d_ap_samples_train`, and `[psi_givens_train, r_dc_train, tau_ref_samples_train, switch_xfade_samples_train]` so the $48\text{ kHz}$ Core 2 loop executes **zero `FDIV` instructions** and **loading at $f_{s,\text{host}} == f_{s,\text{train}}$ requires $0$ flops**.
+   - `core2_mufdn_soa` (`64 floats = 256 B` per 4 FDN lines at `6784..7040` in `Arena 0` and `20544..20800` in `Arena 1`) pre-stores `inv_sigma_knee = 1.0 / sigma_m` (`CL-10`), `two_over_3v_ceil = 2.0 / (3.0 * V_ceil_m)` (`CL-11`), `d_ap_samples_train`, `[psi_givens_train, r_dc_train, tau_ref_samples_train, switch_xfade_samples_train]`, and at relative byte offsets `208..256` (`48 B`) the learned **`WT-UFDN` grain & freeze weights** (`grain_len_tr[4]`, `grain_warp_rate[4]`, and `[grain_window_mix, grain_spray_samples, grain_feedback_mix, head_tap_inject_gain]` in `Arena 0` / `[freeze_alpha_default, onset_sync_thresh, 0.0, 0.0]` in `Arena 1`)—while `control_bus_and_clamp_table` (`7040..10752` in `Arena 0`) stores the `8 × 32` (`1,024 B`) $3\text{ kHz}$ state-space projection matrix `W_ctrl_core2` at `9216..10240`—so the $48\text{ kHz}$ Core 2 loop executes **zero `FDIV` instructions** and **loading at $f_{s,\text{host}} == f_{s,\text{train}}$ requires $0$ flops**.
 4. **Default-Anchored Base Weights ($\mathbf{W}_{\text{head},0}, \boldsymbol{\theta}_0$) for Instant Sample-0 Audio:**
    - Because each control's first Newton/Lobatto node $u_{p,1}$ is anchored at its `default` setting ($u_{p,1} = u_{p,\text{default}} \implies \tilde{\boldsymbol{\psi}}_p(u_{p,\text{default}}) \equiv \mathbf{0}$), the stored base head $\mathbf{W}_{\text{head},0}$ and base physical parameters $\boldsymbol{\theta}_0$ are **already the exact collapsed weights for the default preset at Sample 0**.
 5. **100% Automatic Subsystem Pruning, Dynamic Ring-Buffer Sizing & DAW Tail Reporting (`Zero User Config`):**
@@ -158,7 +158,7 @@ DNAM keeps the core `metadata` schema strictly to the **minimal essentials**, in
      - `widget`: `"toggle"` (2-way switch) | `"segmented"` (inline pill selector) | `"rotary_select"` (stepped rotary selector) | `"footswitch"` (stomp switch).
      - `option_labels` (`dict[str, str]`, default `{}`): Maps machine option IDs in `declared_options` to human-readable UI labels (e.g., `{"off": "Bypass", "on": "Vintage +6 dB", "ultra": "Hi-Gain +12 dB"}`).
 3. **Per-Control Physical Calibration (`controls_schema[*].calibration`, Signed by `immutable_header_sha256`):**
-   - `role`: `"delay_time_ms" | "lfo_rate_hz" | "feedback" | "mix" | "crossover_hz" | "stereo_mode" | "stereo_width"`.
+   - `role`: `"delay_time_ms" | "lfo_rate_hz" | "feedback" | "mix" | "crossover_hz" | "stereo_mode" | "stereo_width" | "freeze_latch" | "grain_size_ms" | "grain_pitch_semitones" | "grain_spray"`.
    - `lobatto_physical_anchors`: Optional `[v_min, v_mid, v_max]` physical values at $u \in \{-1, 0, +1\}$ for single-range controls.
    - `conditional_physical_anchors`: Map of `"switch_id=option_id" -> [v_min, v_mid, v_max]` for multi-range controls (e.g., Darkglass Anagram Delay's `Time (0..10)` paired with `Range ("0.01-0.1s", "0.1-1s", "1-2s")`).
    - `tempo_sync_default_subdivision`: One of the **12 canonical `TempoSubdivision` variants** from `1/2` to `1/16` with straight, dotted (`.`), and triplet (`T`) for each (`"1/2."`, `"1/2"`, `"1/2T"`, `"1/4."`, `"1/4"`, `"1/4T"`, `"1/8."`, `"1/8"`, `"1/8T"`, `"1/16."`, `"1/16"`, `"1/16T"`).
@@ -169,6 +169,8 @@ DNAM keeps the core `metadata` schema strictly to the **minimal essentials**, in
      - `wet_polarity_inverted`: `bool` (when `true`, `DnamEngine::configure_host_mix_and_leveling` inverts `wet_g *= -1.0` with linear voltage mixing `dry = 1 - b, wet = b` so `0%` blend matches bypass polarity and `50%` blend sums constructively without phase cancellation).
      - `supports_trails`: `bool` (backed by `DnamEngine::set_bypass(bypassed, trails)` spillover execution).
      - `tempo_sync_capable`: `bool`.
+     - `supports_freeze`: `bool` (backed by `DnamEngine::set_freeze(amount)` and `ControlCalibrationRole::FreezeLatch`).
+     - `freeze_mutes_dry`: `bool` (`false` = default Sound-on-Sound mode where live dry + `Core 1` soloing continues over the frozen `Core 2` tank; `true` = mutes dry/Core-1 output when frozen).
    - `io_config.leveling`:
      - Anchored **strictly at the default control settings (`controls_schema[*].default`, normalized $\mathbf{u} = \mathbf{0}$ / $\mathbf{z}_{\text{head}} = \mathbf{0}$)**—never `presets[0]`.
      - `auto_unity_enabled`: `bool` (default `true`).
@@ -487,7 +489,9 @@ In addition to all standard `.dnam` JSON fields (`metadata`, `user_metadata`, `c
       "extracted_physics": {
         "delays_ms": [12.4, 19.8, 31.2, 47.5, 73.1, 112.0, 168.4, 245.0],
         "lfo_freqs_hz": [0.85, 3.40],
-        "decay_gains_lin": [0.82, 0.81, 0.79, 0.78, 0.76, 0.75, 0.73, 0.70]
+        "decay_gains_lin": [0.82, 0.81, 0.79, 0.78, 0.76, 0.75, 0.73, 0.70],
+        "detected_grain_size_ms": 0.0,
+        "detected_pitch_shift_semitones": 0.0
       },
       "g_audio_uplo_u_f64": {
         "arena": 3,

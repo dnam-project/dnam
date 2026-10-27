@@ -47,7 +47,11 @@ export type ControlCalibrationRole =
   | "mix"
   | "crossover_hz"
   | "stereo_mode"
-  | "stereo_width";
+  | "stereo_width"
+  | "freeze_latch"
+  | "grain_size_ms"
+  | "grain_pitch_semitones"
+  | "grain_spray";
 
 export interface ControlCalibration {
   role: ControlCalibrationRole;
@@ -73,6 +77,10 @@ const RawControlCalibrationSchema = z
       "crossover_hz",
       "stereo_mode",
       "stereo_width",
+      "freeze_latch",
+      "grain_size_ms",
+      "grain_pitch_semitones",
+      "grain_spray",
     ]),
     lobatto_physical_anchors: z.tuple([z.number(), z.number(), z.number()]).nullable().optional(),
     lobattoPhysicalAnchors: z.tuple([z.number(), z.number(), z.number()]).nullable().optional(),
@@ -129,6 +137,50 @@ export function invertLobattoAnchors(vTarget: number, anchors: [number, number, 
   return Math.min(1.0, Math.max(-1.0, (2.0 * dv) / denom));
 }
 
+export function evaluateLobattoAnchors(
+  calibration: ControlCalibration,
+  u: number,
+): number | undefined {
+  if (calibration.lobattoPhysicalAnchors === undefined) {
+    return undefined;
+  }
+  const [vMin, vMid, vMax] = calibration.lobattoPhysicalAnchors;
+  const uC = Math.min(1.0, Math.max(-1.0, u));
+  const c1 = 0.5 * (vMax - vMin);
+  const c2 = 0.5 * (vMax + vMin) - vMid;
+  return vMid + c1 * uC + c2 * uC * uC;
+}
+
+export function freezeAmountForOption(
+  calibration: ControlCalibration,
+  optionLabel: string,
+): number | undefined {
+  if (calibration.role !== "freeze_latch") {
+    return undefined;
+  }
+  const norm = optionLabel.trim().toLowerCase();
+  if (
+    norm === "off" ||
+    norm === "false" ||
+    norm === "normal" ||
+    norm === "bypass" ||
+    norm === "0"
+  ) {
+    return 0.0;
+  }
+  if (
+    norm === "on" ||
+    norm === "true" ||
+    norm === "freeze" ||
+    norm === "hold" ||
+    norm === "latch" ||
+    norm === "1"
+  ) {
+    return 1.0;
+  }
+  return undefined;
+}
+
 export function resolveTempoSyncTarget(
   calibration: ControlCalibration,
   bpm: number,
@@ -137,7 +189,7 @@ export function resolveTempoSyncTarget(
 ): TempoSyncResolution | undefined {
   const sub = subdivisionOverride ?? calibration.tempoSyncDefaultSubdivision ?? "1/4";
   let vTarget: number;
-  if (calibration.role === "delay_time_ms") {
+  if (calibration.role === "delay_time_ms" || calibration.role === "grain_size_ms") {
     vTarget = tempoSubdivisionDelayMs(bpm, sub);
   } else if (calibration.role === "lfo_rate_hz") {
     vTarget = tempoSubdivisionFreqHz(bpm, sub);

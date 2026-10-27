@@ -23,6 +23,11 @@ def test_arena_weight_layout_roundtrip_and_signed_containers() -> None:
     layout.w_head_tiers = rng.standard_normal((3, 5, 2, 64)).astype(np.float32) * 0.05
     layout.b_head = rng.standard_normal((5, 2)).astype(np.float32) * 0.01
     layout.p_svd_16x4 = rng.standard_normal((16, 4)).astype(np.float32) * 0.2
+    layout.mufdn_grain_len_8 = np.full(8, 2400.0, dtype=np.float32)
+    layout.mufdn_grain_warp_8 = np.full(8, 0.5, dtype=np.float32)
+    layout.mufdn_grain_meta_0 = np.array([0.8, 4.0, 0.25, 0.5], dtype=np.float32)
+    layout.mufdn_grain_meta_1 = np.array([0.0, 0.2, 0.0, 0.0], dtype=np.float32)
+    layout.w_ctrl_core2_8x32 = rng.standard_normal((8, 32)).astype(np.float32) * 0.05
 
     raw_bytes = layout.to_arena012_bytes()
     assert len(raw_bytes) == ARENA_OFFSET_ULTRA_END
@@ -33,6 +38,11 @@ def test_arena_weight_layout_roundtrip_and_signed_containers() -> None:
     assert np.allclose(unpacked.b_head, layout.b_head)
     assert np.allclose(unpacked.p_svd_16x4, layout.p_svd_16x4)
     assert np.allclose(unpacked.mufdn_delays_8, layout.mufdn_delays_8)
+    assert np.allclose(unpacked.mufdn_grain_len_8, layout.mufdn_grain_len_8)
+    assert np.allclose(unpacked.mufdn_grain_warp_8, layout.mufdn_grain_warp_8)
+    assert np.allclose(unpacked.mufdn_grain_meta_0, layout.mufdn_grain_meta_0)
+    assert np.allclose(unpacked.mufdn_grain_meta_1, layout.mufdn_grain_meta_1)
+    assert np.allclose(unpacked.w_ctrl_core2_8x32, layout.w_ctrl_core2_8x32)
 
     with pytest.raises(ValueError, match="Arena buffer too small"):
         ArenaWeightLayout.from_arena012_bytes(b"\x00" * 1024)

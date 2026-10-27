@@ -29,6 +29,7 @@ pub struct DnamEngine<'a, B: MathBackend = DefaultMathBackend> {
     ctrl_energy_accum: f32,
     bypassed: bool,
     trails_enabled: bool,
+    freeze_mutes_dry: bool,
     stereo_width: f32,
     pub control_bus: ControlBus<B>,
     pub core1: Core1Stack<B>,
@@ -160,6 +161,7 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
             ctrl_energy_accum: 0.0,
             bypassed: false,
             trails_enabled: false,
+            freeze_mutes_dry: false,
             stereo_width: 1.0,
             control_bus: ControlBus::new(),
             core1: Core1Stack::new(),
@@ -206,6 +208,7 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
 
         self.preamble = preamble;
         self.header = None;
+        self.freeze_mutes_dry = false;
         self.verification_status = VerificationStatus::Unsigned;
         self.protection_profile = DnamProtectionProfile::Open;
         self.max_available_tier = Self::detect_max_tier(&preamble, copy_len);
@@ -253,6 +256,7 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
 
         self.preamble = preamble;
         self.header = None;
+        self.freeze_mutes_dry = false;
         self.verification_status = VerificationStatus::Unsigned;
         self.protection_profile = DnamProtectionProfile::Open;
         self.max_available_tier = Self::detect_max_tier(&preamble, copy_len);
@@ -296,6 +300,7 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
             128,
         )?;
 
+        let freeze_mutes_dry = view.header.io_config.capabilities.freeze_mutes_dry;
         let mut engine = Self {
             preamble: view.preamble,
             header: Some(view.header),
@@ -309,6 +314,7 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
             ctrl_energy_accum: 0.0,
             bypassed: false,
             trails_enabled: false,
+            freeze_mutes_dry,
             stereo_width: 1.0,
             control_bus: ControlBus::new(),
             core1: Core1Stack::new(),
@@ -456,7 +462,7 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
     }
 
     /// Sets a user control value and snaps immediately without anti-zipper lag, refreshing the
-    /// collapsed stereo output head immediately.
+    /// collapsed stereo output head and Core 2 $3\text{ kHz}$ modulation immediately.
     #[inline]
     pub fn set_control_immediate(&mut self, ctrl_idx: usize, physical_value: f32) {
         self.control_bus
@@ -473,9 +479,20 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
                 self.tier.core1_groups(),
             );
         }
+        if self.control_bus.core2_mod_dirty && self.core2.active {
+            self.core2.apply_control_bus_3khz(
+                &self.control_bus.core2_gain_targets,
+                &self.control_bus.core2_warp_mod,
+                &self.control_bus.core2_grain_len_scale,
+                &self.control_bus.core2_state_mod,
+                self.control_bus.env_states[3],
+            );
+            self.control_bus.core2_mod_dirty = false;
+        }
     }
 
-    /// Updates engine-level calibrated effects (`StereoMode` / `StereoWidth`) when `ctrl_idx` changes.
+    /// Updates engine-level calibrated effects (`StereoMode`, `StereoWidth`, `FreezeLatch`,
+    /// `GrainSizeMs`, `GrainPitchSemitones`, `GrainSpray`) when `ctrl_idx` changes.
     fn refresh_calibrated_control_effects(&mut self, ctrl_idx: usize, physical_value: f32) {
         let Some(ref hdr) = self.header else {
             return;
@@ -486,6 +503,11 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
         let Some(ref cal) = ctrl_def.calibration else {
             return;
         };
+        let decl = ctrl_def.declared_range.unwrap_or([0.0, 10.0]);
+        let span = (decl[1] - decl[0]).max(1e-6);
+        let norm_01 = ((physical_value - decl[0]) / span).clamp(0.0, 1.0);
+        let norm_u = 2.0 * norm_01 - 1.0;
+
         match cal.role {
             ControlCalibrationRole::StereoMode => {
                 if let Some(ref opts) = ctrl_def.declared_options {
@@ -498,12 +520,84 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
                 }
             }
             ControlCalibrationRole::StereoWidth => {
-                let decl = ctrl_def.declared_range.unwrap_or([0.0, 1.0]);
-                let span = (decl[1] - decl[0]).max(1e-6);
-                self.stereo_width = ((physical_value - decl[0]) / span).clamp(0.0, 1.0);
+                self.stereo_width = norm_01;
+            }
+            ControlCalibrationRole::FreezeLatch => {
+                if ctrl_def.kind == crate::schema::ControlKind::Switch {
+                    if let Some(ref opts) = ctrl_def.declared_options {
+                        let idx = (physical_value.round() as isize).max(0) as usize;
+                        if let Some(opt_label) = opts.get(idx)
+                            && let Some(alpha) = cal.freeze_amount_for_option(opt_label)
+                        {
+                            self.core2.set_freeze_amount(alpha);
+                        }
+                    }
+                } else {
+                    self.core2.set_freeze_amount(norm_01);
+                }
+            }
+            ControlCalibrationRole::GrainSizeMs => {
+                let val_ms = cal.evaluate_lobatto_anchors(norm_u).unwrap_or_else(|| {
+                    if decl[1] <= 10.0 {
+                        10.0 + norm_01 * 240.0
+                    } else {
+                        physical_value.clamp(5.0, 500.0)
+                    }
+                });
+                self.core2.set_grain_params(
+                    Some(val_ms),
+                    None,
+                    None,
+                    self.zoh.sample_rate_host_hz as f32,
+                );
+            }
+            ControlCalibrationRole::GrainPitchSemitones => {
+                let val_st = cal.evaluate_lobatto_anchors(norm_u).unwrap_or_else(|| {
+                    if decl[0] >= 0.0 && decl[1] <= 10.0 {
+                        norm_u * 12.0
+                    } else {
+                        physical_value.clamp(-24.0, 24.0)
+                    }
+                });
+                self.core2.set_grain_params(
+                    None,
+                    Some(val_st),
+                    None,
+                    self.zoh.sample_rate_host_hz as f32,
+                );
+            }
+            ControlCalibrationRole::GrainSpray => {
+                let val_spray = cal
+                    .evaluate_lobatto_anchors(norm_u)
+                    .unwrap_or(norm_01)
+                    .clamp(0.0, 1.0);
+                self.core2.set_grain_params(
+                    None,
+                    None,
+                    Some(val_spray),
+                    self.zoh.sample_rate_host_hz as f32,
+                );
             }
             _ => {}
         }
+    }
+
+    /// Engages or disengages Core 2 Unitary Spectral Freeze (`alpha = 1.0` vs `0.0`).
+    #[inline]
+    pub fn set_freeze(&mut self, freeze: bool) {
+        self.core2.set_freeze(freeze);
+    }
+
+    /// Sets the continuous Core 2 Unitary Spectral Freeze amount $\alpha_{\text{freeze}} \in [0.0, 1.0]$.
+    #[inline]
+    pub fn set_freeze_amount(&mut self, alpha: f32) {
+        self.core2.set_freeze_amount(alpha);
+    }
+
+    /// Returns `true` if Core 2 Unitary Spectral Freeze is currently engaged ($\alpha_{\text{freeze}} > 0.5$).
+    #[inline]
+    pub fn is_frozen(&self) -> bool {
+        self.core2.is_frozen()
     }
 
     /// Configures bypass and spillover **Trails** (`bypassed = true, trails = true`).
@@ -668,6 +762,16 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
             &self.control_bus.z_head,
             self.tier.core1_groups(),
         );
+        if self.control_bus.core2_mod_dirty && self.core2.active {
+            self.core2.apply_control_bus_3khz(
+                &self.control_bus.core2_gain_targets,
+                &self.control_bus.core2_warp_mod,
+                &self.control_bus.core2_grain_len_scale,
+                &self.control_bus.core2_state_mod,
+                self.control_bus.env_states[3],
+            );
+            self.control_bus.core2_mod_dirty = false;
+        }
         Ok(())
     }
 
@@ -720,6 +824,7 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
         wet_g: f32,
         bypassed: bool,
         trails_enabled: bool,
+        freeze_mutes_dry: bool,
         stereo_width: f32,
     ) -> [f32; 2] {
         if bypassed && !trails_enabled {
@@ -730,7 +835,16 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
             };
         }
 
-        let (eff_in_l, eff_in_r) = if bypassed { (0.0, 0.0) } else { (in_l, in_r) };
+        let live_scale = if !bypassed && freeze_mutes_dry && core2.active {
+            (1.0 - core2.freeze_alpha_smoothed).clamp(0.0, 1.0)
+        } else {
+            1.0
+        };
+        let (eff_in_l, eff_in_r) = if bypassed {
+            (0.0, 0.0)
+        } else {
+            (in_l * live_scale, in_r * live_scale)
+        };
 
         // Accumulate block energy for 3 kHz envelope follower
         *ctrl_energy_accum += 0.5 * (eff_in_l.abs() + eff_in_r.abs());
@@ -742,9 +856,19 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
             if control_bus.tick_3khz(avg_energy, lfo_env_active, arena) {
                 core1.collapse_stereo_head_3khz(arena, &control_bus.z_head, GROUPS);
             }
+            if control_bus.core2_mod_dirty && core2.active {
+                core2.apply_control_bus_3khz(
+                    &control_bus.core2_gain_targets,
+                    &control_bus.core2_warp_mod,
+                    &control_bus.core2_grain_len_scale,
+                    &control_bus.core2_state_mod,
+                    control_bus.env_states[3],
+                );
+                control_bus.core2_mod_dirty = false;
+            }
         }
 
-        let core1_out = core1.process_sample_tiles::<GROUPS>(eff_in_l, eff_in_r, tiles, mono_only);
+        let h_vecs = core1.process_backbone_tiles::<GROUPS>(eff_in_l, eff_in_r, tiles);
 
         let (mut wet_l, mut wet_r, dry_l, dry_r) = if core2.active {
             let zero_tap = [[0.0_f32; 4]; 2];
@@ -760,14 +884,30 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
                 &control_bus.core2_delay_mod_samples,
                 FDN_GROUPS,
             );
+            let core1_out = core1.process_head_from_taps::<GROUPS>(
+                h_vecs,
+                if bypassed {
+                    None
+                } else {
+                    Some((&core2.latest_ap_out, core2.head_tap_inject_gain))
+                },
+                mono_only,
+            );
             if bypassed {
                 (c2[0], c2[1], in_l, in_r)
             } else {
-                (core1_out[0] + c2[0], core1_out[1] + c2[1], c2[2], c2[3])
+                (
+                    core1_out[0] + c2[0],
+                    core1_out[1] + c2[1],
+                    c2[2] * live_scale,
+                    c2[3] * live_scale,
+                )
             }
         } else if bypassed {
+            let _ = core1.process_head_from_taps::<GROUPS>(h_vecs, None, mono_only);
             (0.0, 0.0, in_l, in_r)
         } else {
+            let core1_out = core1.process_head_from_taps::<GROUPS>(h_vecs, None, mono_only);
             (core1_out[0], core1_out[1], in_l, in_r)
         };
 
@@ -822,6 +962,7 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
         let wet_g = self.core1.mix_wet_gain * self.core1.tier_gain_trim_lin[self.tier as usize];
         let bypassed = self.bypassed;
         let trails = self.trails_enabled;
+        let freeze_mutes_dry = self.freeze_mutes_dry;
         let width = self.stereo_width;
 
         match self.tier {
@@ -844,6 +985,7 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
                         wet_g,
                         bypassed,
                         trails,
+                        freeze_mutes_dry,
                         width,
                     );
                     left_out[i] = l;
@@ -869,6 +1011,7 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
                         wet_g,
                         bypassed,
                         trails,
+                        freeze_mutes_dry,
                         width,
                     );
                     left_out[i] = l;
@@ -894,6 +1037,7 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
                         wet_g,
                         bypassed,
                         trails,
+                        freeze_mutes_dry,
                         width,
                     );
                     left_out[i] = l;
@@ -922,6 +1066,7 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
         let wet_g = self.core1.mix_wet_gain * self.core1.tier_gain_trim_lin[self.tier as usize];
         let bypassed = self.bypassed;
         let trails = self.trails_enabled;
+        let freeze_mutes_dry = self.freeze_mutes_dry;
         let width = self.stereo_width;
 
         match self.tier {
@@ -944,6 +1089,7 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
                         wet_g,
                         bypassed,
                         trails,
+                        freeze_mutes_dry,
                         width,
                     );
                     left_io[i] = l;
@@ -969,6 +1115,7 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
                         wet_g,
                         bypassed,
                         trails,
+                        freeze_mutes_dry,
                         width,
                     );
                     left_io[i] = l;
@@ -994,6 +1141,7 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
                         wet_g,
                         bypassed,
                         trails,
+                        freeze_mutes_dry,
                         width,
                     );
                     left_io[i] = l;
@@ -1027,6 +1175,7 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
         let wet_g = self.core1.mix_wet_gain * self.core1.tier_gain_trim_lin[self.tier as usize];
         let bypassed = self.bypassed;
         let trails = self.trails_enabled;
+        let freeze_mutes_dry = self.freeze_mutes_dry;
         let width = self.stereo_width;
 
         match self.tier {
@@ -1050,6 +1199,7 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
                         wet_g,
                         bypassed,
                         trails,
+                        freeze_mutes_dry,
                         width,
                     );
                     left_out[i] = l;
@@ -1076,6 +1226,7 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
                         wet_g,
                         bypassed,
                         trails,
+                        freeze_mutes_dry,
                         width,
                     );
                     left_out[i] = l;
@@ -1102,6 +1253,7 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
                         wet_g,
                         bypassed,
                         trails,
+                        freeze_mutes_dry,
                         width,
                     );
                     left_out[i] = l;
@@ -1130,6 +1282,7 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
         let wet_g = self.core1.mix_wet_gain * self.core1.tier_gain_trim_lin[self.tier as usize];
         let bypassed = self.bypassed;
         let trails = self.trails_enabled;
+        let freeze_mutes_dry = self.freeze_mutes_dry;
         let width = self.stereo_width;
 
         match self.tier {
@@ -1153,6 +1306,7 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
                         wet_g,
                         bypassed,
                         trails,
+                        freeze_mutes_dry,
                         width,
                     );
                     mono_out[i] = l;
@@ -1178,6 +1332,7 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
                         wet_g,
                         bypassed,
                         trails,
+                        freeze_mutes_dry,
                         width,
                     );
                     mono_out[i] = l;
@@ -1203,6 +1358,7 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
                         wet_g,
                         bypassed,
                         trails,
+                        freeze_mutes_dry,
                         width,
                     );
                     mono_out[i] = l;
@@ -1471,5 +1627,147 @@ mod tests {
             &mut r_out,
         );
         assert_eq!(l_out, [0.25, -0.5, 0.75, -0.25]);
+    }
+
+    #[test]
+    fn test_dnam_engine_wt_ufdn_freeze_grain_calibration_and_3tier_pre_head_routing() {
+        let mut header = DnamJsonHeader::default_reference(true);
+        header.io_config.capabilities.supports_freeze = true;
+        header.io_config.capabilities.freeze_mutes_dry = true;
+        header.controls_schema = alloc::vec![
+            ControlSchemaDef {
+                id: String::from("freeze"),
+                name: String::from("Freeze"),
+                kind: ControlKind::Switch,
+                unit: None,
+                lobatto_degree: None,
+                anchor_nodes_norm: None,
+                declared_range: None,
+                safe_clamped_range: None,
+                default: serde_json::json!("Off"),
+                conditional_min: BTreeMap::new(),
+                conditional_max: BTreeMap::new(),
+                declared_options: Some(alloc::vec![String::from("Off"), String::from("Freeze")]),
+                active_options: Some(alloc::vec![String::from("Off"), String::from("Freeze")]),
+                clamp_warning: None,
+                calibration: Some(ControlCalibration {
+                    role: ControlCalibrationRole::FreezeLatch,
+                    lobatto_physical_anchors: None,
+                    conditional_physical_anchors: BTreeMap::new(),
+                    tempo_sync_default_subdivision: None,
+                }),
+                ui_hints: ControlUiHints::default(),
+                user_metadata: BTreeMap::new(),
+            },
+            ControlSchemaDef {
+                id: String::from("grain_size"),
+                name: String::from("Grain Size"),
+                kind: ControlKind::Range,
+                unit: Some(String::from("ms")),
+                lobatto_degree: Some(2),
+                anchor_nodes_norm: None,
+                declared_range: Some([0.0, 10.0]),
+                safe_clamped_range: Some([0.0, 10.0]),
+                default: serde_json::json!(5.0),
+                conditional_min: BTreeMap::new(),
+                conditional_max: BTreeMap::new(),
+                declared_options: None,
+                active_options: None,
+                clamp_warning: None,
+                calibration: Some(ControlCalibration {
+                    role: ControlCalibrationRole::GrainSizeMs,
+                    lobatto_physical_anchors: Some([20.0, 80.0, 200.0]),
+                    conditional_physical_anchors: BTreeMap::new(),
+                    tempo_sync_default_subdivision: Some(TempoSubdivision::Sixteenth),
+                }),
+                ui_hints: ControlUiHints::default(),
+                user_metadata: BTreeMap::new(),
+            },
+            ControlSchemaDef {
+                id: String::from("pitch"),
+                name: String::from("Pitch"),
+                kind: ControlKind::Range,
+                unit: Some(String::from("st")),
+                lobatto_degree: Some(2),
+                anchor_nodes_norm: None,
+                declared_range: Some([0.0, 10.0]),
+                safe_clamped_range: Some([0.0, 10.0]),
+                default: serde_json::json!(5.0),
+                conditional_min: BTreeMap::new(),
+                conditional_max: BTreeMap::new(),
+                declared_options: None,
+                active_options: None,
+                clamp_warning: None,
+                calibration: Some(ControlCalibration {
+                    role: ControlCalibrationRole::GrainPitchSemitones,
+                    lobatto_physical_anchors: Some([-12.0, 0.0, 12.0]),
+                    conditional_physical_anchors: BTreeMap::new(),
+                    tempo_sync_default_subdivision: None,
+                }),
+                ui_hints: ControlUiHints::default(),
+                user_metadata: BTreeMap::new(),
+            },
+            ControlSchemaDef {
+                id: String::from("spray"),
+                name: String::from("Spray"),
+                kind: ControlKind::Range,
+                unit: None,
+                lobatto_degree: Some(2),
+                anchor_nodes_norm: None,
+                declared_range: Some([0.0, 10.0]),
+                safe_clamped_range: Some([0.0, 10.0]),
+                default: serde_json::json!(0.0),
+                conditional_min: BTreeMap::new(),
+                conditional_max: BTreeMap::new(),
+                declared_options: None,
+                active_options: None,
+                clamp_warning: None,
+                calibration: Some(ControlCalibration {
+                    role: ControlCalibrationRole::GrainSpray,
+                    lobatto_physical_anchors: Some([0.0, 0.4, 1.0]),
+                    conditional_physical_anchors: BTreeMap::new(),
+                    tempo_sync_default_subdivision: None,
+                }),
+                ui_hints: ControlUiHints::default(),
+                user_metadata: BTreeMap::new(),
+            },
+        ];
+
+        let mut arena = alloc::vec![0u8; ARENA_OFFSET_ULTRA_END as usize];
+        // Populate head_tap_inject_gain = 0.75 at 6784 + 252 and non-zero W_ctrl_core2 at 9216
+        arena[6784 + 252..6784 + 256].copy_from_slice(&0.75_f32.to_le_bytes());
+        arena[9216..9220].copy_from_slice(&0.05_f32.to_le_bytes());
+
+        let container = build_dnam_container(&mut header, &arena, &arena, false).unwrap();
+        let mut engine =
+            DnamEngine::<ScalarBackend>::from_bytes(&container, Tier::Ultra, 48_000).unwrap();
+
+        assert!(!engine.is_frozen());
+        engine.set_control_immediate(1, 8.0); // GrainSizeMs
+        engine.set_control_immediate(2, 10.0); // GrainPitchSemitones (+12 st)
+        engine.set_control_immediate(3, 5.0); // GrainSpray (0.4)
+        engine.set_control_immediate(0, 1.0); // FreezeLatch -> "Freeze"
+        assert!(engine.is_frozen());
+
+        // Tempo sync on GrainSizeMs (120 BPM Sixteenth = 125 ms)
+        let synced = engine.sync_tempo(120.0, None, false);
+        assert_eq!(synced, 1);
+
+        // Process across all 3 tiers (Ultra, Full, Lite) with 3-tier Pre-Head Kronecker routing
+        let l_in = [0.2_f32; 32];
+        let r_in = [-0.2_f32; 32];
+        let mut l_out = [0.0_f32; 32];
+        let mut r_out = [0.0_f32; 32];
+        for tier in [Tier::Ultra, Tier::Full, Tier::Lite] {
+            engine.set_tier(tier);
+            engine.process_block(&l_in, &r_in, &mut l_out, &mut r_out);
+            assert!(l_out.iter().all(|x| x.is_finite()));
+            assert!(r_out.iter().all(|x| x.is_finite()));
+        }
+
+        engine.set_freeze_amount(0.25);
+        assert!(!engine.is_frozen());
+        engine.set_freeze(true);
+        assert!(engine.is_frozen());
     }
 }

@@ -4,7 +4,7 @@ Unified Rust + Node.js/TypeScript CLI (`dnam`) and Tauri v2 Desktop Studio for t
 
 ## Highlights
 
-- **`dnam` CLI:** Workspace initialization (`dnam init`), model & control definition (`dnam model`, `dnam control`), hardware/software re-amp capture (`dnam capture`), and `uv`-managed Python trainer execution (`dnam train`, `dnam trainer`).
+- **`dnam` CLI:** Workspace initialization (`dnam init`), model & control definition (`dnam model`, `dnam control` with physical `--calibration-role` tags including `freeze_latch`, `grain_size_ms`, `grain_pitch_semitones`, and `grain_spray`), hardware/software re-amp capture (`dnam capture`), and `uv`-managed Python trainer execution (`dnam train`, `dnam trainer`).
 - **Tauri v2 Desktop Studio (`dnam studio`):** Built on `@dnam-project/ui` (React 19, Tailwind CSS v4, `shadcn/ui` Base UI, `lucide-react`) and `TauriNativeAudioHost` backed by native Rust `dnam-engine` SIMD (`ARM SME`, `ARM64 NEON`, `x86_64 AVX2+FMA`).
 - **Tier 1 & Tier 2 Official Tauri v2 Plugins:**
   - **Tier 1:** `dialog` (native `.dnam`/`.dnam-ckpt`/`.wav` file & workspace folder pickers), `opener` (reveal exported `.dnam`/`.wav` in Finder/Explorer & open Altair HTML convergence reports), `window-state` (multi-monitor window geometry persistence).

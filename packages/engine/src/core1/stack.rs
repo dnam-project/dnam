@@ -378,20 +378,19 @@ impl<B: MathBackend> Core1Stack<B> {
     }
 
     #[inline(always)]
-    pub(crate) fn process_sample_tiles<const GROUPS: usize>(
+    pub(crate) fn process_backbone_tiles<const GROUPS: usize>(
         &mut self,
         x_left: f32,
         x_right: f32,
         tiles: &[[[f32; 4]; 4]],
-        mono_only: bool,
-    ) -> [f32; 2] {
+    ) -> [B::Vec4; 3] {
         let min_tiles = match GROUPS {
             1 => 168,
             2 => 349,
             _ => 566,
         };
         if tiles.len() < min_tiles {
-            return [0.0; 2];
+            return [B::Vec4::zero(); 3];
         }
 
         let x_mid = 0.5 * (x_left + x_right);
@@ -581,19 +580,45 @@ impl<B: MathBackend> Core1Stack<B> {
             self.latest_core1_tap[1] = self.latest_core1_tap[0];
         }
 
-        // 4. Write final Core 1 activations into 16-tap unfolded output head ring buffer
+        [h0, h1, h2]
+    }
+
+    /// Injects optional 12-channel Core 2 pre-head taps across `Lite` (`h0`), `Full` (`h1`),
+    /// and `Ultra` (`h2`), writes the 16-tap unfolded output head ring buffer, and evaluates
+    /// the collapsed stereo/mono Kronecker output head.
+    #[inline(always)]
+    pub(crate) fn process_head_from_taps<const GROUPS: usize>(
+        &mut self,
+        mut h_vecs: [B::Vec4; 3],
+        core2_tap: Option<(&[[f32; 4]; 3], f32)>,
+        mono_only: bool,
+    ) -> [f32; 2] {
+        if let Some((ap_out, inject_gain)) = core2_tap
+            && inject_gain.abs() > 1e-6
+        {
+            let g_vec = B::Vec4::splat(inject_gain);
+            h_vecs[0] = h_vecs[0].fma(g_vec, B::Vec4::load(&ap_out[0]));
+            if GROUPS >= 2 {
+                h_vecs[1] = h_vecs[1].fma(g_vec, B::Vec4::load(&ap_out[1]));
+            }
+            if GROUPS >= 3 {
+                h_vecs[2] = h_vecs[2].fma(g_vec, B::Vec4::load(&ap_out[2]));
+            }
+        }
+
+        // 4. Write final Core 1 (+ optional Core 2 tank) activations into 16-tap unfolded output head ring buffer
         let h_pos = self.head_write_pos & CORE1_HEAD_TAP_MASK;
         {
             let (chunks0, _) = self.head_tap_hist[0].as_chunks_mut::<4>();
-            h0.store(&mut chunks0[h_pos]);
+            h_vecs[0].store(&mut chunks0[h_pos]);
         }
         if GROUPS >= 2 {
             let (chunks1, _) = self.head_tap_hist[1].as_chunks_mut::<4>();
-            h1.store(&mut chunks1[h_pos]);
+            h_vecs[1].store(&mut chunks1[h_pos]);
         }
         if GROUPS >= 3 {
             let (chunks2, _) = self.head_tap_hist[2].as_chunks_mut::<4>();
-            h2.store(&mut chunks2[h_pos]);
+            h_vecs[2].store(&mut chunks2[h_pos]);
         }
         self.head_write_pos = (h_pos + 1) & CORE1_HEAD_TAP_MASK;
 
@@ -640,6 +665,19 @@ impl<B: MathBackend> Core1Stack<B> {
             }
             [out_l, out_r]
         }
+    }
+
+    /// Executes the full Core 1 backbone and 16-tap output head for a single sample without Core 2 pre-head tap injection.
+    #[inline(always)]
+    pub(crate) fn process_sample_tiles<const GROUPS: usize>(
+        &mut self,
+        in_l: f32,
+        in_r: f32,
+        tiles: &[[[f32; 4]; 4]],
+        mono_only: bool,
+    ) -> [f32; 2] {
+        let h_vecs = self.process_backbone_tiles::<GROUPS>(in_l, in_r, tiles);
+        self.process_head_from_taps::<GROUPS>(h_vecs, None, mono_only)
     }
 }
 

@@ -241,9 +241,13 @@ pub fn build_training_request_json(
             model.capture.blend_mode.as_str()
         },
         "default_blend": model.capture.default_blend,
+        "freeze_mutes_dry": model.capture.freeze_mutes_dry,
     });
     if let Some(trails) = model.capture.supports_trails {
         config_obj["supports_trails"] = json!(trails);
+    }
+    if let Some(freeze) = model.capture.supports_freeze {
+        config_obj["supports_freeze"] = json!(freeze);
     }
 
     let mut req = json!({

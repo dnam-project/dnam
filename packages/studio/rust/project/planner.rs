@@ -6,9 +6,10 @@ use std::path::Path;
 
 use dnam_engine::container::DnamContainerView;
 use dnam_engine::provenance::DefaultCryptoProvider;
+use dnam_engine::schema::ControlCalibrationRole;
 use serde::{Deserialize, Serialize};
 
-use crate::project::manifest::{ControlRangeSpec, ModelManifest};
+use crate::project::manifest::{ControlRangeSpec, ControlSwitchSpec, ModelManifest};
 
 /// Priority tier of a planned capture stem.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -302,7 +303,14 @@ pub fn build_capture_plan_with_prescriptions(
     // 4. Switch throws + Switch x Primary-Gain min/max interaction corners
     //    Grouped by Primary-Gain level (default -> min -> max) so `Gain` and `Output Clean Level`
     //    only change twice across all switches rather than thrashing on every switch option.
+    //    Switches with `calibration.role = FreezeLatch` are skipped during static full-stem
+    //    capture because holding Freeze on the pedal before starting a 10 s sweep mutes new
+    //    input (`(1 - alpha_freeze) * x[n] = 0`); their throws are synthesized natively by
+    //    the unitary `WT-UFDN` tank.
     for sw in &model.switches {
+        if is_freeze_latch_switch(sw) {
+            continue;
+        }
         for opt in &sw.options {
             if opt.index == sw.default_index {
                 continue;
@@ -327,6 +335,9 @@ pub fn build_capture_plan_with_prescriptions(
                 continue;
             }
             for sw in &model.switches {
+                if is_freeze_latch_switch(sw) {
+                    continue;
+                }
                 for opt in &sw.options {
                     if opt.index == sw.default_index {
                         continue;
@@ -447,6 +458,12 @@ pub fn compute_control_deltas(
         });
     }
     deltas
+}
+
+fn is_freeze_latch_switch(sw: &ControlSwitchSpec) -> bool {
+    sw.calibration
+        .as_ref()
+        .is_some_and(|c| c.role == ControlCalibrationRole::FreezeLatch)
 }
 
 fn is_gain_like_control(r: &ControlRangeSpec) -> bool {
@@ -908,5 +925,45 @@ mod tests {
                 "missing dual-engine morph corner stem {expected_id}"
             );
         }
+    }
+
+    #[test]
+    fn planner_skips_freeze_latch_switches_in_static_capture_plan() {
+        use dnam_engine::schema::ControlCalibration;
+        use std::collections::BTreeMap;
+
+        let mut model = sample_model();
+        model.switches.push(ControlSwitchSpec {
+            id: "freeze".to_string(),
+            label: "Freeze".to_string(),
+            options: vec![
+                ControlSwitchOptionSpec {
+                    index: 0,
+                    label: "Off".to_string(),
+                },
+                ControlSwitchOptionSpec {
+                    index: 1,
+                    label: "Latch".to_string(),
+                },
+            ],
+            default_index: 0,
+            calibration: Some(ControlCalibration {
+                role: ControlCalibrationRole::FreezeLatch,
+                lobatto_physical_anchors: None,
+                conditional_physical_anchors: BTreeMap::new(),
+                tempo_sync_default_subdivision: None,
+            }),
+        });
+        let plan = build_capture_plan(&model, true);
+        assert!(
+            !plan.steps.iter().any(|s| s.stem_id.contains("freeze")),
+            "FreezeLatch switch should not schedule static stem_switch_freeze_* stems"
+        );
+        assert!(
+            plan.steps
+                .iter()
+                .all(|s| s.switches.get("freeze") == Some(&0)),
+            "all static stems should keep FreezeLatch at default_index"
+        );
     }
 }

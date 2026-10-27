@@ -1,10 +1,10 @@
-# Core 2: Unified Stereo In-Loop Diffusive Modulated Unitary FDN (`M-UFDN`)
+# Core 2: Unified Stereo In-Loop Diffusive Modulated & Windowed Time-Warped Unitary FDN (`M-UFDN` / `WT-UFDN`)
 
-Core 2 models all time-varying delay, modulation, spatial, dispersion, and reverberant phenomena within a single unified **Modulated Unitary Feedback Delay Network (`M-UFDN`)** with $M = 4$ (`Lite`) or $M = 8$ (`Full` & `Ultra`) `fp16` delay lines and a shared-buffer 8-tap early reflection & 64-sample Through-Zero Flanger reference tap:
+Core 2 models all time-varying delay, modulation, spatial, dispersion, reverberant, **granular synthesis / pitch-shimmer**, and **infinite spectral freeze** phenomena within a single mode-free **Windowed Time-Warped Modulated Unitary Feedback Delay Network (`M-UFDN` / `WT-UFDN`)** with $M = 4$ (`Lite`) or $M = 8$ (`Full` & `Ultra`) `fp16` delay lines and a shared-buffer 8-tap early reflection & 64-sample Through-Zero Flanger reference tap:
 
 - **Micro Horizon ($0.2\text{--}8\text{ ms}$):** True Through-Zero Flanging ($\Delta\tau = 0.0\text{ ms}$), Resonant Jet Flanging, and Double-Tracking Comb Filters.
 - **Short Horizon ($8\text{--}45\text{ ms}$):** Quadrature Stereo Chorus, 3D Leslie Rotary Doppler Pitch Shift, Vibrato, and Slapback Doubling.
-- **Long Horizon ($45\text{--}500+\text{ ms}$):** Analog BBD/Tape Echo (with Wow/Flutter & Self-Oscillation), Ping-Pong Stereo Delay, Dispersive Spring Reverb "Drip", and Lush Modulated Hall/Plate Reverb.
+- **Long Horizon ($45\text{--}5,000+\text{ ms}$):** Analog BBD/Tape Echo (with Wow/Flutter & Self-Oscillation), Ping-Pong Stereo Delay, Dispersive Spring Reverb "Drip", Lush Modulated Hall/Plate Reverb, **Asynchronous Granular Clouds, Octave/Fifth Shimmer Pitch-Shifting, Reverse/Micro-Looper Grains, and Infinite Unitary Spectral Freeze (`Hold` / `Sustain`)**.
 
 ---
 
@@ -77,3 +77,44 @@ $$v_{\text{sat},m}[n] = \operatorname{clamp}\!\left(\frac{2}{3 V_{\text{ceil},m}
 Before the final wet/dry stereo mixer, the $3\text{ kHz}$ Control Bus applies a multiplicative stereo amplitude modulator:
 $$A_L[n] = \operatorname{clamp}\!\big(1.0 + \mathbf{w}_{\text{trem},L}^\top \mathbf{m}[n],\; 0.0,\; 2.0\big), \qquad A_R[n] = \operatorname{clamp}\!\big(1.0 + \mathbf{w}_{\text{trem},R}^\top \mathbf{m}[n],\; 0.0,\; 2.0\big)$$
 When paired with Core 1B's crossover poles and Core 2's quadrature Doppler delay lines, this models **Optical/Bias Tremolo**, **Brownface Harmonic Tremolo**, **Stereo Panning**, and **3D Leslie Rotary Speaker Horn/Drum Beaming**.
+
+---
+
+## 4. Mode-Free $3\text{ kHz}$ State-Space Windowed Time-Warped Unitary FDN (`WT-UFDN`) & 3-Tier Pre-Head Kronecker Routing
+
+Rather than branching on a discrete mode enum, `Core 2` unifies standard delay/reverb, granular clouds, pitch-shifted shimmer, and infinite spectral freeze into a **single continuous state-space law** modulated at $3\text{ kHz}$ (`16×` decimated) by the 8-element control-bus state $\mathbf{q}_8[k] = [z_{\text{head},0..3},\; l_{\text{lfo},0},\; l_{\text{lfo},1},\; e_{\text{sustain}},\; \Delta e_{\text{onset}}]^\top$ via the `8 × 32` (`1,024 B`) projection matrix $\mathbf{W}_{\text{ctrl,core2}}$ at `bytes 9216..10240` of `Arena 0`:
+$$\boldsymbol{\theta}_{\text{core2}}[k] = \boldsymbol{\theta}_{\text{core2},0} + \mathbf{W}_{\text{ctrl,core2}}^\top \mathbf{q}_8[k] \in \mathbb{R}^{32}$$
+
+### 4.1 Self-Activating Dual-Tap Complementary Hermite-Hann Grain Reader (`0 FDIV`, `0 FSQRT`, `0 libm`)
+Each FDN delay line $m \in \{0 \dots M-1\}$ maintains a wrapped grain phase $\phi_{A,m}[n] \in [0, 1)$ with half-period companion $\phi_{B,m}[n] = (\phi_{A,m}[n] + 0.5) - \lfloor \phi_{A,m}[n] + 0.5 \rfloor$:
+$$\phi_{A,m}[n] = \operatorname{frac}\!\Big(\phi_{A,m}[n-1] + \Delta\phi_{\text{grain},m}[k]\Big), \qquad \Delta\phi_{\text{grain},m}[k] = \frac{\max(|\nu_m[k]|,\; 0.25)}{L_{\text{grain},m}[k]}$$
+where $\nu_m[k] = 1 - 2^{\Delta p_m / 12} \in [-2, +2]$ is the time-warp / pitch-shift rate ($\nu_m = 0 \implies$ un-warped; $\nu_m = -1 \implies +12\text{ st}$ octave-up shimmer; $\nu_m = +0.5 \implies -12\text{ st}$ octave-down; $\nu_m = +2.0 \implies$ reverse grain).
+
+1. **Exact Partition-of-Unity Algebraic Hermite-Hann Window ($H(\phi_A) + H(\phi_B) \equiv 1.000000$):**
+   Let $u_{A,m} = 1 - |2\phi_{A,m}[n] - 1| \in [0, 1]$ Be the triangle phase on $[0, 1]$. The cubic Hermite polynomial:
+   $$H(\phi_{A,m}) = u_{A,m}^2\big(3 - 2u_{A,m}\big), \qquad H(\phi_{B,m}) \equiv 1.0 - H(\phi_{A,m})$$
+   satisfies $H(0) = H(1) = 0$, $H(0.5) = 1$, $H'(0) = H'(0.5) = H'(1) = 0$, and **exact partition of unity $H(\phi_A) + H(\phi_B) \equiv 1.000000$ at every sample $n$** (`3` scalar `FMLA`s, `0` cosine LUTs).
+2. **Self-Activating Continuous Window Depth ($\kappa_{\text{win},m}[k] \in [0, 1]$):**
+   At each $3\text{ kHz}$ tick, line $m$'s window depth self-activates from the learned/modulated time-warp rate $|\nu_m[k]|$ and grain spray $\sigma_{\text{spray}}[k]$:
+   $$\kappa_{\text{win},m}[k] = \operatorname{clamp}\!\Big(\max\!\big(\kappa_{\text{win,base}}[k],\; 64.0\,|\nu_m[k]|,\; 0.25\,\sigma_{\text{spray}}[k]\big),\; 0.0,\; 1.0\Big)$$
+   $$w_{A,m}[n] = 1 - \kappa_{\text{win},m}[k]\big(1 - H(\phi_{A,m}[n])\big), \qquad w_{B,m}[n] = \kappa_{\text{win},m}[k]\big(1 - H(\phi_{A,m}[n])\big)$$
+   - When $\kappa_{\text{win},m}[k] \le 10^{-5}$ ($\nu_m = 0$ and $\sigma_{\text{spray}} = 0$), $w_{A,m} \equiv 1, w_{B,m} \equiv 0$, so **Tap B is completely skipped (`0` extra $48\text{ kHz}$ delay reads on standard delays/reverbs)**.
+   - Whenever $|\nu_m[k]| > 0$ or $\sigma_{\text{spray}}[k] > 0$, $\kappa_{\text{win},m}[k] \to 1.0$ smoothly crossfades Tap A ($\tau_{A,m}$) and Tap B ($\tau_{B,m}$, with per-wrap deterministic xorshift32 spray jitter $\delta_{A/B,m} \in [-\sigma_{\text{spray}}, +\sigma_{\text{spray}}]$ when $H(\phi) < 10^{-4}$).
+
+### 4.2 Continuous `grain_feedback_mix` ($\kappa_{\text{fb}} \in [0, 1]$) & Unitary Spectral Freeze ($\alpha_{\text{freeze}} \in [0, 1]$)
+1. **Decoupling Tank Feedback from Warped Grain Readout ($\kappa_{\text{fb}} \in [0, 1]$):**
+   Let $\kappa_{\text{fb,eff}}[n] = \kappa_{\text{fb}}[k]\cdot\big(1 - \alpha_{\text{freeze}}[n]\big)$. The signal entering the in-loop Schroeder all-pass and orthogonal feedback matrix $\mathbf{U}(\psi, \mathbf{v})$ is:
+   $$d_{\text{loop},m}[n] = \big(1 - \kappa_{\text{fb,eff}}[n]\big)\, d_{\text{base},m}[n] + \kappa_{\text{fb,eff}}[n]\, d_{\text{grain},m}[n]$$
+   - **$\kappa_{\text{fb}} = 0.0$:** The tank feedback loop remains un-warped while `d_grain` reads pitched/windowed grains from the tank, enabling clean pitch-shifting and **real-time `GrainSizeMs` / `GrainPitchSemitones` / `GrainSpray` scrubbing over a Frozen buffer** without runaway pitch compounding.
+   - **$\kappa_{\text{fb}} > 0.0$:** Feeds warped grains back into the unitary tank for **recursive Shimmer Reverb cascades** ($+12\text{ st} \to +24\text{ st} \to \dots$), automatically scaled by $1 - \alpha_{\text{freeze}}[n]$ so engaging Freeze preserves a strictly unitary single-tap tank.
+2. **Continuous & Latching Unitary Spectral Freeze ($\alpha_{\text{freeze}} \in [0, 1]$):**
+   Driven by a `ControlCalibrationRole::FreezeLatch` switch/knob or [`DnamEngine::set_freeze`](../packages/engine/src/engine.rs), $\alpha_{\text{freeze}}[n] \in [0, 1]$ slews input injection to $(1 - \alpha_{\text{freeze}}[n])\mathbf{u}_{\text{in}}[n]$ and interpolates the loop gain $g_{\text{lin},m}$ onto the coercive limit-cycle sphere (`1.0035`, bounded by $V_{\text{ceil},m} \le 0.985$, `CL-10`–`CL-11`). When `io_config.capabilities.freeze_mutes_dry == false` (default **Sound-on-Sound** mode), live dry + `Core 1` solo notes continue playing over the infinite frozen `Core 2` pad.
+
+### 4.3 3-Tier (`Lite` / `Full` / `Ultra`) Pre-Head Kronecker Routing + Direct Stereo Wet Sum (`0` Extra $48\text{ kHz}$ MACs)
+Whenever `core2.active` is `true`, `ModulatedUfdn` exposes 12 channels across 3 4-lane groups (`latest_ap_out: [[f32; 4]; 3]`):
+- **Group 0 (`latest_ap_out[0]`, lines `0..3`):** Injected into `Lite` (`h0`, `64` taps) via `head_tap_inject_gain` before pushing into the 16-tap `Lite` delay buffer.
+- **Group 1 (`latest_ap_out[1]`, lines `4..7`):** Injected into `Full` (`h1`, `128` taps) before pushing into the 16-tap `Full` delay buffer.
+- **Group 2 (`latest_ap_out[2]`, cross-diffused post-Givens + early-reflection/grain taps):** Injected into `Ultra` (`h2`, `192` taps) before pushing into the 16-tap `Ultra` delay buffer.
+
+Evaluating the existing 16-tap `192-D` Kronecker Head $\mathbf{W}_{\text{head}}(\mathbf{z}_{\text{head}})$ on those combined features—summed with `Core 2`'s direct stereo wet output (`c2[0..1]`)—gives every `Core 2` line a **learned 16-tap stereo FIR + Rank-4 control-dependent tone/post-filter** with **`0` extra $48\text{ kHz}$ MACs**!
+

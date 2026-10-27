@@ -282,9 +282,16 @@ pub struct ModelCapabilities {
     /// `true` if spillover bypass (`DnamEngine::set_bypass(true, true)`) is supported.
     #[serde(default)]
     pub supports_trails: bool,
-    /// `true` if one or more controls in `controls_schema` carry `DelayTimeMs` or `LfoRateHz` calibration for MIDI tempo sync.
+    /// `true` if one or more controls in `controls_schema` carry `DelayTimeMs`, `GrainSizeMs`, or `LfoRateHz` calibration for MIDI tempo sync.
     #[serde(default)]
     pub tempo_sync_capable: bool,
+    /// `true` if unitary spectral freeze (`DnamEngine::set_freeze(true)` or `FreezeLatch` control) is supported.
+    #[serde(default)]
+    pub supports_freeze: bool,
+    /// `true` if engaging spectral freeze also mutes the live dry/Core 1 signal path (stutter/hold replacement);
+    /// `false` (default) allows "Sound-on-Sound" playing over the frozen Core 2 pad.
+    #[serde(default)]
+    pub freeze_mutes_dry: bool,
 }
 
 impl Default for ModelCapabilities {
@@ -295,6 +302,8 @@ impl Default for ModelCapabilities {
             wet_polarity_inverted: false,
             supports_trails: false,
             tempo_sync_capable: false,
+            supports_freeze: false,
+            freeze_mutes_dry: false,
         }
     }
 }
@@ -665,7 +674,7 @@ pub struct StemProvenance {
 }
 
 /// Extracted Stage-1 physical system-identification anchors for a stem.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct ExtractedPhysics {
     /// Extracted FDN delay times in milliseconds.
     #[serde(default)]
@@ -676,6 +685,12 @@ pub struct ExtractedPhysics {
     /// Extracted per-line linear feedback decay gains.
     #[serde(default)]
     pub decay_gains_lin: Vec<f32>,
+    /// Extracted grain window length in milliseconds (`0.0` when un-windowed).
+    #[serde(default)]
+    pub detected_grain_size_ms: f32,
+    /// Extracted dominant pitch-shift interval in semitones (`0.0` when un-pitched).
+    #[serde(default)]
+    pub detected_pitch_shift_semitones: f32,
 }
 
 /// `.dnam-ckpt` 3-phase control clamp audit report and actionable stem prescriptions.

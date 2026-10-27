@@ -108,6 +108,26 @@ class ArenaWeightLayout:
             dtype=np.float32,
         )
     )
+    # 8 WT-UFDN grain lengths (samples): (8,)
+    mufdn_grain_len_8: NDArray[np.float32] = field(
+        default_factory=lambda: np.full(8, 2048.0, dtype=np.float32)
+    )
+    # 8 WT-UFDN grain warp rates (nu = 1 - 2^(st/12)): (8,)
+    mufdn_grain_warp_8: NDArray[np.float32] = field(
+        default_factory=lambda: np.zeros(8, dtype=np.float32)
+    )
+    # Group 0 WT-UFDN grain meta: [window_mix, spray_samples, feedback_mix, head_tap_inject_gain]
+    mufdn_grain_meta_0: NDArray[np.float32] = field(
+        default_factory=lambda: np.array([0.0, 0.0, 0.0, 0.1], dtype=np.float32)
+    )
+    # Group 1 WT-UFDN grain metadata: [freeze_alpha_default, 0.0, onset_sync_thresh, 0.0]
+    mufdn_grain_meta_1: NDArray[np.float32] = field(
+        default_factory=lambda: np.zeros(4, dtype=np.float32)
+    )
+    # 3 kHz Core 2 state-space modulation matrix W_ctrl_core2: (8, 32) at 9216..10240
+    w_ctrl_core2_8x32: NDArray[np.float32] = field(
+        default_factory=lambda: np.zeros((8, 32), dtype=np.float32)
+    )
 
     def to_arena012_bytes(self) -> bytes:
         """Packs all fields into a 64-byte aligned `36,224 B` `Arena 0..2` byte buffer."""
@@ -170,12 +190,19 @@ class ArenaWeightLayout:
         for tier, off in enumerate(head_offsets):
             write_f32_slice(off, self.w_head_tiers[tier].ravel())
 
-        # 4. M-UFDN base delays (4 in Arena 0 at 6784, 4 in Arena 1 at 20544)
+        # 4. M-UFDN base delays & WT-UFDN grain weights (Arena 0: 6784..7040, Arena 1: 20544..20800)
         write_f32_slice(6784, self.mufdn_delays_8[:4])
+        write_f32_slice(6784 + 208, self.mufdn_grain_len_8[:4])
+        write_f32_slice(6784 + 224, self.mufdn_grain_warp_8[:4])
+        write_f32_slice(6784 + 240, self.mufdn_grain_meta_0[:4])
         write_f32_slice(20544, self.mufdn_delays_8[4:8])
+        write_f32_slice(20544 + 208, self.mufdn_grain_len_8[4:8])
+        write_f32_slice(20544 + 224, self.mufdn_grain_warp_8[4:8])
+        write_f32_slice(20544 + 240, self.mufdn_grain_meta_1[:4])
 
-        # 5. P_svd (16x4 = 64 floats = 256 B) in Arena 0 at 8960
+        # 5. P_svd (16x4 = 256 B) at 8960 and W_ctrl_core2 (8x32 = 1024 B) at 9216
         write_f32_slice(8960, self.p_svd_16x4.ravel())
+        write_f32_slice(9216, self.w_ctrl_core2_8x32.ravel())
 
         return bytes(buf)
 
@@ -230,8 +257,15 @@ class ArenaWeightLayout:
             layout.w_head_tiers[tier] = read_f32_slice(off, 640).reshape((5, 2, 64))
 
         layout.mufdn_delays_8[:4] = read_f32_slice(6784, 4)
+        layout.mufdn_grain_len_8[:4] = read_f32_slice(6784 + 208, 4)
+        layout.mufdn_grain_warp_8[:4] = read_f32_slice(6784 + 224, 4)
+        layout.mufdn_grain_meta_0[:4] = read_f32_slice(6784 + 240, 4)
         layout.mufdn_delays_8[4:8] = read_f32_slice(20544, 4)
+        layout.mufdn_grain_len_8[4:8] = read_f32_slice(20544 + 208, 4)
+        layout.mufdn_grain_warp_8[4:8] = read_f32_slice(20544 + 224, 4)
+        layout.mufdn_grain_meta_1[:4] = read_f32_slice(20544 + 240, 4)
         layout.p_svd_16x4 = read_f32_slice(8960, 64).reshape((16, 4))
+        layout.w_ctrl_core2_8x32 = read_f32_slice(9216, 256).reshape((8, 32))
         return layout
 
     def with_kronecker_solution(

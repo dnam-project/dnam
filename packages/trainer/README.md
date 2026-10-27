@@ -1,6 +1,6 @@
 # `dnam-trainer` — PyTorch 4-Stage Differentiable Trainer & Headless `dnam-train` Worker
 
-`dnam-trainer` (`dnam-train`) is the 4-Stage differentiable PyTorch trainer, `.dnam-ckpt` SVD-Kronecker iterative solver, and 3-Phase Control-Space Audit worker for **Dynamic Neural Audio Modeler (DNAM / "Tri-Physics")**.
+`dnam-trainer` (`dnam-train`) is the 4-Stage differentiable PyTorch trainer (`Core 1` LTI + 3-Stage Selective Cascade & `Core 2` Mode-Free `WT-UFDN` with 3-Tier Pre-Head Kronecker Routing), `.dnam-ckpt` SVD-Kronecker iterative solver, and 3-Phase Control-Space Audit worker for **Dynamic Neural Audio Modeler (DNAM / "Tri-Physics")**.
 
 It is installed and invoked automatically by the native **`dnam` CLI & Tauri Desktop Studio (`packages/studio`)**:
 

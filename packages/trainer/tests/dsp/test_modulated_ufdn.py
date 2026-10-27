@@ -13,6 +13,7 @@ from dnam_trainer.dsp.modulated_ufdn import (
     cubic_lagrange_read_torch,
     dual_pointer_switch_crossfade_torch,
     givens_householder_matrix_torch,
+    hermite_hann_grain_read_torch,
 )
 
 
@@ -85,3 +86,48 @@ def test_differentiable_modulated_ufdn_forward_bypass_and_reference() -> None:
         DifferentiableModulatedUfdn(num_lines=4, r_dc=0.5)
     with pytest.raises(IndexError):
         ufdn.to_reference_dsp(line=99)
+
+
+def test_wt_ufdn_hermite_hann_grain_read_and_12ch_tank_lines() -> None:
+    sig = torch.sin(torch.linspace(0.0, 20.0, 256, dtype=torch.float64)).unsqueeze(0)
+    # Zero warp and zero window mix collapses to base delay read
+    y_unwarped = hermite_hann_grain_read_torch(
+        sig,
+        16.0,
+        grain_len_samples=64.0,
+        warp_rate=0.0,
+        window_mix=0.0,
+        spray_samples=0.0,
+    )
+    y_base = cubic_lagrange_read_torch(sig, 16.0)
+    assert torch.allclose(y_unwarped, y_base)
+
+    # Active octave-up shimmer warp (+1.0) with complementary Hann crossfade
+    y_warped = hermite_hann_grain_read_torch(
+        sig,
+        16.0,
+        grain_len_samples=64.0,
+        warp_rate=1.0,
+        window_mix=1.0,
+        spray_samples=2.0,
+    )
+    assert y_warped.shape == sig.shape
+    assert torch.all(torch.isfinite(y_warped))
+    assert not torch.allclose(y_warped, y_base)
+
+    ufdn = DifferentiableModulatedUfdn(num_lines=8, active=True, dtype=torch.float64)
+    with torch.no_grad():
+        ufdn.grain_warp_rate.fill_(0.5)
+        ufdn.grain_window_mix.fill_(0.8)
+    x_st = torch.randn((1, 2, 128), dtype=torch.float64)
+    tank_12, wet_2 = ufdn.forward_tank_lines(x_st, freeze_amount=0.5)
+    assert tank_12.shape == (1, 12, 128)
+    assert wet_2.shape == (1, 2, 128)
+    assert torch.all(torch.isfinite(tank_12))
+    assert torch.all(torch.isfinite(wet_2))
+
+    # Inactive ufdn forward_tank_lines pads 12 channels
+    ufdn_off = DifferentiableModulatedUfdn(num_lines=4, active=False, dtype=torch.float64)
+    tank_off, wet_off = ufdn_off.forward_tank_lines(x_st)
+    assert tank_off.shape == (1, 12, 128)
+    assert torch.equal(wet_off, x_st)

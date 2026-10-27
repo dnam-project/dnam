@@ -74,6 +74,90 @@ def cubic_lagrange_read_torch(
     )
 
 
+def hermite_hann_grain_read_torch(
+    signal: Tensor,
+    tau_base_samples: Tensor | float,
+    *,
+    grain_len_samples: Tensor | float = 2048.0,
+    warp_rate: Tensor | float = 0.0,
+    window_mix: Tensor | float | None = None,
+    spray_samples: float = 0.0,
+    phase_offset: float = 0.0,
+) -> Tensor:
+    """Self-Activating Dual-Tap Complementary Hermite-Hann Grain Reader (`0 FDIV`, `0 FSQRT`).
+
+    Evaluates:
+    - $\\phi_A[n] = (\\phi_0 + n \\cdot \\max(|\\nu|, 0.25) / L_{\\text{grain}}) \\bmod 1$,
+      $\\phi_B[n] = (\\phi_A[n] + 0.5) \\bmod 1$.
+    - Algebraic Hermite-Hann window $H(\\phi) = u^2(3 - 2u)$ for $u = 1 - |2\\phi - 1|$, which
+      satisfies exact partition of unity $H(\\phi_A) + H(\\phi_B) \\equiv 1.000000$.
+    - Self-activating window depth:
+      $\\kappa_{\\text{win}} = \\operatorname{clamp}(\\max(\\kappa_{0}, 64|\\nu|), 0, 1)$.
+    """
+    seq_len = signal.shape[-1]
+    dtype = signal.dtype
+    device = signal.device
+
+    tau_b = (
+        torch.full(signal.shape, float(tau_base_samples), dtype=dtype, device=device)
+        if isinstance(tau_base_samples, (int, float))
+        else tau_base_samples.to(dtype=dtype, device=device).expand(signal.shape)
+    )
+    g_len = (
+        torch.full(signal.shape, max(16.0, float(grain_len_samples)), dtype=dtype, device=device)
+        if isinstance(grain_len_samples, (int, float))
+        else torch.clamp(
+            grain_len_samples.to(dtype=dtype, device=device).expand(signal.shape), min=16.0
+        )
+    )
+    nu = (
+        torch.full(signal.shape, float(warp_rate), dtype=dtype, device=device)
+        if isinstance(warp_rate, (int, float))
+        else torch.clamp(warp_rate.to(dtype=dtype, device=device).expand(signal.shape), -2.0, 2.0)
+    )
+    if window_mix is None:
+        k_base = torch.zeros_like(nu)
+    elif isinstance(window_mix, (int, float)):
+        k_base = torch.full_like(nu, float(window_mix))
+    else:
+        k_base = window_mix.to(dtype=dtype, device=device).expand(signal.shape)
+    k_win = torch.clamp(
+        torch.maximum(
+            k_base, torch.maximum(64.0 * nu.abs(), torch.full_like(nu, 0.25 * abs(spray_samples)))
+        ),
+        0.0,
+        1.0,
+    )
+
+    if float(k_win.max().detach().cpu().item()) <= 1e-6:
+        return cubic_lagrange_read_torch(signal, tau_b)
+
+    step = torch.clamp(torch.maximum(nu.abs(), torch.full_like(nu, 0.25)) / g_len, max=0.25)
+    t_idx = torch.arange(seq_len, dtype=dtype, device=device)
+    phi_a = torch.remainder(float(phase_offset) + step * t_idx, 1.0)
+    phi_b = torch.remainder(phi_a + 0.5, 1.0)
+
+    u_a = 1.0 - (2.0 * phi_a - 1.0).abs()
+    h_a = u_a * u_a * (3.0 - 2.0 * u_a)
+    w_a = 1.0 - k_win * (1.0 - h_a)
+    w_b = k_win * (1.0 - h_a)
+
+    span = torch.where(nu >= 0.0, nu * g_len, -nu * g_len)
+    tau_a = torch.where(
+        nu >= 0.0,
+        tau_b + phi_a * span,
+        tau_b + (1.0 - phi_a) * span,
+    )
+    tau_b_tap = torch.where(
+        nu >= 0.0,
+        tau_b + phi_b * span,
+        tau_b + (1.0 - phi_b) * span,
+    )
+    d_a = cubic_lagrange_read_torch(signal, tau_a)
+    d_b = cubic_lagrange_read_torch(signal, tau_b_tap)
+    return w_a * d_a + w_b * d_b
+
+
 def dual_pointer_switch_crossfade_torch(
     signal: Tensor,
     tau_old: float,
@@ -238,6 +322,16 @@ class DifferentiableModulatedUfdn(nn.Module):
         self.wet_mix = nn.Parameter(torch.tensor(0.25, dtype=dtype))
         self.tzf_mix = nn.Parameter(torch.tensor(0.0, dtype=dtype))
 
+        # WT-UFDN Windowed Time-Warp & Unitary Spectral Freeze parameters
+        self.grain_len_samples = nn.Parameter(torch.full((num_lines,), 2048.0, dtype=dtype))
+        self.grain_warp_rate = nn.Parameter(torch.zeros(num_lines, dtype=dtype))
+        self.grain_window_mix = nn.Parameter(torch.tensor(0.0, dtype=dtype))
+        self.grain_spray_samples = nn.Parameter(torch.tensor(0.0, dtype=dtype))
+        self.grain_feedback_mix = nn.Parameter(torch.tensor(0.0, dtype=dtype))
+        self.head_tap_inject_gain = nn.Parameter(torch.tensor(0.10, dtype=dtype))
+        self.freeze_alpha_default = nn.Parameter(torch.tensor(0.0, dtype=dtype))
+        self.onset_sync_thresh = nn.Parameter(torch.tensor(0.0, dtype=dtype))
+
     def clamped_loop_params(self) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
         """Enforces `CL-06`, `CL-08`, `CL-10`, and `CL-11` on learned Core 2 parameters."""
         taus = torch.clamp(self.delay_samples, min=4.0)
@@ -247,29 +341,44 @@ class DifferentiableModulatedUfdn(nn.Module):
         a_diff = 0.75 * torch.tanh(self.a_diff_raw)
         return taus, g_lin, sig_k, v_ceil, a_diff
 
-    def forward(
+    def clamped_grain_params(self) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
+        """Returns clamped `(grain_len_samples, grain_warp_rate, grain_window_mix,
+        grain_spray_samples, grain_feedback_mix)` for `WT-UFDN` export (`CL-06`).
+        """
+        grain_len = torch.clamp(self.grain_len_samples, min=16.0, max=65536.0)
+        grain_warp = torch.clamp(self.grain_warp_rate, min=-2.0, max=2.0)
+        win_mix = torch.clamp(self.grain_window_mix, min=0.0, max=1.0)
+        spray = torch.clamp(self.grain_spray_samples, min=0.0, max=512.0)
+        fb_mix = torch.clamp(self.grain_feedback_mix, min=0.0, max=1.0)
+        return grain_len, grain_warp, win_mix, spray, fb_mix
+
+    def forward_tank_lines(
         self,
         stereo_in: Tensor,
         *,
         delta_delay_samples: Tensor | None = None,
         delta_g_lin: Tensor | None = None,
-        lfo_beam_gain: Tensor | None = None,
-    ) -> Tensor:
-        """Processes `stereo_in` of shape `(B, 2, L)` or `(2, L)` through Core 2 `M-UFDN`."""
+        freeze_amount: float = 0.0,
+    ) -> tuple[Tensor, Tensor]:
+        """Evaluates the `WT-UFDN` tank and returns `(tank_12ch_b_12_l, wet_stereo_b_2_l)` where
+        `tank_12ch_b_12_l` has 12 channels (`[0:4]` Lite Group 0, `[4:8]` Full Group 1, `[8:12]`
+        cross-diffused + grain taps for Ultra) for 3-Tier Pre-Head Kronecker Routing.
+        """
         squeeze_batch = stereo_in.ndim == 2
         inp = stereo_in.unsqueeze(0) if squeeze_batch else stereo_in
         if inp.ndim != 3 or inp.shape[1] != 2:
             raise ValueError(f"Expected stereo input (B, 2, L), got {tuple(stereo_in.shape)}")
 
+        bsz, _, seq_len = inp.shape
         if not self.active:
-            return stereo_in
+            z12 = torch.zeros((bsz, 12, seq_len), dtype=inp.dtype, device=inp.device)
+            return z12, inp
 
         work_dtype = torch.float64 if inp.dtype == torch.float64 else torch.float32
         dev_type = inp.device.type if inp.device.type in ("cuda", "cpu", "mps") else "cpu"
 
         with torch.autocast(device_type=dev_type, enabled=False):
             x_st = inp.to(dtype=work_dtype)
-            bsz, _, seq_len = x_st.shape
             taus, g_lin, sig_k, v_ceil, _ = self.clamped_loop_params()
             taus = taus.to(dtype=work_dtype)
             g_lin = g_lin.to(dtype=work_dtype)
@@ -281,6 +390,10 @@ class DifferentiableModulatedUfdn(nn.Module):
             if delta_g_lin is not None:
                 g_lin = torch.clamp(g_lin + delta_g_lin.to(dtype=work_dtype), 0.0, 0.9990)
 
+            alpha_frz = max(0.0, min(1.0, float(freeze_amount)))
+            if alpha_frz > 1e-5:
+                g_lin = g_lin + alpha_frz * (1.0 - g_lin)
+
             u_mat = givens_householder_matrix_torch(
                 self.psi_rad.to(dtype=work_dtype),
                 self.v_householder.to(dtype=work_dtype),
@@ -289,11 +402,9 @@ class DifferentiableModulatedUfdn(nn.Module):
                 device=x_st.device,
             )
 
-            # Expand stereo input (B, 2, L) into M lines (B, M, L)
             repeats = self.num_lines // 2
-            u_inj = x_st.repeat(1, repeats, 1)
+            u_inj = x_st.repeat(1, repeats, 1) * (1.0 - alpha_frz)
 
-            # Causal-Block Wavefront Unrolling: block size B_causal <= min(floor(tau_m)) - 2
             min_tau_int = max(4, int(torch.floor(torch.min(taus)).detach().cpu().item()))
             max_tau_int = int(torch.ceil(torch.max(taus)).detach().cpu().item()) + 4
             b_causal = max(2, min(256, min_tau_int - 2))
@@ -331,11 +442,9 @@ class DifferentiableModulatedUfdn(nn.Module):
                 s_p2 = torch.gather(hist_win, -1, base_pos - 2)
                 delayed_blk = w_m1 * s_m1 + w_0 * s_0 + w_p1 * s_p1 + w_p2 * s_p2
 
-                # Orthogonal stereo mixing U(psi, v) across M lines
                 mixed_blk = torch.einsum("mn,bnl->bml", u_mat, delayed_blk)
                 u_loop = mixed_blk + u_inj[:, :, t0:t1]
 
-                # Passband-normalized DC coupling & Coercive-Saturating Lyapunov loop law
                 y_dc = alpha_dc * (u_loop - u_loop.mean(dim=-1, keepdim=True) * (1.0 - self.r_dc))
                 ratio = y_dc.abs() / sig_v
                 g_eff = g_v / (1.0 + ratio * ratio)
@@ -351,18 +460,82 @@ class DifferentiableModulatedUfdn(nn.Module):
                 if out_blocks
                 else torch.zeros((bsz, self.num_lines, 0), dtype=work_dtype, device=x_st.device)
             )
-            even_sum = fdn_lines[:, 0::2, :].mean(dim=1)
-            odd_sum = fdn_lines[:, 1::2, :].mean(dim=1)
+
+            # Evaluate self-activating Hermite-Hann grain tap on fdn_lines when warped/windowed
+            g_len = torch.clamp(self.grain_len_samples.to(dtype=work_dtype), min=16.0).view(
+                1, self.num_lines, 1
+            )
+            warp_r = torch.clamp(self.grain_warp_rate.to(dtype=work_dtype), -2.0, 2.0).view(
+                1, self.num_lines, 1
+            )
+            win_m = torch.clamp(self.grain_window_mix.to(dtype=work_dtype), 0.0, 1.0)
+            grain_lines = hermite_hann_grain_read_torch(
+                fdn_lines,
+                16.0,
+                grain_len_samples=g_len,
+                warp_rate=warp_r,
+                window_mix=win_m,
+            )
+
+            if self.num_lines == 8:
+                ch_lite = grain_lines[:, 0:4, :]
+                ch_full = grain_lines[:, 4:8, :]
+                mixed_all = torch.einsum("mn,bnl->bml", u_mat, fdn_lines)
+                ch_ultra = 0.5 * (
+                    torch.cat([mixed_all[:, 0:2, :], mixed_all[:, 6:8, :]], dim=1)
+                    + torch.cat([grain_lines[:, 0:2, :], grain_lines[:, 6:8, :]], dim=1)
+                )
+            else:
+                ch_lite = grain_lines[:, 0:4, :]
+                ch_full = grain_lines[:, 0:4, :]
+                mixed_all = torch.einsum("mn,bnl->bml", u_mat, fdn_lines)
+                ch_ultra = 0.5 * (mixed_all + grain_lines)
+
+            tank_12ch = torch.cat([ch_lite, ch_full, ch_ultra], dim=1)
+            even_sum = grain_lines[:, 0::2, :].mean(dim=1)
+            odd_sum = grain_lines[:, 1::2, :].mean(dim=1)
             wet_stereo = torch.stack([even_sum, odd_sum], dim=1)
 
+        return tank_12ch.to(dtype=inp.dtype), wet_stereo.to(dtype=inp.dtype)
+
+    def forward(
+        self,
+        stereo_in: Tensor,
+        *,
+        delta_delay_samples: Tensor | None = None,
+        delta_g_lin: Tensor | None = None,
+        lfo_beam_gain: Tensor | None = None,
+        freeze_amount: float = 0.0,
+    ) -> Tensor:
+        """Processes `stereo_in` of shape `(B, 2, L)` or `(2, L)` through Core 2 `WT-UFDN`."""
+        squeeze_batch = stereo_in.ndim == 2
+        inp = stereo_in.unsqueeze(0) if squeeze_batch else stereo_in
+        if inp.ndim != 3 or inp.shape[1] != 2:
+            raise ValueError(f"Expected stereo input (B, 2, L), got {tuple(stereo_in.shape)}")
+
+        if not self.active:
+            return stereo_in
+
+        work_dtype = torch.float64 if inp.dtype == torch.float64 else torch.float32
+        dev_type = inp.device.type if inp.device.type in ("cuda", "cpu", "mps") else "cpu"
+
+        _, wet_stereo = self.forward_tank_lines(
+            inp,
+            delta_delay_samples=delta_delay_samples,
+            delta_g_lin=delta_g_lin,
+            freeze_amount=freeze_amount,
+        )
+        with torch.autocast(device_type=dev_type, enabled=False):
+            x_st = inp.to(dtype=work_dtype)
+            wet_st = wet_stereo.to(dtype=work_dtype)
             if lfo_beam_gain is not None:
-                wet_stereo = wet_stereo * lfo_beam_gain.to(dtype=work_dtype)
+                wet_st = wet_st * lfo_beam_gain.to(dtype=work_dtype)
 
             # CL-06: 64-sample Through-Zero Flanging (TZF) dry reference tap
             dry_tzf = cubic_lagrange_read_torch(x_st, self.tzf_reference_tap_samples)
             w_mix = torch.tanh(self.wet_mix.to(dtype=work_dtype))
             t_mix = torch.tanh(self.tzf_mix.to(dtype=work_dtype))
-            y_out = x_st + t_mix * (dry_tzf - x_st) + w_mix * wet_stereo
+            y_out = x_st + t_mix * (dry_tzf - x_st) + w_mix * wet_st
 
         out = y_out.to(dtype=inp.dtype)
         return out.squeeze(0) if squeeze_batch else out
@@ -390,4 +563,5 @@ __all__ = [
     "cubic_lagrange_weights_torch",
     "dual_pointer_switch_crossfade_torch",
     "givens_householder_matrix_torch",
+    "hermite_hann_grain_read_torch",
 ]

@@ -100,6 +100,12 @@ pub struct CaptureSettings {
     /// Optional explicit override for spillover bypass trails support.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub supports_trails: Option<bool>,
+    /// Optional explicit override for continuous / latching spectral freeze (`WT-UFDN`) support.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supports_freeze: Option<bool>,
+    /// Whether engaging freeze mutes dry/Core-1 feed into the output (`false` = Sound-on-Sound).
+    #[serde(default)]
+    pub freeze_mutes_dry: bool,
 }
 
 impl Default for CaptureSettings {
@@ -118,6 +124,8 @@ impl Default for CaptureSettings {
             blend_mode: "auto".to_string(),
             default_blend: 1.0,
             supports_trails: None,
+            supports_freeze: None,
+            freeze_mutes_dry: false,
         }
     }
 }
