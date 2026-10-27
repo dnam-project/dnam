@@ -378,6 +378,95 @@ mod tests {
         .expect("run with mock worker");
         assert!(out_worker.contains("Trained model 'm1'"));
 
+        // Explicit model_id selection
+        let out_explicit = run_train(
+            &dir,
+            TrainCommandArgs {
+                model_id: Some("m1".to_string()),
+                unsigned: true,
+                dry_run: true,
+                ..TrainCommandArgs::default()
+            },
+        )
+        .expect("explicit model_id");
+        assert!(out_explicit.contains("Wrote training request JSON for 'm1'"));
+
+        // format_training_event_line coverage across all event types and optional fields
+        let ev_stage = TrainingEventMessage {
+            event: "training_stage".to_string(),
+            payload: serde_json::json!({
+                "stage": 2,
+                "stage_name": "Core1 Hybrid SSM",
+                "message": "Optimizing..."
+            }),
+        };
+        let stage_line = format_training_event_line(&ev_stage).expect("stage line");
+        assert!(stage_line.contains("[Stage 2/4 — Core1 Hybrid SSM] Optimizing..."));
+
+        let ev_step = TrainingEventMessage {
+            event: "training_step".to_string(),
+            payload: serde_json::json!({
+                "stage": 2,
+                "epoch": 5,
+                "total_epochs": 10,
+                "esr_lite_db": -18.5,
+                "esr_full_db": -22.1,
+                "esr_ultra_db": -25.4,
+                "esr_lf_db": -24.0,
+                "esr_mid_db": -26.0,
+                "esr_hf_db": -21.0,
+                "elapsed_sec": 1.2
+            }),
+        };
+        let step_line = format_training_event_line(&ev_step).expect("step line");
+        assert!(step_line.contains("Bands(LF/MF/HF)=-24.00/-26.00/-21.00 dB"));
+
+        for (phase, key) in [
+            (1, "phase1_clamps"),
+            (2, "phase2_rail_warnings"),
+            (3, "phase3_clamps"),
+        ] {
+            let ev_audit = TrainingEventMessage {
+                event: "audit_phase".to_string(),
+                payload: serde_json::json!({
+                    "phase": phase,
+                    "audit_report": { key: [1, 2] }
+                }),
+            };
+            let audit_line = format_training_event_line(&ev_audit).expect("audit line");
+            assert!(audit_line.contains(&format!("Phase {phase}/3 complete (2 clamps/warnings)")));
+        }
+
+        let ev_done = TrainingEventMessage {
+            event: "training_complete".to_string(),
+            payload: serde_json::json!({
+                "model_id": "m1",
+                "esr_lite_db": -20.0,
+                "esr_full_db": -24.0,
+                "esr_ultra_db": -28.0,
+                "esr_lf_db": -25.0,
+                "esr_mid_db": -29.0,
+                "esr_hf_db": -27.0,
+                "mr_stft_db": -19.5,
+                "ltas_rms_tilt_db": 0.12,
+                "ltas_hf_tilt_db": -0.08,
+                "seg_esr_db": -26.4,
+                "core2_active": true,
+                "elapsed_sec": 4.5
+            }),
+        };
+        let done_line = format_training_event_line(&ev_done).expect("done line");
+        assert!(done_line.contains("MR-STFT=-19.50 dB"));
+        assert!(done_line.contains("Tilt(RMS/HF)=0.12/-0.08 dB"));
+        assert!(done_line.contains("SegESR=-26.40 dB"));
+        assert!(done_line.contains("Core2=ON"));
+
+        let ev_unknown = TrainingEventMessage {
+            event: "other_event".to_string(),
+            payload: serde_json::json!({}),
+        };
+        assert!(format_training_event_line(&ev_unknown).is_none());
+
         // Trainer env status / install --dry-run / uninstall
         let st_json = run_trainer_env(&dir, &TrainerAction::Status).expect("status");
         assert!(st_json.contains("venv_dir"));

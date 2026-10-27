@@ -6,8 +6,9 @@ pub mod excitation;
 pub mod wav;
 
 pub use alignment::{
-    AlignmentReport, HotCornerAnalysis, align_hardware_latency, analyze_hot_corner_nonlinearity,
-    apply_subsample_shift_fft, estimate_subsample_lag_and_snr, measure_silent_window_noise_floor,
+    AlignmentReport, HotCornerAnalysis, PostAlignmentVerification, align_hardware_latency,
+    analyze_hot_corner_nonlinearity, apply_subsample_shift_fft, estimate_subsample_lag_and_snr,
+    measure_silent_window_noise_floor, verify_and_polish_post_alignment,
 };
 pub use backends::{
     AtomicF32RingBuffer, AudioDeviceDescriptor, CalibrationResult, CaptureBackend,

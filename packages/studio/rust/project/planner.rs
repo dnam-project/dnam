@@ -298,6 +298,92 @@ pub fn build_capture_plan_with_prescriptions(
                 ));
             }
         }
+
+        // 3c. Resonant Filter (cutoff × reson) high-resonance corners (`(max, max)` -> `(min, max)`)
+        //     followed by Envelope Filter upward auto-wah sweep corner (`(env_amount=max, cutoff=min)`).
+        for (cutoff_ctrl, reson_ctrl) in select_cutoff_resonance_pairs(&model.ranges) {
+            let cutoff_default = default_ranges.get(&cutoff_ctrl.id).copied().unwrap_or(0.5);
+            let reson_default = default_ranges.get(&reson_ctrl.id).copied().unwrap_or(0.5);
+            if (1.0 - reson_default).abs() >= 1e-4 {
+                for &(c_tag, c_val) in &[("max", 1.0_f32), ("min", 0.0_f32)] {
+                    if (c_val - cutoff_default).abs() < 1e-4 {
+                        continue;
+                    }
+                    let mut res_coords = default_ranges.clone();
+                    res_coords.insert(cutoff_ctrl.id.clone(), c_val);
+                    res_coords.insert(reson_ctrl.id.clone(), 1.0);
+                    let res_id = format!(
+                        "stem_corner_{}_{}_{}_max",
+                        cutoff_ctrl.id, c_tag, reson_ctrl.id
+                    );
+                    if !steps.iter().any(|s| s.stem_id == res_id) {
+                        steps.push(make_step(
+                            model,
+                            res_id,
+                            CaptureTier::CornerAnchor,
+                            res_coords,
+                            default_switches.clone(),
+                            None,
+                        ));
+                    }
+                }
+            }
+        }
+
+        for (env_ctrl, cutoff_ctrl) in select_envelope_cutoff_pairs(&model.ranges) {
+            let env_default = default_ranges.get(&env_ctrl.id).copied().unwrap_or(0.5);
+            let cutoff_default = default_ranges.get(&cutoff_ctrl.id).copied().unwrap_or(0.5);
+            if (1.0 - env_default).abs() >= 1e-4 && cutoff_default.abs() >= 1e-4 {
+                let mut env_coords = default_ranges.clone();
+                env_coords.insert(env_ctrl.id.clone(), 1.0);
+                env_coords.insert(cutoff_ctrl.id.clone(), 0.0);
+                let env_id = format!("stem_corner_{}_max_{}_min", env_ctrl.id, cutoff_ctrl.id);
+                if !steps.iter().any(|s| s.stem_id == env_id) {
+                    steps.push(make_step(
+                        model,
+                        env_id,
+                        CaptureTier::CornerAnchor,
+                        env_coords.clone(),
+                        default_switches.clone(),
+                        None,
+                    ));
+                }
+
+                let ballistics_ctrls: Vec<&ControlRangeSpec> = model
+                    .ranges
+                    .iter()
+                    .filter(|r| {
+                        r.id != env_ctrl.id
+                            && r.id != cutoff_ctrl.id
+                            && is_envelope_ballistics_control(r)
+                            && (1.0 - default_ranges.get(&r.id).copied().unwrap_or(0.5)).abs()
+                                >= 1e-4
+                    })
+                    .collect();
+                if !ballistics_ctrls.is_empty() {
+                    let mut slow_coords = env_coords;
+                    let mut suffix = String::new();
+                    for b_ctrl in &ballistics_ctrls {
+                        slow_coords.insert(b_ctrl.id.clone(), 1.0);
+                        suffix.push_str(&format!("_{}_max", b_ctrl.id));
+                    }
+                    let slow_id = format!(
+                        "stem_corner_{}_max_{}_min{suffix}",
+                        env_ctrl.id, cutoff_ctrl.id
+                    );
+                    if !steps.iter().any(|s| s.stem_id == slow_id) {
+                        steps.push(make_step(
+                            model,
+                            slow_id,
+                            CaptureTier::CornerAnchor,
+                            slow_coords,
+                            default_switches.clone(),
+                            None,
+                        ));
+                    }
+                }
+            }
+        }
     }
 
     // 4. Switch throws + Switch x Primary-Gain min/max interaction corners
@@ -330,6 +416,14 @@ pub fn build_capture_plan_with_prescriptions(
     }
     if include_corners && let Some((primary, _)) = corner_pair {
         let primary_default = default_ranges.get(&primary.id).copied().unwrap_or(0.5);
+        let paired_env_cutoff = if is_envelope_amount_control(primary) {
+            model
+                .ranges
+                .iter()
+                .find(|r| r.id != primary.id && is_filter_cutoff_control(r))
+        } else {
+            None
+        };
         for (tag, norm_val) in [("min", 0.0_f32), ("max", 1.0_f32)] {
             if (norm_val - primary_default).abs() < 1e-4 {
                 continue;
@@ -346,6 +440,11 @@ pub fn build_capture_plan_with_prescriptions(
                     sw_map.insert(sw.id.clone(), opt.index);
                     let mut sw_corner_coords = default_ranges.clone();
                     sw_corner_coords.insert(primary.id.clone(), norm_val);
+                    if tag == "max"
+                        && let Some(cutoff_ctrl) = paired_env_cutoff
+                    {
+                        sw_corner_coords.insert(cutoff_ctrl.id.clone(), 0.0);
+                    }
                     let sw_corner_id = format!(
                         "stem_corner_switch_{}_{}_{}_{}",
                         sw.id, opt.index, primary.id, tag
@@ -543,6 +642,92 @@ fn select_parametric_freq_pairs(
                 .find(|r| r.id.eq_ignore_ascii_case(band_id) && r.id != freq_ctrl.id)
         {
             pairs.push((band_ctrl, freq_ctrl));
+        }
+    }
+    pairs
+}
+
+fn is_filter_resonance_control(r: &ControlRangeSpec) -> bool {
+    let id = r.id.to_ascii_lowercase();
+    let label = r.label.to_ascii_lowercase();
+    id.contains("reson")
+        || label.contains("reson")
+        || id == "q"
+        || id.ends_with("_q")
+        || id == "filter_q"
+}
+
+fn is_filter_cutoff_control(r: &ControlRangeSpec) -> bool {
+    if is_filter_resonance_control(r) {
+        return false;
+    }
+    let id = r.id.to_ascii_lowercase();
+    let label = r.label.to_ascii_lowercase();
+    id.contains("cutoff") || label.contains("cutoff") || id == "filter" || id == "filter_freq"
+}
+
+fn is_envelope_amount_control(r: &ControlRangeSpec) -> bool {
+    let id = r.id.to_ascii_lowercase();
+    let label = r.label.to_ascii_lowercase();
+    if id.contains("mix")
+        || label.contains("mix")
+        || id.contains("decay")
+        || label.contains("decay")
+    {
+        return false;
+    }
+    id.contains("env_amount")
+        || id.contains("env_sens")
+        || id.contains("env_depth")
+        || id.contains("sens")
+        || id == "env"
+        || id == "envelope"
+        || label.contains("env amount")
+        || label.contains("envelope amount")
+        || label.contains("env sens")
+        || label.contains("sensitivity")
+}
+
+fn is_envelope_ballistics_control(r: &ControlRangeSpec) -> bool {
+    let id = r.id.to_ascii_lowercase();
+    let label = r.label.to_ascii_lowercase();
+    id == "attack"
+        || id == "release"
+        || id.ends_with("_attack")
+        || id.ends_with("_release")
+        || label.contains("attack")
+        || label.contains("release")
+}
+
+/// Identifies `(filter_cutoff, filter_reson)` control pairs on resonant filters so high-resonance
+/// peak / self-oscillation corners at both high and low cutoff can be scheduled.
+fn select_cutoff_resonance_pairs(
+    ranges: &[ControlRangeSpec],
+) -> Vec<(&ControlRangeSpec, &ControlRangeSpec)> {
+    let mut pairs = Vec::new();
+    for cutoff in ranges.iter().filter(|r| is_filter_cutoff_control(r)) {
+        for reson in ranges
+            .iter()
+            .filter(|r| r.id != cutoff.id && is_filter_resonance_control(r))
+        {
+            pairs.push((cutoff, reson));
+        }
+    }
+    pairs
+}
+
+/// Identifies `(env_amount, filter_cutoff)` control pairs on envelope filters (auto-wah / MF-101)
+/// so the full upward dynamic sweep corner (`env_amount = max, filter_cutoff = min`) is scheduled.
+fn select_envelope_cutoff_pairs(
+    ranges: &[ControlRangeSpec],
+) -> Vec<(&ControlRangeSpec, &ControlRangeSpec)> {
+    let mut pairs = Vec::new();
+    for env_ctrl in ranges.iter().filter(|r| is_envelope_amount_control(r)) {
+        for cutoff in ranges
+            .iter()
+            .filter(|r| r.id != env_ctrl.id && is_filter_cutoff_control(r))
+        {
+            pairs.push((env_ctrl, cutoff));
         }
     }
     pairs
@@ -965,5 +1150,167 @@ mod tests {
                 .all(|s| s.switches.get("freeze") == Some(&0)),
             "all static stems should keep FreezeLatch at default_index"
         );
+    }
+
+    #[test]
+    fn planner_schedules_resonant_envelope_filter_corners() {
+        let model = ModelManifest {
+            model_id: "moogerfooger".to_string(),
+            title: "Moogerfooger MF-101".to_string(),
+            tier: "Full".to_string(),
+            description: String::new(),
+            output_mode: "stereo".to_string(),
+            topology: "auto".to_string(),
+            capture: CaptureSettings::default(),
+            ranges: vec![
+                ControlRangeSpec {
+                    id: "env_amount".to_string(),
+                    label: "Env Amount".to_string(),
+                    min: 0.0,
+                    max: 10.0,
+                    default_value: 5.0,
+                    unit: None,
+                    calibration: None,
+                },
+                ControlRangeSpec {
+                    id: "drive".to_string(),
+                    label: "Drive".to_string(),
+                    min: 0.0,
+                    max: 10.0,
+                    default_value: 5.0,
+                    unit: None,
+                    calibration: None,
+                },
+                ControlRangeSpec {
+                    id: "filter_cutoff".to_string(),
+                    label: "Filter Cutoff".to_string(),
+                    min: 0.0,
+                    max: 10.0,
+                    default_value: 5.0,
+                    unit: None,
+                    calibration: None,
+                },
+                ControlRangeSpec {
+                    id: "filter_reson".to_string(),
+                    label: "Filter Reson".to_string(),
+                    min: 0.0,
+                    max: 10.0,
+                    default_value: 5.0,
+                    unit: None,
+                    calibration: None,
+                },
+            ],
+            switches: Vec::new(),
+            presets: Vec::new(),
+            stems: Vec::new(),
+            distribution_policy: None,
+        };
+        let plan = build_capture_plan(&model, true);
+        for expected_id in [
+            "stem_corner_high_pair",
+            "stem_corner_filter_cutoff_max_filter_reson_max",
+            "stem_corner_filter_cutoff_min_filter_reson_max",
+            "stem_corner_env_amount_max_filter_cutoff_min",
+        ] {
+            assert!(
+                plan.steps.iter().any(|s| s.stem_id == expected_id),
+                "missing resonant envelope filter corner stem {expected_id}"
+            );
+        }
+    }
+
+    #[test]
+    fn planner_schedules_gravitron_envelope_ballistics_and_mode_corners() {
+        let model = ModelManifest {
+            model_id: "gravitron".to_string(),
+            title: "Gravitron".to_string(),
+            tier: "Full".to_string(),
+            description: String::new(),
+            output_mode: "stereo".to_string(),
+            topology: "auto".to_string(),
+            capture: CaptureSettings::default(),
+            ranges: vec![
+                ControlRangeSpec {
+                    id: "sensitivity".to_string(),
+                    label: "Sensitivity".to_string(),
+                    min: 0.0,
+                    max: 10.0,
+                    default_value: 5.0,
+                    unit: None,
+                    calibration: None,
+                },
+                ControlRangeSpec {
+                    id: "attack".to_string(),
+                    label: "Attack".to_string(),
+                    min: 0.0,
+                    max: 10.0,
+                    default_value: 5.0,
+                    unit: None,
+                    calibration: None,
+                },
+                ControlRangeSpec {
+                    id: "release".to_string(),
+                    label: "Release".to_string(),
+                    min: 0.0,
+                    max: 10.0,
+                    default_value: 5.0,
+                    unit: None,
+                    calibration: None,
+                },
+                ControlRangeSpec {
+                    id: "cutoff_freq".to_string(),
+                    label: "Cutoff Freq".to_string(),
+                    min: 0.0,
+                    max: 10.0,
+                    default_value: 5.0,
+                    unit: None,
+                    calibration: None,
+                },
+            ],
+            switches: vec![ControlSwitchSpec {
+                id: "mode".to_string(),
+                label: "Mode".to_string(),
+                options: vec![
+                    ControlSwitchOptionSpec {
+                        index: 0,
+                        label: "LP".to_string(),
+                    },
+                    ControlSwitchOptionSpec {
+                        index: 1,
+                        label: "BP".to_string(),
+                    },
+                    ControlSwitchOptionSpec {
+                        index: 2,
+                        label: "HP".to_string(),
+                    },
+                ],
+                default_index: 0,
+                calibration: None,
+            }],
+            presets: Vec::new(),
+            stems: Vec::new(),
+            distribution_policy: None,
+        };
+        let plan = build_capture_plan(&model, true);
+        assert_eq!(plan.steps.len(), 18);
+        for expected_id in [
+            "stem_corner_high_pair",
+            "stem_corner_sensitivity_max_cutoff_freq_min",
+            "stem_corner_sensitivity_max_cutoff_freq_min_attack_max_release_max",
+            "stem_corner_switch_mode_1_sensitivity_max",
+            "stem_corner_switch_mode_2_sensitivity_max",
+        ] {
+            assert!(
+                plan.steps.iter().any(|s| s.stem_id == expected_id),
+                "missing gravitron corner stem {expected_id}"
+            );
+        }
+        let bp_max = plan
+            .steps
+            .iter()
+            .find(|s| s.stem_id == "stem_corner_switch_mode_1_sensitivity_max")
+            .expect("bp_max");
+        assert!((bp_max.normalized_ranges["sensitivity"] - 1.0).abs() < 1e-5);
+        assert!(bp_max.normalized_ranges["cutoff_freq"].abs() < 1e-5);
     }
 }

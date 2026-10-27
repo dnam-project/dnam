@@ -26,6 +26,21 @@ pub struct AlignmentReport {
     pub noise_floor_dbfs: f32,
 }
 
+/// Result of verifying (and auto-polishing if needed) a post-shift aligned wet capture.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PostAlignmentVerification {
+    /// Aligned wet waveform after any residual multi-sample polish.
+    pub aligned_wet: Vec<f32>,
+    /// Total sub-sample lag applied (`initial_lag_samples + applied_polish_samples`).
+    pub total_lag_samples: f32,
+    /// Integer residual lag (`samples`) remaining after verification (`0` when aligned).
+    pub residual_lag_samples: i32,
+    /// Peak normalized cross-correlation in `[-16, +16]` against the best reference.
+    pub verification_correlation: f32,
+    /// Reference signal that yielded `verification_correlation` (`"dry"`, `"dry_lp"`, `"dry_hp"`, `"fuzz"`, or `"star_center"`).
+    pub best_reference: &'static str,
+}
+
 /// Telemetry from Step-2 Engaged Hot-Corner Verification (`0.0 dB` send preserved).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct HotCornerAnalysis {
@@ -208,7 +223,8 @@ pub fn apply_subsample_shift_fft(wet: &[f32], lag_samples: f32) -> Vec<f32> {
 }
 
 /// Builds a causal clipped fuzz proxy `LPF_800(tanh(10 * HPF_80(dry)))` so extreme comparator/fuzz
-/// pedals with `< 0.35` linear correlation still lock sub-sample USB stream startup jitter.
+/// pedals with `< 0.35` linear correlation still lock sub-sample USB stream startup jitter while
+/// matching the causal group delay of hardware fuzz tone stacks.
 fn build_clipped_fuzz_proxy(dry: &[f32], sample_rate_hz: u32) -> Vec<f32> {
     let sr = (sample_rate_hz.max(8_000)) as f32;
     let a_hp = (-TAU * 80.0 / sr).exp();
@@ -226,6 +242,56 @@ fn build_clipped_fuzz_proxy(dry: &[f32], sample_rate_hz: u32) -> Vec<f32> {
         out.push(s_lp);
     }
     out
+}
+
+/// Builds a zero-phase 1-pole forward-backward (`filtfilt`) low-pass helper at `cutoff_hz`
+/// used to construct the complementary zero-phase high-pass proxy (`build_zerophase_hp_proxy`).
+fn build_zerophase_lp_proxy(dry: &[f32], sample_rate_hz: u32, cutoff_hz: f32) -> Vec<f32> {
+    let sr = (sample_rate_hz.max(8_000)) as f32;
+    let a_lp = (-TAU * cutoff_hz / sr).exp();
+    let b_lp = 1.0 - a_lp;
+    let mut s_fwd = 0.0_f32;
+    let mut out = Vec::with_capacity(dry.len());
+    for &x in dry {
+        s_fwd = a_lp * s_fwd + b_lp * x;
+        out.push(s_fwd);
+    }
+    let mut s_rev = 0.0_f32;
+    for y in out.iter_mut().rev() {
+        s_rev = a_lp * s_rev + b_lp * *y;
+        *y = s_rev;
+    }
+    out
+}
+
+/// Builds a zero-phase high-pass proxy `x[n] - filtfilt_LPF(x[n])` at `cutoff_hz`
+/// so steep high-pass/band-pass filter stems (`Mode = HP/BP`) correlate cleanly inside
+/// `locked ± 48` without group-delay bias.
+fn build_zerophase_hp_proxy(dry: &[f32], sample_rate_hz: u32, cutoff_hz: f32) -> Vec<f32> {
+    let lp = build_zerophase_lp_proxy(dry, sample_rate_hz, cutoff_hz);
+    dry.iter().zip(lp.iter()).map(|(&x, &l)| x - l).collect()
+}
+
+/// Locates the leading Pulse-1 chirp onset window (`~12 ms`) in `dry` so delay/reverb stems with
+/// heavy repeats (`Mix < 100%`) can lock sub-sample USB startup jitter on the first direct pulse
+/// before any echo tap (`>= 12 ms`) arrives, and so `100% Mix` kill-dry delay stems can be
+/// identified by their silent Pulse-1 return window.
+fn pulse1_onset_window(dry: &[f32], sample_rate_hz: u32) -> Option<std::ops::Range<usize>> {
+    let n = dry.len();
+    if n < 128 {
+        return None;
+    }
+    let fs = (sample_rate_hz.max(8_000)) as f32;
+    let search_lim = ((0.50 * fs).round() as usize).min(n / 2).max(32);
+    let idx0 = dry[..search_lim].iter().position(|&x| x.abs() > 0.35)?;
+    let p1_start = idx0.saturating_sub(8);
+    let chirp_len = ((0.012 * fs).round() as usize).clamp(32, (n / 8).max(32));
+    let p1_end = (p1_start + chirp_len).min(n);
+    if p1_end.saturating_sub(p1_start) >= 32 {
+        Some(p1_start..p1_end)
+    } else {
+        None
+    }
 }
 
 /// Aligns `wet` to `dry` using $O(N \log N)$ `realfft` normalized cross-correlation + parabolic
@@ -270,42 +336,136 @@ pub fn align_hardware_latency(
         }
     }
 
+    let wet_rms = array_rms(wet);
+
     let (resolved_lag, frac_offset, resolved_corr) = if let Some(locked) = fixed_latency_samples {
-        let mut local_best_lag = locked;
-        let mut local_best_corr = f32::NEG_INFINITY;
-        for lag in (locked - 24)..=(locked + 24) {
-            let idx_i32 = lag + (max_lag as i32);
-            if idx_i32 >= 0 && (idx_i32 as usize) < corr_map.len() {
-                let abs_c = corr_map[idx_i32 as usize].abs();
-                if abs_c > local_best_corr {
-                    local_best_corr = abs_c;
-                    local_best_lag = lag;
-                }
-            }
-        }
-        let mut active_map = corr_map;
-        if local_best_corr <= 0.35 {
-            let dry_fuzz = build_clipped_fuzz_proxy(dry, sample_rate_hz);
-            let fuzz_map = fft_normalized_cross_correlation(&dry_fuzz, wet, max_lag);
-            let mut fuzz_best_lag = locked;
-            let mut fuzz_best_corr = f32::NEG_INFINITY;
-            for lag in (locked - 24)..=(locked + 24) {
+        let search_window = |map: &[f32], radius: i32| -> (i32, f32) {
+            let lo = locked - radius;
+            let hi = locked + radius;
+            let mut best_l = locked;
+            let mut best_c = f32::NEG_INFINITY;
+            for lag in lo..=hi {
                 let idx_i32 = lag + (max_lag as i32);
-                if idx_i32 >= 0 && (idx_i32 as usize) < fuzz_map.len() {
-                    let abs_c = fuzz_map[idx_i32 as usize].abs();
-                    if abs_c > fuzz_best_corr {
-                        fuzz_best_corr = abs_c;
-                        fuzz_best_lag = lag;
+                if idx_i32 >= 0 && (idx_i32 as usize) < map.len() {
+                    let abs_c = map[idx_i32 as usize].abs();
+                    if abs_c > best_c {
+                        best_c = abs_c;
+                        best_l = lag;
                     }
                 }
             }
-            if fuzz_best_corr > local_best_corr {
-                local_best_corr = fuzz_best_corr;
-                local_best_lag = fuzz_best_lag;
-                active_map = fuzz_map;
+            // If best_l landed on the window boundary (lo or hi) with strong correlation and the
+            // slope is still rising outward, follow the monotonic main-lobe slope up to 16 samples
+            // to its true local maximum so we never clip on a boundary without jumping to a sidelobe.
+            if best_l == lo && best_c > 0.35 {
+                for step in 1..=16 {
+                    let cand = lo - step;
+                    let idx_i32 = cand + (max_lag as i32);
+                    if idx_i32 < 0 || (idx_i32 as usize) >= map.len() {
+                        break;
+                    }
+                    let abs_c = map[idx_i32 as usize].abs();
+                    if abs_c > best_c {
+                        best_c = abs_c;
+                        best_l = cand;
+                    } else {
+                        break;
+                    }
+                }
+            } else if best_l == hi && best_c > 0.35 {
+                for step in 1..=16 {
+                    let cand = hi + step;
+                    let idx_i32 = cand + (max_lag as i32);
+                    if idx_i32 < 0 || (idx_i32 as usize) >= map.len() {
+                        break;
+                    }
+                    let abs_c = map[idx_i32 as usize].abs();
+                    if abs_c > best_c {
+                        best_c = abs_c;
+                        best_l = cand;
+                    } else {
+                        break;
+                    }
+                }
+            }
+            (best_l, best_c)
+        };
+
+        let (mut local_best_lag, mut local_best_corr) = search_window(&corr_map, 48);
+        let mut active_map = corr_map;
+
+        if local_best_corr <= 0.35 {
+            for proxy in [
+                build_clipped_fuzz_proxy(dry, sample_rate_hz),
+                build_zerophase_hp_proxy(dry, sample_rate_hz, 1_500.0),
+            ] {
+                let p_map = fft_normalized_cross_correlation(&proxy, wet, max_lag);
+                let (p_lag, p_corr) = search_window(&p_map, 48);
+                if p_corr > local_best_corr {
+                    local_best_corr = p_corr;
+                    local_best_lag = p_lag;
+                    active_map = p_map;
+                }
             }
         }
-        if local_best_corr > 0.35 {
+
+        // Echo-free Pulse-1 onset fallback for delay/reverb pedals with heavy repeats (Mix < 100%)
+        // where 11s of echo repeats dilute full-signal correlation below 0.35, while preserving
+        // locked latency on 100% Mix kill-dry delay stems (where Pulse-1 wet RMS is silent).
+        let mut p1_override: Option<(i32, f32, f32)> = None;
+        if local_best_corr <= 0.35
+            && let Some(p1_range) = pulse1_onset_window(dry, sample_rate_hz)
+        {
+            let d_slice = &dry[p1_range.clone()];
+            let d_view = ArrayView1::from(d_slice);
+            let d_energy = d_view.dot(&d_view);
+            let p1_len = p1_range.len();
+            let radius = 48_i32;
+            let mut p1_corrs = vec![0.0_f32; (2 * radius + 1) as usize];
+            let mut best_p1_lag = locked;
+            let mut best_p1_c = 0.0_f32;
+            for offset in -radius..=radius {
+                let cand_lag = locked + offset;
+                let w_start_i32 = (p1_range.start as i32) + cand_lag;
+                let w_end_i32 = w_start_i32 + (p1_len as i32);
+                if w_start_i32 >= 0 && (w_end_i32 as usize) <= n {
+                    let w_slice = &wet[(w_start_i32 as usize)..(w_end_i32 as usize)];
+                    let w_p1_rms = array_rms(w_slice);
+                    if w_p1_rms > 0.02 * wet_rms && w_p1_rms > 1e-4 {
+                        let w_view = ArrayView1::from(w_slice);
+                        let denom = (d_energy * w_view.dot(&w_view)).sqrt();
+                        let c = if denom > 1e-12 {
+                            (d_view.dot(&w_view) / denom).abs()
+                        } else {
+                            0.0
+                        };
+                        p1_corrs[(offset + radius) as usize] = c;
+                        if c > best_p1_c {
+                            best_p1_c = c;
+                            best_p1_lag = cand_lag;
+                        }
+                    }
+                }
+            }
+            if best_p1_c > 0.65 {
+                let best_off_idx = (best_p1_lag - locked + radius) as usize;
+                let mut p1_frac = 0.0_f32;
+                if best_off_idx > 0 && best_off_idx + 1 < p1_corrs.len() {
+                    let y_prev = p1_corrs[best_off_idx - 1];
+                    let y_curr = p1_corrs[best_off_idx];
+                    let y_next = p1_corrs[best_off_idx + 1];
+                    let denom = y_prev - 2.0 * y_curr + y_next;
+                    if denom.abs() > 1e-9 {
+                        p1_frac = (0.5 * (y_prev - y_next) / denom).clamp(-0.5, 0.5);
+                    }
+                }
+                p1_override = Some((best_p1_lag, p1_frac, best_p1_c.clamp(0.0, 1.0)));
+            }
+        }
+
+        if let Some((p1_lag, p1_frac, p1_c)) = p1_override {
+            (p1_lag, p1_frac, p1_c)
+        } else if local_best_corr > 0.35 {
             let local_idx = (local_best_lag + (max_lag as i32)) as usize;
             let mut local_frac = 0.0_f32;
             if local_idx > 0 && local_idx + 1 < active_map.len() {
@@ -334,7 +494,6 @@ pub fn align_hardware_latency(
     let noise_floor_dbfs =
         measure_silent_window_noise_floor(wet, sample_rate_hz, baseline_noise_floor_dbfs);
     let safe_noise_power = 10.0_f32.powf(noise_floor_dbfs / 10.0).max(1e-12);
-    let wet_rms = array_rms(wet);
     let signal_power = (wet_rms * wet_rms).max(1e-12);
     let snr_db = 10.0 * (signal_power / safe_noise_power).log10();
 
@@ -354,6 +513,210 @@ pub fn estimate_subsample_lag_and_snr(
     max_lag_samples: usize,
 ) -> StudioResult<AlignmentReport> {
     align_hardware_latency(dry, wet, max_lag_samples, None, 48_000, None)
+}
+
+fn local_normalized_xcorr(
+    reference: &[f32],
+    target: &[f32],
+    max_local_lag: i32,
+) -> (i32, f32, f32) {
+    let n = reference.len().min(target.len());
+    if n < 64 {
+        return (0, 0.0, 0.0);
+    }
+    let r_max = max_local_lag.max(1) as usize;
+    let mut corrs = vec![0.0_f32; 2 * r_max + 1];
+    let mut best_k = 0_i32;
+    let mut best_c = 0.0_f32;
+    for k in -(r_max as i32)..=(r_max as i32) {
+        let (r_slice, t_slice) = if k >= 0 {
+            let ku = k as usize;
+            if ku >= n {
+                continue;
+            }
+            (&reference[..n - ku], &target[ku..n])
+        } else {
+            let ku = (-k) as usize;
+            if ku >= n {
+                continue;
+            }
+            (&reference[ku..n], &target[..n - ku])
+        };
+        let r_view = ArrayView1::from(r_slice);
+        let t_view = ArrayView1::from(t_slice);
+        let dot = r_view.dot(&t_view);
+        let denom = (r_view.dot(&r_view) * t_view.dot(&t_view)).sqrt();
+        let c = if denom > 1e-12 {
+            (dot / denom).abs()
+        } else {
+            0.0
+        };
+        corrs[(k + (r_max as i32)) as usize] = c;
+        if c > best_c {
+            best_c = c;
+            best_k = k;
+        }
+    }
+    let idx = (best_k + (r_max as i32)) as usize;
+    let mut frac = 0.0_f32;
+    if idx > 0 && idx + 1 < corrs.len() {
+        let y_prev = corrs[idx - 1];
+        let y_curr = corrs[idx];
+        let y_next = corrs[idx + 1];
+        let denom = y_prev - 2.0 * y_curr + y_next;
+        if denom.abs() > 1e-9 {
+            frac = (0.5 * (y_prev - y_next) / denom).clamp(-0.5, 0.5);
+        }
+    }
+    (best_k, best_c.clamp(0.0, 1.0), frac)
+}
+
+/// Verifies a post-shift aligned wet capture over `[-16, +16]` samples against broadband `dry`
+/// first. When broadband `dry` already has strong correlation (`c_dry > 0.40`), uses `dry`
+/// exclusively so causal tone-stack phase shifts on amplifiers/preamps never trigger false shifts.
+/// When broadband `dry` correlation is low (`c_dry <= 0.40`, e.g., extreme comparator fuzz or
+/// steep `Mode = BP / HP` filter stems), evaluates causal clipped fuzz (`fuzz`), zero-phase
+/// `1.5 kHz` HP (`dry_hp`), `star_center` (or same-switch reference stem), and the stationary
+/// high-level Velocity Step 6 burst window (`step6_dry_hp`, `step6_ref`). If a residual integer
+/// misalignment (`|best_k| >= 1`) is detected with high confidence (`best_corr > 0.45`),
+/// automatically applies a secondary sub-sample FFT phase-ramp polish.
+pub fn verify_and_polish_post_alignment(
+    dry: &[f32],
+    star_center: Option<&[f32]>,
+    aligned_wet: &[f32],
+    initial_lag_samples: f32,
+    sample_rate_hz: u32,
+) -> PostAlignmentVerification {
+    let n = dry.len().min(aligned_wet.len());
+    let (k_dry, c_dry, frac_dry) = local_normalized_xcorr(&dry[..n], &aligned_wet[..n], 16);
+
+    let mut best_name = "dry";
+    let mut best_ref = dry;
+    let mut best_range = 0..n;
+    let mut best_k = k_dry;
+    let mut best_c = c_dry;
+    let mut best_frac = frac_dry;
+
+    let hp_proxy;
+    let fuzz_proxy;
+    if c_dry <= 0.40 {
+        let wet_full_rms = array_rms(&aligned_wet[..n]);
+        if let Some(p1_range) = pulse1_onset_window(dry, sample_rate_hz)
+            && p1_range.end <= n
+        {
+            let dry_p1_rms = array_rms(&dry[p1_range.clone()]);
+            let wet_p1_rms = array_rms(&aligned_wet[p1_range.clone()]);
+            // If dry has Pulse 1 (> 0.15 RMS) while aligned_wet is silent during Pulse 1
+            // (< 1.5% of full wet RMS), this is a 100% Mix kill-dry delay stem whose output is
+            // intentionally delayed beyond Pulse 1—preserve the locked hardware latency untouched.
+            if dry_p1_rms > 0.15 && wet_full_rms > 1e-4 && wet_p1_rms < 0.015 * wet_full_rms {
+                return PostAlignmentVerification {
+                    aligned_wet: aligned_wet.to_vec(),
+                    total_lag_samples: initial_lag_samples,
+                    residual_lag_samples: 0,
+                    verification_correlation: c_dry,
+                    best_reference: "kill_dry_locked",
+                };
+            }
+            if wet_p1_rms > 0.02 * wet_full_rms && wet_p1_rms > 1e-4 {
+                let (k_p1, c_p1, frac_p1) = local_normalized_xcorr(
+                    &dry[p1_range.clone()],
+                    &aligned_wet[p1_range.clone()],
+                    16,
+                );
+                if c_p1 > 0.65 {
+                    best_name = "pulse1_dry";
+                    best_ref = dry;
+                    best_range = p1_range;
+                    best_k = k_p1;
+                    best_c = c_p1;
+                    best_frac = frac_p1;
+                }
+            }
+        }
+
+        if best_name != "pulse1_dry" {
+            hp_proxy = build_zerophase_hp_proxy(dry, sample_rate_hz, 1_500.0);
+            fuzz_proxy = build_clipped_fuzz_proxy(dry, sample_rate_hz);
+
+            let wlen = ((0.24 * (sample_rate_hz as f32)).round() as usize)
+                .min(n / 4)
+                .max(1);
+            let lo = (n * 35) / 100;
+            let hi = ((n * 68) / 100).min(n);
+            let mut burst_start = lo;
+            if hi > lo + wlen {
+                let stride = ((sample_rate_hz as usize) / 100).max(1);
+                let mut best_energy = -1.0_f64;
+                let mut s = lo;
+                while s + wlen <= hi {
+                    let energy: f64 = dry[s..s + wlen]
+                        .iter()
+                        .map(|&x| (x as f64) * (x as f64))
+                        .sum();
+                    if energy > best_energy {
+                        best_energy = energy;
+                        burst_start = s;
+                    }
+                    s += stride;
+                }
+            }
+            let burst_end = (burst_start + wlen).min(n);
+            let has_burst_win = burst_end.saturating_sub(burst_start) >= 512;
+
+            let mut candidates: Vec<(&'static str, &[f32], std::ops::Range<usize>)> =
+                vec![("fuzz", &fuzz_proxy, 0..n), ("dry_hp", &hp_proxy, 0..n)];
+            if has_burst_win {
+                candidates.push(("burst_dry_hp", &hp_proxy, burst_start..burst_end));
+            }
+            if let Some(center) = star_center
+                && center.len() >= n
+            {
+                candidates.push(("star_center", center, 0..n));
+                if has_burst_win {
+                    candidates.push(("burst_ref", center, burst_start..burst_end));
+                }
+            }
+
+            for (name, ref_sig, range) in candidates {
+                let (k, c, frac) = local_normalized_xcorr(
+                    &ref_sig[range.clone()],
+                    &aligned_wet[range.clone()],
+                    16,
+                );
+                if c > best_c {
+                    best_c = c;
+                    best_k = k;
+                    best_frac = frac;
+                    best_name = name;
+                    best_ref = ref_sig;
+                    best_range = range;
+                }
+            }
+        }
+    }
+
+    if best_k != 0 && best_c > 0.45 {
+        let polish_shift = (best_k as f32) + best_frac;
+        let polished = apply_subsample_shift_fft(aligned_wet, polish_shift);
+        let (new_k, new_c, _) =
+            local_normalized_xcorr(&best_ref[best_range.clone()], &polished[best_range], 16);
+        PostAlignmentVerification {
+            aligned_wet: polished,
+            total_lag_samples: initial_lag_samples + polish_shift,
+            residual_lag_samples: new_k,
+            verification_correlation: new_c,
+            best_reference: best_name,
+        }
+    } else {
+        PostAlignmentVerification {
+            aligned_wet: aligned_wet.to_vec(),
+            total_lag_samples: initial_lag_samples,
+            residual_lag_samples: best_k,
+            verification_correlation: best_c,
+            best_reference: best_name,
+        }
+    }
 }
 
 /// Analyzes Step-2 engaged hot-corner return signal without reducing `send_gain_db`.
@@ -524,5 +887,246 @@ mod tests {
         assert!(stats.net_gain_over_unity_db > 2.0);
         assert!(stats.compression_ratio > 1.1);
         assert!(stats.clipped_sample_fraction > 0.01);
+    }
+
+    #[test]
+    fn test_wide_usb_jitter_and_post_alignment_residual_polish() {
+        let dry = generate_excitation_signal(48_000, 4_096);
+        let locked_lag = 120_i32;
+        let true_lag = 80_usize; // -40 samples relative to locked_lag (outside old +/-32 window)
+        let hp_dry = build_zerophase_hp_proxy(&dry, 48_000, 1_500.0);
+        let mut wet_hp = vec![0.0_f32; dry.len()];
+        wet_hp[true_lag..dry.len()].copy_from_slice(&hp_dry[..(dry.len() - true_lag)]);
+
+        let rep = align_hardware_latency(&dry, &wet_hp, 256, Some(locked_lag), 48_000, None)
+            .expect("align wide USB jitter HP stem");
+        assert_eq!(rep.coarse_lag_samples, true_lag as i32);
+        assert!(rep.peak_correlation > 0.50);
+
+        // Simulate a residual -9 sample misalignment on both broadband (> 0.40) and
+        // low-broadband-correlation (<= 0.40) stems and verify post-alignment auto-polish fixes both
+        let misshifted_hp = apply_subsample_shift_fft(&hp_dry, 9.0);
+        let polished_hp =
+            verify_and_polish_post_alignment(&dry, Some(&hp_dry), &misshifted_hp, 89.0, 48_000);
+        assert_eq!(polished_hp.residual_lag_samples, 0);
+        assert!((polished_hp.total_lag_samples - (true_lag as f32)).abs() < 0.25);
+        assert!(polished_hp.verification_correlation > 0.50);
+
+        let dry_low_corr: Vec<f32> = (0..4_096)
+            .map(|i| {
+                let env = 0.5 + 0.5 * ((i as f32) * 0.019).sin() * ((i as f32) * 0.007).cos();
+                let carrier = if i % 3 == 0 { 0.8_f32 } else { -0.4_f32 };
+                env * carrier
+            })
+            .collect();
+        let fuzz_ref = build_clipped_fuzz_proxy(&dry_low_corr, 48_000);
+        let misshifted_fuzz = apply_subsample_shift_fft(&fuzz_ref, 9.0);
+        let polished_fuzz = verify_and_polish_post_alignment(
+            &dry_low_corr,
+            Some(&fuzz_ref),
+            &misshifted_fuzz,
+            89.0,
+            48_000,
+        );
+        assert_eq!(polished_fuzz.residual_lag_samples, 0);
+        assert!((polished_fuzz.total_lag_samples - (true_lag as f32)).abs() < 0.25);
+        assert!(polished_fuzz.verification_correlation > 0.95);
+    }
+
+    #[test]
+    fn test_delay_pedal_heavy_repeats_slapback_and_kill_dry_alignment() {
+        let sr = 48_000_u32;
+        let dry = generate_excitation_signal(sr, 96_000); // 2.0s signal
+        let locked_lag = 300_i32;
+        let true_hw_lag = 314_usize; // +14 samples USB startup jitter
+
+        let sim_delay = |delay_samples: usize, feedback: f32, mix: f32| -> Vec<f32> {
+            let n = dry.len();
+            let mut x = vec![0.0_f32; n];
+            x[true_hw_lag..n].copy_from_slice(&dry[..(n - true_hw_lag)]);
+            let mut dline = vec![0.0_f32; n];
+            for i in delay_samples..n {
+                dline[i] = x[i - delay_samples] + feedback * dline[i - delay_samples];
+            }
+            x.iter()
+                .zip(dline.iter())
+                .map(|(&xi, &di)| (1.0 - mix) * xi + mix * di)
+                .collect()
+        };
+
+        // 1. Heavy-mix / high-feedback delay (Mix = 82%, Delay = 180 ms, Feedback = 0.85)
+        // Full-signal dry correlation is diluted below 0.35 by echo repeats, but Pulse-1 onset
+        // locks exact hardware latency (314) before the first echo arrives.
+        let wet_heavy = sim_delay(8_640, 0.85, 0.82);
+        let rep_heavy = align_hardware_latency(&dry, &wet_heavy, 2_048, Some(locked_lag), sr, None)
+            .expect("align heavy-repeat delay");
+        assert_eq!(rep_heavy.coarse_lag_samples, true_hw_lag as i32);
+        assert!(rep_heavy.peak_correlation > 0.65);
+
+        // 2. Short slapback delay (Mix = 88%, Delay = 16 ms = 768 samples, Feedback = 0.70)
+        let wet_slap = sim_delay(768, 0.70, 0.88);
+        let rep_slap = align_hardware_latency(&dry, &wet_slap, 2_048, Some(locked_lag), sr, None)
+            .expect("align slapback delay");
+        assert_eq!(rep_slap.coarse_lag_samples, true_hw_lag as i32);
+        assert!(rep_slap.peak_correlation > 0.65);
+
+        // 3. 100% Mix kill-dry delay (Delay = 120 ms = 5,760 samples, Feedback = 0.50)
+        // Preserves locked hardware latency (300) without stripping the echo tap offset, even if
+        // verify_and_polish_post_alignment is called with a different star_center reference.
+        let wet_kill_dry = sim_delay(5_760, 0.50, 1.00);
+        let rep_kill =
+            align_hardware_latency(&dry, &wet_kill_dry, 2_048, Some(locked_lag), sr, None)
+                .expect("align kill-dry delay");
+        assert_eq!(rep_kill.coarse_lag_samples, locked_lag);
+        let aligned_kill = apply_subsample_shift_fft(&wet_kill_dry, rep_kill.subsample_lag_samples);
+        let verified_kill = verify_and_polish_post_alignment(
+            &dry,
+            Some(&wet_heavy),
+            &aligned_kill,
+            rep_kill.subsample_lag_samples,
+            sr,
+        );
+        assert_eq!(verified_kill.best_reference, "kill_dry_locked");
+        assert_eq!(verified_kill.residual_lag_samples, 0);
+        assert_eq!(
+            verified_kill.total_lag_samples,
+            rep_kill.subsample_lag_samples
+        );
+    }
+
+    #[test]
+    fn test_causal_fuzz_group_delay_bass_boost_sidelobe_and_tonestack_dry_gate() {
+        let sr = 48_000_u32;
+        let dry = generate_excitation_signal(sr, 48_000);
+        let locked_lag = 200_i32;
+        let true_hw_lag = 211_usize; // +11 samples USB jitter
+
+        // 1. Causal fuzz pedal regression test (`duality_fuzz`):
+        // Construct wet via an independent CAUSAL comparator + 1-pole 750 Hz tone stack (not by calling
+        // build_clipped_fuzz_proxy) so if build_clipped_fuzz_proxy ever regressed to zero-phase filtfilt,
+        // the ~9-sample causal group delay mismatch would fail this test.
+        let dry_fuzz_in: Vec<f32> = (0..16_384)
+            .map(|i| {
+                let env = 0.5 + 0.5 * ((i as f32) * 0.019).sin() * ((i as f32) * 0.007).cos();
+                let carrier = if i % 3 == 0 { 0.8_f32 } else { -0.4_f32 };
+                env * carrier
+            })
+            .collect();
+        let a_hp = (-TAU * 85.0 / (sr as f32)).exp();
+        let a_lp = (-TAU * 750.0 / (sr as f32)).exp();
+        let mut s_hp = 0.0_f32;
+        let mut s_lp = 0.0_f32;
+        let mut wet_causal_fuzz = vec![0.0_f32; dry_fuzz_in.len()];
+        for i in true_hw_lag..dry_fuzz_in.len() {
+            let x = dry_fuzz_in[i - true_hw_lag];
+            s_hp = a_hp * s_hp + (1.0 - a_hp) * x;
+            let clipped = (12.0 * (x - s_hp)).tanh();
+            s_lp = a_lp * s_lp + (1.0 - a_lp) * clipped;
+            wet_causal_fuzz[i] = s_lp;
+        }
+        let fuzz_rep = align_hardware_latency(
+            &dry_fuzz_in,
+            &wet_causal_fuzz,
+            512,
+            Some(locked_lag),
+            sr,
+            None,
+        )
+        .expect("align causal hardware fuzz");
+        assert!(
+            (fuzz_rep.coarse_lag_samples - (true_hw_lag as i32)).abs() <= 1,
+            "Causal fuzz alignment must match hardware latency within +/-1 sample (got {} vs {})",
+            fuzz_rep.coarse_lag_samples,
+            true_hw_lag
+        );
+
+        // 2. Heavy bass-boosted amp sidelobe rejection (`swe_tc650` Gain=10, Bass=10):
+        // Inject a strong +82-sample periodic bass sidelobe outside +/-48 samples and verify
+        // align_hardware_latency never jumps to the +82-sample bass sidelobe.
+        let mut wet_bass_sidelobe = vec![0.0_f32; dry.len()];
+        let sidelobe_lag = (locked_lag as usize) + 82;
+        for i in sidelobe_lag..dry.len() {
+            wet_bass_sidelobe[i] =
+                0.30 * dry[i - (locked_lag as usize)] + 0.70 * dry[i - sidelobe_lag];
+        }
+        let bass_rep =
+            align_hardware_latency(&dry, &wet_bass_sidelobe, 512, Some(locked_lag), sr, None)
+                .expect("align bass sidelobe");
+        assert!(
+            (bass_rep.coarse_lag_samples - locked_lag).abs() <= 2,
+            "Must lock to direct path at locked_lag ({locked_lag}) and reject +82-sample sidelobe (got {})",
+            bass_rep.coarse_lag_samples
+        );
+
+        // 3. Amp tone-stack broadband dry gate (`peggy_fliptop` Treble=0.0 vs star_center Treble=5.0):
+        // When broadband dry has c_dry > 0.40 at lag = 0, verify_and_polish_post_alignment must use
+        // "dry" exclusively and NEVER shift the stem toward a star_center reference at lag = +3.
+        let mut wet_treble_min = vec![0.0_f32; dry.len()];
+        let mut s_tone = 0.0_f32;
+        let a_tone = (-TAU * 600.0 / (sr as f32)).exp();
+        for (i, &x) in dry.iter().enumerate() {
+            s_tone = a_tone * s_tone + (1.0 - a_tone) * x;
+            wet_treble_min[i] = 0.55 * x + 0.45 * s_tone;
+        }
+        let star_center_shifted = apply_subsample_shift_fft(&wet_treble_min, -3.0);
+        let v_tone = verify_and_polish_post_alignment(
+            &dry,
+            Some(&star_center_shifted),
+            &wet_treble_min,
+            locked_lag as f32,
+            sr,
+        );
+        assert_eq!(v_tone.best_reference, "dry");
+        assert_eq!(v_tone.residual_lag_samples, 0);
+        assert_eq!(v_tone.total_lag_samples, locked_lag as f32);
+
+        // 4. Boundary slope-following (`best_l == lo` and `best_l == hi` with `best_c > 0.35`):
+        // When USB jitter places the smooth main-lobe peak at `locked - 54` or `locked + 54`
+        // (6 samples outside `locked ± 48`), slope-following walks outward up to 16 samples to the
+        // true local maximum without clipping at the boundary.
+        let smooth_dry = build_zerophase_lp_proxy(&dry, sr, 900.0);
+        let lag_lo_out = (locked_lag - 54) as usize;
+        let mut wet_lo_out = vec![0.0_f32; smooth_dry.len()];
+        wet_lo_out[lag_lo_out..].copy_from_slice(&smooth_dry[..smooth_dry.len() - lag_lo_out]);
+        let rep_lo =
+            align_hardware_latency(&smooth_dry, &wet_lo_out, 512, Some(locked_lag), sr, None)
+                .expect("boundary slope follow lo");
+        assert_eq!(rep_lo.coarse_lag_samples, lag_lo_out as i32);
+
+        let lag_hi_out = (locked_lag + 54) as usize;
+        let mut wet_hi_out = vec![0.0_f32; smooth_dry.len()];
+        wet_hi_out[lag_hi_out..].copy_from_slice(&smooth_dry[..smooth_dry.len() - lag_hi_out]);
+        let rep_hi =
+            align_hardware_latency(&smooth_dry, &wet_hi_out, 512, Some(locked_lag), sr, None)
+                .expect("boundary slope follow hi");
+        assert_eq!(rep_hi.coarse_lag_samples, lag_hi_out as i32);
+
+        // 5. Post-alignment verification using "pulse1_dry" on a heavy-echo wet signal with residual lag
+        let mut wet_echo_misaligned = vec![0.0_f32; dry.len()];
+        let res_shift = 5_usize;
+        for i in res_shift..dry.len() {
+            wet_echo_misaligned[i] = 0.20 * dry[i - res_shift];
+        }
+        for tap in (1_200..18_000).step_by(900) {
+            for i in (tap + res_shift)..dry.len() {
+                wet_echo_misaligned[i] += 0.85 * dry[i - tap - res_shift];
+            }
+        }
+        let v_p1 = verify_and_polish_post_alignment(
+            &dry,
+            None,
+            &wet_echo_misaligned,
+            locked_lag as f32,
+            sr,
+        );
+        assert_eq!(v_p1.best_reference, "pulse1_dry");
+        assert_eq!(v_p1.residual_lag_samples, 0);
+
+        // 6. Short-buffer guard clauses (`pulse1_onset_window` < 128, `local_normalized_xcorr` < 64)
+        assert!(pulse1_onset_window(&[0.5; 64], sr).is_none());
+        assert_eq!(
+            local_normalized_xcorr(&[0.5; 32], &[0.5; 32], 8),
+            (0, 0.0, 0.0)
+        );
     }
 }

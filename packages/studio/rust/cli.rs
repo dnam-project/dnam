@@ -279,6 +279,104 @@ mod tests {
         .expect("banner");
         assert!(banner.contains("DNAM Studio & CLI"));
 
+        let init_out = execute_cli(&DnamCli {
+            workspace: dir.clone(),
+            command: Some(DnamCommand::Init {
+                name: "TestWS".to_string(),
+                author: "Tester".to_string(),
+                model_id: Some("m1".to_string()),
+            }),
+        })
+        .expect("init");
+        assert!(init_out.contains("Initialized DNAM workspace"));
+
+        let status_out = execute_cli(&DnamCli {
+            workspace: dir.clone(),
+            command: Some(DnamCommand::Status),
+        })
+        .expect("status");
+        assert!(status_out.contains("TestWS"));
+
+        let model_out = execute_cli(&DnamCli {
+            workspace: dir.clone(),
+            command: Some(DnamCommand::Model {
+                action: workspace_cmd::ModelAction::List,
+            }),
+        })
+        .expect("model list");
+        assert!(model_out.contains("m1"));
+
+        let ctrl_out = execute_cli(&DnamCli {
+            workspace: dir.clone(),
+            command: Some(DnamCommand::Control {
+                action: workspace_cmd::ControlAction::List {
+                    model: "m1".to_string(),
+                },
+            }),
+        })
+        .expect("control list");
+        assert!(ctrl_out.contains("ranges"));
+
+        let preset_out = execute_cli(&DnamCli {
+            workspace: dir.clone(),
+            command: Some(DnamCommand::Preset {
+                action: workspace_cmd::PresetAction::List {
+                    model: "m1".to_string(),
+                },
+            }),
+        })
+        .expect("preset list");
+        assert!(!preset_out.is_empty());
+
+        let stem_out = execute_cli(&DnamCli {
+            workspace: dir.clone(),
+            command: Some(DnamCommand::Stem {
+                action: workspace_cmd::StemAction::List {
+                    model: "m1".to_string(),
+                },
+            }),
+        })
+        .expect("stem list");
+        assert!(!stem_out.is_empty());
+
+        let cap_out = execute_cli(&DnamCli {
+            workspace: dir.clone(),
+            command: Some(DnamCommand::Capture {
+                action: capture_cmd::CaptureAction::Backends,
+            }),
+        })
+        .expect("capture backends");
+        assert!(cap_out.contains("anagram"));
+
+        let train_out = execute_cli(&DnamCli {
+            workspace: dir.clone(),
+            command: Some(DnamCommand::Train {
+                model: Some("m1".to_string()),
+                all_models: false,
+                epochs: Some(1),
+                from_scratch: true,
+                audit_only: false,
+                force_tier2: false,
+                topology: None,
+                backend: None,
+                device: None,
+                precision: None,
+                unsigned: true,
+                dry_run: true,
+            }),
+        })
+        .expect("train dry run");
+        assert!(train_out.contains("Wrote training request JSON"));
+
+        let studio_out = execute_cli(&DnamCli {
+            workspace: dir.clone(),
+            command: Some(DnamCommand::Studio {
+                headless_check: true,
+            }),
+        })
+        .expect("studio headless_check");
+        assert!(!studio_out.is_empty());
+
         let mut header = DnamJsonHeader::default_reference(false);
         let arena = vec![0u8; ARENA_OFFSET_ULTRA_END as usize];
         let c_bytes =

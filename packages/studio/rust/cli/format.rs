@@ -115,6 +115,7 @@ pub fn format_calibration_step2_panel(step1: &Step1CalibrationMetrics) -> String
          Step 2/2 — Engaged Hot-Corner & System-Identification Probe\n\
          • Engage the pedal/device at its hottest setting (at locked {:+.1} dB Send Gain):\n\
            - Drive / Preamp / Amp: Set Drive / Gain / Level to maximum.\n\
+           - Envelope / Resonant Filter: Set Sensitivity / Env Amount to maximum and Cutoff to minimum.\n\
            - Delay / Echo / Reverb: Set Feedback / Repeats and Mix to maximum.\n\
          • Measures soft-knee onset, saturation/clipping rail, resonant peaks, LFO rate,\n\
            and reverb/delay tail across the full input range to synthesize the model's\n\

@@ -272,6 +272,11 @@ tier = "Full"
 ranges = []
 switches = []
 presets = []
+[capture]
+backend = "usb"
+device_id = "anagram_0"
+calibrated_latency_samples = 128
+noise_floor_dbfs = -92.0
 [[stems]]
 stem_id = "s0"
 dry_wav_path = "models/test_m/stems/input.wav"
@@ -285,7 +290,13 @@ snr_db = 40.0
         let parsed: ModelManifest = toml::from_str(toml_str).expect("parse model manifest");
         assert_eq!(parsed.output_mode, "stereo");
         assert_eq!(parsed.topology, "auto");
-        assert_eq!(parsed.capture.backend, "software");
+        assert_eq!(parsed.capture.backend, "usb");
+        assert!(parsed.capture.auto_unity_leveling);
+        assert_eq!(parsed.capture.leveling_metric, "rms_dbfs");
+        assert_eq!(parsed.capture.blend_mode, "auto");
+        assert!((parsed.capture.default_blend - 1.0).abs() < 1e-6);
         assert_eq!(parsed.stems[0].noise_floor_dbfs, -96.0);
+        let def_cap = CaptureSettings::default();
+        assert_eq!(def_cap.backend, "software");
     }
 }

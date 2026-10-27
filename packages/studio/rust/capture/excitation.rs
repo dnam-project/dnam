@@ -348,19 +348,28 @@ pub fn analyze_probe_for_excitation(
     }
 }
 
-/// Generates a multi-band dry excitation signal tailored to an optional [`TargetExcitationProfile`].
+/// Generates a universal multi-band dry excitation signal tailored to an optional
+/// [`TargetExcitationProfile`] that simultaneously excites nonlinear amplifiers, preamps,
+/// overdrives, distortions, fuzzes, compressors, envelope/resonant filters, modulation effects,
+/// delays, reverbs, and speaker cabinets—or complete multi-effect signal chains—without relying on
+/// control-name heuristics.
 ///
 /// Structure:
 /// 1. Leading 3-pulse asymmetric alignment burst + settling silence ([`synth_alignment_pulses`]).
-/// 2. Core 3-section excitation body spanning both Zone A (`[knee_amplitude_lin, saturation_ceiling_lin]`)
-///    and Zone B (`[saturation_ceiling_lin, 0.98]` post-clipping overdrive & full-scale headroom):
-///    - **Section 1 (0..35%):** Logarithmic sweeps (`25 Hz -> 14 kHz`) modulated across Zone A and Zone B,
+/// 2. Core 3-section excitation body spanning sub-threshold envelope ballistics (`-48 dBFS`),
+///    Zone A (`[knee_amplitude_lin, saturation_ceiling_lin]`), and Zone B
+///    (`[saturation_ceiling_lin, 0.98]` post-clipping overdrive & full-scale headroom):
+///    - **Section 1 (0..35%):** Logarithmic sweeps (`20 Hz -> 20 kHz`) modulated across Zone A and Zone B,
 ///      plus a steady phase-locking harmonic carrier at `dominant_resonance_hz` when `detected_lfo_hz > 0.15`.
-///    - **Section 2 (35..70%):** Transient velocity ladder of root+fifth+octave dyads (`55 Hz .. 440 Hz`)
-///      stepping across `[0.45 * knee_amplitude_lin, saturation_ceiling_lin]` and `[saturation_ceiling_lin, 0.98]`,
-///      with `2x` stride silent echo-isolation gaps when `has_delay_or_reverb_tail` is true.
-///    - **Section 3 (70..100%):** Dynamic `sin^2` swell (`0 -> 0.98 -> 0`) combining a resonance-centered
-///      CCIF two-tone (`f_res`, `f_res + 80 Hz`) and a 16-tone Schroeder-phase multitone.
+///    - **Section 2 (35..70%):** 8-step velocity & ballistic plateau ladder spanning `-42 dBFS` (`0.008`)
+///      through `knee` and `sat` up to `0.98` (`-0.18 dBFS`) on root+fifth+octave dyads (`55 Hz .. 440 Hz`)
+///      combined with a 12-tone Schroeder-phase broadband harmonic cluster (`120 Hz .. 7.2 kHz`),
+///      featuring a `1.2 ms` plosive Attack onset, a `55%` sustained flat plateau, a `32 ms` exponential
+///      decay, and a release listening gap with a `-46 dBFS` broadband release-tracking probe (or true
+///      silence when `has_delay_or_reverb_tail` is `true`).
+///    - **Section 3 (70..100%):** Dual-regime dynamic swell (`-48 dBFS -> knee -> 0.98 -> knee -> -48 dBFS`)
+///      combining a resonance-centered CCIF two-tone (`f_res`, `f_res + 80 Hz`), a wide-band CCIF pair,
+///      and a 24-tone Schroeder-phase multitone.
 /// 3. Trailing silent window for per-stem `noise_floor_dbfs` and tail decay measurement.
 pub fn generate_excitation_signal_with_profile(
     sample_rate_hz: u32,
@@ -424,10 +433,10 @@ pub fn generate_excitation_signal_with_profile(
             // Zone A in first half (knee -> sat), Zone B in second half (sat -> 0.98 full scale)
             let env_sw = if frac < 0.5 {
                 let u = frac * 2.0;
-                knee + (sat - knee) * (0.5 - 0.5 * (TAU * u).cos())
+                knee + (sat - knee) * (0.5 - 0.5 * (TAU * 2.0 * u).cos())
             } else {
                 let u = (frac - 0.5) * 2.0;
-                sat + (0.98 - sat) * (0.5 - 0.5 * (PI * u).cos())
+                sat + (0.98 - sat) * (0.5 - 0.5 * (TAU * u).cos())
             };
             let phi_sw = TAU * f_start * (((k_sw * t1).exp() - 1.0) / k_sw);
             body[i] = env_sw * phi_sw.sin();
@@ -443,71 +452,91 @@ pub fn generate_excitation_signal_with_profile(
         }
     }
 
-    // Section 2 (35..70%): Universal 7-Octave (27.5 Hz A0 .. 3520 Hz A7) & Multi-Articulation Velocity Ladder
+    // Section 2 (35..70%): 8-step velocity & ballistic plateau ladder (-42 dBFS .. 0.98)
     let n2 = s2_end.saturating_sub(s1_end);
     if n2 > 0 {
-        let notes_hz: [f32; 16] = [
-            27.50, 36.71, 48.99, 65.41, 87.31, 110.00, 146.83, 196.00, 261.63, 349.23, 440.00,
-            587.33, 783.99, 1_046.50, 1_760.00, 3_520.00,
+        let notes_hz: [f32; 8] = [55.00, 82.41, 110.00, 146.83, 196.00, 246.94, 329.63, 440.00];
+        let step_levels: [f32; 8] = [
+            0.008,
+            0.032,
+            (0.45 * knee).max(0.065),
+            knee,
+            0.5 * (knee + sat),
+            sat,
+            0.5 * (sat + 0.98),
+            0.98,
         ];
-        let burst_len = ((0.18 * fs).round() as usize).max(16).min((n2 / 4).max(16));
-        let stride = if prof.has_delay_or_reverb_tail {
-            (burst_len * 2).max(1)
+        let n_steps = step_levels.len();
+        let stride = (n2 / n_steps).max(1);
+        let burst_len = if prof.has_delay_or_reverb_tail {
+            (stride / 2).max(1)
         } else {
-            burst_len.max(1)
+            ((stride * 72) / 100).max(1)
         };
-        let vel_lo = (0.45 * knee).max(0.04);
         let nyq_guard = 0.45 * fs;
-        let mut b_idx = 0_usize;
-        let mut start_idx = 0_usize;
-        while start_idx < n2 {
-            let end_idx = (start_idx + burst_len).min(n2);
+        let f_hi_max = nyq_guard.clamp(240.0, 7_200.0);
+        let n_harm = 12_usize;
+        let harm_log_ratio = (f_hi_max / 120.0_f32).ln();
+
+        for (b_idx, &vel) in step_levels.iter().enumerate() {
+            let st = b_idx * stride;
+            if st >= n2 {
+                break;
+            }
+            let en = (st + stride).min(n2);
+            let span = en - st;
+            let act = burst_len.min(span);
+            let plat_len = (act * 55) / 100;
             let f_root = notes_hz[b_idx % notes_hz.len()].min(nyq_guard * 0.45);
-            let f_third = (f_root * 1.259_921).min(nyq_guard);
             let f_fifth = (f_root * 1.498_307_1).min(nyq_guard);
             let f_oct = (f_root * 2.0).min(nyq_guard);
-            // Coprime velocity stride (gcd(5, 8) = 1) decouples 7-octave pitch register from velocity level
-            let step_pos = (b_idx * 5 + (b_idx / notes_hz.len())) % 8;
-            // First 5 steps densely resolve Zone A [vel_lo, sat]; steps 5..7 drive Zone B [sat, 0.98]
-            let vel = if step_pos < 5 {
-                vel_lo + (sat - vel_lo) * ((step_pos as f32) / 4.0)
-            } else {
-                sat + (0.98 - sat) * (((step_pos - 4) as f32) / 3.0)
-            };
-            let is_sag_sustain = !prof.has_delay_or_reverb_tail && b_idx.is_multiple_of(4);
-            let is_percussive = !is_sag_sustain && b_idx.is_multiple_of(3);
-            let (atk_tau, decay_tau) = if prof.has_delay_or_reverb_tail {
-                (0.0008, 0.030)
-            } else if is_sag_sustain {
-                (0.0100, 0.250)
-            } else if is_percussive {
-                (0.0003, 0.035)
-            } else {
-                (0.0020, 0.120)
-            };
-            let active_len = if is_sag_sustain {
-                ((end_idx - start_idx) * 2 / 3).max(1)
-            } else {
-                end_idx - start_idx
-            };
-            for k in 0..active_len {
+
+            for k in 0..span {
                 let tb = (k as f32) / fs;
-                let env_b = (1.0 - (-tb / atk_tau).exp()) * (-tb / decay_tau).exp();
-                let wave_b = 0.50 * (TAU * f_root * tb).sin()
-                    + 0.20 * (TAU * f_third * tb + 0.2).sin()
-                    + 0.20 * (TAU * f_fifth * tb + 0.5).sin()
-                    + 0.10 * (TAU * f_oct * tb + 0.9).sin();
-                body[s1_end + start_idx + k] = vel * env_b * wave_b;
+                let dyad = 0.55 * (TAU * f_root * tb).sin()
+                    + 0.30 * (TAU * f_fifth * tb + 0.3).sin()
+                    + 0.15 * (TAU * f_oct * tb + 0.7).sin();
+                let mut sch_sum = 0.0_f32;
+                let mut sch_cnt = 0.0_f32;
+                for h in 1..=n_harm {
+                    let frac_h = ((h - 1) as f32) / ((n_harm - 1).max(1) as f32);
+                    let fh = 120.0 * (frac_h * harm_log_ratio).exp();
+                    if fh >= nyq_guard {
+                        break;
+                    }
+                    let ph = PI * (h as f32) * ((h - 1) as f32) / (n_harm as f32);
+                    sch_sum += (TAU * fh * tb + ph).cos();
+                    sch_cnt += 1.0;
+                }
+                let sch_norm = if sch_cnt > 0.0 {
+                    (sch_sum / sch_cnt.sqrt()).clamp(-1.0, 1.0)
+                } else {
+                    0.0
+                };
+                let carrier = 0.75 * dyad + 0.25 * sch_norm;
+                let env = if k < act {
+                    let atk = 1.0 - (-tb / 0.0012).exp();
+                    let rel_tail = if k < plat_len {
+                        1.0
+                    } else {
+                        let t_dec = ((k - plat_len) as f32) / fs;
+                        (-t_dec / 0.032).exp()
+                    };
+                    vel * atk * rel_tail
+                } else if !prof.has_delay_or_reverb_tail {
+                    0.005
+                } else {
+                    0.0
+                };
+                body[s1_end + st + k] = env * carrier;
             }
-            b_idx += 1;
-            start_idx += stride;
         }
     }
 
-    // Section 3 (70..100%): Dynamic sin^2 swell + Dual CCIF/SMPTE IMD + 24-tone 20 Hz..20 kHz Schroeder multitone
+    // Section 3 (70..100%): Dual-regime dynamic swell (-48 dBFS -> knee -> 0.98 -> knee -> -48 dBFS)
+    // combining resonance-centered CCIF two-tone and a 24-tone Schroeder-phase multitone.
     let n3 = n_body.saturating_sub(s2_end);
     if n3 > 0 {
-        let d3 = ((n3 as f32) / fs).max(1e-4);
         let f_max_mt = (0.45 * fs).clamp(40.0, 20_000.0);
         let f_ccif = res_hz.clamp(120.0, (0.40 * fs).min(8_000.0));
         let f_air = (0.30 * fs).min(11_000.0);
@@ -531,14 +560,26 @@ pub fn generate_excitation_signal_with_profile(
             *mt_val = sum_t;
             max_mt = max_mt.max(sum_t.abs());
         }
+        let low_floor = 0.004_f32;
+        let log_knee_ratio = (knee.max(low_floor) / low_floor).ln();
         for (j, &mt_raw) in multitone.iter().enumerate() {
             let t3 = (j as f32) / fs;
-            let s_val = (PI * t3 / d3).sin();
-            let swell_env = s_val * s_val;
+            let u = (j as f32) / (n3.max(1) as f32);
+            let swell_env = if u < 0.15 {
+                let r = u / 0.15;
+                low_floor * (r * log_knee_ratio).exp()
+            } else if u <= 0.85 {
+                let r = (u - 0.15) / 0.70;
+                let s_val = (PI * r).sin();
+                knee + (0.98 - knee) * (s_val * s_val)
+            } else {
+                let r = ((1.0 - u) / 0.15).clamp(0.0, 1.0);
+                low_floor * (r * log_knee_ratio).exp()
+            };
             let ccif_res = 0.30 * ((TAU * f_ccif * t3).sin() + (TAU * (f_ccif + 80.0) * t3).sin());
             let ccif_wide = 0.15 * ((TAU * 60.0 * t3).sin() + (TAU * f_air * t3).sin());
             let mt_norm = mt_raw / max_mt;
-            body[s2_end + j] = 0.98 * swell_env * (0.55 * mt_norm + ccif_res + ccif_wide);
+            body[s2_end + j] = swell_env * (0.55 * mt_norm + ccif_res + ccif_wide);
         }
     }
 
@@ -647,5 +688,67 @@ mod tests {
 
         let tailored = generate_excitation_signal_with_profile(48_000, 8_192, Some(&prof));
         assert_eq!(tailored.len(), 8_192);
+    }
+
+    #[test]
+    fn test_universal_excitation_saturation_density_and_envelope_ballistic_invariants() {
+        let sr = 48_000_u32;
+        // 1. Header pulses must be smooth Hann-windowed chirps (zero at boundaries, no step-tick spike)
+        let hdr = synth_alignment_pulses(sr, 21_600);
+        assert_eq!(hdr[0], 0.0);
+        assert_eq!(*hdr.last().expect("non-empty"), 0.0);
+        let max_hdr_diff = hdr
+            .windows(2)
+            .map(|w| (w[1] - w[0]).abs())
+            .fold(0.0_f32, f32::max);
+        assert!(
+            max_hdr_diff < 0.75,
+            "Alignment header must not contain a 2-sample +0.95/-0.95 step-tick discontinuity (got max diff {max_hdr_diff})"
+        );
+
+        // 2. Universal excitation body must simultaneously deliver full-scale saturation drive
+        // (peak >= 0.97, RMS >= -13.5 dBFS, >= 5% samples >= -6 dBFS, >= 1.5% samples >= -3 dBFS)
+        // AND sub-threshold / release-probe envelope ballistics coverage ([-50 dBFS, -24 dBFS]).
+        let n = (sr as usize) * 4;
+        let sig = generate_excitation_signal_with_profile(sr, n, None);
+        let body_start = (0.55 * (sr as f32)) as usize;
+        let body_end = n - ((0.50 * (sr as f32)) as usize);
+        let body = &sig[body_start..body_end];
+        let body_peak = body.iter().map(|&x| x.abs()).fold(0.0_f32, f32::max);
+        let body_rms = (body.iter().map(|&x| x * x).sum::<f32>() / (body.len() as f32)).sqrt();
+        let body_rms_dbfs = 20.0 * body_rms.log10();
+        let frac_ge_minus_6dbfs =
+            (body.iter().filter(|&&x| x.abs() >= 0.50).count() as f32) / (body.len() as f32);
+        let frac_ge_minus_3dbfs =
+            (body.iter().filter(|&&x| x.abs() >= 0.7079).count() as f32) / (body.len() as f32);
+        let frac_low_ballistic = (body
+            .iter()
+            .filter(|&&x| (0.002..=0.063).contains(&x.abs()))
+            .count() as f32)
+            / (body.len() as f32);
+
+        assert!(
+            body_peak >= 0.97,
+            "Expected full-scale Zone-B peak >= 0.97, got {body_peak}"
+        );
+        assert!(
+            body_rms_dbfs >= -13.5,
+            "Expected high-drive body RMS >= -13.5 dBFS, got {body_rms_dbfs} dBFS"
+        );
+        assert!(
+            frac_ge_minus_6dbfs >= 0.05,
+            "Expected >= 5% of body samples >= -6 dBFS for amp/fuzz saturation, got {}",
+            frac_ge_minus_6dbfs
+        );
+        assert!(
+            frac_ge_minus_3dbfs >= 0.015,
+            "Expected >= 1.5% of body samples >= -3 dBFS for top-end clipping, got {}",
+            frac_ge_minus_3dbfs
+        );
+        assert!(
+            frac_low_ballistic >= 0.05,
+            "Expected >= 5% of body samples in [-54 dBFS, -24 dBFS] for envelope-filter threshold & release probing, got {}",
+            frac_low_ballistic
+        );
     }
 }

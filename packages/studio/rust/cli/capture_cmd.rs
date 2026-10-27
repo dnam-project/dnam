@@ -11,7 +11,8 @@ use crate::capture::{
     compute_pcm_sha256, create_capture_backend_with_gain, estimate_subsample_lag_and_snr,
     generate_calibration_probe, generate_excitation_signal,
     generate_excitation_signal_with_profile, list_backend_devices, list_capture_backends,
-    measure_silent_window_noise_floor, query_cpal_devices, write_wav_24bit, write_wav_32bit_float,
+    measure_silent_window_noise_floor, query_cpal_devices, read_wav,
+    verify_and_polish_post_alignment, write_wav_24bit, write_wav_32bit_float,
 };
 use crate::cli::format::{self, StemPromptAction};
 use crate::error::{StudioError, StudioResult};
@@ -329,11 +330,16 @@ pub fn run_capture(workspace: &Path, action: &CaptureAction) -> StudioResult<Str
                     );
                     let profile = analyze_probe_for_excitation(&scaled_dry, &aligned_wet2, sr);
                     let raw_peak_dbfs = hot_analysis.measured_return_peak_dbfs;
+                    let locked_latency = if s1.latency_samples != 0 {
+                        s1.latency_samples
+                    } else {
+                        report.coarse_lag_samples
+                    };
                     let candidate = CalibrationResult {
                         backend: backend.clone(),
                         device_id: resolved_dev.clone(),
                         send_gain_db: initial_gain_db,
-                        latency_samples: report.coarse_lag_samples,
+                        latency_samples: locked_latency,
                         noise_floor_dbfs: s1.noise_floor_dbfs,
                         snr_db: report.snr_db,
                         unity_ref_dbfs: s1.unity_ref_dbfs,
@@ -540,10 +546,45 @@ pub fn run_capture(workspace: &Path, action: &CaptureAction) -> StudioResult<Str
                     StemPromptAction::Record => {}
                 }
 
-                let (aligned_wet, align, raw_peak_dbfs, raw_clipped_fraction) = loop {
+                let has_delay_trails = manifest.capture.supports_trails == Some(true)
+                    || manifest
+                        .capture
+                        .excitation_profile
+                        .as_ref()
+                        .is_some_and(|p| p.has_delay_or_reverb_tail);
+                let star_center_samples: Option<Vec<f32>> =
+                    if !has_delay_trails && step.stem_id != "stem_00_star_center" {
+                        let same_switch_wav = step.switches.iter().find_map(|(sw_id, &sw_idx)| {
+                            let cand = format!("stem_switch_{sw_id}_{sw_idx}");
+                            if sw_idx > 0 && step.stem_id != cand {
+                                read_wav(stems_dir.join(format!("{cand}.wav")))
+                                    .ok()
+                                    .map(|w| w.samples)
+                            } else {
+                                None
+                            }
+                        });
+                        same_switch_wav.or_else(|| {
+                            read_wav(stems_dir.join("stem_00_star_center.wav"))
+                                .ok()
+                                .map(|w| w.samples)
+                        })
+                    } else {
+                        None
+                    };
+
+                let (
+                    aligned_wet,
+                    align,
+                    raw_peak_dbfs,
+                    raw_clipped_fraction,
+                    res_lag_samples,
+                    verify_corr,
+                    verify_ref,
+                ) = loop {
                     let wet =
                         cap_backend.capture_stem(&dry, &step.normalized_ranges, &step.switches)?;
-                    let align = align_hardware_latency(
+                    let mut align = align_hardware_latency(
                         &dry,
                         &wet,
                         max_lag,
@@ -551,15 +592,42 @@ pub fn run_capture(workspace: &Path, action: &CaptureAction) -> StudioResult<Str
                         sr,
                         baseline_noise,
                     )?;
-                    let aligned_wet = apply_subsample_shift_fft(&wet, align.subsample_lag_samples);
-                    let raw_peak = aligned_wet
-                        .iter()
-                        .fold(1e-9_f32, |acc, &x| acc.max(x.abs()));
+                    let initial_aligned_wet =
+                        apply_subsample_shift_fft(&wet, align.subsample_lag_samples);
+                    let (aligned_wet, res_lag_samples, verify_corr, verify_ref) =
+                        if !has_delay_trails {
+                            let v = verify_and_polish_post_alignment(
+                                &dry,
+                                star_center_samples.as_deref(),
+                                &initial_aligned_wet,
+                                align.subsample_lag_samples,
+                                sr,
+                            );
+                            align.subsample_lag_samples = v.total_lag_samples;
+                            align.coarse_lag_samples = v.total_lag_samples.round() as i32;
+                            align.peak_correlation =
+                                align.peak_correlation.max(v.verification_correlation);
+                            (
+                                v.aligned_wet,
+                                v.residual_lag_samples,
+                                v.verification_correlation,
+                                v.best_reference,
+                            )
+                        } else {
+                            (initial_aligned_wet, 0_i32, align.peak_correlation, "locked")
+                        };
+                    let body_start = if aligned_wet.len() >= (sr as usize) * 4 {
+                        ((0.20 * (sr as f32)).round() as usize).min(aligned_wet.len() / 8)
+                    } else {
+                        0
+                    };
+                    let body_slice = &aligned_wet[body_start..];
+                    let raw_peak = body_slice.iter().fold(1e-9_f32, |acc, &x| acc.max(x.abs()));
                     let raw_peak_dbfs = 20.0 * raw_peak.log10();
                     let raw_clipped_count =
-                        aligned_wet.iter().filter(|&&x| x.abs() >= clip_lin).count();
+                        body_slice.iter().filter(|&&x| x.abs() >= clip_lin).count();
                     let raw_clipped_fraction =
-                        (raw_clipped_count as f32) / (aligned_wet.len().max(1) as f32);
+                        (raw_clipped_count as f32) / (body_slice.len().max(1) as f32);
                     if is_step2_return_clipped(raw_peak_dbfs, raw_clipped_fraction)
                         && let Some(new_pad_db) = format::prompt_stem_clean_pad_on_clipping(
                             &step.stem_id,
@@ -583,7 +651,15 @@ pub fn run_capture(workspace: &Path, action: &CaptureAction) -> StudioResult<Str
                         active_clean_pad_db = new_pad_db;
                         continue;
                     }
-                    break (aligned_wet, align, raw_peak_dbfs, raw_clipped_fraction);
+                    break (
+                        aligned_wet,
+                        align,
+                        raw_peak_dbfs,
+                        raw_clipped_fraction,
+                        res_lag_samples,
+                        verify_corr,
+                        verify_ref,
+                    );
                 };
 
                 let makeup_db = active_clean_pad_db.abs();
@@ -629,8 +705,16 @@ pub fn run_capture(workspace: &Path, action: &CaptureAction) -> StudioResult<Str
                 } else {
                     String::new()
                 };
+                let align_tag = if !has_delay_trails && (res_lag_samples != 0 || verify_corr < 0.35)
+                {
+                    format!(
+                        " [WARN: ALIGNMENT res_lag={res_lag_samples:+} samp, corr={verify_corr:.3}]"
+                    )
+                } else {
+                    String::new()
+                };
                 let line = format!(
-                    "  - {}: usb_peak={raw_peak_dbfs:+.2} dBFS{clip_tag} | clean_pad={active_clean_pad_db:+.1} dB | f32_peak={restored_peak_dbfs:+.2} dBFS | lag={:.2} samp | snr={:.1} dB",
+                    "  - {}: usb_peak={raw_peak_dbfs:+.2} dBFS{clip_tag} | clean_pad={active_clean_pad_db:+.1} dB | f32_peak={restored_peak_dbfs:+.2} dBFS | lag={:.2} samp (res={res_lag_samples:+} samp, corr={verify_corr:.3} vs {verify_ref}){align_tag} | snr={:.1} dB",
                     step.stem_id, align.subsample_lag_samples, align.snr_db
                 );
                 eprintln!("{line}");
@@ -829,6 +913,26 @@ mod tests {
         assert!(!is_step2_return_clipped(-3.0, 0.0));
         assert!(is_step2_return_clipped(0.0, 0.01));
         assert!(is_step2_return_clipped(-0.02, 0.0));
+        assert!(is_real_hw_device("usb", "scarlett_2i2"));
+        assert!(!is_real_hw_device("software", "scarlett_2i2"));
+        assert!(!is_real_hw_device("usb", "loopback_default"));
+        let _ = resolve_effective_device("usb", "loopback_default");
+
+        let cal_s1_hot = run_capture(
+            &dir,
+            &CaptureAction::Calibrate {
+                model: Some("m1".to_string()),
+                backend: "software".to_string(),
+                device: "loopback_default".to_string(),
+                send_gain_db: Some(48.0),
+                clean_pad_db: 0.0,
+                step: Some(1),
+                yes: true,
+            },
+        )
+        .expect("calibrate step 1 hot auto-pad");
+        assert!(cal_s1_hot.contains("send_gain_db"));
+
         let cal_hot = run_capture(
             &dir,
             &CaptureAction::Calibrate {
@@ -843,6 +947,44 @@ mod tests {
         )
         .expect("calibrate step 2 hot");
         assert!(cal_hot.contains("hot_corner_clipped_fraction"));
+
+        let cal_both_hot = run_capture(
+            &dir,
+            &CaptureAction::Calibrate {
+                model: Some("m1".to_string()),
+                backend: "software".to_string(),
+                device: "loopback_default".to_string(),
+                send_gain_db: Some(48.0),
+                clean_pad_db: 0.0,
+                step: None,
+                yes: true,
+            },
+        )
+        .expect("calibrate both steps hot");
+        assert!(cal_both_hot.contains("hot_corner_clipped_fraction"));
+
+        // Add a switch control and record a specific stem (--stem) to exercise switch reference & stem filter
+        proj.add_switch_control(
+            "m1",
+            crate::project::parse_compact_switch_spec("mode=LP,BP:0").expect("switch"),
+        )
+        .expect("add switch");
+        let rec_specific = run_capture(
+            &dir,
+            &CaptureAction::Record {
+                model: Some("m1".to_string()),
+                backend: Some("software".to_string()),
+                samples: 1024,
+                stem: Some("stem_switch_mode_1".to_string()),
+                max_stems: None,
+                clean_pad_db: 0.0,
+                yes: true,
+                countdown_sec: 0.0,
+                all_stems: true,
+            },
+        )
+        .expect("record specific switch stem");
+        assert!(rec_specific.contains("stem_switch_mode_1"));
         let _ = fs::remove_dir_all(&dir);
     }
 }

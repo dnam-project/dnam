@@ -4,7 +4,7 @@
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -416,14 +416,23 @@ pub fn cpal_play_and_record(
         .collect::<Vec<_>>()
         .into();
     let rec_cursor = Arc::new(AtomicUsize::new(0));
+    let streams_armed = Arc::new(AtomicBool::new(false));
+    let out_started = Arc::new(AtomicBool::new(false));
 
     let play_dry = Arc::clone(&scaled_dry);
     let play_pos = Arc::clone(&play_cursor);
+    let out_armed = Arc::clone(&streams_armed);
+    let out_began = Arc::clone(&out_started);
     let out_ch_usize = out_channels as usize;
     let out_stream = out_dev
         .build_output_stream(
             out_config,
             move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
+                if !out_armed.load(Ordering::Acquire) {
+                    data.fill(0.0);
+                    return;
+                }
+                out_began.store(true, Ordering::Release);
                 let mut pos = play_pos.load(Ordering::Relaxed);
                 for frame in data.chunks_mut(out_ch_usize) {
                     frame.fill(0.0);
@@ -443,11 +452,15 @@ pub fn cpal_play_and_record(
 
     let rec_buf = Arc::clone(&recorded_slots);
     let rec_pos = Arc::clone(&rec_cursor);
+    let in_began = Arc::clone(&out_started);
     let in_ch_usize = in_channels as usize;
     let in_stream = in_dev
         .build_input_stream(
             in_config,
             move |data: &[f32], _: &cpal::InputCallbackInfo| {
+                if !in_began.load(Ordering::Acquire) {
+                    return;
+                }
                 let mut pos = rec_pos.load(Ordering::Relaxed);
                 if pos < target_frames {
                     for frame in data.chunks(in_ch_usize) {
@@ -474,6 +487,7 @@ pub fn cpal_play_and_record(
     out_stream
         .play()
         .map_err(|e| StudioError::Audio(format!("Failed to start cpal output stream: {e}")))?;
+    streams_armed.store(true, Ordering::Release);
 
     let expected_dur =
         Duration::from_secs_f64((target_frames as f64) / (sample_rate_hz.max(1) as f64));
