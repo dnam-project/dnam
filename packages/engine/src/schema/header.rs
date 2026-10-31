@@ -28,6 +28,9 @@ impl SchemaVersion {
     /// Initial `1.0.0` schema release.
     pub const V1_0_0: Self = Self::new(1, 0, 0);
 
+    /// `1.1.0` schema release adding optional `.dnam-ckpt` Arena 4 (`FLAG_HAS_CALIB_STATS`).
+    pub const V1_1_0: Self = Self::new(1, 1, 0);
+
     /// Current container schema version supported by this engine build.
     pub const CURRENT: Self = Self::new(
         crate::container::CONTAINER_VERSION_MAJOR,
@@ -132,7 +135,7 @@ impl SchemaVersion {
 }
 
 fn default_version() -> String {
-    SchemaVersion::CURRENT.as_semver_string()
+    SchemaVersion::V1_0_0.as_semver_string()
 }
 
 fn default_container_kind() -> String {

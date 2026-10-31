@@ -8,7 +8,7 @@
 - [`rust/capture.rs`](rust/capture.rs) & [`rust/capture/`](rust/capture/wav.rs): 16/24/32-bit PCM & 32-bit float WAV I/O, excitation probe synthesis, sub-sample lag/SNR/USB-jitter alignment (with clipped fuzz proxy fallback), and `software`/`usb`/`anagram` capture backends.
 - [`rust/runner.rs`](rust/runner.rs): Native hardware SIMD (`dnam-engine`) `.dnam` container inspector and 24-bit WAV renderer.
 - [`rust/trainer.rs`](rust/trainer.rs) & [`rust/trainer/`](rust/trainer/env_manager.rs): `TrainerEnvManager` (`uv` auto-discovery & `<config_dir>/trainer-venv`) and `TrainerBridge` (`--request-json` + JSONL stream).
-- [`rust/ipc.rs`](rust/ipc.rs) & [`rust/cli.rs`](rust/cli.rs): Tauri v2 `StudioIpcHandler` and `clap` v4 `dnam` CLI router.
+- [`rust/ipc.rs`](rust/ipc.rs) & [`rust/cli.rs`](rust/cli.rs): Tauri v2 `StudioIpcHandler` and `clap` v4 `dnam` CLI router (`workspace_cmd`, `capture_cmd`, `train_cmd`, `cache_cmd`).
 - [`src/`](src/index.ts) & [`tests/`](tests/): TypeScript SDK ([`binary.ts`](src/binary.ts), [`ipc.ts`](src/ipc.ts), [`host.ts`](src/host.ts) `TauriNativeAudioHost`), Tauri v2 React 19 UI ([`src/ui/StudioApp.tsx`](src/ui/StudioApp.tsx), [`src/ui/studio_store.ts`](src/ui/studio_store.ts)), co-located `src/**/*.test.ts(x)` unit tests, [`tests/integration/`](tests/integration/) Vitest Browser integration tests, and [`tests/e2e/studio_desktop.spec.ts`](tests/e2e/studio_desktop.spec.ts) (`@playwright/test`).
 
 ## 2. Guides & Verification

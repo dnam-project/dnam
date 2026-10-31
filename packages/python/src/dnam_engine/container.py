@@ -201,6 +201,16 @@ class DnamContainer:
         """Returns a read-only zero-copy `memoryview` of the 64-byte aligned tensor arena."""
         return memoryview(self._arena_bytes)
 
+    @property
+    def arena4_bytes(self) -> bytes | None:
+        """Returns the `.dnam-ckpt` `Arena 4` (`DNCA`) calibration stats bytes if present."""
+        if not self.is_checkpoint or not self._preamble.has_calib_stats:
+            return None
+        arena3_end = 36_224 + self._preamble.num_ckpt_stems * 151_296
+        if len(self._arena_bytes) <= arena3_end:
+            return None
+        return self._arena_bytes[arena3_end:]
+
     def to_bytes(self) -> bytes:
         """Returns the complete binary container bytes."""
         return self._raw_bytes

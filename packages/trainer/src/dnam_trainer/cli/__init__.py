@@ -49,6 +49,8 @@ def train_cmd(
     precision: PrecisionPolicy | None = None,
     unsigned: bool = False,
     creator_seed_hex: str | None = None,
+    no_cache: bool = False,
+    cache_max_gb: float | None = None,
     event_format: EventFormat = "jsonl",
     status_json: bool = False,
 ) -> None:
@@ -82,6 +84,8 @@ def train_cmd(
         precision=precision,
         unsigned=unsigned,
         creator_seed_hex=creator_seed_hex,
+        no_cache=no_cache,
+        cache_max_gb=cache_max_gb,
         event_format=event_format,
     )
 

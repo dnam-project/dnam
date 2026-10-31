@@ -28,6 +28,16 @@ def cubic_lagrange_weights_torch(mu: Tensor) -> tuple[Tensor, Tensor, Tensor, Te
     return w_m1, w_0, w_p1, w_p2
 
 
+def _gather_last_dim_i32(signal: Tensor, idx_i32: Tensor) -> Tensor:
+    """Gathers from the last dimension of `signal` `(..., L)` using 32-bit `int32` indices."""
+    seq_len = signal.shape[-1]
+    blk_len = idx_i32.shape[-1]
+    flat_sig = signal.reshape(-1, seq_len)
+    flat_idx = idx_i32.reshape(-1, blk_len)
+    row_idx = torch.arange(flat_sig.shape[0], device=signal.device, dtype=torch.int32).unsqueeze(1)
+    return flat_sig[row_idx, flat_idx].reshape(idx_i32.shape)
+
+
 def cubic_lagrange_read_torch(
     signal: Tensor,
     tau_samples: Tensor | float,
@@ -48,10 +58,10 @@ def cubic_lagrange_read_torch(
 
     # CL-06: Enforce causal minimum delay >= 4.0 samples
     tau_clamped = torch.clamp(tau_t, min=4.0)
-    d_int = torch.floor(tau_clamped).to(dtype=torch.long)
+    d_int = torch.floor(tau_clamped).to(dtype=torch.int32)
     mu = tau_clamped - d_int.to(dtype=signal.dtype)
 
-    n_idx = torch.arange(seq_len, device=signal.device, dtype=torch.long)
+    n_idx = torch.arange(seq_len, device=signal.device, dtype=torch.int32)
     base_idx = n_idx - d_int
 
     idx_m1 = base_idx + 1
@@ -62,7 +72,7 @@ def cubic_lagrange_read_torch(
     def _gather_causal(idx: Tensor) -> Tensor:
         valid = (idx >= 0) & (idx < seq_len)
         safe_idx = torch.clamp(idx, 0, max(0, seq_len - 1))
-        gathered = torch.gather(signal, -1, safe_idx)
+        gathered = _gather_last_dim_i32(signal, safe_idx)
         return torch.where(valid, gathered, torch.zeros_like(gathered))
 
     w_m1, w_0, w_p1, w_p2 = cubic_lagrange_weights_torch(mu)
@@ -188,7 +198,7 @@ def givens_householder_matrix_torch(
     v_vec: Tensor | None = None,
     *,
     num_lines: int = 8,
-    dtype: torch.dtype = torch.float64,
+    dtype: torch.dtype = torch.float32,
     device: torch.device | None = None,
 ) -> Tensor:
     """Constructs the $O(M)$ orthogonal stereo feedback matrix `U(psi, v) = H(v) @ R(psi)`
@@ -374,8 +384,10 @@ class DifferentiableModulatedUfdn(nn.Module):
             z12 = torch.zeros((bsz, 12, seq_len), dtype=inp.dtype, device=inp.device)
             return z12, inp
 
-        work_dtype = torch.float64 if inp.dtype == torch.float64 else torch.float32
-        dev_type = inp.device.type if inp.device.type in ("cuda", "cpu", "mps") else "cpu"
+        work_dtype = torch.float32
+        dev_type = (
+            inp.device.type if inp.device.type in ("cuda", "cpu", "mps", "xla", "hpu") else "cpu"
+        )
 
         with torch.autocast(device_type=dev_type, enabled=False):
             x_st = inp.to(dtype=work_dtype)
@@ -416,7 +428,7 @@ class DifferentiableModulatedUfdn(nn.Module):
                 device=x_st.device,
             )
 
-            d_int = torch.floor(taus).to(dtype=torch.long)
+            d_int = torch.floor(taus).to(dtype=torch.int32)
             mu = (taus - d_int.to(dtype=work_dtype)).view(1, self.num_lines, 1)
             w_m1, w_0, w_p1, w_p2 = cubic_lagrange_weights_torch(mu)
 
@@ -429,17 +441,17 @@ class DifferentiableModulatedUfdn(nn.Module):
             for t0 in range(0, seq_len, b_causal):
                 t1 = min(seq_len, t0 + b_causal)
                 blk_len = t1 - t0
-                t_offsets = torch.arange(blk_len, device=x_st.device, dtype=torch.long).view(
+                t_offsets = torch.arange(blk_len, device=x_st.device, dtype=torch.int32).view(
                     1, 1, blk_len
                 )
                 base_pos = (hist_pad + t_offsets - d_int.view(1, self.num_lines, 1)).expand(
                     bsz, self.num_lines, blk_len
                 )
 
-                s_m1 = torch.gather(hist_win, -1, base_pos + 1)
-                s_0 = torch.gather(hist_win, -1, base_pos)
-                s_p1 = torch.gather(hist_win, -1, base_pos - 1)
-                s_p2 = torch.gather(hist_win, -1, base_pos - 2)
+                s_m1 = _gather_last_dim_i32(hist_win, base_pos + 1)
+                s_0 = _gather_last_dim_i32(hist_win, base_pos)
+                s_p1 = _gather_last_dim_i32(hist_win, base_pos - 1)
+                s_p2 = _gather_last_dim_i32(hist_win, base_pos - 2)
                 delayed_blk = w_m1 * s_m1 + w_0 * s_0 + w_p1 * s_p1 + w_p2 * s_p2
 
                 mixed_blk = torch.einsum("mn,bnl->bml", u_mat, delayed_blk)
@@ -516,8 +528,10 @@ class DifferentiableModulatedUfdn(nn.Module):
         if not self.active:
             return stereo_in
 
-        work_dtype = torch.float64 if inp.dtype == torch.float64 else torch.float32
-        dev_type = inp.device.type if inp.device.type in ("cuda", "cpu", "mps") else "cpu"
+        work_dtype = torch.float32
+        dev_type = (
+            inp.device.type if inp.device.type in ("cuda", "cpu", "mps", "xla", "hpu") else "cpu"
+        )
 
         _, wet_stereo = self.forward_tank_lines(
             inp,

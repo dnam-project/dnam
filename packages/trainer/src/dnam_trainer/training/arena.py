@@ -24,6 +24,7 @@ from dnam_engine.schema import (
     StemRegistryEntry,
     TensorSliceEntry,
 )
+from dnam_trainer.training.calib_cache import Arena4CalibrationData
 from dnam_trainer.training.kronecker_head import (
     ARENA3_STEM_BYTE_LEN,
     MultiTierKroneckerHeadSolution,
@@ -355,13 +356,14 @@ def build_signed_dnam_containers(
     *,
     creator_seed_hex: str | None = None,
     signer_id: str = "dnam-creator",
+    arena4_calib: Arena4CalibrationData | None = None,
 ) -> tuple[DnamContainer, DnamContainer]:
     """Builds both the deployment `.dnam` (`DNAM`) and single-checkpoint `.dnam-ckpt` (`DNCK`)
     containers.
 
     `Arena 0..2` (`36,224 B`) are bit-identical across `.dnam` and `.dnam-ckpt`.
     `.dnam-ckpt` appends `Arena 3` (`151,296 B/stem`) containing `uplo='U'` `float64`
-    audio statistics.
+    audio statistics, and optional `Arena 4` (`DNCA` 64-byte aligned calibration stats).
     """
     arena012 = arena_layout.to_arena012_bytes()
     t_dir = default_tensor_directory()
@@ -371,6 +373,7 @@ def build_signed_dnam_containers(
     # prefix CRCs)
     deploy_hdr = base_header.model_copy(
         update={
+            "version": "1.0.0",
             "container_kind": "dnam",
             "tensor_directory": t_dir,
             "stems_registry": None,
@@ -391,7 +394,7 @@ def build_signed_dnam_containers(
     else:
         dnam_container = dnam_unsigned
 
-    # 2. Build .dnam-ckpt header & Arena 0..3 payload using bit-identical final_arena012
+    # 2. Build .dnam-ckpt header & Arena 0..3(+4) payload using bit-identical final_arena012
     registry_entries: list[StemRegistryEntry] = []
     arena3_chunks: list[bytes] = [final_arena012]
     for idx, stat in enumerate(stem_stats):
@@ -401,9 +404,11 @@ def build_signed_dnam_containers(
 
     arena0123 = b"".join(arena3_chunks)
     assert len(arena0123) == ARENA_OFFSET_ULTRA_END + len(stem_stats) * ARENA3_STEM_BYTE_LEN
+    arena01234 = arena0123 + arena4_calib.to_bytes() if arena4_calib is not None else arena0123
 
     ckpt_hdr = dnam_unsigned.header.model_copy(
         update={
+            "version": "1.1.0" if arena4_calib is not None else dnam_unsigned.header.version,
             "container_kind": "dnam-ckpt",
             "tensor_directory": t_dir,
             "stems_registry": registry_entries,
@@ -412,7 +417,7 @@ def build_signed_dnam_containers(
     )
     ckpt_unsigned = DnamContainer.build(
         ckpt_hdr,
-        arena0123,
+        arena01234,
         plaintext_arena_crc_source=final_arena012,
     )
     if creator_seed_hex is not None:
@@ -424,7 +429,7 @@ def build_signed_dnam_containers(
         )
         ckpt_container = DnamContainer.build(
             signed_ckpt_hdr,
-            arena0123,
+            arena01234,
             plaintext_arena_crc_source=final_arena012,
         )
     else:

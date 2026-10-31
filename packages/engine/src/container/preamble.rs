@@ -6,7 +6,8 @@ use crate::schema::DnamError;
 
 use super::{
     CONTAINER_VERSION_MAJOR, CONTAINER_VERSION_MINOR, DNAM_MAGIC, DNCK_MAGIC, FLAG_CORE2_ACTIVE,
-    FLAG_ENCRYPTED_ARENA, FLAG_HAS_SIGNATURES, FLAG_LFO_ENV_ACTIVE, FLAG_STEREO_OUT,
+    FLAG_ENCRYPTED_ARENA, FLAG_HAS_CALIB_STATS, FLAG_HAS_SIGNATURES, FLAG_LFO_ENV_ACTIVE,
+    FLAG_STEREO_OUT,
 };
 
 /// Fixed 64-byte binary preamble (`#[repr(C, align(64))]`, `<4s3H2B10IH2BfI`) at byte offset `0x0000`.
@@ -196,6 +197,12 @@ impl DnamPreamble {
     #[inline]
     pub const fn is_encrypted_arena(&self) -> bool {
         (self.flags & FLAG_ENCRYPTED_ARENA) != 0
+    }
+
+    /// Returns `true` if `HAS_CALIB_STATS` (`bit 11`) is set.
+    #[inline]
+    pub const fn has_calib_stats(&self) -> bool {
+        (self.flags & FLAG_HAS_CALIB_STATS) != 0
     }
 }
 

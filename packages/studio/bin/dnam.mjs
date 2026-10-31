@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { resolve } from "node:path";
 
 function resolveBinaryPath() {
@@ -10,13 +10,19 @@ function resolveBinaryPath() {
   }
   const exe = process.platform === "win32" ? "dnam.exe" : "dnam";
   const root = resolve(import.meta.dirname, "../../..");
+  let bestCandidate = null;
+  let bestMtime = -1;
   for (const profile of ["release", "debug"]) {
     const candidate = resolve(root, "target", profile, exe);
     if (existsSync(candidate)) {
-      return candidate;
+      const mtime = statSync(candidate).mtimeMs;
+      if (mtime > bestMtime) {
+        bestMtime = mtime;
+        bestCandidate = candidate;
+      }
     }
   }
-  return exe;
+  return bestCandidate ?? exe;
 }
 
 const result = spawnSync(resolveBinaryPath(), process.argv.slice(2), {

@@ -141,3 +141,53 @@ def test_stem_sufficient_statistics_arena3_roundtrip_and_multi_tier_kronecker_so
         solve_all_tiers_kronecker_head_float64([], np.zeros((0, 4)))
     with pytest.raises(ValueError, match="z_head_stems must have shape"):
         solve_all_tiers_kronecker_head_float64([stat1], np.zeros((1, 2)))
+
+    # Trilimb f32 tensor round-trip + band_floors_dbfs + is_silent + device cache
+    g_limbs, c_limbs = stat1.to_trilimb_f32_tensors()
+    recomb = StemSufficientStatistics.from_trilimb_f32_tensors(
+        stem_id=stat1.stem_id,
+        controls_meta=stat1.controls_meta,
+        input_pcm_sha256=stat1.input_pcm_sha256,
+        target_pcm_sha256=stat1.target_pcm_sha256,
+        num_frames=stat1.num_frames,
+        g_trilimb=g_limbs,
+        c_trilimb=c_limbs,
+    )
+    np.testing.assert_allclose(recomb.g_audio_uplo_u_f64, stat1.g_audio_uplo_u_f64)
+    np.testing.assert_allclose(recomb.c_audio_tier_f64, stat1.c_audio_tier_f64)
+
+    from dnam_trainer.training.accelerator import is_mps_available
+    from dnam_trainer.training.kronecker_head import (
+        compute_modulated_stem_sufficient_statistics,
+        precompute_base48_band_cache,
+    )
+
+    dev_str = "mps" if is_mps_available() else "cpu"
+    stat_sil = compute_stem_sufficient_statistics(
+        phi_s1[:128],
+        y_s1[:128],
+        stem_id="s_sil",
+        controls_meta={},
+        input_pcm_sha256="11" * 32,
+        target_pcm_sha256="22" * 32,
+        band_floors_dbfs=(-90.0, -90.0, -90.0),
+        is_silent=True,
+        device=dev_str,
+    )
+    assert stat_sil.num_frames == 128
+
+    b16 = rng.standard_normal((128, 16)).astype(np.float32) * 0.1
+    b_cache = precompute_base48_band_cache(b16, b16, b16, device=dev_str)
+    stat_mod_sil = compute_modulated_stem_sufficient_statistics(
+        b_cache,
+        (0.0, 0.0, 0.0),
+        y_s1[:128],
+        stem_id="sm_sil",
+        controls_meta={},
+        input_pcm_sha256="11" * 32,
+        target_pcm_sha256="22" * 32,
+        band_floors_dbfs=(-90.0, -90.0, -90.0),
+        is_silent=True,
+        device=dev_str,
+    )
+    assert stat_mod_sil.num_frames == 128

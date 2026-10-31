@@ -59,7 +59,7 @@ type ControlValue = float | str
 type ControlCoords = dict[str, ControlValue]
 type TopologyMode = Literal["auto", "core1_only", "full"]
 type OutputMode = Literal["stereo", "mono"]
-type AcceleratorDevice = Literal["auto", "tpu", "cuda", "mps", "cpu"]
+type AcceleratorDevice = Literal["auto", "tpu", "cuda", "rocm", "mps", "cpu"]
 type PrecisionPolicy = Literal["auto", "bf16-mixed", "fp32"]
 
 
@@ -363,6 +363,11 @@ class TrainingConfig(StrictModel):
     supports_freeze: bool | None = None
     freeze_mutes_dry: bool = False
     seed: int = 42
+    cache_dir: str | None = None
+    cache_enabled: bool = True
+    cache_max_gb: float | None = Field(default=None, gt=0.0)
+    memory_budget_gb: float | None = Field(default=None, gt=0.0)
+    noise_floor_dbfs: float | None = Field(default=None, le=0.0)
     backend: TrainingBackendConfig = Field(default_factory=TrainingBackendConfig)
 
 

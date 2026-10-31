@@ -21,6 +21,7 @@ def log_octave_pole_init(
     f_min_hz: float = 25.0,
     f_max_hz: float = 16_000.0,
     dtype: torch.dtype = torch.float32,
+    device: torch.device | str | None = None,
 ) -> tuple[Tensor, Tensor]:
     """
     Computes log-octave initial pole frequencies `f_{0,c}` and angles `theta_{0,c}` (`Test 7`).
@@ -28,13 +29,15 @@ def log_octave_pole_init(
     if num_channels < 1:
         raise ValueError(f"num_channels must be >= 1, got {num_channels}")
     if num_channels == 1:
-        freqs = torch.tensor([math.sqrt(f_min_hz * f_max_hz)], dtype=dtype)
+        freqs_list = [math.sqrt(f_min_hz * f_max_hz)]
     else:
-        idx = torch.arange(num_channels, dtype=torch.float64)
         ratio = f_max_hz / f_min_hz
-        freqs_f64 = f_min_hz * (ratio ** (idx / float(num_channels - 1)))
-        freqs = freqs_f64.to(dtype=dtype)
-    thetas = (2.0 * math.pi * freqs.to(torch.float64) / float(sample_rate_hz)).to(dtype=dtype)
+        freqs_list = [
+            f_min_hz * (ratio ** (i / float(num_channels - 1))) for i in range(num_channels)
+        ]
+    thetas_list = [2.0 * math.pi * f / float(sample_rate_hz) for f in freqs_list]
+    freqs = torch.tensor(freqs_list, dtype=dtype, device=device)
+    thetas = torch.tensor(thetas_list, dtype=dtype, device=device)
     return freqs, thetas
 
 
@@ -222,9 +225,11 @@ class DifferentiableSelectiveRgLru(nn.Module):
                 f"Expected input shape (B, {self.num_channels}, L), got {tuple(x.shape)}"
             )
 
-        work_dtype = torch.float64 if inp.dtype == torch.float64 else torch.float32
-        complex_dtype = torch.complex128 if work_dtype == torch.float64 else torch.complex64
-        dev_type = inp.device.type if inp.device.type in ("cuda", "cpu", "mps") else "cpu"
+        work_dtype = torch.float32
+        complex_dtype = torch.complex64
+        dev_type = (
+            inp.device.type if inp.device.type in ("cuda", "cpu", "mps", "xla", "hpu") else "cpu"
+        )
 
         with torch.autocast(device_type=dev_type, enabled=False):
             x_f = inp.to(dtype=work_dtype)
@@ -278,9 +283,11 @@ class DifferentiableSelectiveRgLru(nn.Module):
         under `CL-03`..`CL-05` radial-polar selectivity and $\\mathcal{H}_2$ input scaling.
         """
         inp = x.unsqueeze(0) if x.ndim == 2 else x
-        work_dtype = torch.float64 if inp.dtype == torch.float64 else torch.float32
-        complex_dtype = torch.complex128 if work_dtype == torch.float64 else torch.complex64
-        dev_type = inp.device.type if inp.device.type in ("cuda", "cpu", "mps") else "cpu"
+        work_dtype = torch.float32
+        complex_dtype = torch.complex64
+        dev_type = (
+            inp.device.type if inp.device.type in ("cuda", "cpu", "mps", "xla", "hpu") else "cpu"
+        )
 
         with torch.autocast(device_type=dev_type, enabled=False):
             x_f = inp.to(dtype=work_dtype)
@@ -317,7 +324,7 @@ class DifferentiableSelectiveRgLru(nn.Module):
             r_low_t, dr_span_t = self.clamped_radii()
             r_low_v = float(r_low_t[channel].cpu().item())
             dr_span_v = float(dr_span_t[channel].cpu().item())
-            theta_t = self.theta_rad[channel].to(torch.float64).cpu()
+            theta_t = self.theta_rad[channel].to(dtype=torch.float32, device="cpu")
             u_c, u_s = algebraic_unit_rotor_torch(theta_t)
             r_bar = min(0.9995, max(0.25, r_low_v + 0.5 * dr_span_v))
             gamma_v = math.sqrt(max(1e-7, 1.0 - r_bar * r_bar))

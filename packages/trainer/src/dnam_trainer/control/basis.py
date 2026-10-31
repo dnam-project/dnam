@@ -95,7 +95,7 @@ def eval_node_anchored_newton_basis(
     if not (0 <= degree <= 3):
         raise ValueError(f"Lobatto degree must be in {{0, 1, 2, 3}}, got {degree}")
 
-    u_t = torch.as_tensor(u, dtype=torch.float64 if not isinstance(u, Tensor) else u.dtype)
+    u_t = torch.as_tensor(u, dtype=torch.float32 if not isinstance(u, Tensor) else u.dtype)
     u1, u2, u3 = float(anchors[0]), float(anchors[1]), float(anchors[2])
 
     d1 = u_t - u1
@@ -272,7 +272,7 @@ class ParametricControlHyperBus(nn.Module):
         Encodes a single control coordinate dictionary into its `1D` raw basis vector `psi_raw`.
         """
         if not self.controls_schema:
-            return torch.zeros(1, dtype=torch.float64)
+            return torch.zeros(1, dtype=self.w_main.dtype, device=self.w_main.device)
 
         parts: list[Tensor] = []
         for c in self.controls_schema:
@@ -292,11 +292,15 @@ class ParametricControlHyperBus(nn.Module):
                 else:
                     _, def_u, _ = normalize_and_clamp_range(float(c.default), dec_range)
                     anchors = (def_u, -1.0, 1.0)
-                parts.append(eval_node_anchored_newton_basis(u_norm, anchors, deg))
+                parts.append(
+                    eval_node_anchored_newton_basis(u_norm, anchors, deg).to(
+                        dtype=self.w_main.dtype, device=self.w_main.device
+                    )
+                )
             else:
                 opts = c.declared_options or ["default"]
                 n_sub = max(1, len(opts) - 1)
-                vec = torch.zeros(n_sub, dtype=torch.float64)
+                vec = torch.zeros(n_sub, dtype=self.w_main.dtype, device=self.w_main.device)
                 val_str = str(raw_v)
                 if val_str in opts:
                     idx = opts.index(val_str)
@@ -307,9 +311,11 @@ class ParametricControlHyperBus(nn.Module):
         return torch.cat(parts, dim=0)
 
     def encode_batch_coords(self, coords_list: Sequence[Mapping[str, float | str]]) -> Tensor:
-        """Encodes a list of control coordinate dicts into `(S, D_basis)` in `float64`."""
+        """Encodes a list of control coordinate dicts into `(S, D_basis)` in 32-bit."""
         if not coords_list:
-            return torch.zeros((0, self.basis_dim), dtype=torch.float64)
+            return torch.zeros(
+                (0, self.basis_dim), dtype=self.w_main.dtype, device=self.w_main.device
+            )
         rows = [self.encode_control_coords(c) for c in coords_list]
         return torch.stack(rows, dim=0)
 

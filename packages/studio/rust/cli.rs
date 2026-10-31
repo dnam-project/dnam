@@ -1,5 +1,6 @@
 //! Subsystem 6: `clap` v4 Subcommand Router for the `dnam` CLI and Tauri v2 Studio.
 
+pub mod cache_cmd;
 pub mod capture_cmd;
 pub mod format;
 pub mod train_cmd;
@@ -161,6 +162,12 @@ pub enum DnamCommand {
         #[command(subcommand)]
         action: train_cmd::TrainerAction,
     },
+    /// Inspect or clear `.dnam-cache` local training sidecar caches (`status`, `clear`).
+    Cache {
+        /// Cache action (`status`, `clear`).
+        #[command(subcommand)]
+        action: cache_cmd::CacheAction,
+    },
     /// Launch the Tauri v2 Desktop Studio GUI window (or inspect Studio launch config).
     Studio {
         /// Print Tauri v2 window & native audio host configuration as JSON without opening a window.
@@ -246,6 +253,7 @@ pub fn execute_cli(cli: &DnamCli) -> StudioResult<String> {
             },
         ),
         Some(DnamCommand::Trainer { action }) => train_cmd::run_trainer_env(&cli.workspace, action),
+        Some(DnamCommand::Cache { action }) => cache_cmd::run_cache(&cli.workspace, action),
         Some(DnamCommand::Studio { headless_check }) => {
             workspace_cmd::run_studio(&cli.workspace, *headless_check)
         }
@@ -424,6 +432,15 @@ mod tests {
         })
         .expect("trainer status");
         assert!(tr_st.contains("venv_dir"));
+
+        let cache_st = execute_cli(&DnamCli {
+            workspace: dir.clone(),
+            command: Some(DnamCommand::Cache {
+                action: cache_cmd::CacheAction::Status { model: None },
+            }),
+        })
+        .expect("cache status");
+        assert!(cache_st.contains("total_entries"));
 
         let _ = fs::remove_dir_all(&dir);
     }

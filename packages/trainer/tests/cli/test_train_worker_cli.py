@@ -22,6 +22,10 @@ from dnam_trainer.cli import (
 )
 from dnam_trainer.events import (
     AuditPhaseEvent,
+    CacheEvent,
+    PlannerEvent,
+    RuntimeEvent,
+    SolverEvent,
     TrainingCompleteEvent,
     TrainingStageEvent,
     TrainingStepEvent,
@@ -105,19 +109,73 @@ def test_training_observers_rich_jsonl_and_sse() -> None:
             esr_lite_db=-20.0,
             esr_full_db=-22.0,
             esr_ultra_db=-25.0,
+            esr_lf_db=-24.0,
+            esr_mid_db=-26.0,
+            esr_hf_db=-21.0,
         ),
         AuditPhaseEvent(
             phase=1,
             audit_report=AuditReport(phase1_clamps=["[CLAMP-RANGE] drive clamped"]),
+        ),
+        AuditPhaseEvent(
+            phase=2,
+            audit_report=AuditReport(phase2_rail_warnings=["[WARN-RAIL] rail warning"]),
         ),
         TrainingCompleteEvent(
             model_id="b7k",
             esr_lite_db=-25.0,
             esr_full_db=-30.0,
             esr_ultra_db=-35.0,
+            esr_lf_db=-28.0,
+            esr_mid_db=-32.0,
+            esr_hf_db=-24.0,
+            mr_stft_db=0.45,
+            ltas_rms_tilt_db=0.5,
+            ltas_hf_tilt_db=0.8,
+            seg_esr_db=-26.0,
             core2_active=False,
             lfo_env_active=False,
             resume_tier_executed=1,
+        ),
+        RuntimeEvent(
+            device_kind="mps",
+            torch_device="mps:0",
+            contraction_dtype="bfloat16",
+            bf16_native=True,
+            fp32_matmul_exact=True,
+            fast_math_off=True,
+            budget_bytes=8 * 1024**3,
+            max_tensor_bytes=1 * 1024**3,
+            unverified_hardware=True,
+            warning="test warning",
+        ),
+        PlannerEvent(
+            mode="STREAMED",
+            num_samples=48000,
+            num_stems=2,
+            block_rows=16384,
+            stem_group_size=1,
+            budget_bytes=8 * 1024**3,
+            estimated_peak_bytes=2 * 1024**3,
+            regimes=((0, 24000), (24000, 48000)),
+        ),
+        CacheEvent(
+            tier="sidecar",
+            action="hit",
+            key="stage1",
+            bytes_count=1024 * 1024,
+            elapsed_ms=1.2,
+            message="ok",
+        ),
+        SolverEvent(
+            pass_name="stage2",
+            num_solves=4,
+            matrix_dim=64,
+            rhs_cols=8,
+            transfer_ms=0.5,
+            solve_ms=1.1,
+            lstsq_fallbacks=1,
+            warning="lstsq fallback",
         ),
     ]
     for ev in events:
@@ -126,7 +184,7 @@ def test_training_observers_rich_jsonl_and_sse() -> None:
         obs_rich.on_training_event(ev)
 
     jsonl_lines = [ln for ln in buf_jsonl.getvalue().splitlines() if ln.strip()]
-    assert len(jsonl_lines) == 4
+    assert len(jsonl_lines) == 9
     assert parse_training_event_json(jsonl_lines[0]).event_type == "training_stage"
     assert "event: training_complete" in buf_sse.getvalue()
 
@@ -284,8 +342,49 @@ def test_dnam_train_worker_cli_status_train_and_ckpt_resume(
             topology="core1_only",
             device="cpu",
             precision="fp32",
+            no_cache=True,
+            cache_max_gb=0.5,
             event_format="jsonl",
         )
         assert res_ovr.model_id == "b7k_worker"
     finally:
         os.environ.pop("DNAM_SIGNING_KEY", None)
+
+    # 7. Test default_user_config_dir and _resolve_creator_seed_hex
+    import dnam_trainer.cli.worker as worker_mod
+    from dnam_trainer.cli.worker import _resolve_creator_seed_hex, default_user_config_dir
+
+    os.environ["DNAM_CONFIG_DIR"] = str(tmp_path / "cfg_override")
+    try:
+        assert default_user_config_dir() == tmp_path / "cfg_override"
+        user_key = default_user_config_dir() / "keys" / "creator_ed25519.key"
+        user_key.parent.mkdir(parents=True, exist_ok=True)
+        user_key.write_text(seed_hex + "\n", encoding="utf-8")
+        assert _resolve_creator_seed_hex(None, False) == seed_hex
+        user_key.write_text("short\n", encoding="utf-8")
+        assert _resolve_creator_seed_hex(None, False) is None
+    finally:
+        os.environ.pop("DNAM_CONFIG_DIR", None)
+
+    os.environ["DNAM_CREATOR_SEED_HEX"] = seed_hex
+    try:
+        assert _resolve_creator_seed_hex(None, False) == seed_hex
+    finally:
+        os.environ.pop("DNAM_CREATOR_SEED_HEX", None)
+    assert isinstance(default_user_config_dir(), Path)
+
+    orig_plat = worker_mod.sys.platform
+    try:
+        worker_mod.sys.platform = "win32"
+        os.environ["APPDATA"] = str(tmp_path / "appdata")
+        assert default_user_config_dir() == tmp_path / "appdata" / "dnam"
+        os.environ.pop("APPDATA", None)
+        assert default_user_config_dir().name == "dnam"
+
+        worker_mod.sys.platform = "linux"
+        os.environ["XDG_CONFIG_HOME"] = str(tmp_path / "xdg")
+        assert default_user_config_dir() == tmp_path / "xdg" / "dnam"
+        os.environ.pop("XDG_CONFIG_HOME", None)
+        assert default_user_config_dir().name == "dnam"
+    finally:
+        worker_mod.sys.platform = orig_plat

@@ -43,7 +43,7 @@ def _sample_cubic_lagrange_1d(
 
     d_int = torch.floor(read_pos)
     alpha = read_pos - d_int
-    base_idx = d_int.to(dtype=torch.long)
+    base_idx = d_int.to(dtype=torch.int32)
 
     pad_len = padded.shape[1]
     idx_m1 = (base_idx + 1).clamp(0, pad_len - 1)
@@ -51,10 +51,11 @@ def _sample_cubic_lagrange_1d(
     idx_p1 = (base_idx - 1).clamp(0, pad_len - 1)
     idx_p2 = (base_idx - 2).clamp(0, pad_len - 1)
 
-    u_m1 = torch.gather(padded, 1, idx_m1)
-    u_0 = torch.gather(padded, 1, idx_0)
-    u_p1 = torch.gather(padded, 1, idx_p1)
-    u_p2 = torch.gather(padded, 1, idx_p2)
+    row_idx = torch.arange(bsz, device=device, dtype=torch.int32).unsqueeze(1)
+    u_m1 = padded[row_idx, idx_m1]
+    u_0 = padded[row_idx, idx_0]
+    u_p1 = padded[row_idx, idx_p1]
+    u_p2 = padded[row_idx, idx_p2]
 
     a = alpha
     c_m1 = -a * (a - 1.0) * (a - 2.0) * (1.0 / 6.0)

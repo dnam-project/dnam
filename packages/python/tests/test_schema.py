@@ -42,6 +42,7 @@ from dnam_engine.schema import (
     tempo_subdivision_delay_ms,
     tempo_subdivision_freq_hz,
 )
+from dnam_engine.schema.controls import invert_lobatto_anchors
 
 
 def test_exception_hierarchy_and_translation() -> None:
@@ -256,6 +257,52 @@ def test_control_calibration_tempo_subdivisions_capabilities_and_leveling() -> N
     assert stereo_cal.stereo_width_for_option("Mono") == 0.0
     assert stereo_cal.stereo_width_for_option("Stereo") == 1.0
     assert stereo_cal.stereo_width_for_option("Unknown") is None
+    assert stereo_cal.freeze_amount_for_option("Off") is None
+    assert stereo_cal.evaluate_lobatto_anchors(0.0) is None
+    assert stereo_cal.resolve_tempo_sync(120.0) is None
+
+    freeze_cal = ControlCalibration(role="freeze_latch")
+    assert freeze_cal.stereo_width_for_option("Mono") is None
+    assert freeze_cal.freeze_amount_for_option("Off") == 0.0
+    assert freeze_cal.freeze_amount_for_option("Freeze") == 1.0
+    assert freeze_cal.freeze_amount_for_option("Unknown") is None
+
+    # Test quadratic Lobatto anchors, octave folding, and edge cases
+    assert invert_lobatto_anchors(10.0, (10.0, 10.0, 10.0)) == 0.0
+    assert invert_lobatto_anchors(50.0, (10.0, 30.0, 100.0)) > 0.0
+    assert invert_lobatto_anchors(50.0, (100.0, 30.0, 10.0)) < 0.0
+    assert invert_lobatto_anchors(0.0, (0.0, 1.0, 0.0)) == -1.0
+
+    res_fold_hi = cal.resolve_tempo_sync(20.0, "1/2.", fold_octave=True)
+    assert res_fold_hi is not None
+    assert res_fold_hi.was_clamped
+    res_fold_lo = cal.resolve_tempo_sync(400.0, "1/16T", fold_octave=True)
+    assert res_fold_lo is not None
+    res_clamp_lo = cal.resolve_conditional_target(1.0, fold_octave=False)
+    assert res_clamp_lo is not None
+    assert res_clamp_lo.was_clamped
+    res_clamp_hi = cal.resolve_conditional_target(5000.0, fold_octave=False)
+    assert res_clamp_hi is not None
+    assert res_clamp_hi.was_clamped
+
+    lfo_cal = ControlCalibration(
+        role="lfo_rate_hz",
+        lobatto_physical_anchors=(0.5, 2.0, 10.0),
+    )
+    assert abs((lfo_cal.evaluate_lobatto_anchors(0.0) or 0.0) - 2.0) < 1e-6
+    assert abs((lfo_cal.evaluate_lobatto_anchors(1.0) or 0.0) - 10.0) < 1e-6
+    res_lfo = lfo_cal.resolve_tempo_sync(120.0, "1/4", fold_octave=True)
+    assert res_lfo is not None
+    assert abs(res_lfo.target_physical - 2.0) < 1e-4
+    res_lfo_hi = lfo_cal.resolve_conditional_target(30.0, fold_octave=True)
+    assert res_lfo_hi is not None
+    assert res_lfo_hi.was_clamped
+    res_lfo_lo = lfo_cal.resolve_conditional_target(0.15, fold_octave=True)
+    assert res_lfo_lo is not None
+    assert res_lfo_lo.was_clamped
+    res_lfo_clamp = lfo_cal.resolve_conditional_target(100.0, fold_octave=False)
+    assert res_lfo_clamp is not None
+    assert res_lfo_clamp.was_clamped
 
     caps = ModelCapabilities(
         blend_mode="host_parallel",

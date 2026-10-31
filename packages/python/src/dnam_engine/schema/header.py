@@ -216,7 +216,7 @@ class AuditReport(StrictModel):
 
 CURRENT_SCHEMA_VERSION: str = "1.0.0"
 SUPPORTED_SCHEMA_MAJOR: int = 1
-MAX_SUPPORTED_SCHEMA_MINOR: int = 0
+MAX_SUPPORTED_SCHEMA_MINOR: int = 1
 
 
 def parse_schema_version(version_str: str) -> tuple[int, int, int]:

@@ -3,6 +3,13 @@ Resume."""
 
 from __future__ import annotations
 
+from dnam_trainer.training.accelerator import (
+    AcceleratorRuntime,
+    PlannerDecision,
+    ProbeResult,
+    assert_32bit_device_tensor,
+    resolve_accelerator_runtime,
+)
 from dnam_trainer.training.arena import (
     ARENA_OFFSET_FULL_END,
     ARENA_OFFSET_LITE_END,
@@ -22,6 +29,12 @@ from dnam_trainer.training.backends import (
     prepare_request_for_remote,
     register_training_backend,
 )
+from dnam_trainer.training.calib_cache import (
+    Arena4CalibrationData,
+    InputCalibStats,
+    SidecarCacheStore,
+    StemCalibStats,
+)
 from dnam_trainer.training.hardware import (
     HardwareRuntimeProfile,
     move_to_host_float64,
@@ -39,6 +52,11 @@ from dnam_trainer.training.kronecker_head import (
     merge_stem_statistics_for_resume,
     solve_all_tiers_kronecker_head_float64,
     solve_kronecker_head_float64,
+)
+from dnam_trainer.training.numerics import (
+    ExactGramAccumulator,
+    HostDenseSolver,
+    HostSolveSpec,
 )
 from dnam_trainer.training.pipeline import (
     DnamTrainer,
@@ -59,26 +77,52 @@ from dnam_trainer.training.telemetry import (
     save_telemetry_html_report,
     save_telemetry_parquet,
 )
+from dnam_trainer.training.windowing import (
+    CausalBsplineWindowSchedule,
+    SegmentationWindowStats,
+    build_orthogonal_fft_windows,
+    build_stage_window_grids,
+    build_uniform_windows,
+    compute_segmentation_window_stats,
+    segment_regimes_dp,
+)
 
 __all__ = [
     "ARENA3_STEM_BYTE_LEN",
     "ARENA_OFFSET_FULL_END",
     "ARENA_OFFSET_LITE_END",
     "ARENA_OFFSET_ULTRA_END",
+    "AcceleratorRuntime",
+    "Arena4CalibrationData",
     "ArenaWeightLayout",
+    "CausalBsplineWindowSchedule",
     "DnamTrainer",
     "DnamTriPhysicsModel",
+    "ExactGramAccumulator",
     "HardwareRuntimeProfile",
+    "HostDenseSolver",
+    "HostSolveSpec",
+    "InputCalibStats",
     "LocalTrainingBackend",
     "MultiTierKroneckerHeadSolution",
+    "PlannerDecision",
+    "ProbeResult",
     "RemoteTrainingBackend",
     "ResumeExecutionResult",
+    "SegmentationWindowStats",
+    "SidecarCacheStore",
+    "StemCalibStats",
     "StemSufficientStatistics",
     "SurrogateDelayReadout",
     "TrainingBackend",
     "TrainingStepRecord",
+    "assert_32bit_device_tensor",
+    "build_orthogonal_fft_windows",
     "build_signed_dnam_containers",
+    "build_stage_window_grids",
     "build_training_telemetry_df",
+    "build_uniform_windows",
+    "compute_segmentation_window_stats",
     "compute_stem_sufficient_statistics",
     "compute_svd_control_projector",
     "default_tensor_directory",
@@ -92,11 +136,13 @@ __all__ = [
     "plot_esr_convergence_chart",
     "prepare_request_for_remote",
     "register_training_backend",
+    "resolve_accelerator_runtime",
     "resolve_hardware_profile",
     "resolve_stem_audio_pcm",
     "rglru_soa_byte_offset",
     "save_telemetry_html_report",
     "save_telemetry_parquet",
+    "segment_regimes_dp",
     "setup_accelerator_environment",
     "sign_header_with_creator_key",
     "solve_all_tiers_kronecker_head_float64",

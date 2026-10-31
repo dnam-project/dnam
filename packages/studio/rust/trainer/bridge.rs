@@ -46,6 +46,10 @@ pub struct TrainerJobOptions {
     pub unsigned: bool,
     /// Explicit 64-character hex `Ed25519` creator secret seed.
     pub creator_seed_hex: Option<String>,
+    /// Disable the `.dnam-cache` local sidecar cache (`--no-cache`).
+    pub no_cache: bool,
+    /// Optional workspace sidecar cache quota in GB (`--cache-max-gb`).
+    pub cache_max_gb: Option<f64>,
 }
 
 /// Builds the canonical `TrainingJobRequest` JSON object consumed by `dnam-train --request-json`.
@@ -223,11 +227,19 @@ pub fn build_training_request_json(
         model.output_mode.as_str()
     };
 
+    let cache_dir = workspace_root
+        .join("models")
+        .join(&model.model_id)
+        .join(".dnam-cache");
+
     let mut config_obj = json!({
         "sample_rate_train_hz": workspace.project.sample_rate_hz,
         "topology": topology,
         "output_mode": output_mode,
         "epochs": epochs,
+        "cache_dir": cache_dir.display().to_string(),
+        "cache_enabled": true,
+        "cache_max_gb": 16.0,
         "auto_unity_leveling": model.capture.auto_unity_leveling,
         "leveling_metric": if model.capture.leveling_metric.is_empty() {
             "rms_dbfs"
@@ -415,6 +427,12 @@ impl TrainerBridge {
             cmd.arg("--unsigned");
         } else if let Some(seed_hex) = &opts.creator_seed_hex {
             cmd.arg("--creator-seed-hex").arg(seed_hex);
+        }
+        if opts.no_cache {
+            cmd.arg("--no-cache");
+        }
+        if let Some(max_gb) = opts.cache_max_gb {
+            cmd.arg("--cache-max-gb").arg(max_gb.to_string());
         }
 
         cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
@@ -633,6 +651,8 @@ mod tests {
             precision: Some("fp32".to_string()),
             unsigned: false,
             creator_seed_hex: Some("11".repeat(32)),
+            no_cache: true,
+            cache_max_gb: Some(8.0),
         };
         bridge_ok
             .run_job_with_options(
@@ -658,6 +678,8 @@ mod tests {
             precision: None,
             unsigned: true,
             creator_seed_hex: None,
+            no_cache: false,
+            cache_max_gb: None,
         };
         bridge_ok
             .run_job_with_options(

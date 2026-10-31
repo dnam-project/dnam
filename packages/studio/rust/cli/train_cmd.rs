@@ -135,6 +135,8 @@ pub fn run_train(workspace: &Path, args: TrainCommandArgs) -> StudioResult<Strin
                 precision: args.precision.clone(),
                 unsigned: args.unsigned,
                 creator_seed_hex: creator_seed_hex.clone(),
+                no_cache: false,
+                cache_max_gb: None,
             };
             let events = bridge.run_job_with_options(
                 &req_json,

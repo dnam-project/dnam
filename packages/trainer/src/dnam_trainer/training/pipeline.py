@@ -64,6 +64,8 @@ from dnam_trainer.dsp.selective_rglru import (
 from dnam_trainer.events import (
     AuditPhaseEvent,
     NullObserver,
+    PlannerEvent,
+    RuntimeEvent,
     TrainingCompleteEvent,
     TrainingObserver,
     TrainingStageEvent,
@@ -76,17 +78,25 @@ from dnam_trainer.schema import (
     ResumeJobRequest,
     StemAudioRef,
     TopologyMode,
+    TrainingConfig,
     TrainingJobRequest,
     TrainingJobResult,
     TrainingStem,
     TrainingTelemetryRow,
 )
+from dnam_trainer.training.accelerator import resolve_accelerator_runtime
 from dnam_trainer.training.arena import (
     ARENA_OFFSET_FULL_END,
     ARENA_OFFSET_LITE_END,
     ARENA_OFFSET_ULTRA_END,
     ArenaWeightLayout,
     build_signed_dnam_containers,
+)
+from dnam_trainer.training.calib_cache import (
+    Arena4CalibrationData,
+    InputCalibStats,
+    SidecarCacheStore,
+    StemCalibStats,
 )
 from dnam_trainer.training.hardware import HardwareRuntimeProfile, resolve_hardware_profile
 from dnam_trainer.training.kronecker_head import (
@@ -105,11 +115,14 @@ from dnam_trainer.training.kronecker_head import (
 from dnam_trainer.training.metrics import (
     DEFAULT_NOISE_FLOOR_DBFS,
     PsychoacousticMetricsReport,
+    StemNoiseProfile,
     compute_band_split_esr_db,
     compute_floor_regularized_besr_db,
     evaluate_psychoacoustic_metrics,
+    measure_stem_band_noise_floor,
     torch_floor_regularized_besr_loss,
 )
+from dnam_trainer.training.numerics import HostDenseSolver
 from dnam_trainer.training.selective_cascade import (
     calibrate_3stage_selective_cascade,
     modulate_tier_blocks_with_controls,
@@ -619,6 +632,7 @@ class DnamTriPhysicsModel(nn.Module):
             str, tuple[NDArray[np.float32], NDArray[np.float32], NDArray[np.float32]]
         ] = {}
         self._calibrated_knot_coords: dict[str, NDArray[np.float64]] = {}
+        self._arena4_calib: Arena4CalibrationData | None = None
 
         self.dilations = (1, 3, 7, 19)
         self.tier_in_proj = nn.ParameterList(
@@ -824,6 +838,15 @@ class DnamTriPhysicsModel(nn.Module):
         on_stage_progress: Callable[[int, str], None] | None = None,
         on_step_metrics: Callable[[int, int, float, float, float, float, float, float], None]
         | None = None,
+        device: torch.device | str | None = None,
+        solver: HostDenseSolver | None = None,
+        silent_stem_flags: Sequence[bool] | None = None,
+        stem_noise_floors_dbfs: Sequence[tuple[float, float, float]] | None = None,
+        stem_noise_profiles: Sequence[StemNoiseProfile] | None = None,
+        stem_ids: Sequence[str] | None = None,
+        tgt_shas: Sequence[str] | None = None,
+        existing_arena4: Arena4CalibrationData | None = None,
+        sidecar_cache: SidecarCacheStore | None = None,
     ) -> None:
         """Calibrates the 3-Stage Causal Selective State-Space + 3-Band Decoupled (`LF`/`MF`/`HF`)
         Cascade on each unique dry input signal in `inputs_list` and caches the nested tier base
@@ -832,20 +855,73 @@ class DnamTriPhysicsModel(nn.Module):
         self._calibrated_tier_blocks.clear()
         self._calibrated_knot_coords.clear()
         mute_thresh_sq = 10.0 ** (-55.0 / 10.0)
+        dev = torch.device(device) if device is not None else torch.device("cpu")
+        existing_inputs_by_sha = dict(existing_arena4.inputs) if existing_arena4 is not None else {}
+        input_calib_records: dict[str, InputCalibStats] = {}
+        stem_jitter_lags: dict[int, float] = {}
+        stem_jitter_corrs: dict[int, float] = {}
+        stem_lti_irs: dict[int, NDArray[np.float32]] = {}
+
         for s_idx, x_arr in enumerate(inputs_list):
             sha_key = (
                 in_shas[s_idx] if in_shas is not None and s_idx < len(in_shas) else f"idx_{s_idx}"
             )
             if sha_key in self._calibrated_tier_blocks:
                 continue
+            cached_in = existing_inputs_by_sha.get(sha_key)
+            if cached_in is not None and cached_in.num_samples != x_arr.shape[0]:
+                cached_in = None
+
+            cached_s1_proj_t: torch.Tensor | None = None
+            if cached_in is not None and cached_in.s1_proj_f32 is not None:
+                cached_s1_proj_t = torch.from_numpy(cached_in.s1_proj_f32).to(
+                    device=dev, dtype=torch.float32
+                )
+
+            out_rec: dict[str, Any] = {}
             b_lite, b_full, b_ultra = calibrate_3stage_selective_cascade(
                 x_arr[:, 0],
                 targets_list,
                 sample_rate_hz=self.sample_rate_hz,
                 on_stage_progress=on_stage_progress,
                 on_step_metrics=on_step_metrics,
+                device=dev,
+                solver=solver,
+                silent_stem_flags=silent_stem_flags,
+                stem_noise_floors_dbfs=stem_noise_floors_dbfs,
+                cached_s1_proj=cached_s1_proj_t,
+                out_calib_records=out_rec,
             )
             self._calibrated_tier_blocks[sha_key] = (b_lite, b_full, b_ultra)
+            if sidecar_cache is not None and sidecar_cache.should_materialize(
+                payload_bytes=int(x_arr.shape[0] * b_lite.shape[1] * 3 * 4),
+                expected_passes=2,
+                est_regen_ms=100.0,
+            ):
+                sidecar_cache.put_tensor(
+                    "tier_blocks",
+                    [sha_key, int(x_arr.shape[0])],
+                    torch.from_numpy(np.hstack([b_lite, b_full, b_ultra])),
+                )
+            if len(sha_key) == 64 and "seg_stats" in out_rec:
+                seg_st = out_rec["seg_stats"]
+                input_calib_records[sha_key] = InputCalibStats(
+                    input_pcm_sha256=sha_key,
+                    num_samples=int(x_arr.shape[0]),
+                    win_bounds=tuple((int(a), int(b)) for a, b in seg_st.win_bounds),
+                    win_grams_f64=np.asarray(seg_st.win_grams_f64, dtype=np.float64),
+                    s1_proj_f32=out_rec.get("s1_proj"),
+                )
+            if "all_stem_lags" in out_rec:
+                for t_i, lag_v in enumerate(out_rec["all_stem_lags"]):
+                    stem_jitter_lags[t_i] = float(lag_v)
+            if "all_stem_corrs" in out_rec:
+                for t_i, corr_v in enumerate(out_rec["all_stem_corrs"]):
+                    stem_jitter_corrs[t_i] = float(corr_v)
+            if "lti_irs_by_stem_idx" in out_rec:
+                for t_i, ir_v in out_rec["lti_irs_by_stem_idx"].items():
+                    stem_lti_irs[int(t_i)] = ir_v
+
             if b_lite.shape[1] == 32 and u_ctrl_stems is not None:
                 c_knots = np.full((32, 3), 99.0, dtype=np.float64)
                 col_cursor = 0
@@ -853,13 +929,52 @@ class DnamTriPhysicsModel(nn.Module):
                 for t_idx, y_arr in enumerate(targets_list):
                     y_2d = np.asarray(y_arr, dtype=np.float64)
                     y_1d = (y_2d[:, 0] if y_2d.ndim == 2 else y_2d.ravel())[:l_tot]
-                    if float(np.mean(y_1d**2)) > mute_thresh_sq and col_cursor < 32:
+                    is_silent = (
+                        silent_stem_flags[t_idx]
+                        if silent_stem_flags is not None and t_idx < len(silent_stem_flags)
+                        else float(np.mean(y_1d**2)) <= mute_thresh_sq
+                    )
+                    if not is_silent and col_cursor < 32:
                         if t_idx < len(u_ctrl_stems):
                             c_knots[col_cursor] = np.asarray(u_ctrl_stems[t_idx], dtype=np.float64)[
                                 :3
                             ]
                         col_cursor += 1
                 self._calibrated_knot_coords[sha_key] = c_knots
+
+        stem_calib_records: dict[str, StemCalibStats] = {}
+        if (
+            stem_ids is not None
+            and in_shas is not None
+            and tgt_shas is not None
+            and stem_noise_profiles is not None
+        ):
+            for idx, sid in enumerate(stem_ids):
+                in_s = in_shas[idx] if idx < len(in_shas) else ""
+                tg_s = tgt_shas[idx] if idx < len(tgt_shas) else ""
+                if len(in_s) == 64 and len(tg_s) == 64 and idx < len(stem_noise_profiles):
+                    prof = stem_noise_profiles[idx]
+                    stem_calib_records[sid] = StemCalibStats(
+                        stem_id=sid,
+                        input_pcm_sha256=in_s,
+                        is_silent=prof.is_silent,
+                        jitter_lag_samples=stem_jitter_lags.get(idx, 0.0),
+                        jitter_corr=stem_jitter_corrs.get(idx, 1.0),
+                        noise_floor_dbfs_broadband=prof.noise_floor_dbfs_broadband,
+                        noise_floor_dbfs_lf=prof.noise_floor_dbfs_lf,
+                        noise_floor_dbfs_mf=prof.noise_floor_dbfs_mf,
+                        noise_floor_dbfs_hf=prof.noise_floor_dbfs_hf,
+                        band_energy_broadband=prof.band_energy_broadband,
+                        band_energy_lf=prof.band_energy_lf,
+                        band_energy_mf=prof.band_energy_mf,
+                        band_energy_hf=prof.band_energy_hf,
+                        lti_ir_f32=stem_lti_irs.get(idx),
+                    )
+        if input_calib_records or stem_calib_records:
+            self._arena4_calib = Arena4CalibrationData(
+                inputs=input_calib_records,
+                stems=stem_calib_records,
+            )
 
     def extract_calibrated_or_tier_features(
         self,
@@ -1096,8 +1211,52 @@ class DnamTrainer:
         hardware_profile: HardwareRuntimeProfile | None = None,
         observer: TrainingObserver | None = None,
     ) -> None:
+        self._explicit_hardware_profile = hardware_profile is not None
         self.hardware_profile = hardware_profile or resolve_hardware_profile("auto")
         self.observer: TrainingObserver = observer or NullObserver()
+
+    def _resolve_job_device_and_solver(
+        self,
+        config: TrainingConfig,
+        *,
+        num_samples: int,
+        num_stems: int,
+    ) -> tuple[torch.device, HostDenseSolver]:
+        requested = config.backend.device
+        if requested == "auto" and self._explicit_hardware_profile:
+            requested = self.hardware_profile.device_type
+        rt = resolve_accelerator_runtime(
+            requested,
+            precision=config.backend.precision,
+            budget_gb_override=config.memory_budget_gb,
+        )
+        plan = rt.plan_2d(num_samples=num_samples, num_stems=num_stems)
+        self.observer.on_training_event(
+            RuntimeEvent(
+                device_kind=rt.probe.device_kind,
+                torch_device=rt.probe.torch_device,
+                contraction_dtype=rt.probe.contraction_dtype,
+                bf16_native=rt.probe.bf16_native,
+                fp32_matmul_exact=rt.probe.fp32_matmul_exact,
+                fast_math_off=rt.probe.fast_math_off,
+                budget_bytes=rt.probe.budget_bytes,
+                max_tensor_bytes=rt.probe.max_tensor_bytes,
+                unverified_hardware=rt.probe.unverified_hardware,
+                warning=rt.probe.cpu_fallback_warning,
+            )
+        )
+        self.observer.on_training_event(
+            PlannerEvent(
+                mode=plan.mode,
+                num_samples=plan.num_samples,
+                num_stems=plan.num_stems,
+                block_rows=plan.block_rows,
+                stem_group_size=plan.stem_group_size,
+                budget_bytes=plan.budget_bytes,
+                estimated_peak_bytes=plan.estimated_peak_bytes,
+            )
+        )
+        return rt.device, HostDenseSolver(observer=self.observer)
 
     def _evaluate_multi_tier_esr(
         self,
@@ -1109,6 +1268,8 @@ class DnamTrainer:
         *,
         sample_rate_hz: int = 48_000,
         full_psychoacoustics: bool = False,
+        silent_stem_flags: Sequence[bool] | None = None,
+        stem_noise_floors_dbfs: Sequence[tuple[float, float, float]] | None = None,
     ) -> tuple[float, float, float, dict[str, float], PsychoacousticMetricsReport]:
         """Computes dataset Floor-Regularized Band-Balanced ESR (`bESR` in dB) across `Lite`
         ($N=64$), `Full` ($N=128$), and `Ultra` ($N=192$), plus the multi-band and psychoacoustic
@@ -1132,12 +1293,25 @@ class DnamTrainer:
             pred_u = evaluate_kronecker_head_features(phi, z_s, head_sol.w_ultra_5x2x192)
             del phi
             y_f64 = np.asarray(y, dtype=np.float64)
+            band_floors = (
+                stem_noise_floors_dbfs[s_idx]
+                if stem_noise_floors_dbfs is not None and s_idx < len(stem_noise_floors_dbfs)
+                else None
+            )
 
             besr_l = compute_floor_regularized_besr_db(
-                pred_l, y_f64, sample_rate_hz=sample_rate_hz, floor_dbfs=DEFAULT_NOISE_FLOOR_DBFS
+                pred_l,
+                y_f64,
+                sample_rate_hz=sample_rate_hz,
+                floor_dbfs=DEFAULT_NOISE_FLOOR_DBFS,
+                band_floors_dbfs=band_floors,
             )
             besr_f = compute_floor_regularized_besr_db(
-                pred_f, y_f64, sample_rate_hz=sample_rate_hz, floor_dbfs=DEFAULT_NOISE_FLOOR_DBFS
+                pred_f,
+                y_f64,
+                sample_rate_hz=sample_rate_hz,
+                floor_dbfs=DEFAULT_NOISE_FLOOR_DBFS,
+                band_floors_dbfs=band_floors,
             )
             if full_psychoacoustics:
                 rep_u = evaluate_psychoacoustic_metrics(
@@ -1145,6 +1319,7 @@ class DnamTrainer:
                     y_f64,
                     sample_rate_hz=sample_rate_hz,
                     floor_dbfs=DEFAULT_NOISE_FLOOR_DBFS,
+                    band_floors_dbfs=band_floors,
                 )
             else:
                 besr_u_val = compute_floor_regularized_besr_db(
@@ -1152,6 +1327,7 @@ class DnamTrainer:
                     y_f64,
                     sample_rate_hz=sample_rate_hz,
                     floor_dbfs=DEFAULT_NOISE_FLOOR_DBFS,
+                    band_floors_dbfs=band_floors,
                 )
                 lf_u, mf_u, hf_u = compute_band_split_esr_db(
                     pred_u, y_f64, sample_rate_hz=sample_rate_hz
@@ -1173,8 +1349,13 @@ class DnamTrainer:
             fallback_reports.append(rep_u)
 
             rms_tgt = float(np.mean(y_f64**2))
-            if rms_tgt <= 10.0 ** (-55.0 / 10.0):
-                # Silent/mute stem (`volume_min`): report residual output level in dBFS
+            is_silent = (
+                silent_stem_flags[s_idx]
+                if silent_stem_flags is not None and s_idx < len(silent_stem_flags)
+                else rms_tgt <= 10.0 ** (-55.0 / 10.0)
+            )
+            if is_silent:
+                # Genuinely silent stem (within 6 dB of noise floor): report residual output dBFS
                 per_stem_ultra[stem_ids[s_idx]] = float(
                     10.0 * math.log10(max(float(np.mean(pred_u**2)), 1e-18))
                 )
@@ -1289,6 +1470,7 @@ class DnamTrainer:
             for c in stems_controls
         ]
         min_stem_len = min(x.shape[0] for x in inputs_list)
+        max_stem_len = max(x.shape[0] for x in inputs_list)
         use_selective_cascade = (
             not audit_only and request.config.epochs > 0 and min_stem_len >= 32_768
         )
@@ -1300,10 +1482,35 @@ class DnamTrainer:
             sample_rate_hz=sr,
             core2_active=core2_active,
         )
-        device = torch.device("cpu")
-        if self.hardware_profile.torch_device.startswith("cuda"):
-            device = torch.device(self.hardware_profile.torch_device)
+        device, solver = self._resolve_job_device_and_solver(
+            request.config,
+            num_samples=max_stem_len,
+            num_stems=len(stem_ids),
+        )
         model.to(device)
+
+        stem_noise_profiles = [
+            measure_stem_band_noise_floor(
+                inputs_list[i][:, 0],
+                targets_list[i],
+                sample_rate_hz=sr,
+                request_noise_floor_dbfs=request.config.noise_floor_dbfs,
+                device=device,
+            )
+            for i in range(len(stem_ids))
+        ]
+        silent_stem_flags = [p.is_silent for p in stem_noise_profiles]
+        stem_noise_floors_dbfs = [p.band_floors_dbfs for p in stem_noise_profiles]
+
+        sidecar_cache: SidecarCacheStore | None = None
+        if request.config.cache_enabled and request.config.cache_dir:
+            sidecar_cache = SidecarCacheStore(
+                request.config.cache_dir,
+                num_stems=len(stem_ids),
+                max_gb=request.config.cache_max_gb,
+                device_kind=device.type,
+                observer=self.observer,
+            )
 
         self.observer.on_training_event(
             TrainingStageEvent(
@@ -1353,6 +1560,7 @@ class DnamTrainer:
                         lfo_freqs_hz=[0.8] if core2_active else [],
                         decay_gains_lin=[0.65] if core2_active else [],
                     ),
+                    device=device,
                 )
                 stem_stats_s2.append(stat)
 
@@ -1360,6 +1568,7 @@ class DnamTrainer:
             stem_stats_s2,
             z_head_stems,
             mode="init",
+            solver=solver,
         )
         model.load_kronecker_solution(head_init_sol, p_svd_16x4)
 
@@ -1371,6 +1580,8 @@ class DnamTrainer:
             stem_ids,
             sample_rate_hz=sr,
             full_psychoacoustics=False,
+            silent_stem_flags=silent_stem_flags,
+            stem_noise_floors_dbfs=stem_noise_floors_dbfs,
         )
         s2_elapsed = max(0.0, time.perf_counter() - t0)
         telemetry_rows: list[TrainingTelemetryRow] = [
@@ -1476,6 +1687,14 @@ class DnamTrainer:
                 in_shas=in_shas,
                 u_ctrl_stems=u_ctrl_stems,
                 on_step_metrics=_on_cascade_step_metrics,
+                device=device,
+                solver=solver,
+                silent_stem_flags=silent_stem_flags,
+                stem_noise_floors_dbfs=stem_noise_floors_dbfs,
+                stem_noise_profiles=stem_noise_profiles,
+                stem_ids=stem_ids,
+                tgt_shas=tgt_shas,
+                sidecar_cache=sidecar_cache,
             )
         else:
             self.observer.on_training_event(
@@ -1673,6 +1892,7 @@ class DnamTrainer:
                                 b_f16,
                                 b_u16,
                                 c_knots=model._calibrated_knot_coords.get(in_sha),
+                                device=device,
                             )
                         stat = compute_modulated_stem_sufficient_statistics(
                             base48_caches[in_sha],
@@ -1683,6 +1903,7 @@ class DnamTrainer:
                             input_pcm_sha256=in_sha,
                             target_pcm_sha256=tgt_shas[s_idx],
                             extracted_physics=ext_phys,
+                            device=device,
                         )
                     else:
                         x_t = torch.as_tensor(
@@ -1701,6 +1922,7 @@ class DnamTrainer:
                             input_pcm_sha256=in_sha,
                             target_pcm_sha256=tgt_shas[s_idx],
                             extracted_physics=ext_phys,
+                            device=device,
                         )
                         del phi_np, x_t
                     stem_stats_s4.append(stat)
@@ -1722,6 +1944,7 @@ class DnamTrainer:
             stem_stats_s4,
             z_head_stems,
             mode="polish",
+            solver=solver,
         )
         esr_l_final, esr_f_final, esr_u_final, per_stem_ultra, psycho_final = (
             self._evaluate_multi_tier_esr(
@@ -1732,6 +1955,8 @@ class DnamTrainer:
                 stem_ids,
                 sample_rate_hz=sr,
                 full_psychoacoustics=True,
+                silent_stem_flags=silent_stem_flags,
+                stem_noise_floors_dbfs=stem_noise_floors_dbfs,
             )
         )
         if not use_selective_cascade and not audit_only and request.config.epochs > 0:
@@ -1739,6 +1964,7 @@ class DnamTrainer:
                 stem_stats_s2,
                 z_head_stems,
                 mode="polish",
+                solver=solver,
             )
             esr_l_s2p, esr_f_s2p, esr_u_s2p, per_stem_s2p, psycho_s2p = (
                 self._evaluate_multi_tier_esr(
@@ -1749,6 +1975,8 @@ class DnamTrainer:
                     stem_ids,
                     sample_rate_hz=sr,
                     full_psychoacoustics=True,
+                    silent_stem_flags=silent_stem_flags,
+                    stem_noise_floors_dbfs=stem_noise_floors_dbfs,
                 )
             )
             if esr_u_s2p < esr_u_final:
@@ -1915,7 +2143,10 @@ class DnamTrainer:
             stem_stats_s4,
             creator_seed_hex=creator_seed_hex,
             signer_id=signer_id,
+            arena4_calib=model._arena4_calib,
         )
+        if sidecar_cache is not None:
+            sidecar_cache.cleanup_on_success()
 
         elapsed_sec = max(0.0, time.perf_counter() - t0)
         self.observer.on_training_event(
@@ -2002,10 +2233,53 @@ class DnamTrainer:
             sample_rate_hz=sr,
             core2_active=core2_active,
         )
-        device = torch.device("cpu")
-        if self.hardware_profile.torch_device.startswith("cuda"):
-            device = torch.device(self.hardware_profile.torch_device)
+        max_resume_len = max((x.shape[0] for x in inputs_list), default=4096)
+        device, solver = self._resolve_job_device_and_solver(
+            resume_request.config,
+            num_samples=max_resume_len,
+            num_stems=max(1, len(stem_ids)),
+        )
         model.to(device)
+
+        existing_arena4 = (
+            Arena4CalibrationData.from_bytes(ckpt_container.arena4_bytes)
+            if ckpt_container.arena4_bytes is not None
+            else None
+        )
+        existing_stem_calib_by_id = (
+            dict(existing_arena4.stems) if existing_arena4 is not None else {}
+        )
+        stem_noise_profiles: list[StemNoiseProfile] = []
+        for idx in range(len(stem_ids)):
+            ex_st = existing_stem_calib_by_id.get(stem_ids[idx])
+            if ex_st is not None and ex_st.input_pcm_sha256 == in_shas[idx]:
+                stem_noise_profiles.append(
+                    StemNoiseProfile(
+                        noise_floor_dbfs_broadband=ex_st.noise_floor_dbfs_broadband,
+                        noise_floor_dbfs_lf=ex_st.noise_floor_dbfs_lf,
+                        noise_floor_dbfs_mf=ex_st.noise_floor_dbfs_mf,
+                        noise_floor_dbfs_hf=ex_st.noise_floor_dbfs_hf,
+                        body_rms_dbfs=ex_st.band_energy_broadband,
+                        band_energy_broadband=ex_st.band_energy_broadband,
+                        band_energy_lf=ex_st.band_energy_lf,
+                        band_energy_mf=ex_st.band_energy_mf,
+                        band_energy_hf=ex_st.band_energy_hf,
+                        is_silent=ex_st.is_silent,
+                        source="measured_silent_frames",
+                    )
+                )
+            else:
+                stem_noise_profiles.append(
+                    measure_stem_band_noise_floor(
+                        inputs_list[idx][:, 0],
+                        targets_list[idx],
+                        sample_rate_hz=sr,
+                        request_noise_floor_dbfs=resume_request.config.noise_floor_dbfs,
+                        device=device,
+                    )
+                )
+        silent_stem_flags = [p.is_silent for p in stem_noise_profiles]
+        stem_noise_floors_dbfs = [p.band_floors_dbfs for p in stem_noise_profiles]
 
         # Forward-pass ONLY newly added or modified stems; also keep all existing stems not in
         # candidates
@@ -2045,6 +2319,7 @@ class DnamTrainer:
                         controls_meta=stems_controls[idx],
                         input_pcm_sha256=in_shas[idx],
                         target_pcm_sha256=tgt_shas[idx],
+                        device=device,
                     )
                     evaluated_stats.append(stat)
 
@@ -2076,6 +2351,7 @@ class DnamTrainer:
             final_stats,
             z_head_stems,
             mode="polish",
+            solver=solver,
         )
         model.load_kronecker_solution(head_polish_sol, p_svd_16x4)
 
@@ -2091,14 +2367,23 @@ class DnamTrainer:
                 active_u: list[float] = []
                 per_stem_ultra: dict[str, float] = {}
                 for idx, st_stat in enumerate(evaluated_stats):
+                    band_floors_i = (
+                        stem_noise_floors_dbfs[idx] if idx < len(stem_noise_floors_dbfs) else None
+                    )
                     bl, bf, bu = evaluate_stem_besr_from_sufficient_stats(
                         st_stat,
                         z_head_stems[offset + idx],
                         head_polish_sol,
                         targets_list[idx],
+                        band_floors_dbfs=band_floors_i,
                     )
-                    y_f64 = np.asarray(targets_list[idx], dtype=np.float64)
-                    if float(np.mean(y_f64**2)) <= 10.0 ** (-55.0 / 10.0):
+                    is_silent_i = (
+                        silent_stem_flags[idx]
+                        if idx < len(silent_stem_flags)
+                        else float(np.mean(np.asarray(targets_list[idx], dtype=np.float64) ** 2))
+                        <= 10.0 ** (-55.0 / 10.0)
+                    )
+                    if is_silent_i:
                         per_stem_ultra[stem_ids[idx]] = min(bu, -60.0)
                     else:
                         per_stem_ultra[stem_ids[idx]] = bu
@@ -2144,6 +2429,8 @@ class DnamTrainer:
                         stem_ids,
                         sample_rate_hz=sr,
                         full_psychoacoustics=True,
+                        silent_stem_flags=silent_stem_flags,
+                        stem_noise_floors_dbfs=stem_noise_floors_dbfs,
                     )
                 )
         else:
@@ -2252,6 +2539,7 @@ class DnamTrainer:
             final_stats,
             creator_seed_hex=creator_seed_hex,
             signer_id=signer_id,
+            arena4_calib=existing_arena4,
         )
 
         elapsed_sec = max(0.0, time.perf_counter() - t0)

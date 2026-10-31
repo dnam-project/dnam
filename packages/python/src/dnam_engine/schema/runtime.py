@@ -71,6 +71,11 @@ class DnamPreambleInfo(StrictModel):
         """Returns the pre-allocated JSON header capacity (`tensor_arena_offset - 64`)."""
         return max(0, self.tensor_arena_offset - 64)
 
+    @property
+    def has_calib_stats(self) -> bool:
+        """Returns `True` if `.dnam-ckpt` `Arena 4` calibration stats are present."""
+        return (self.flags & (1 << 11)) != 0
+
 
 class DnamTelemetrySnapshot(StrictModel):
     """Lock-free runtime telemetry snapshot from `DnamEngine`."""

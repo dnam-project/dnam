@@ -17,7 +17,10 @@ pub use crate::provenance::{
     DNSL_MAGIC, DnamSealEnvelopePreamble, DnamSealRecipientSlot, FLAG_SEAL_CHACHA20_FULL,
     MAX_SEAL_RECIPIENTS, unseal_dnam_container,
 };
-pub use ckpt::{pack_uplo_u_f64, unpack_uplo_u_f64, uplo_u_packed_len, verify_ckpt_stem_crc32c};
+pub use ckpt::{
+    ARENA4_HEADER_BYTES, DNCA_MAGIC, pack_uplo_u_f64, unpack_uplo_u_f64, uplo_u_packed_len,
+    verify_ckpt_arena4_calib_stats, verify_ckpt_stem_crc32c,
+};
 pub use preamble::DnamPreamble;
 pub use view::{
     DnamContainerView, build_dnam_container, compute_header_crc32c, update_header_in_place,
@@ -33,8 +36,8 @@ pub const DNCK_MAGIC: [u8; 4] = *b"DNCK";
 /// Current container major version (`1`).
 pub const CONTAINER_VERSION_MAJOR: u16 = 1;
 
-/// Current container minor version (`0`).
-pub const CONTAINER_VERSION_MINOR: u16 = 0;
+/// Current container minor version (`1`, backwards-compatible with `1.0.0` and `1.1.0`).
+pub const CONTAINER_VERSION_MINOR: u16 = 1;
 
 /// Fixed byte length of `Arena 0 (Lite)` (`168 × 64 B = 10,752 B`).
 pub const ARENA_OFFSET_LITE_END: u32 = 10_752;
@@ -83,6 +86,8 @@ pub const FLAG_STEREO_OUT: u16 = 1 << 8;
 pub const FLAG_HAS_SIGNATURES: u16 = 1 << 9;
 /// Bit 10 (`1024`): `Arena 0..2` is `ChaCha20` 64-byte block encrypted for `authorized_devices`.
 pub const FLAG_ENCRYPTED_ARENA: u16 = 1 << 10;
+/// Bit 11 (`2048`): `Arena 4` `.dnam-ckpt` calibration statistics (`DNCA`) are present.
+pub const FLAG_HAS_CALIB_STATS: u16 = 1 << 11;
 
 /// Updates an incremental Castagnoli `CRC32C` state with `data` using hardware `CRC32C` on `aarch64`.
 #[inline]

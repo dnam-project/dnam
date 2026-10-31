@@ -172,7 +172,7 @@ dynamic-neural-audio-modeler/
     │   │   ├── runner.rs            # Native SIMD Container Inspector, 24-Bit WAV Renderer & Kernel Host (`dnam-engine`)
     │   │   ├── trainer.rs           # `uv` Auto-Bootstrap Venv Manager & JSON-Job/JSONL Subprocess Bridge (`trainer/{env_manager,bridge}.rs`)
     │   │   ├── ipc.rs               # Tauri v2 Command & Native Hardware Acceleration Host Handler
-    │   │   └── cli.rs               # `clap` v4 Subcommand Router (`cli/{workspace_cmd,capture_cmd,train_cmd,format}.rs`)
+    │   │   └── cli.rs               # `clap` v4 Subcommand Router (`cli/{workspace_cmd,capture_cmd,train_cmd,cache_cmd,format}.rs`)
     │   ├── tests/                   # Rust Integration Tests (`project_and_capture.rs`, `cli_and_trainer_bridge.rs`)
     │   ├── src/                     # TypeScript SDK & Tauri v2 React 19 Desktop Studio (`binary.ts`, `ipc.ts`, `host.ts`, `ui/StudioApp.tsx`)
     │   └── test/                    # 1:1 Mirrored Vitest Suite (>= 95% coverage)
@@ -200,7 +200,11 @@ dynamic-neural-audio-modeler/
     │   │       ├── training/        # Hardware runtime, Cascade solvers, Kronecker .dnam-ckpt Solver, `wav_io.py` & TrainingBackend (CL-18)
     │   │       │   ├── AGENTS.md    # Scoped router (< 2,500 B)
     │   │       │   ├── __init__.py
+    │   │       │   ├── accelerator.py
     │   │       │   ├── hardware.py
+    │   │       │   ├── numerics.py
+    │   │       │   ├── windowing.py
+    │   │       │   ├── calib_cache.py
     │   │       │   ├── metrics.py
     │   │       │   ├── selective_cascade.py
     │   │       │   ├── cascade_primitives.py

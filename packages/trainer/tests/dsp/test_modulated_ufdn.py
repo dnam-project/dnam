@@ -18,17 +18,17 @@ from dnam_trainer.dsp.modulated_ufdn import (
 
 
 def test_givens_householder_unitarity_and_coercive_lyapunov_bounds() -> None:
-    # CL-08: Exact unitarity U^T @ U = I across Dual-Mono (psi=0, v=0), Reverb, and Ping-Pong
-    # (psi=pi/2)
+    # CL-08: Unitarity U^T @ U = I across Dual-Mono (psi=0, v=0), Reverb, and Ping-Pong
+    # (psi=pi/2) in 32-bit float32
     for psi in (0.0, 0.35, math.pi * 0.5):
-        for v_vec in (torch.zeros(8, dtype=torch.float64), torch.ones(8, dtype=torch.float64)):
-            u_mat = givens_householder_matrix_torch(psi, v_vec, num_lines=8, dtype=torch.float64)
+        for v_vec in (torch.zeros(8, dtype=torch.float32), torch.ones(8, dtype=torch.float32)):
+            u_mat = givens_householder_matrix_torch(psi, v_vec, num_lines=8, dtype=torch.float32)
             ident = u_mat.T @ u_mat
-            err = float(torch.max(torch.abs(ident - torch.eye(8, dtype=torch.float64))).item())
-            assert err < 1e-14
+            err = float(torch.max(torch.abs(ident - torch.eye(8, dtype=torch.float32))).item())
+            assert err < 1e-6
 
     # CL-09..CL-11: Coercive Lyapunov loop step bounded by v_ceil <= 0.985 even under +40 dB input
-    extreme_in = torch.tensor([100.0, -100.0, 0.0], dtype=torch.float64)
+    extreme_in = torch.tensor([100.0, -100.0, 0.0], dtype=torch.float32)
     s_next, _, _ = coercive_lyapunov_loop_step_torch(
         extreme_in,
         g_lin=0.9990,
@@ -38,11 +38,11 @@ def test_givens_householder_unitarity_and_coercive_lyapunov_bounds() -> None:
         dc_x_prev=torch.zeros_like(extreme_in),
         dc_y_prev=torch.zeros_like(extreme_in),
     )
-    assert float(torch.max(torch.abs(s_next)).item()) <= 0.985 + 1e-12
+    assert float(torch.max(torch.abs(s_next)).item()) <= 0.985 + 1e-6
 
 
 def test_cubic_lagrange_and_dual_pointer_switch_crossfade() -> None:
-    sig = torch.sin(torch.linspace(0.0, 30.0, 512, dtype=torch.float64))
+    sig = torch.sin(torch.linspace(0.0, 30.0, 512, dtype=torch.float32))
     y_del = cubic_lagrange_read_torch(sig, 12.35)
     assert y_del.shape == sig.shape
     assert torch.all(torch.isfinite(y_del))
@@ -58,13 +58,13 @@ def test_cubic_lagrange_and_dual_pointer_switch_crossfade() -> None:
 
 
 def test_differentiable_modulated_ufdn_forward_bypass_and_reference() -> None:
-    ufdn = DifferentiableModulatedUfdn(num_lines=4, active=True, dtype=torch.float64)
-    x_st = torch.randn((1, 2, 256), dtype=torch.float64, requires_grad=True)
+    ufdn = DifferentiableModulatedUfdn(num_lines=4, active=True, dtype=torch.float32)
+    x_st = torch.randn((1, 2, 256), dtype=torch.float32, requires_grad=True)
     y_st = ufdn(
         x_st,
-        delta_delay_samples=torch.full((4,), 0.5, dtype=torch.float64),
-        delta_g_lin=torch.full((4,), 0.01, dtype=torch.float64),
-        lfo_beam_gain=torch.ones((1, 2, 256), dtype=torch.float64),
+        delta_delay_samples=torch.full((4,), 0.5, dtype=torch.float32),
+        delta_g_lin=torch.full((4,), 0.01, dtype=torch.float32),
+        lfo_beam_gain=torch.ones((1, 2, 256), dtype=torch.float32),
     )
     assert y_st.shape == (1, 2, 256)
     loss = torch.sum(y_st**2)
@@ -89,7 +89,7 @@ def test_differentiable_modulated_ufdn_forward_bypass_and_reference() -> None:
 
 
 def test_wt_ufdn_hermite_hann_grain_read_and_12ch_tank_lines() -> None:
-    sig = torch.sin(torch.linspace(0.0, 20.0, 256, dtype=torch.float64)).unsqueeze(0)
+    sig = torch.sin(torch.linspace(0.0, 20.0, 256, dtype=torch.float32)).unsqueeze(0)
     # Zero warp and zero window mix collapses to base delay read
     y_unwarped = hermite_hann_grain_read_torch(
         sig,
@@ -115,11 +115,11 @@ def test_wt_ufdn_hermite_hann_grain_read_and_12ch_tank_lines() -> None:
     assert torch.all(torch.isfinite(y_warped))
     assert not torch.allclose(y_warped, y_base)
 
-    ufdn = DifferentiableModulatedUfdn(num_lines=8, active=True, dtype=torch.float64)
+    ufdn = DifferentiableModulatedUfdn(num_lines=8, active=True, dtype=torch.float32)
     with torch.no_grad():
         ufdn.grain_warp_rate.fill_(0.5)
         ufdn.grain_window_mix.fill_(0.8)
-    x_st = torch.randn((1, 2, 128), dtype=torch.float64)
+    x_st = torch.randn((1, 2, 128), dtype=torch.float32)
     tank_12, wet_2 = ufdn.forward_tank_lines(x_st, freeze_amount=0.5)
     assert tank_12.shape == (1, 12, 128)
     assert wet_2.shape == (1, 2, 128)
@@ -127,7 +127,7 @@ def test_wt_ufdn_hermite_hann_grain_read_and_12ch_tank_lines() -> None:
     assert torch.all(torch.isfinite(wet_2))
 
     # Inactive ufdn forward_tank_lines pads 12 channels
-    ufdn_off = DifferentiableModulatedUfdn(num_lines=4, active=False, dtype=torch.float64)
+    ufdn_off = DifferentiableModulatedUfdn(num_lines=4, active=False, dtype=torch.float32)
     tank_off, wet_off = ufdn_off.forward_tank_lines(x_st)
     assert tank_off.shape == (1, 12, 128)
     assert torch.equal(wet_off, x_st)

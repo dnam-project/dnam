@@ -29,8 +29,33 @@ models/*/stems/input.wav
 models/*/renders/
 models/*/reports/*.parquet
 models/*/reports/*.html
+models/*/.dnam-cache/
+.dnam-cache/
 .cache/
 ";
+
+fn ensure_gitignore_has_dnam_cache(root: &Path) {
+    let gitignore_path = root.join(".gitignore");
+    if !gitignore_path.is_file() {
+        return;
+    }
+    if let Ok(mut text) = fs::read_to_string(&gitignore_path) {
+        let mut changed = false;
+        for rule in ["models/*/.dnam-cache/", ".dnam-cache/"] {
+            if !text.lines().any(|line| line.trim() == rule) {
+                if !text.ends_with('\n') && !text.is_empty() {
+                    text.push('\n');
+                }
+                text.push_str(rule);
+                text.push('\n');
+                changed = true;
+            }
+        }
+        if changed {
+            let _ = fs::write(&gitignore_path, text);
+        }
+    }
+}
 
 /// Returns the OS-appropriate user configuration directory for `dnam`:
 /// - Respects `DNAM_CONFIG_DIR` environment variable when set.
@@ -446,10 +471,19 @@ impl DnamProject {
         let content = fs::read_to_string(&manifest_path)?;
         let manifest: DnamProjectManifest =
             toml::from_str(&content).map_err(|e| StudioError::Toml(e.to_string()))?;
+        ensure_gitignore_has_dnam_cache(&root);
         Ok(Self {
             root_dir: root,
             manifest,
         })
+    }
+
+    /// Returns the resolved path to a model's local sidecar calibration cache (`models/<model_id>/.dnam-cache`).
+    pub fn model_cache_dir(&self, model_id: &str) -> PathBuf {
+        self.root_dir
+            .join("models")
+            .join(model_id)
+            .join(".dnam-cache")
     }
 
     /// Returns the workspace root directory.

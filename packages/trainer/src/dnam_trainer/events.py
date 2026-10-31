@@ -116,8 +116,71 @@ class TrainingCompleteEvent(StrictModel):
     elapsed_sec: float = 0.0
 
 
+class RuntimeEvent(StrictModel):
+    """Emitted after startup capability probes and accelerator runtime resolution."""
+
+    event_type: Literal["runtime_init"] = "runtime_init"
+    device_kind: Literal["tpu", "cuda", "rocm", "mps", "cpu"]
+    torch_device: str
+    contraction_dtype: Literal["float32", "bfloat16"]
+    bf16_native: bool
+    fp32_matmul_exact: bool
+    fast_math_off: bool
+    budget_bytes: int
+    max_tensor_bytes: int
+    unverified_hardware: bool = False
+    warning: str | None = None
+
+
+class PlannerEvent(StrictModel):
+    """Emitted when the 2-D memory planner selects execution mode and block/group sizes."""
+
+    event_type: Literal["planner_config"] = "planner_config"
+    mode: Literal["STREAMED", "RESIDENT", "RESIDENT_BATCHED"]
+    num_samples: int
+    num_stems: int
+    block_rows: int
+    stem_group_size: int
+    budget_bytes: int
+    estimated_peak_bytes: int
+    regimes: list[tuple[int, int]] = Field(default_factory=list)
+
+
+class CacheEvent(StrictModel):
+    """Emitted on Arena-4 or `.dnam-cache` sidecar hit, miss, write, or cleanup."""
+
+    event_type: Literal["cache_activity"] = "cache_activity"
+    tier: Literal["arena4", "sidecar"]
+    action: Literal["hit", "miss", "write", "evict", "corrupt_ignored", "cleanup"]
+    key: str
+    bytes_count: int = 0
+    elapsed_ms: float = 0.0
+    message: str = ""
+
+
+class SolverEvent(StrictModel):
+    """Emitted after a batched host-fp64 solve pass."""
+
+    event_type: Literal["host_solve"] = "host_solve"
+    pass_name: str
+    num_solves: int = Field(ge=1)
+    matrix_dim: int = Field(ge=1)
+    rhs_cols: int = Field(ge=1)
+    transfer_ms: float = Field(ge=0.0)
+    solve_ms: float = Field(ge=0.0)
+    lstsq_fallbacks: int = Field(default=0, ge=0)
+    warning: str | None = None
+
+
 type TrainingEvent = Annotated[
-    TrainingStageEvent | TrainingStepEvent | AuditPhaseEvent | TrainingCompleteEvent,
+    TrainingStageEvent
+    | TrainingStepEvent
+    | AuditPhaseEvent
+    | TrainingCompleteEvent
+    | RuntimeEvent
+    | PlannerEvent
+    | CacheEvent
+    | SolverEvent,
     Field(discriminator="event_type"),
 ]
 
@@ -166,10 +229,14 @@ class NullObserver:
 
 __all__ = [
     "AuditPhaseEvent",
+    "CacheEvent",
     "CalibrationStepEvent",
     "CaptureEvent",
     "CaptureObserver",
     "NullObserver",
+    "PlannerEvent",
+    "RuntimeEvent",
+    "SolverEvent",
     "StemCaptureEvent",
     "TrainingCompleteEvent",
     "TrainingEvent",

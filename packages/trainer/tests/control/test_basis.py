@@ -34,18 +34,18 @@ def test_normalize_and_clamp_range_and_lobatto_basis() -> None:
     assert deg1 == 0
     assert torch.allclose(
         eval_node_anchored_newton_basis(0.5, anchors1, deg1),
-        torch.zeros(3, dtype=torch.float64),
+        torch.zeros(3, dtype=torch.float32),
     )
 
     deg3, anchors3 = compute_lobatto_degree_and_anchors([-1.0, 0.0, 1.0, 0.5], default_u=0.0)
     assert deg3 == 3
     # At anchor u1 (0.0), all 3 terms vanish identically (0.000000)
     b_at_u1 = eval_node_anchored_newton_basis(anchors3[0], anchors3, deg3)
-    assert float(torch.max(torch.abs(b_at_u1)).item()) < 1e-15
+    assert float(torch.max(torch.abs(b_at_u1)).item()) < 1e-7
     # At anchor u2, psi_2 and psi_3 vanish identically
     b_at_u2 = eval_node_anchored_newton_basis(anchors3[1], anchors3, deg3)
-    assert abs(float(b_at_u2[1].item())) < 1e-15
-    assert abs(float(b_at_u2[2].item())) < 1e-15
+    assert abs(float(b_at_u2[1].item())) < 1e-7
+    assert abs(float(b_at_u2[2].item())) < 1e-7
 
     with pytest.raises(ValueError, match="Lobatto degree"):
         eval_node_anchored_newton_basis(0.0, anchors3, 5)

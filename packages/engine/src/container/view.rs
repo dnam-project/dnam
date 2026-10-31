@@ -13,10 +13,11 @@ use crate::schema::{DnamError, DnamJsonHeader, DnamProtectionProfile};
 
 use super::preamble::DnamPreamble;
 use super::{
-    ARENA_OFFSET_FULL_END, ARENA_OFFSET_LITE_END, ARENA_OFFSET_ULTRA_END, DNAM_MAGIC, DNCK_MAGIC,
-    FLAG_CORE2_ACTIVE, FLAG_DEFAULT_ANCHORED, FLAG_ENCRYPTED_ARENA, FLAG_EXEC_ORDER_SOA,
-    FLAG_HAS_CKPT_STEMS, FLAG_HAS_FULL_DELTA, FLAG_HAS_LITE, FLAG_HAS_SIGNATURES,
-    FLAG_HAS_ULTRA_DELTA, FLAG_LFO_ENV_ACTIVE, FLAG_STEREO_OUT, crc32c_update,
+    ARENA_OFFSET_FULL_END, ARENA_OFFSET_LITE_END, ARENA_OFFSET_ULTRA_END, ARENA3_STEM_BYTES_ULTRA,
+    DNAM_MAGIC, DNCK_MAGIC, FLAG_CORE2_ACTIVE, FLAG_DEFAULT_ANCHORED, FLAG_ENCRYPTED_ARENA,
+    FLAG_EXEC_ORDER_SOA, FLAG_HAS_CALIB_STATS, FLAG_HAS_CKPT_STEMS, FLAG_HAS_FULL_DELTA,
+    FLAG_HAS_LITE, FLAG_HAS_SIGNATURES, FLAG_HAS_ULTRA_DELTA, FLAG_LFO_ENV_ACTIVE, FLAG_STEREO_OUT,
+    crc32c_update, verify_ckpt_arena4_calib_stats,
 };
 
 /// Computes `header_crc32c` over `container_bytes[0..tensor_arena_offset]` with
@@ -164,6 +165,18 @@ impl<'a> DnamContainerView<'a> {
         let plain_bytes = arena_storage.as_bytes();
         Self::verify_arena_prefix_crcs(&preamble, plain_bytes)?;
 
+        if preamble.magic == DNAM_MAGIC && preamble.has_calib_stats() {
+            return Err(DnamError::SchemaValidationError(
+                "FLAG_HAS_CALIB_STATS (Arena 4) is forbidden in runtime .dnam containers"
+                    .to_string(),
+            ));
+        }
+        if preamble.magic == DNCK_MAGIC && preamble.has_calib_stats() {
+            let arena3_end = (preamble.arena_offset_ultra_end as usize)
+                + (preamble.num_ckpt_stems as usize) * ARENA3_STEM_BYTES_ULTRA;
+            verify_ckpt_arena4_calib_stats(plain_bytes, arena3_end)?;
+        }
+
         // 5. Verify split-payload Ed25519 provenance over Arena 0..2
         let ultra_end = (preamble.arena_offset_ultra_end as usize).min(plain_bytes.len());
         let verification_status = verify_container_provenance(
@@ -269,13 +282,28 @@ pub fn build_dnam_container(
     header.slimmable_tiers.full.prefix_crc32c = crc_full;
     header.slimmable_tiers.ultra.prefix_crc32c = crc_ultra;
 
+    let is_ckpt = header.container_kind == "dnam-ckpt";
+    let magic = if is_ckpt { DNCK_MAGIC } else { DNAM_MAGIC };
+    let num_ckpt_stems = header.stems_registry.as_ref().map_or(0, |s| s.len() as u16);
+    let arena3_end =
+        (ARENA_OFFSET_ULTRA_END as usize) + (num_ckpt_stems as usize) * ARENA3_STEM_BYTES_ULTRA;
+    if !is_ckpt && stored_arena_bytes.len() > ARENA_OFFSET_ULTRA_END as usize {
+        return Err(DnamError::SchemaValidationError(
+            "runtime .dnam arena cannot exceed ARENA_OFFSET_ULTRA_END (36,224 B)".to_string(),
+        ));
+    }
+    let has_arena4 = is_ckpt && stored_arena_bytes.len() > arena3_end;
+    if has_arena4 {
+        verify_ckpt_arena4_calib_stats(stored_arena_bytes, arena3_end)?;
+        if header.metadata.signatures.is_none() && header.schema_version()?.minor < 1 {
+            header.version = crate::schema::SchemaVersion::V1_1_0.as_semver_string();
+        }
+    }
+
     let json_bytes =
         serde_json::to_vec(header).map_err(|e| DnamError::InvalidJsonHeader(e.to_string()))?;
     let min_header_region = 64 + json_bytes.len();
     let tensor_arena_offset = min_header_region.div_ceil(4096).max(1) * 4096;
-
-    let is_ckpt = header.container_kind == "dnam-ckpt";
-    let magic = if is_ckpt { DNCK_MAGIC } else { DNAM_MAGIC };
 
     let mut flags = FLAG_HAS_LITE | FLAG_EXEC_ORDER_SOA | FLAG_DEFAULT_ANCHORED;
     if stored_arena_bytes.len() >= ARENA_OFFSET_FULL_END as usize {
@@ -307,9 +335,11 @@ pub fn build_dnam_container(
     if encrypted_arena {
         flags |= FLAG_ENCRYPTED_ARENA;
     }
+    if has_arena4 {
+        flags |= FLAG_HAS_CALIB_STATS;
+    }
 
     let schema_ver = header.schema_version()?;
-    let num_ckpt_stems = header.stems_registry.as_ref().map_or(0, |s| s.len() as u16);
 
     let mut preamble = DnamPreamble {
         magic,

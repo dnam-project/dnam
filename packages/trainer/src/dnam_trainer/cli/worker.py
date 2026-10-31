@@ -48,6 +48,13 @@ def get_trainer_status_payload(
         "resolved_device": prof.device_type,
         "torch_device": prof.torch_device,
         "contraction_dtype": str(prof.contraction_dtype),
+        "bf16_native": prof.bf16_native,
+        "fp32_matmul_exact": prof.fp32_matmul_exact,
+        "fast_math_off": prof.fast_math_off,
+        "budget_bytes": prof.budget_bytes,
+        "max_tensor_bytes": prof.max_tensor_bytes,
+        "unverified_hardware": prof.unverified_hardware,
+        "cpu_fallback_warning": prof.cpu_fallback_warning,
         "cuda_available": torch.cuda.is_available(),
         "mps_available": hasattr(torch.backends, "mps") and torch.backends.mps.is_available(),
     }
@@ -108,6 +115,8 @@ def run_worker_job(
     precision: PrecisionPolicy | None = None,
     unsigned: bool = False,
     creator_seed_hex: str | None = None,
+    no_cache: bool = False,
+    cache_max_gb: float | None = None,
     event_format: EventFormat = "jsonl",
     console: Console | None = None,
 ) -> TrainingJobResult:
@@ -153,6 +162,10 @@ def run_worker_job(
                 }
             )
             cfg = cfg.model_copy(update={"backend": b_cfg})
+        if no_cache:
+            cfg = cfg.model_copy(update={"cache_enabled": False})
+        if cache_max_gb is not None:
+            cfg = cfg.model_copy(update={"cache_max_gb": cache_max_gb})
         resume_req = resume_req.model_copy(
             update={"config": cfg, "force_tier2": force_tier2 or resume_req.force_tier2}
         )
@@ -181,6 +194,10 @@ def run_worker_job(
                 }
             )
             cfg = cfg.model_copy(update={"backend": b_cfg})
+        if no_cache:
+            cfg = cfg.model_copy(update={"cache_enabled": False})
+        if cache_max_gb is not None:
+            cfg = cfg.model_copy(update={"cache_max_gb": cache_max_gb})
         job_req = job_req.model_copy(update={"config": cfg})
         result = backend.train(
             job_req,

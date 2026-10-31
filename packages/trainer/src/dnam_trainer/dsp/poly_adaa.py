@@ -194,8 +194,10 @@ class DifferentiablePolyAdaa(nn.Module):
                 f"Expected input shape (B, {self.num_channels}, L), got {tuple(x.shape)}"
             )
 
-        work_dtype = torch.float64 if inp.dtype == torch.float64 else torch.float32
-        dev_type = inp.device.type if inp.device.type in ("cuda", "cpu", "mps") else "cpu"
+        work_dtype = torch.float32
+        dev_type = (
+            inp.device.type if inp.device.type in ("cuda", "cpu", "mps", "xla", "hpu") else "cpu"
+        )
 
         with torch.autocast(device_type=dev_type, enabled=False):
             x_f = inp.to(dtype=work_dtype)

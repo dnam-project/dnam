@@ -3,7 +3,7 @@
 Free from legacy NAM A2 text-JSON weight array constraints and Python `pickle` (`torch.save`) checkpoints, DNAM defines two companion **zero-copy, 64-byte cache-line and SIMD-aligned Hybrid Binary Container formats** engineered for **$< 50\text{ ns}$ `#[no_std]` hardware loading**:
 
 1. **`.dnam` (Magic `b"DNAM"`, Version `1.0`):** The single-file real-time deployment container ($10.5\text{ KB}$ `Lite` / $21.8\text{ KB}$ `Full` / $35.4\text{ KB}$ `Ultra` binary arena) loaded via zero-copy `mmap` or `Float32Array` view by the Rust SIMD engine (`packages/engine`), audio plugin (`packages/plugin`), Python wheel (`packages/python`), and Node.js/WASM runtime (`packages/js`).
-2. **`.dnam-ckpt` (Magic `b"DNCK"`, Version `1.0`):** The deduplicated, `pickle`-free single-file iterative training checkpoint. Its leading tensor arenas (`Arena 0..2`) are **bit-for-bit identical** to the exported `.dnam` model, followed by `Arena 3` containing the tier-ordered **Column-Major Upper-Triangular (`uplo='U'`) `float64` audio sufficient statistics** $\lbrace \mathrm{pack}_{\text{U}}\big(\mathbf{G}_{\text{audio}}^{(s)}\big), \mathbf{C}_{\text{audio}}^{(s)} \rbrace$ (**$17.25\text{ KB/stem}$ `Lite` / $66.50\text{ KB/stem}$ `Full` / $147.75\text{ KB/stem}$ `Ultra`**—nearly $2\times$ smaller than full matrix storage and 100% 64-byte aligned).
+2. **`.dnam-ckpt` (Magic `b"DNCK"`, Version `1.1`):** The deduplicated, `pickle`-free single-file iterative training checkpoint (`1.1` when `Arena 4` calibration stats are present, `1.0` otherwise). Its leading tensor arenas (`Arena 0..2`) are **bit-for-bit identical** to the exported `.dnam` model, followed by `Arena 3` containing the tier-ordered **Column-Major Upper-Triangular (`uplo='U'`) `float64` audio sufficient statistics** $\lbrace \mathrm{pack}_{\text{U}}\big(\mathbf{G}_{\text{audio}}^{(s)}\big), \mathbf{C}_{\text{audio}}^{(s)} \rbrace$ (**$17.25\text{ KB/stem}$ `Lite` / $66.50\text{ KB/stem}$ `Full` / $147.75\text{ KB/stem}$ `Ultra`**—nearly $2\times$ smaller than full matrix storage and 100% 64-byte aligned), and optional `Arena 4` (`HAS_CALIB_STATS` bit `11`, magic `b"DNCA"`) containing portable per-input (`INPC`) and per-stem (`STMC`) calibration statistics (`~3.6 MB` at 30 stems $\times$ 30 s, stripped on `.dnam` export).
 3. **`.dnam-seal` (Magic `b"DNSL"`, Version `1.0`):** The 100% opaque, immutable 64-byte cache-line aligned OEM hardware wrapper (`DnamSealEnvelope`, `DnamProtectionProfile::EnclaveSealed`) that wraps an inner `ENCRYPTED_ARENA = 1` `.dnam` container (`cek_arena`) inside an outer `ChaCha20` + `X25519` `HPKE` binary envelope (`cek_outer`) for factory-attested hardware TrustZone enclaves (`OemDeviceCertificate`, see [`digital_marketplace_and_provenance.md` §3](digital_marketplace_and_provenance.md#3-pillar-2-hardware-enclave--oem-drm-oemdevicecertificate-attestation--dnam-seal-bdnsl-wrapper)).
 
 ---
@@ -35,6 +35,10 @@ Both `.dnam` and `.dnam-ckpt` share an identical three-region binary layout desi
 | 3D. Arena 3 (.dnam-ckpt only): Per-Stem Packed Upper-Triangular f64   |
 |     Sufficient Statistics {pack_U(G_audio^(s)), C_audio^(s)}          |
 |     • 17,664 B/stem (Lite) | 68,096 B/stem (Full) | 151,296 B (Ultra) |
++-----------------------------------------------------------------------+ arena3_end (64B-aligned)
+| 3E. Arena 4 (.dnam-ckpt v1.1 w/ HAS_CALIB_STATS): Portable Calib      |
+|     Statistics (magic "DNCA", 64B INPC + 128B STMC records, stripped  |
+|     automatically on .dnam runtime export)                            |
 +-----------------------------------------------------------------------+ EOF (64B-aligned)
 ```
 
@@ -46,8 +50,8 @@ All fields are naturally aligned with **zero compiler-inserted padding holes** (
 | :--- | :--- | :--- | :--- |
 | `0x00..0x04` | `[u8; 4]` | `magic` | `b"DNAM"` (`0x4D414E44`) for `.dnam`; `b"DNCK"` (`0x4B434E44`) for `.dnam-ckpt` |
 | `0x04..0x06` | `u16` | `version_major` | Schema major version (`1`); reject if `!= 1` |
-| `0x06..0x08` | `u16` | `version_minor` | Schema minor version (`0`) |
-| `0x08..0x0A` | `u16` | `flags` | **Auto-populated by trainer/exporter (except Bit `8`):** Bit `0`: `HAS_LITE` (`1`), Bit `1`: `HAS_FULL_DELTA` (`2`), Bit `2`: `HAS_ULTRA_DELTA` (`4`), Bit `3`: `HAS_CKPT_STEMS` (`8`), Bit `4`: `EXEC_ORDER_SOA` (`16`), Bit `5`: `DEFAULT_ANCHORED` (`32`), Bit `6`: `CORE2_ACTIVE` (`64`, auto-pruned if `0`), Bit `7`: `LFO_ENV_ACTIVE` (`128`, auto-pruned if `0`), Bit `8`: `STEREO_OUT` (`256`, the **only** user-configurable mode flag: `1 = stereo`, `0 = mono`), Bit `9`: `HAS_SIGNATURES` (`512`, auto-set when `metadata.signatures` is present), Bit `10`: `ENCRYPTED_ARENA` (`1024`, auto-set when `Arena 0..2` is `ChaCha20`-wrapped for `authorized_devices`) |
+| `0x06..0x08` | `u16` | `version_minor` | Schema minor version (`1`; `0..=1` accepted by loader) |
+| `0x08..0x0A` | `u16` | `flags` | **Auto-populated by trainer/exporter (except Bit `8`):** Bit `0`: `HAS_LITE` (`1`), Bit `1`: `HAS_FULL_DELTA` (`2`), Bit `2`: `HAS_ULTRA_DELTA` (`4`), Bit `3`: `HAS_CKPT_STEMS` (`8`), Bit `4`: `EXEC_ORDER_SOA` (`16`), Bit `5`: `DEFAULT_ANCHORED` (`32`), Bit `6`: `CORE2_ACTIVE` (`64`, auto-pruned if `0`), Bit `7`: `LFO_ENV_ACTIVE` (`128`, auto-pruned if `0`), Bit `8`: `STEREO_OUT` (`256`, the **only** user-configurable mode flag: `1 = stereo`, `0 = mono`), Bit `9`: `HAS_SIGNATURES` (`512`, auto-set when `metadata.signatures` is present), Bit `10`: `ENCRYPTED_ARENA` (`1024`, auto-set when `Arena 0..2` is `ChaCha20`-wrapped for `authorized_devices`), Bit `11`: `HAS_CALIB_STATS` (`2048`, `.dnam-ckpt` only; auto-set when `Arena 4` calibration stats follow `Arena 3` and stripped on `.dnam` export) |
 | `0x0A..0x0B` | `u8` | `num_controls` | Total user controls `P = P_range + P_switch ∈ [0, 255]` (`ControlClampDescriptor` count) |
 | `0x0B..0x0C` | `u8` | `ring_buffer_pow2_log2` | Auto-populated by trainer: `0` when `CORE2_ACTIVE == 0`, or `⌈log₂(max_m D_m + ΔD_max + 8)⌉ ∈ [8, 15]` when Core 2 is active |
 | `0x0C..0x10` | `u32` | `sample_rate_train_hz` | Reference training sample rate in Hz (e.g., `48000`) |
@@ -523,6 +527,21 @@ In addition to all standard `.dnam` JSON fields (`metadata`, `user_metadata`, `c
   }
 }
 ```
+
+### 6.4 `Arena 4` (`DNCA`, `HAS_CALIB_STATS` Bit 11) & Workspace `.dnam-cache` Sidecar
+
+When `HAS_CALIB_STATS` (Bit `11` = `0x0800`) is set in a `.dnam-ckpt` preamble (`version_major = 1, version_minor = 1`), `Arena 4` immediately follows `Arena 3` at 64-byte alignment and stores compact, portable calibration statistics (`magic = b"DNCA"`):
+
+1. **`DNCA` Arena Header (`64 B`, `align(64)`):**
+   - `magic = b"DNCA"`, `schema_version = 1`, `num_inputs` (`u16`), `num_stems` (`u16`), `total_byte_len` (`u64`, `% 64 == 0`), and `arena4_crc32c` (`u32`, Castagnoli `CRC32C` over the entire `Arena 4` payload with the checksum field zeroed).
+2. **Per-Input Calibration Record (`INPC`, `64 B` Header + 64B-Padded Payload):**
+   - Keyed by `input_pcm_sha256` (`32 B`), `sample_rate_hz` (`u32`), `num_samples` (`u32`), `num_seg_windows` (`u16`), `seg_feat_dim` (`u16`), `s1_in_dim` (`u16`), and `s1_out_dim` (`u16`).
+   - Stores per-window segmentation Gram matrices (`uplo='U'` `float32`) and Stage-1 orthonormal projector weights (`float32`), enabling instant DP regime segmentation (`segment_regimes_dp`) and Stage-1 basis projection on resume without re-evaluating full-length nonlinear sweeps.
+3. **Per-Stem Calibration Record (`STMC`, `128 B` Header + 64B-Padded Payload):**
+   - Keyed by `input_pcm_sha256` (`32 B`) and `target_pcm_sha256` (`32 B`), storing `measured_lag_samples` (`f32`), `silent_stem_flag` (`u8`), per-band silent-frame noise floors (`noise_floor_dbfs_broadband`, `noise_floor_dbfs_lf`, `noise_floor_dbfs_mf`, `noise_floor_dbfs_hf` in `f32`), per-band active body energies (`band_energy_broadband/lf/mf/hf` in `f32`), per-window segmentation cross-correlations (`float32`), and the `8,192`-tap causal Wiener LTI impulse response (`float32`).
+   - Automatically stripped when exporting a runtime `.dnam` container (`version_major = 1, version_minor = 0`, `HAS_CALIB_STATS = 0`).
+4. **Workspace Sidecar (`models/<id>/.dnam-cache/*.dnce`):**
+   - Paired with a local, gitignored, 64-byte aligned memory-mappable sidecar cache (`SidecarCacheStore` in `calib_cache.py`, managed via `dnam cache status` and `dnam cache clear`) that uses a measured read-vs-regenerate bandwidth cost model, supports stage-level crash resume, enforces a `16 GB` default workspace quota (`~3 GB` floor), and cleans up intermediate stage entries automatically upon training completion.
 
 ---
 

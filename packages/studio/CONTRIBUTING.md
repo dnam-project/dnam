@@ -18,7 +18,7 @@ All contributions must also comply with the root [`CONTRIBUTING.md`](../../CONTR
 ## 2. Local Development & Verification Commands
 
 ```bash
-# Run the `dnam` CLI (`init`, `model`, `capture`, `train`, `inspect`, `studio`)
+# Run the `dnam` CLI (`init`, `model`, `capture`, `train`, `cache`, `inspect`, `studio`)
 moon run studio:cli -- --help
 
 # Launch the Studio UI Vite dev server (http://localhost:1420)

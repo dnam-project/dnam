@@ -14,6 +14,11 @@ from dnam_trainer.training.kronecker_head import (
     compute_stem_sufficient_statistics,
     solve_all_tiers_kronecker_head_float64,
 )
+from dnam_trainer.training.numerics import (
+    ExactGramAccumulator,
+    HostDenseSolver,
+    HostSolveSpec,
+)
 
 
 def test_bench_phase1_preflight_audit(benchmark: Any) -> None:
@@ -66,3 +71,21 @@ def test_bench_selective_rglru_chunked_scan(benchmark: Any) -> None:
     with torch.no_grad():
         out, _ = benchmark(layer, x)
     assert out.shape == (1, 4, 4096)
+
+
+def test_bench_exact_gram_and_host_batched_solve(benchmark: Any) -> None:
+    """Benchmarks on-device `ExactGramAccumulator` + batched `HostDenseSolver` (`< 50 ms`)."""
+    torch.manual_seed(2026)
+    x = torch.randn((4096, 32), dtype=torch.float32) * 0.25
+    y = torch.randn((4096, 4), dtype=torch.float32) * 0.1
+    solver = HostDenseSolver()
+
+    def _run_pass() -> list[torch.Tensor]:
+        acc = ExactGramAccumulator(32, 4, device=x.device)
+        acc.add(x, y)
+        spec = HostSolveSpec(accumulator=acc, ridge_scale=1e-6, min_ridge=1e-12)
+        return solver.solve_batch([spec], pass_name="bench_pass")
+
+    weights = benchmark(_run_pass)
+    assert len(weights) == 1
+    assert weights[0].shape == (32, 4)

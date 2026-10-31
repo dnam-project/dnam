@@ -3,11 +3,13 @@
 Implements:
 1. Exact idempotent orthogonal frequency-band projectors (`project_fft_band`) satisfying
    $P_a^2 = P_a$ and $P_a P_b = 0$ ($a \\neq b$),
-2. Parseval commuted in-band orthonormal column reduction (`parseval_inband_projectors`),
-3. Window-streamed 3-band decoupled Cholesky solver (`solve_3band_decoupled_window_stage`),
+2. Parseval commuted in-band orthonormal column reduction (`parseval_inband_projectors`) via
+   on-device `ExactGramAccumulator` + host `float64` `eigh`,
+3. Window-streamed 3-band decoupled solver (`solve_3band_decoupled_window_stage`) via batched
+   `HostDenseSolver`,
 4. 1/3-octave LTAS high-frequency tilt balance (`apply_ltas_hf_tilt_balance`), and
 5. Stage-1 and refinement comparator + wavefolder bases (`build_stage1_fuzz_basis`,
-   `build_refinement_fuzz_basis`).
+   `build_refinement_fuzz_basis`) chunked so no tensor exceeds `max_tensor_bytes` (`1 GiB`).
 """
 
 from __future__ import annotations
@@ -17,23 +19,37 @@ from collections.abc import Callable, Sequence
 
 import torch
 import torch.nn.functional as F
+from torch import Tensor
 
+from dnam_trainer.training.accelerator import empty_device_cache, free_tensor_storage
 from dnam_trainer.training.cascade_primitives import (
-    build_causal_bspline_window_weights,
     fast_1pole_lpf,
-    solve_cholesky_ridge,
     split_bezout_3band,
+)
+from dnam_trainer.training.cascade_selective_stages import (
+    MAX_CHUNK_COLS,
+    ColumnChunkedMatrix,
+)
+from dnam_trainer.training.numerics import (
+    ExactGramAccumulator,
+    HostDenseSolver,
+    HostSolveSpec,
+)
+from dnam_trainer.training.windowing import (
+    CausalBsplineWindowSchedule,
+    build_orthogonal_fft_windows,
+    compute_cumulative_energy_state,
 )
 
 
 @torch.no_grad()
 def project_fft_band(
-    sig: torch.Tensor,
+    sig: Tensor,
     f_lo: float,
     f_hi: float,
     *,
     sr: float = 48_000.0,
-) -> torch.Tensor:
+) -> Tensor:
     """Exact idempotent orthogonal frequency-band projector in `float32`, chunked to `< 75 MB`."""
     was_1d = sig.ndim == 1
     if was_1d:
@@ -58,37 +74,61 @@ def project_fft_band(
     return out.squeeze(-1) if was_1d else out
 
 
+def _project_fft_band_chunked(
+    cm: ColumnChunkedMatrix,
+    f_lo: float,
+    f_hi: float,
+    *,
+    sr: float = 48_000.0,
+    free_input: bool = True,
+) -> ColumnChunkedMatrix:
+    out_chunks: list[Tensor] = []
+    for ch in cm.chunks:
+        out_chunks.append(project_fft_band(ch, f_lo, f_hi, sr=sr))
+        if free_input:
+            free_tensor_storage(ch)
+    if free_input:
+        cm.chunks.clear()
+    return ColumnChunkedMatrix(out_chunks)
+
+
 @torch.no_grad()
 def parseval_inband_projectors(
-    u_st: torch.Tensor,
+    u_st: Tensor | ColumnChunkedMatrix,
     max_lf: int,
     max_mf: int,
     max_hf: int,
     *,
+    solver: HostDenseSolver | None = None,
     sr: float = 48_000.0,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+) -> tuple[Tensor, Tensor, Tensor]:
     """Computes in-band orthonormal projection matrices `(P_lf, P_mf, P_hf)` simultaneously via
-    Parseval's theorem on 16 multi-window blocks (`< 90 MB` RAM).
+    Parseval's theorem on 16 multi-window blocks using 32-bit `complex64` FFT +
+    `ExactGramAccumulator` + host `float64` `eigh`.
     """
-    l_seq, c_in = u_st.shape
+    host_solver = solver if solver is not None else HostDenseSolver()
+    u_cm = (
+        u_st if isinstance(u_st, ColumnChunkedMatrix) else ColumnChunkedMatrix.from_tensors([u_st])
+    )
+    l_seq, c_in = u_cm.shape
+    dev = u_cm.device
     blk_len = min(4096, l_seq)
     n_blks = min(16, max(1, l_seq // blk_len))
     step = max(1, (l_seq - blk_len) // max(1, n_blks - 1)) if n_blks > 1 else 0
-    blocks = torch.stack([u_st[i * step : i * step + blk_len] for i in range(n_blks)], dim=0)
+    blocks = torch.stack(
+        [u_cm.slice_rows(i * step, i * step + blk_len) for i in range(n_blks)],
+        dim=0,
+    )
     spec = torch.fft.rfft(blocks.to(torch.float32), n=blk_len, dim=1)
     del blocks
-    freqs = torch.fft.rfftfreq(blk_len, d=1.0 / sr, device=u_st.device)
+    freqs = torch.fft.rfftfreq(blk_len, d=1.0 / sr, device=dev)
 
-    def _proj_from_mask(spec_t: torch.Tensor, mask: torch.Tensor, k_max: int) -> torch.Tensor:
-        sb = spec_t[:, mask, :].reshape(-1, c_in).to(torch.complex128)
-        gram_raw = torch.real(sb.H @ sb)
+    def _proj_from_mask(spec_t: Tensor, mask: Tensor, k_max: int) -> Tensor:
+        sb = spec_t[:, mask, :].reshape(-1, c_in)
+        sb_re_im = torch.cat([sb.real, sb.imag], dim=0).contiguous()
         del sb
-        col_std = torch.sqrt(torch.clamp(torch.diagonal(gram_raw), min=1e-18)).unsqueeze(0)
-        gram_n = gram_raw / (col_std.T @ col_std)
-        _, eigvecs = torch.linalg.eigh(gram_n)
         k_use = min(k_max, c_in)
-        top_v = eigvecs[:, -k_use:]
-        return (top_v / col_std.T).to(u_st.dtype)
+        return host_solver.fit_orthonormal_projector(sb_re_im, k_use).to(u_cm.dtype)
 
     p_lf = _proj_from_mask(spec, freqs <= 250.0, max_lf)
     p_mf = _proj_from_mask(spec, (freqs > 250.0) & (freqs <= 2500.0), max_mf)
@@ -97,16 +137,41 @@ def parseval_inband_projectors(
     return p_lf, p_mf, p_hf
 
 
+def _matmul_to_chunked(
+    u_cm: ColumnChunkedMatrix,
+    proj: Tensor,
+    *,
+    free_u: bool = False,
+) -> ColumnChunkedMatrix:
+    k_out = proj.shape[1]
+    out_chunks: list[Tensor] = []
+    out_ranges: list[tuple[int, int]] = []
+    for k0 in range(0, k_out, MAX_CHUNK_COLS):
+        k1 = min(k_out, k0 + MAX_CHUNK_COLS)
+        out_chunks.append(torch.zeros((u_cm.l_tot, k1 - k0), device=u_cm.device, dtype=u_cm.dtype))
+        out_ranges.append((k0, k1))
+
+    for ch, (c0, c1) in zip(u_cm.chunks, u_cm.col_ranges, strict=True):
+        p_in = proj[c0:c1]
+        for ch_out, (k0, k1) in zip(out_chunks, out_ranges, strict=True):
+            ch_out.add_(ch @ p_in[:, k0:k1])
+        if free_u:
+            free_tensor_storage(ch)
+    if free_u:
+        u_cm.chunks.clear()
+    return ColumnChunkedMatrix(out_chunks)
+
+
 @torch.no_grad()
 def solve_3band_decoupled_window_stage(
-    u_st: torch.Tensor,
-    cur_lf: torch.Tensor,
-    cur_mf: torch.Tensor,
-    cur_hf: torch.Tensor,
-    y_lf_fft: torch.Tensor,
-    y_mf_fft: torch.Tensor,
-    y_hf_fft: torch.Tensor,
-    bspline_weights: torch.Tensor,
+    u_st: Tensor | ColumnChunkedMatrix,
+    cur_lf: Tensor,
+    cur_mf: Tensor,
+    cur_hf: Tensor,
+    y_lf_fft: Tensor,
+    y_mf_fft: Tensor,
+    y_hf_fft: Tensor,
+    bspline_weights: Tensor | CausalBsplineWindowSchedule,
     win_bounds: Sequence[tuple[int, int]],
     *,
     shifts: tuple[int, ...] = (-6, -3, -1, 1, 3, 6),
@@ -116,107 +181,133 @@ def solve_3band_decoupled_window_stage(
     ridge_scale: float = 1e-5,
     overlap: int = 128,
     free_u_st: bool = True,
+    solver: HostDenseSolver | None = None,
     sr: float = 48_000.0,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Memory-bounded (`< 1.0 GB` working buffer) sequential 3-band orthogonal FFT decoupled
-    window solver with Parseval commuted column reduction.
+) -> tuple[Tensor, Tensor, Tensor]:
+    """Memory-bounded sequential 3-band orthogonal FFT decoupled window solver with Parseval
+    commuted column reduction and batched host-CPU `float64` solves.
     """
+    host_solver = solver if solver is not None else HostDenseSolver()
+    u_cm = (
+        u_st if isinstance(u_st, ColumnChunkedMatrix) else ColumnChunkedMatrix.from_tensors([u_st])
+    )
     l_tot, m_col = y_lf_fft.shape
+    dev = y_lf_fft.device
     n_wins = len(win_bounds)
     pad = max(abs(d) for d in shifts) + 2
 
     p_lf, p_mf, p_hf = parseval_inband_projectors(
-        u_st, max_cols_lf, max_cols_mf, max_cols_hf, sr=sr
+        u_cm, max_cols_lf, max_cols_mf, max_cols_hf, solver=host_solver, sr=sr
     )
-    u_lf_pre = u_st @ p_lf
-    u_mf_pre = u_st @ p_mf
-    k_hf = p_hf.shape[1]
-    if free_u_st and k_hf <= u_st.shape[1]:
-        for r0 in range(0, l_tot, 65_536):
-            r1 = min(l_tot, r0 + 65_536)
-            u_st[r0:r1, :k_hf] = u_st[r0:r1].clone() @ p_hf
-        u_hf_pre = u_st[:, :k_hf].contiguous()
-        u_st.resize_(0)
-    else:
-        u_hf_pre = u_st @ p_hf
-        if free_u_st:
-            u_st.resize_(0)
-    del p_lf, p_mf, p_hf
-    gc.collect()
+
+    def _build_b_win(
+        u_band_cm: ColumnChunkedMatrix,
+        cur_band: Tensor,
+        has_cur: bool,
+        s_w: int,
+        e_w: int,
+    ) -> Tensor:
+        sl = e_w - s_w
+        p0 = max(0, s_w - pad)
+        p1 = min(l_tot, e_w + pad)
+        left_pad = max(0, pad - s_w)
+        right_pad = max(0, (e_w + pad) - l_tot)
+        u_sh_slice = u_band_cm.slice_rows(p0, p1)
+        if left_pad > 0 or right_pad > 0:
+            u_sh_pad = F.pad(u_sh_slice.unsqueeze(0), (0, 0, left_pad, right_pad)).squeeze(0)
+        else:
+            u_sh_pad = u_sh_slice
+        base_off = (s_w - p0) + left_pad
+
+        parts = [u_sh_pad[base_off : base_off + sl]]
+        for d in shifts:
+            parts.append(u_sh_pad[base_off - d : base_off - d + sl])
+        if has_cur:
+            parts.insert(0, cur_band[s_w:e_w])
+        return torch.cat(parts, dim=-1)
 
     def _solve_single_band(
-        u_band: torch.Tensor,
-        cur_band: torch.Tensor,
-        y_band: torch.Tensor,
+        u_band_cm: ColumnChunkedMatrix,
+        cur_band: Tensor,
+        y_band: Tensor,
         f_lo: float,
         f_hi: float,
         stride: int,
-    ) -> torch.Tensor:
-        out_band = torch.zeros((l_tot, m_col), dtype=torch.float32)
-        has_cur = float(torch.sum(cur_band**2).item()) > 1e-12
-        for w_idx, (k0, k1) in enumerate(win_bounds):
-            s_w = 0 if w_idx == 0 else max(0, k0 - overlap)
-            e_w = l_tot if w_idx == n_wins - 1 else min(l_tot, k1 + overlap)
-            sl = e_w - s_w
+    ) -> Tensor:
+        has_cur = float(torch.sum(cur_band * cur_band).item()) > 1.0e-12
+        out_band = torch.zeros((l_tot, m_col), device=dev, dtype=torch.float32)
+        win_batch_size = 4
 
-            p0 = max(0, s_w - pad)
-            p1 = min(l_tot, e_w + pad)
-            left_pad = max(0, pad - s_w)
-            right_pad = max(0, (e_w + pad) - l_tot)
-            u_sh_slice = u_band[p0:p1]
-            if left_pad > 0 or right_pad > 0:
-                u_sh_pad = F.pad(u_sh_slice.unsqueeze(0), (0, 0, left_pad, right_pad)).squeeze(0)
-            else:
-                u_sh_pad = u_sh_slice
-            base_off = (s_w - p0) + left_pad
+        for b0 in range(0, n_wins, win_batch_size):
+            b1 = min(n_wins, b0 + win_batch_size)
+            specs_batch: list[HostSolveSpec] = []
+            b_wins_batch: list[tuple[int, int, int, Tensor]] = []
+            for w_idx in range(b0, b1):
+                k0, k1 = win_bounds[w_idx]
+                s_w = 0 if w_idx == 0 else max(0, k0 - overlap)
+                e_w = l_tot if w_idx == n_wins - 1 else min(l_tot, k1 + overlap)
+                b_win = _build_b_win(u_band_cm, cur_band, has_cur, s_w, e_w)
 
-            parts = [u_band[s_w:e_w]]
-            for d in shifts:
-                parts.append(u_sh_pad[base_off - d : base_off - d + sl])
-            if has_cur:
-                parts.insert(0, cur_band[s_w:e_w])
-            b_win = torch.cat(parts, dim=-1)
-            del parts, u_sh_pad
+                acc_w = ExactGramAccumulator(b_win.shape[1], m_col, device=dev)
+                acc_w.add(b_win[::stride], y_band[s_w:e_w:stride], weight=1.0)
+                acc_w.offload_to_cpu()
+                specs_batch.append(
+                    HostSolveSpec(accumulator=acc_w, ridge_scale=ridge_scale, min_ridge=1e-9)
+                )
+                b_wins_batch.append((w_idx, s_w, e_w, b_win))
 
-            b_sub = b_win[::stride].to(torch.float64)
-            y_sub = y_band[s_w:e_w:stride].to(torch.float64)
-            g_w = b_sub.T @ b_sub
-            c_w = b_sub.T @ y_sub
-            del b_sub, y_sub
+            w_mats_batch = host_solver.solve_batch(
+                specs_batch, pass_name="ortho_fft_band_win", return_device=dev
+            )
+            del specs_batch
+            for (w_idx, s_w, e_w, b_win), w_mat in zip(b_wins_batch, w_mats_batch, strict=True):
+                if isinstance(bspline_weights, CausalBsplineWindowSchedule):
+                    bw_slice = bspline_weights.window_weight(w_idx, s_w, e_w)
+                else:
+                    bw_slice = bspline_weights[s_w:e_w, w_idx : w_idx + 1]
+                out_band[s_w:e_w].add_(bw_slice * (b_win @ w_mat))
+            del b_wins_batch, w_mats_batch
 
-            w_mat = solve_cholesky_ridge(g_w, c_w, ridge_scale=ridge_scale, min_ridge=1e-9)
-            del g_w, c_w
+        u_band_cm.free()
+        res_band = project_fft_band(out_band, f_lo, f_hi, sr=sr)
+        del out_band
+        empty_device_cache(dev)
+        return res_band
 
-            bw_slice = bspline_weights[s_w:e_w, w_idx : w_idx + 1]
-            out_band[s_w:e_w] += bw_slice * (b_win @ w_mat)
-            del b_win, w_mat
-        return project_fft_band(out_band, f_lo, f_hi, sr=sr)
-
-    u_lf = project_fft_band(u_lf_pre, 0.0, 250.0, sr=sr)
+    u_lf_pre = _matmul_to_chunked(u_cm, p_lf, free_u=False)
+    del p_lf
+    u_lf = _project_fft_band_chunked(u_lf_pre, 0.0, 250.0, sr=sr, free_input=True)
     del u_lf_pre
     new_lf = _solve_single_band(u_lf, cur_lf, y_lf_fft, 0.0, 250.0, stride=4)
     del u_lf
 
-    u_mf = project_fft_band(u_mf_pre, 250.0, 2500.0, sr=sr)
+    u_mf_pre = _matmul_to_chunked(u_cm, p_mf, free_u=False)
+    del p_mf
+    u_mf = _project_fft_band_chunked(u_mf_pre, 250.0, 2500.0, sr=sr, free_input=True)
     del u_mf_pre
     new_mf = _solve_single_band(u_mf, cur_mf, y_mf_fft, 250.0, 2500.0, stride=2)
     del u_mf
 
-    u_hf = project_fft_band(u_hf_pre, 2500.0, sr * 0.5, sr=sr)
+    u_hf_pre = _matmul_to_chunked(u_cm, p_hf, free_u=free_u_st)
+    if free_u_st and isinstance(u_st, Tensor):
+        free_tensor_storage(u_st)
+    del p_hf
+    u_hf = _project_fft_band_chunked(u_hf_pre, 2500.0, sr * 0.5, sr=sr, free_input=True)
     del u_hf_pre
     new_hf = _solve_single_band(u_hf, cur_hf, y_hf_fft, 2500.0, sr * 0.5, stride=1)
     del u_hf
+    empty_device_cache(dev)
 
     return new_lf, new_mf, new_hf
 
 
 @torch.no_grad()
 def apply_ltas_hf_tilt_balance(
-    z_hf: torch.Tensor,
-    y_hf: torch.Tensor,
+    z_hf: Tensor,
+    y_hf: Tensor,
     *,
     sr: float = 48_000.0,
-) -> torch.Tensor:
+) -> Tensor:
     """Applies a mild 1/3-octave LTAS energy balance (`[0.85, 1.18]`, max +/- 1.4 dB) above 2500 Hz
     to compensate for least-squares attenuation ($r^2 < 1$) in low-energy high-frequency bands.
     """
@@ -227,8 +318,8 @@ def apply_ltas_hf_tilt_balance(
 
     spec_p = torch.fft.rfft(z_hf.to(torch.float32), n=l_seq, dim=0)
     spec_t = torch.fft.rfft(y_hf.to(torch.float32), n=l_seq, dim=0)
-    pow_p = torch.abs(spec_p).to(torch.float64) ** 2
-    pow_t = torch.abs(spec_t).to(torch.float64) ** 2
+    pow_p = spec_p.real * spec_p.real + spec_p.imag * spec_p.imag
+    pow_t = spec_t.real * spec_t.real + spec_t.imag * spec_t.imag
 
     gain_curve = torch.ones_like(pow_p, dtype=torch.float32)
     for fc in centers_hz:
@@ -237,8 +328,8 @@ def apply_ltas_hf_tilt_balance(
         mask = (freqs >= f_lo) & (freqs < f_hi)
         if not torch.any(mask):
             continue
-        ep = torch.sum(pow_p[mask], dim=0) + 1e-18
-        et = torch.sum(pow_t[mask], dim=0) + 1e-18
+        ep = torch.sum(pow_p[mask], dim=0) + 1.0e-18
+        et = torch.sum(pow_t[mask], dim=0) + 1.0e-18
         g = torch.clamp((et / ep) ** 0.45, 0.85, 1.18).to(torch.float32)
         gain_curve[mask] = g.unsqueeze(0)
 
@@ -249,7 +340,12 @@ def apply_ltas_hf_tilt_balance(
 
 
 @torch.no_grad()
-def build_stage1_fuzz_basis(x: torch.Tensor, sr: float = 48_000.0) -> torch.Tensor:
+def build_stage1_fuzz_basis(
+    x: Tensor,
+    sr: float = 48_000.0,
+    *,
+    return_chunked: bool = False,
+) -> Tensor | ColumnChunkedMatrix:
     """Builds Stage-1 broadband + envelope-normalized comparator basis on `x`."""
     cutoffs = (12.0, 30.0, 70.0, 160.0, 380.0, 900.0, 2200.0, 5000.0)
     hpfs = [x - fast_1pole_lpf(x, fc, sr=sr) for fc in cutoffs]
@@ -272,32 +368,44 @@ def build_stage1_fuzz_basis(x: torch.Tensor, sr: float = 48_000.0) -> torch.Tens
             tg = torch.tanh(g * sig)
             nl_cols.append(tg)
             nl_cols.append(tg * tg - fast_1pole_lpf(tg * tg, 10.0, sr=sr))
-    return torch.stack(nl_cols, dim=-1)
+
+    chunks: list[Tensor] = []
+    for c0 in range(0, len(nl_cols), MAX_CHUNK_COLS):
+        chunks.append(torch.stack(nl_cols[c0 : c0 + MAX_CHUNK_COLS], dim=-1))
+    del nl_cols
+    cm = ColumnChunkedMatrix(chunks)
+    if return_chunked:
+        return cm
+    return cm.slice_rows(0, cm.l_tot)
 
 
 @torch.no_grad()
 def build_refinement_fuzz_basis(
-    cur_lf: torch.Tensor,
-    cur_mf: torch.Tensor,
-    cur_hf: torch.Tensor,
+    cur_lf: Tensor,
+    cur_mf: Tensor,
+    cur_hf: Tensor,
     *,
     include_wavefolder: bool = True,
     n_modes: int = 8,
+    solver: HostDenseSolver | None = None,
+    return_chunked: bool = False,
     sr: float = 48_000.0,
-) -> torch.Tensor:
-    """Pre-allocated in-place refinement basis builder (avoids doubling RAM in `torch.cat`)."""
+) -> Tensor | ColumnChunkedMatrix:
+    """Chunked refinement basis builder (`< 925 MB` max single tensor on `cur_lf.device`)."""
+    host_solver = solver if solver is not None else HostDenseSolver()
     z_prev = cur_lf + cur_mf + cur_hf
     z_lm = cur_lf + cur_mf
     l_seq, m_col = z_prev.shape
 
-    z_glob = z_prev / (torch.sqrt(torch.mean(z_prev**2, dim=0, keepdim=True) + 1e-12)) * 0.20
-    z_lm_glob = z_lm / (torch.sqrt(torch.mean(z_lm**2, dim=0, keepdim=True) + 1e-12)) * 0.20
+    z_glob = (
+        z_prev / (torch.sqrt(torch.mean(z_prev * z_prev, dim=0, keepdim=True) + 1.0e-12)) * 0.20
+    )
+    z_lm_glob = z_lm / (torch.sqrt(torch.mean(z_lm * z_lm, dim=0, keepdim=True) + 1.0e-12)) * 0.20
     del z_prev, z_lm
 
     if m_col > n_modes:
         svd_st = max(1, l_seq // 32_768)
-        _, _, vt = torch.linalg.svd(z_glob[::svd_st].to(torch.float64), full_matrices=False)
-        proj = vt[:n_modes, :].T.to(torch.float32)
+        proj = host_solver.fit_target_manifold_projector(z_glob[::svd_st], n_modes)
         zg = z_glob @ proj
         z_lmg = z_lm_glob @ proj
         del z_glob, z_lm_glob, proj
@@ -305,11 +413,10 @@ def build_refinement_fuzz_basis(
         zg = z_glob
         z_lmg = z_lm_glob
 
-    k_m = zg.shape[1]
-    env_loc = torch.sqrt(fast_1pole_lpf(zg * zg, 6.0, sr=sr) + 1e-6)
+    env_loc = torch.sqrt(fast_1pole_lpf(zg * zg, 6.0, sr=sr) + 1.0e-6)
     z_loc = 0.20 * zg / (env_loc + 0.015)
     del env_loc
-    env_lmloc = torch.sqrt(fast_1pole_lpf(z_lmg * z_lmg, 6.0, sr=sr) + 1e-6)
+    env_lmloc = torch.sqrt(fast_1pole_lpf(z_lmg * z_lmg, 6.0, sr=sr) + 1.0e-6)
     z_lmloc = 0.20 * z_lmg / (env_lmloc + 0.015)
     del env_lmloc
 
@@ -318,81 +425,63 @@ def build_refinement_fuzz_basis(
     ez = fast_1pole_lpf(torch.abs(zg), 25.0, sr=sr)
 
     sigs = (zg, z_lmg, z_loc, z_lmloc, z_hp300, zg - 0.35 * ez)
-    n_per_sig = 10 + (3 if include_wavefolder else 0)
-    n_blocks = 6 + len(sigs) * n_per_sig
-    out = torch.empty((l_seq, n_blocks * k_m), dtype=torch.float32)
-
-    idx = 0
-    for base_b in (zg, z_lmg, z_loc, z_lmloc, z_hp300, z_hp1200):
-        out[:, idx : idx + k_m] = base_b
-        idx += k_m
+    blocks_list: list[Tensor] = [zg, z_lmg, z_loc, z_lmloc, z_hp300, z_hp1200]
     del z_hp1200
 
     for sig_s in sigs:
         for g in (1.5, 5.0, 18.0, 65.0, 250.0):
             tg = torch.tanh(g * sig_s)
-            out[:, idx : idx + k_m] = tg
-            idx += k_m
+            blocks_list.append(tg)
             tg_sq = tg * tg
             del tg
-            out[:, idx : idx + k_m] = tg_sq - fast_1pole_lpf(tg_sq, 15.0, sr=sr)
+            blocks_list.append(tg_sq - fast_1pole_lpf(tg_sq, 15.0, sr=sr))
             del tg_sq
-            idx += k_m
         if include_wavefolder:
             for g_wf in (2.5, 8.0, 25.0):
-                out[:, idx : idx + k_m] = torch.sin(g_wf * sig_s)
-                idx += k_m
-    return out
+                blocks_list.append(torch.sin(g_wf * sig_s))
+
+    cm = ColumnChunkedMatrix.from_tensors(blocks_list)
+    del blocks_list
+    if return_chunked:
+        return cm
+    return cm.slice_rows(0, cm.l_tot)
 
 
 @torch.no_grad()
 def run_4stage_orthogonal_fft_cascade(
-    x: torch.Tensor,
-    y_full: torch.Tensor,
+    x: Tensor,
+    y_full: Tensor,
     *,
     sr: float,
     on_stage_progress: Callable[[int, str], None] | None,
-    report_step: Callable[[int, torch.Tensor, torch.Tensor, torch.Tensor], torch.Tensor],
+    report_step: Callable[[int, Tensor, Tensor, Tensor], Tensor],
+    solver: HostDenseSolver | None = None,
 ) -> tuple[
-    torch.Tensor,
-    torch.Tensor,
-    torch.Tensor,
-    torch.Tensor,
-    torch.Tensor,
-    torch.Tensor,
-    torch.Tensor,
-    torch.Tensor,
+    Tensor,
+    Tensor,
+    Tensor,
+    Tensor,
+    Tensor,
+    Tensor,
+    Tensor,
+    Tensor,
 ]:
     """Executes the 4-Stage Parseval Commuted 3-Band Orthogonal FFT Decoupled Comparator &
     Wavefolder Cascade, returning `(z1_full, z2_full, z3_full, d4_tot, z4_lf, z4_mf, z4_hf, z3_hf)`.
     """
+    host_solver = solver if solver is not None else HostDenseSolver()
     l_tot = x.shape[0]
-
-    def _make_active_windows(step_len: int) -> list[tuple[int, int]]:
-        if l_tot >= 500_000:
-            starts = [0, *range(36_000, 540_000, step_len)]
-        else:
-            starts = list(range(0, l_tot, step_len))
-        bounds_w: list[tuple[int, int]] = []
-        for idx_s, s0 in enumerate(starts):
-            s1 = l_tot if idx_s == len(starts) - 1 else starts[idx_s + 1]
-            if s1 > s0:
-                bounds_w.append((s0, s1))
-        return bounds_w
 
     y_lf_fft = project_fft_band(y_full, 0.0, 250.0, sr=sr)
     y_mf_fft = project_fft_band(y_full, 250.0, 2500.0, sr=sr)
     y_hf_fft = project_fft_band(y_full, 2500.0, sr * 0.5, sr=sr)
 
-    win12 = _make_active_windows(12_000)
-    win8 = _make_active_windows(8_000)
-    win6 = _make_active_windows(6_000)
-    win4 = _make_active_windows(4_000)
-
-    bw12 = build_causal_bspline_window_weights(x, win12, overlap=192, sr=sr)
-    bw8 = build_causal_bspline_window_weights(x, win8, overlap=160, sr=sr)
-    bw6 = build_causal_bspline_window_weights(x, win6, overlap=128, sr=sr)
-    bw4 = build_causal_bspline_window_weights(x, win4, overlap=96, sr=sr)
+    win12, win8, win6, win4 = build_orthogonal_fft_windows(l_tot)
+    e_cum = compute_cumulative_energy_state(x, sr=sr)
+    bw12 = CausalBsplineWindowSchedule(e_cum, win12, overlap=192)
+    bw8 = CausalBsplineWindowSchedule(e_cum, win8, overlap=160)
+    bw6 = CausalBsplineWindowSchedule(e_cum, win6, overlap=128)
+    bw4 = CausalBsplineWindowSchedule(e_cum, win4, overlap=96)
 
     cur_lf = torch.zeros_like(y_lf_fft)
     cur_mf = torch.zeros_like(y_mf_fft)
@@ -402,9 +491,9 @@ def run_4stage_orthogonal_fft_cascade(
         on_stage_progress(
             1, "Calibrating Stage 1 (V1A Preamp, Comparator & 3-Band Orthogonal Cascade)"
         )
-    u1 = build_stage1_fuzz_basis(x, sr=sr)
+    u1_cm = build_stage1_fuzz_basis(x, sr=sr, return_chunked=True)
     cur_lf, cur_mf, cur_hf = solve_3band_decoupled_window_stage(
-        u1,
+        u1_cm,
         cur_lf,
         cur_mf,
         cur_hf,
@@ -417,9 +506,10 @@ def run_4stage_orthogonal_fft_cascade(
         max_cols_mf=180,
         max_cols_hf=240,
         overlap=192,
+        solver=host_solver,
         sr=sr,
     )
-    del u1, bw12
+    del u1_cm, bw12
     gc.collect()
     z1_full = cur_lf + cur_mf + cur_hf
     z1_b_lf, z1_b_mf, z1_b_hf = split_bezout_3band(z1_full, sr=sr)
@@ -428,11 +518,18 @@ def run_4stage_orthogonal_fft_cascade(
 
     if on_stage_progress is not None:
         on_stage_progress(2, "Calibrating Stage 2 (Interstage Comparator & Wavefolder Cascade)")
-    u2 = build_refinement_fuzz_basis(
-        cur_lf, cur_mf, cur_hf, include_wavefolder=True, n_modes=8, sr=sr
+    u2_cm = build_refinement_fuzz_basis(
+        cur_lf,
+        cur_mf,
+        cur_hf,
+        include_wavefolder=True,
+        n_modes=8,
+        solver=host_solver,
+        return_chunked=True,
+        sr=sr,
     )
     cur_lf, cur_mf, cur_hf = solve_3band_decoupled_window_stage(
-        u2,
+        u2_cm,
         cur_lf,
         cur_mf,
         cur_hf,
@@ -445,9 +542,10 @@ def run_4stage_orthogonal_fft_cascade(
         max_cols_mf=190,
         max_cols_hf=250,
         overlap=160,
+        solver=host_solver,
         sr=sr,
     )
-    del u2, bw8
+    del u2_cm, bw8
     gc.collect()
     z2_full = cur_lf + cur_mf + cur_hf
     z2_b_lf, z2_b_mf, z2_b_hf = split_bezout_3band(z2_full, sr=sr)
@@ -458,11 +556,18 @@ def run_4stage_orthogonal_fft_cascade(
         on_stage_progress(
             3, "Calibrating Stage 3 (Power Section, Wavefolder & 48 kHz Reference Polish)"
         )
-    u3 = build_refinement_fuzz_basis(
-        cur_lf, cur_mf, cur_hf, include_wavefolder=True, n_modes=8, sr=sr
+    u3_cm = build_refinement_fuzz_basis(
+        cur_lf,
+        cur_mf,
+        cur_hf,
+        include_wavefolder=True,
+        n_modes=8,
+        solver=host_solver,
+        return_chunked=True,
+        sr=sr,
     )
     cur_lf, cur_mf, cur_hf = solve_3band_decoupled_window_stage(
-        u3,
+        u3_cm,
         cur_lf,
         cur_mf,
         cur_hf,
@@ -475,20 +580,28 @@ def run_4stage_orthogonal_fft_cascade(
         max_cols_mf=200,
         max_cols_hf=260,
         overlap=128,
+        solver=host_solver,
         sr=sr,
     )
-    del u3, bw6
+    del u3_cm, bw6
     gc.collect()
     z3_full = cur_lf + cur_mf + cur_hf
     z3_lf, z3_mf, z3_hf = split_bezout_3band(z3_full, sr=sr)
     report_step(3, z3_lf, z3_mf, z3_hf)
     del z3_lf, z3_mf
 
-    u4 = build_refinement_fuzz_basis(
-        cur_lf, cur_mf, cur_hf, include_wavefolder=True, n_modes=8, sr=sr
+    u4_cm = build_refinement_fuzz_basis(
+        cur_lf,
+        cur_mf,
+        cur_hf,
+        include_wavefolder=True,
+        n_modes=8,
+        solver=host_solver,
+        return_chunked=True,
+        sr=sr,
     )
     cur_lf, cur_mf, cur_hf = solve_3band_decoupled_window_stage(
-        u4,
+        u4_cm,
         cur_lf,
         cur_mf,
         cur_hf,
@@ -501,9 +614,10 @@ def run_4stage_orthogonal_fft_cascade(
         max_cols_mf=210,
         max_cols_hf=270,
         overlap=96,
+        solver=host_solver,
         sr=sr,
     )
-    del u4, bw4, y_lf_fft, y_mf_fft
+    del u4_cm, bw4, e_cum, y_lf_fft, y_mf_fft
     gc.collect()
     cur_hf = apply_ltas_hf_tilt_balance(cur_hf, y_hf_fft, sr=sr)
     del y_hf_fft

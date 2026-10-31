@@ -10,6 +10,10 @@ from rich.console import Console
 
 from dnam_trainer.events import (
     AuditPhaseEvent,
+    CacheEvent,
+    PlannerEvent,
+    RuntimeEvent,
+    SolverEvent,
     TrainingCompleteEvent,
     TrainingEvent,
     TrainingObserver,
@@ -93,6 +97,40 @@ class RichTrainingObserver:
                 f"Ultra={event.esr_ultra_db:+.2f} dB{psycho_str} | "
                 f"Core2={c2_state} | {event.elapsed_sec:.2f}s"
             )
+        elif isinstance(event, RuntimeEvent):
+            budget_gib = event.budget_bytes / (1024**3)
+            cap_gib = event.max_tensor_bytes / (1024**3)
+            unver = " [unverified]" if event.unverified_hardware else ""
+            self.console.print(
+                f"[bold cyan][Runtime][/bold cyan] device={event.device_kind} "
+                f"({event.torch_device}){unver} | contraction={event.contraction_dtype} | "
+                f"budget={budget_gib:.2f} GiB (max_tensor={cap_gib:.2f} GiB)"
+            )
+            if event.warning:
+                self.console.print(f"  [yellow]⚠ {event.warning}[/yellow]")
+        elif isinstance(event, PlannerEvent):
+            budget_gib = event.budget_bytes / (1024**3)
+            peak_gib = event.estimated_peak_bytes / (1024**3)
+            self.console.print(
+                f"[bold cyan][Planner][/bold cyan] mode={event.mode} | "
+                f"block_rows={event.block_rows} | stem_group={event.stem_group_size} | "
+                f"est_peak={peak_gib:.2f}/{budget_gib:.2f} GiB | regimes={len(event.regimes)}"
+            )
+        elif isinstance(event, CacheEvent):
+            mb = event.bytes_count / (1024**2)
+            self.console.print(
+                f"  [dim][Cache {event.tier}:{event.action}] {event.key} "
+                f"({mb:.2f} MiB, {event.elapsed_ms:.1f} ms) {event.message}[/dim]"
+            )
+        elif isinstance(event, SolverEvent):
+            fb = f" | lstsq_fallbacks={event.lstsq_fallbacks}" if event.lstsq_fallbacks > 0 else ""
+            self.console.print(
+                f"  [dim][HostSolve {event.pass_name}] {event.num_solves}x "
+                f"({event.matrix_dim}x{event.matrix_dim}, rhs={event.rhs_cols}) | "
+                f"transfer={event.transfer_ms:.1f} ms | solve={event.solve_ms:.1f} ms{fb}[/dim]"
+            )
+            if event.warning:
+                self.console.print(f"  [yellow]⚠ {event.warning}[/yellow]")
 
 
 class JsonlTrainingObserver:

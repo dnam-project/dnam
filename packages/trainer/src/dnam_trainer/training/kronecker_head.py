@@ -15,11 +15,19 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 import numpy as np
+import torch
 from numpy.typing import NDArray
+from torch import Tensor
 
 from dnam_engine.container import GramMatrix, crc32c
 from dnam_engine.schema import ExtractedPhysics, StemProvenance, StemRegistryEntry, TensorSliceEntry
 from dnam_trainer.training.metrics import split_three_bands_np
+from dnam_trainer.training.numerics import (
+    ExactGramAccumulator,
+    HostDenseSolver,
+    recombine_f32_trilimb_to_f64,
+    split_f64_to_f32_trilimb,
+)
 from dnam_trainer.training.selective_cascade import compute_tier32_modulator_vectors
 
 ARENA012_BYTE_LEN: int = 36_224
@@ -141,6 +149,91 @@ class StemSufficientStatistics:
             c_audio_tier_f64=c_arr,
             extracted_physics=entry.extracted_physics,
         )
+
+    def to_trilimb_f32_tensors(
+        self,
+        device: torch.device | str = "cpu",
+    ) -> tuple[tuple[Tensor, Tensor, Tensor], tuple[Tensor, Tensor, Tensor]]:
+        """Splits `g_audio_uplo_u_f64` and `c_audio_tier_f64` into lossless 3-limb `float32`
+        expansions `(hi, mid, lo)` on `device` without allocating 64-bit device tensors.
+        """
+        g_t = split_f64_to_f32_trilimb(self.g_audio_uplo_u_f64, device=device)
+        c_t = split_f64_to_f32_trilimb(self.c_audio_tier_f64, device=device)
+        return g_t, c_t
+
+    @classmethod
+    def from_trilimb_f32_tensors(
+        cls,
+        *,
+        stem_id: str,
+        controls_meta: dict[str, float | str],
+        input_pcm_sha256: str,
+        target_pcm_sha256: str,
+        num_frames: int,
+        g_trilimb: tuple[Tensor, Tensor, Tensor],
+        c_trilimb: tuple[Tensor, Tensor, Tensor],
+        extracted_physics: ExtractedPhysics | None = None,
+    ) -> StemSufficientStatistics:
+        """Recombines 3-limb `float32` tensors `(hi, mid, lo)` on the host into `float64`
+        `StemSufficientStatistics`.
+        """
+        g_f64 = recombine_f32_trilimb_to_f64(*g_trilimb)
+        c_f64 = recombine_f32_trilimb_to_f64(*c_trilimb)
+        return cls(
+            stem_id=stem_id,
+            controls_meta=dict(controls_meta),
+            input_pcm_sha256=input_pcm_sha256,
+            target_pcm_sha256=target_pcm_sha256,
+            num_frames=num_frames,
+            g_audio_uplo_u_f64=g_f64,
+            c_audio_tier_f64=c_f64,
+            extracted_physics=extracted_physics,
+        )
+
+
+def _compute_band_weights_f64(
+    y_lf: NDArray[np.float64],
+    y_mf: NDArray[np.float64],
+    y_hf: NDArray[np.float64],
+    *,
+    num_frames: int,
+    floor_dbfs: float = -60.0,
+    band_floors_dbfs: tuple[float, float, float] | None = None,
+    is_silent: bool = False,
+) -> tuple[float, float, float]:
+    """Computes target-adaptive 3-band weights `(w_lf, w_mf, w_hf)` using per-band measured noise
+    floors when available, preserving full tonal weight on quiet active stems while regularizing
+    genuinely silent stems.
+    """
+    n_elems = float(max(1, y_lf.size))
+    e_lf = float(np.sum(y_lf * y_lf))
+    e_mf = float(np.sum(y_mf * y_mf))
+    e_hf = float(np.sum(y_hf * y_hf))
+    e_bb = e_lf + e_mf + e_hf
+
+    if band_floors_dbfs is not None:
+        fl_lf = n_elems * (10.0 ** (float(band_floors_dbfs[0]) / 10.0))
+        fl_mf = n_elems * (10.0 ** (float(band_floors_dbfs[1]) / 10.0))
+        fl_hf = n_elems * (10.0 ** (float(band_floors_dbfs[2]) / 10.0))
+        if is_silent:
+            mute_reg = n_elems * 1.0e-3
+            fl_lf = max(fl_lf, mute_reg)
+            fl_mf = max(fl_mf, mute_reg)
+            fl_hf = max(fl_hf, mute_reg)
+    else:
+        fl_base = n_elems * (10.0 ** (float(floor_dbfs) / 10.0))
+        if is_silent or e_bb <= fl_base:
+            fl_base = max(fl_base, n_elems * 1.0e-3)
+        fl_lf = fl_base
+        fl_mf = fl_base
+        fl_hf = fl_base
+
+    scale = float(num_frames) / 3.0
+    return (
+        scale / (e_lf + fl_lf),
+        scale / (e_mf + fl_mf),
+        scale / (e_hf + fl_hf),
+    )
 
 
 def compute_svd_control_projector(
@@ -266,16 +359,19 @@ def compute_stem_sufficient_statistics(
     window_size: int = 32_768,
     band_balance_weight: float = 0.25,
     floor_dbfs: float = -60.0,
+    band_floors_dbfs: tuple[float, float, float] | None = None,
+    is_silent: bool = False,
+    device: torch.device | str | None = None,
 ) -> StemSufficientStatistics:
     """Computes a stem's tier-ordered `float64` audio Gram matrix
     $\\mathbf{G}_{\\text{audio}}^{(s)} \\in \\mathbb{R}^{192 \\times 192}$
     and cross-correlation $\\mathbf{C}_{\\text{audio}}^{(s)} \\in \\mathbb{R}^{192 \\times 2}$ via
-    window-streamed host accumulation with **Floor-Regularized Target-Adaptive Band Balancing**
+    window-streamed accumulation with **Floor-Regularized Target-Adaptive Band Balancing**
     across Low (`< 250 Hz`), Mid (`250-2500 Hz`), and High (`> 2500 Hz`) bands, where
     $H_{\\text{LF}}(z) + H_{\\text{MF}}(z) + H_{\\text{HF}}(z) \\equiv 1$ is a complementary
     3-band partition of unity and $\\tilde{\\gamma}_b^{(s)}$ normalizes each band by its
-    floor-clamped target energy ($\\epsilon_{\\text{floor}} = -60\\text{ dBFS}$), then packs
-    $\\mathbf{G}_{\\text{audio}}^{(s)}$ into `LAPACK uplo='U'` format (`18,528` `f64`).
+    floor-clamped target energy, then packs $\\mathbf{G}_{\\text{audio}}^{(s)}$ into
+    `LAPACK uplo='U'` format (`18,528` `f64`).
     """
     phi = np.asarray(features_t_x_192)
     y = np.asarray(target_t_x_2)
@@ -294,20 +390,19 @@ def compute_stem_sufficient_statistics(
 
     step = max(1, window_size)
     use_bands = band_balance_weight > 0.0 and num_frames >= 8
-    eps_floor_sq = 10.0 ** (float(floor_dbfs) / 10.0)
     y_f64_all = np.asarray(y, dtype=np.float64)
-    e_bb = float(np.sum(y_f64_all * y_f64_all))
-    floor_e = float(max(1, y_f64_all.size)) * eps_floor_sq
 
     if use_bands:
         y_lf_all, y_mf_all, y_hf_all = split_three_bands_np(y_f64_all)
-        mute_thresh_e = float(max(1, y_f64_all.size)) * (10.0 ** (-55.0 / 10.0))
-        mute_floor = (
-            float(max(1, y_f64_all.size)) * 1e-3 if e_bb <= max(floor_e, mute_thresh_e) else floor_e
+        w_lf, w_mf, w_hf = _compute_band_weights_f64(
+            y_lf_all,
+            y_mf_all,
+            y_hf_all,
+            num_frames=num_frames,
+            floor_dbfs=floor_dbfs,
+            band_floors_dbfs=band_floors_dbfs,
+            is_silent=is_silent,
         )
-        w_lf = (float(num_frames) / 3.0) / (float(np.sum(y_lf_all * y_lf_all)) + mute_floor)
-        w_mf = (float(num_frames) / 3.0) / (float(np.sum(y_mf_all * y_mf_all)) + mute_floor)
-        w_hf = (float(num_frames) / 3.0) / (float(np.sum(y_hf_all * y_hf_all)) + mute_floor)
 
         for start in range(0, num_frames, step):
             end = min(start + step, num_frames)
@@ -351,7 +446,7 @@ def compute_stem_sufficient_statistics(
 @dataclass(frozen=True, slots=True)
 class Base48BandGramCache:
     """Pre-filtered base cascade blocks `(b_lite, b_full, b_ultra)` (`48` or `96` channels) and
-    their exact full-length 3-band Bezout Gram matrices for $O(1)$ per-stem `Arena 3`
+    their exact full-length 3-band Gram matrices for $O(1)$ per-stem `Arena 3`
     sufficient-statistics assembly (`60x` faster Stage 4 with zero window-boundary truncation).
     """
 
@@ -364,42 +459,80 @@ class Base48BandGramCache:
     c_knots: NDArray[np.float64] | None = None
 
 
+@torch.no_grad()
 def precompute_base48_band_cache(
     b_lite_16: NDArray[np.float32],
     b_full_16: NDArray[np.float32],
     b_ultra_16: NDArray[np.float32],
     *,
     c_knots: NDArray[np.float64] | None = None,
+    device: torch.device | str | None = None,
+    sample_rate_hz: float = 48_000.0,
 ) -> Base48BandGramCache:
     """Filters the base cascade channels `[b_lite, b_full, b_ultra]` once over the full
-    signal length via [`split_three_bands_np`] and caches their `float64` band Gram matrices.
+    signal length in 32-bit `float32` on `device` and accumulates their exact band Gram matrices
+    via [`ExactGramAccumulator`] before recombining to `float64` on the host.
     """
-    b_all = np.concatenate([b_lite_16, b_full_16, b_ultra_16], axis=-1)
+    b_all = np.ascontiguousarray(
+        np.concatenate([b_lite_16, b_full_16, b_ultra_16], axis=-1), dtype=np.float32
+    )
     t_len, n_ch = b_all.shape
-    store_dtype = np.float32 if n_ch > 48 else np.float64
+    sr = float(sample_rate_hz)
+    store_dtype = np.float32 if t_len > 65_536 else np.float64
+
     b_lf = np.empty((t_len, n_ch), dtype=store_dtype)
     b_mf = np.empty((t_len, n_ch), dtype=store_dtype)
     b_hf = np.empty((t_len, n_ch), dtype=store_dtype)
+
     for c0 in range(0, n_ch, 16):
         c1 = min(n_ch, c0 + 16)
         lf_c, mf_c, hf_c = split_three_bands_np(
-            np.ascontiguousarray(b_all[:, c0:c1], dtype=np.float64)
+            np.ascontiguousarray(b_all[:, c0:c1], dtype=np.float64),
+            sample_rate_hz=sr,
         )
-        b_lf[:, c0:c1] = lf_c.astype(store_dtype)
-        b_mf[:, c0:c1] = mf_c.astype(store_dtype)
-        b_hf[:, c0:c1] = hf_c.astype(store_dtype)
+        b_lf[:, c0:c1] = lf_c.astype(store_dtype, copy=False)
+        b_mf[:, c0:c1] = mf_c.astype(store_dtype, copy=False)
+        b_hf[:, c0:c1] = hf_c.astype(store_dtype, copy=False)
 
-    g_lf = np.zeros((n_ch, n_ch), dtype=np.float64)
-    g_mf = np.zeros((n_ch, n_ch), dtype=np.float64)
-    g_hf = np.zeros((n_ch, n_ch), dtype=np.float64)
-    for r0 in range(0, t_len, 32_768):
-        r1 = min(t_len, r0 + 32_768)
-        sl_lf = b_lf[r0:r1].astype(np.float64)
-        sl_mf = b_mf[r0:r1].astype(np.float64)
-        sl_hf = b_hf[r0:r1].astype(np.float64)
-        g_lf += sl_lf.T @ sl_lf
-        g_mf += sl_mf.T @ sl_mf
-        g_hf += sl_hf.T @ sl_hf
+    if device is not None and torch.device(device).type != "cpu":
+        dev = torch.device(device)
+        acc_lf = ExactGramAccumulator(n_ch, 0, device=dev)
+        acc_mf = ExactGramAccumulator(n_ch, 0, device=dev)
+        acc_hf = ExactGramAccumulator(n_ch, 0, device=dev)
+        for r0 in range(0, t_len, 16_384):
+            r1 = min(t_len, r0 + 16_384)
+            sl_lf_t = torch.from_numpy(np.ascontiguousarray(b_lf[r0:r1], dtype=np.float32)).to(
+                device=dev
+            )
+            sl_mf_t = torch.from_numpy(np.ascontiguousarray(b_mf[r0:r1], dtype=np.float32)).to(
+                device=dev
+            )
+            sl_hf_t = torch.from_numpy(np.ascontiguousarray(b_hf[r0:r1], dtype=np.float32)).to(
+                device=dev
+            )
+            acc_lf.add(sl_lf_t, None)
+            acc_mf.add(sl_mf_t, None)
+            acc_hf.add(sl_hf_t, None)
+            del sl_lf_t, sl_mf_t, sl_hf_t
+        g_lf = recombine_f32_trilimb_to_f64(acc_lf.g_hi, acc_lf.g_mid, acc_lf.g_lo)
+        g_mf = recombine_f32_trilimb_to_f64(acc_mf.g_hi, acc_mf.g_mid, acc_mf.g_lo)
+        g_hf = recombine_f32_trilimb_to_f64(acc_hf.g_hi, acc_hf.g_mid, acc_hf.g_lo)
+    else:
+        g_lf = np.zeros((n_ch, n_ch), dtype=np.float64)
+        g_mf = np.zeros((n_ch, n_ch), dtype=np.float64)
+        g_hf = np.zeros((n_ch, n_ch), dtype=np.float64)
+        for r0 in range(0, t_len, 32_768):
+            r1 = min(t_len, r0 + 32_768)
+            sl_lf = b_lf[r0:r1].astype(np.float64, copy=False)
+            sl_mf = b_mf[r0:r1].astype(np.float64, copy=False)
+            sl_hf = b_hf[r0:r1].astype(np.float64, copy=False)
+            g_lf += sl_lf.T @ sl_lf
+            g_mf += sl_mf.T @ sl_mf
+            g_hf += sl_hf.T @ sl_hf
+
+    g_lf = 0.5 * (g_lf + g_lf.T)
+    g_mf = 0.5 * (g_mf + g_mf.T)
+    g_hf = 0.5 * (g_hf + g_hf.T)
 
     return Base48BandGramCache(
         b48_lf=b_lf,
@@ -423,8 +556,11 @@ def compute_modulated_stem_sufficient_statistics(
     target_pcm_sha256: str,
     extracted_physics: ExtractedPhysics | None = None,
     floor_dbfs: float = -60.0,
+    band_floors_dbfs: tuple[float, float, float] | None = None,
+    is_silent: bool = False,
+    device: torch.device | str | None = None,
 ) -> StemSufficientStatistics:
-    """Computes exact full-length 3-band Bezout `float64` [`StemSufficientStatistics`] directly from
+    """Computes exact full-length 3-band `float64` [`StemSufficientStatistics`] directly from
     [`Base48BandGramCache`] and `u_ctrl_3` in `< 5 ms` per stem without re-filtering the 192
     modulated feature channels.
     """
@@ -436,16 +572,16 @@ def compute_modulated_stem_sufficient_statistics(
 
     num_frames = int(base_cache.b48_lf.shape[0])
     y = y[:num_frames]
-    eps_floor_sq = 10.0 ** (float(floor_dbfs) / 10.0)
-    e_bb = float(np.sum(y * y))
-    floor_e = float(max(1, y.size)) * eps_floor_sq
-    mute_thresh_e = float(max(1, y.size)) * (10.0 ** (-55.0 / 10.0))
-    mute_floor = float(max(1, y.size)) * 1e-3 if e_bb <= max(floor_e, mute_thresh_e) else floor_e
-
     y_lf, y_mf, y_hf = split_three_bands_np(y)
-    w_lf = (float(num_frames) / 3.0) / (float(np.sum(y_lf * y_lf)) + mute_floor)
-    w_mf = (float(num_frames) / 3.0) / (float(np.sum(y_mf * y_mf)) + mute_floor)
-    w_hf = (float(num_frames) / 3.0) / (float(np.sum(y_hf * y_hf)) + mute_floor)
+    w_lf, w_mf, w_hf = _compute_band_weights_f64(
+        y_lf,
+        y_mf,
+        y_hf,
+        num_frames=num_frames,
+        floor_dbfs=floor_dbfs,
+        band_floors_dbfs=band_floors_dbfs,
+        is_silent=is_silent,
+    )
 
     g_base = w_lf * base_cache.g48_lf + w_mf * base_cache.g48_mf + w_hf * base_cache.g48_hf
     c_base = (
@@ -520,6 +656,7 @@ def solve_kronecker_head_float64(
     *,
     mode: Literal["init", "polish"] = "polish",
     tier_dim: Literal[64, 128, 192] = 192,
+    solver: HostDenseSolver | None = None,
 ) -> tuple[NDArray[np.float64], float]:
     """Solves the `CL-18` `float64` Kronecker normal equations for a single slimmable tier (`64`,
     `128`, or `192`).
@@ -615,15 +752,22 @@ def solve_all_tiers_kronecker_head_float64(
     z_head_stems: NDArray[np.float64],
     *,
     mode: Literal["init", "polish"] = "polish",
+    solver: HostDenseSolver | None = None,
 ) -> MultiTierKroneckerHeadSolution:
     """
     Solves all 3 slimmable tiers (`Lite` $N=64$, `Full` $N=128$, `Ultra` $N=192$) in `float64`.
     """
-    w_lite, r_lite = solve_kronecker_head_float64(stem_stats, z_head_stems, mode=mode, tier_dim=64)
-    w_full, r_full = solve_kronecker_head_float64(stem_stats, z_head_stems, mode=mode, tier_dim=128)
-    w_ultra, r_ultra = solve_kronecker_head_float64(
-        stem_stats, z_head_stems, mode=mode, tier_dim=192
+    w_lite, r_lite = solve_kronecker_head_float64(
+        stem_stats, z_head_stems, mode=mode, tier_dim=64, solver=solver
     )
+    w_full, r_full = solve_kronecker_head_float64(
+        stem_stats, z_head_stems, mode=mode, tier_dim=128, solver=solver
+    )
+    w_ultra, r_ultra = solve_kronecker_head_float64(
+        stem_stats, z_head_stems, mode=mode, tier_dim=192, solver=solver
+    )
+    if solver is not None:
+        solver.total_solves += 3
     return MultiTierKroneckerHeadSolution(
         w_lite_5x2x64=w_lite,
         w_full_5x2x128=w_full,
@@ -657,6 +801,8 @@ def evaluate_stem_besr_from_sufficient_stats(
     target_t_x_2: NDArray[np.floating[Any]],
     *,
     floor_dbfs: float = -60.0,
+    band_floors_dbfs: tuple[float, float, float] | None = None,
+    is_silent: bool = False,
 ) -> tuple[float, float, float]:
     """Evaluates exact `Lite` ($N=64$), `Full` ($N=128$), and `Ultra` ($N=192$) `bESR` in dB
     directly from a stem's cached `Arena 3` [`StemSufficientStatistics`] via the quadratic form
@@ -670,16 +816,16 @@ def evaluate_stem_besr_from_sufficient_stats(
     num_frames = stat.num_frames
     y = y[:num_frames]
 
-    eps_floor_sq = 10.0 ** (float(floor_dbfs) / 10.0)
-    e_bb = float(np.sum(y * y))
-    floor_e = float(max(1, y.size)) * eps_floor_sq
-    mute_thresh_e = float(max(1, y.size)) * (10.0 ** (-55.0 / 10.0))
-    mute_floor = float(max(1, y.size)) * 1e-3 if e_bb <= max(floor_e, mute_thresh_e) else floor_e
-
     y_lf, y_mf, y_hf = split_three_bands_np(y)
-    w_lf = (float(num_frames) / 3.0) / (float(np.sum(y_lf * y_lf)) + mute_floor)
-    w_mf = (float(num_frames) / 3.0) / (float(np.sum(y_mf * y_mf)) + mute_floor)
-    w_hf = (float(num_frames) / 3.0) / (float(np.sum(y_hf * y_hf)) + mute_floor)
+    w_lf, w_mf, w_hf = _compute_band_weights_f64(
+        y_lf,
+        y_mf,
+        y_hf,
+        num_frames=num_frames,
+        floor_dbfs=floor_dbfs,
+        band_floors_dbfs=band_floors_dbfs,
+        is_silent=is_silent,
+    )
     target_quad = (
         w_lf * float(np.sum(y_lf * y_lf))
         + w_mf * float(np.sum(y_mf * y_mf))

@@ -254,7 +254,7 @@ describe("Schema Suite", () => {
     expect(TelemetrySnapshotSchema).toBeDefined();
   });
 
-  it("parses ControlCalibration, 12 tempo subdivisions, ModelCapabilities, and LevelingConfig", () => {
+  it("parses ControlCalibration, 12 tempo subdivisions, ModelCapabilities, and LevelingConfig", async () => {
     expect(TEMPO_SUBDIVISIONS).toHaveLength(12);
     expect(tempoSubdivisionDelayMs(120, "1/2.")).toBeCloseTo(1500, 3);
     expect(tempoSubdivisionDelayMs(120, "1/8.")).toBeCloseTo(375, 3);
@@ -294,5 +294,37 @@ describe("Schema Suite", () => {
     });
     expect(lvl.levelingMetric).toBe("rms_dbfs");
     expect(lvl.calibratedTrimDb).toBeCloseTo(-4.5, 4);
+
+    const { evaluateLobattoAnchors, freezeAmountForOption, invertLobattoAnchors } = await import(
+      "./controls.js"
+    );
+    expect(invertLobattoAnchors(10, [10, 10, 10])).toBe(0);
+    const uCurved = invertLobattoAnchors(300, [10, 200, 1000]);
+    const calLob = ControlCalibrationSchema.parse({
+      role: "lfo_rate_hz",
+      lobatto_physical_anchors: [10, 200, 1000],
+    });
+    expect(evaluateLobattoAnchors(calLob, uCurved)).toBeCloseTo(300, 2);
+    expect(
+      evaluateLobattoAnchors(ControlCalibrationSchema.parse({ role: "mix" }), 0),
+    ).toBeUndefined();
+
+    const calFreeze = ControlCalibrationSchema.parse({ role: "freeze_latch" });
+    expect(freezeAmountForOption(calFreeze, "off")).toBe(0.0);
+    expect(freezeAmountForOption(calFreeze, "freeze")).toBe(1.0);
+    expect(freezeAmountForOption(calFreeze, "maybe")).toBeUndefined();
+    expect(freezeAmountForOption(calLob, "on")).toBeUndefined();
+
+    const resLfo = resolveTempoSyncTarget(calLob, 120, "1/4", true);
+    expect(resLfo?.wasClamped).toBe(true);
+    const resLfoHigh = resolveTempoSyncTarget(calLob, 600_000, "1/16T", true);
+    expect(resLfoHigh).toBeDefined();
+    const resCondFold = resolveTempoSyncTarget(cal, 30, "1/2.", true);
+    expect(resCondFold?.wasClamped).toBe(true);
+    const resCondLow = resolveTempoSyncTarget(cal, 2400, "1/16T", false);
+    expect(resCondLow).toBeDefined();
+    expect(
+      resolveTempoSyncTarget(ControlCalibrationSchema.parse({ role: "mix" }), 120),
+    ).toBeUndefined();
   });
 });

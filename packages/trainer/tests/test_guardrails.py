@@ -146,3 +146,31 @@ def test_valid_github_latex_math_across_docs() -> None:
                 assert ";" not in mermaid_block, (
                     f"Semicolon ';' in Mermaid sequenceDiagram at {md_path}:{line_no}"
                 )
+
+
+def test_device_32bit_only_and_no_legacy_window_tables() -> None:
+    """Enforces the 32-bit-only device compute policy and absence of hard-coded 500k sample tables
+    across `dsp/` and cascade solver modules.
+    """
+    device_only_modules = [
+        TRAINER_PKG_ROOT / "src" / "dnam_trainer" / "dsp" / "poly_adaa.py",
+        TRAINER_PKG_ROOT / "src" / "dnam_trainer" / "dsp" / "selective_rglru.py",
+        TRAINER_PKG_ROOT / "src" / "dnam_trainer" / "dsp" / "modulated_ufdn.py",
+        TRAINER_PKG_ROOT / "src" / "dnam_trainer" / "training" / "cascade_orthogonal_fft.py",
+        TRAINER_PKG_ROOT / "src" / "dnam_trainer" / "training" / "cascade_selective_stages.py",
+        TRAINER_PKG_ROOT / "src" / "dnam_trainer" / "training" / "selective_cascade.py",
+    ]
+    forbidden_tokens = (
+        "torch.float64",
+        "torch.complex128",
+        "torch.int64",
+        "torch.long",
+        ".double()",
+        "np.linalg",
+        "np.fft",
+        "500_000",
+    )
+    for mod_path in device_only_modules:
+        text = mod_path.read_text(encoding="utf-8")
+        for tok in forbidden_tokens:
+            assert tok not in text, f"Forbidden token '{tok}' found in {mod_path}"
