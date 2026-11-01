@@ -41,6 +41,36 @@ pub unsafe extern "C" fn dnam_engine_create_from_bytes(
     }
 }
 
+/// Creates a new [`DnamEngineHandle`] capped at `max_supported_tier` (`0 = Lite`, `1 = Full`, `2 = Pro`, `3 = Ultra`).
+///
+/// # Safety
+/// `data_ptr` must point to a valid readable byte buffer of at least `data_len` bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn dnam_engine_create_with_max_tier(
+    data_ptr: *const u8,
+    data_len: usize,
+    tier: u8,
+    max_supported_tier: u8,
+    sample_rate_hz: u32,
+) -> *mut DnamEngineHandle {
+    if data_ptr.is_null() || data_len < 64 {
+        return core::ptr::null_mut();
+    }
+    // SAFETY: Caller guarantees `data_ptr` is valid for `data_len` bytes.
+    let bytes = unsafe { slice::from_raw_parts(data_ptr, data_len) };
+    let tier_enum = Tier::from_u8(tier);
+    let max_tier_enum = Tier::from_u8(max_supported_tier);
+    match DynamicDnamEngine::from_bytes_owned_with_max_tier(
+        bytes,
+        tier_enum,
+        max_tier_enum,
+        sample_rate_hz,
+    ) {
+        Ok(engine) => Box::into_raw(Box::new(DnamEngineHandle { engine })),
+        Err(_) => core::ptr::null_mut(),
+    }
+}
+
 /// Destroys a [`DnamEngineHandle`] previously created by [`dnam_engine_create_from_bytes`].
 ///
 /// # Safety
@@ -55,7 +85,7 @@ pub unsafe extern "C" fn dnam_engine_destroy(handle: *mut DnamEngineHandle) {
     }
 }
 
-/// Switches the active slimmable tier (`0 = Lite`, `1 = Full`, `2 = Ultra`) with `0.00 dB` LUFS continuity.
+/// Switches the active slimmable tier (`0 = Lite`, `1 = Full`, `2 = Pro`, `3 = Ultra`) with `0.00 dB` LUFS continuity.
 ///
 /// # Safety
 /// `handle` must be a valid non-null pointer to a [`DnamEngineHandle`].
@@ -64,6 +94,65 @@ pub unsafe extern "C" fn dnam_engine_set_tier(handle: *mut DnamEngineHandle, tie
     // SAFETY: Caller guarantees `handle` is either null or a valid pointer to `DnamEngineHandle`.
     if let Some(h) = unsafe { handle.as_mut() } {
         h.engine.set_tier(Tier::from_u8(tier));
+    }
+}
+
+/// Sets the plugin/host ceiling tier (`0 = Lite`, `1 = Full`, `2 = Pro`, `3 = Ultra`).
+///
+/// # Safety
+/// `handle` must be a valid non-null pointer to a [`DnamEngineHandle`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn dnam_engine_set_max_supported_tier(
+    handle: *mut DnamEngineHandle,
+    max_tier: u8,
+) {
+    // SAFETY: Caller guarantees `handle` is either null or a valid pointer to `DnamEngineHandle`.
+    if let Some(h) = unsafe { handle.as_mut() } {
+        h.engine.set_max_supported_tier(Tier::from_u8(max_tier));
+    }
+}
+
+/// Enables or disables Offline Bounce mode ($4\times$ linear-phase polyphase oversampling, `12`-sample PDC).
+///
+/// # Safety
+/// `handle` must be a valid non-null pointer to a [`DnamEngineHandle`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn dnam_engine_set_offline_bounce(
+    handle: *mut DnamEngineHandle,
+    enabled: bool,
+) {
+    // SAFETY: Caller guarantees `handle` is either null or a valid pointer to `DnamEngineHandle`.
+    if let Some(h) = unsafe { handle.as_mut() } {
+        h.engine.set_offline_bounce(enabled);
+    }
+}
+
+/// Enables or disables automatic tier promotion (`min(max_available_tier, max_supported_tier)`) during Offline Bounce.
+///
+/// # Safety
+/// `handle` must be a valid non-null pointer to a [`DnamEngineHandle`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn dnam_engine_set_maximize_tier_on_bounce(
+    handle: *mut DnamEngineHandle,
+    enabled: bool,
+) {
+    // SAFETY: Caller guarantees `handle` is either null or a valid pointer to `DnamEngineHandle`.
+    if let Some(h) = unsafe { handle.as_mut() } {
+        h.engine.set_maximize_tier_on_bounce(enabled);
+    }
+}
+
+/// Returns the current Plugin Delay Compensation (`PDC`) latency in host samples (`0` or `12`).
+///
+/// # Safety
+/// `handle` must be a valid non-null pointer to a [`DnamEngineHandle`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn dnam_engine_get_latency_samples(handle: *const DnamEngineHandle) -> usize {
+    // SAFETY: Caller guarantees `handle` is either null or a valid pointer to `DnamEngineHandle`.
+    if let Some(h) = unsafe { handle.as_ref() } {
+        h.engine.latency_samples()
+    } else {
+        0
     }
 }
 

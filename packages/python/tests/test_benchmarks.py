@@ -52,7 +52,11 @@ class BenchmarkCallable(Protocol):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("tier", [Tier.LITE, Tier.FULL, Tier.ULTRA], ids=["lite", "full", "ultra"])
+@pytest.mark.parametrize(
+    "tier",
+    [Tier.LITE, Tier.FULL, Tier.PRO, Tier.ULTRA],
+    ids=["lite", "full", "pro", "ultra"],
+)
 @pytest.mark.parametrize("block_size", [64, 256, 1024], ids=["n64", "n256", "n1024"])
 def test_bench_engine_stereo_zero_alloc(
     benchmark: BenchmarkCallable,
@@ -298,19 +302,19 @@ def test_bench_provenance_watermark_and_structural_hash(
     benchmark: BenchmarkCallable,
     ref_container_core2: DnamContainer,
 ) -> None:
-    """Benchmarks Dual-Mechanism Buyer Watermarking (`Test 8H`) + 160-D structural hash."""
+    """Benchmarks Dual-Mechanism Buyer Watermarking (`Test 8H`) + 224-D structural hash."""
     arena_bytes = bytes(ref_container_core2.arena)
     code = provenance.generate_tardos_code(b"\x11" * 32, model_id="m1", license_id="l1")
     wm = WatermarkParams(
-        kappa_48=tuple(1.0 + 0.005 * ((i % 3) - 1) for i in range(48)),
-        tardos_code_4608=tuple(float(v) for v in code),
+        kappa_64=tuple(1.0 + 0.005 * ((i % 3) - 1) for i in range(64)),
+        tardos_code_7680=tuple(float(v) for v in code),
     )
 
     def _watermark_and_score() -> float:
         watermarked = provenance.apply_dual_watermark(arena_bytes, wm)
         _ = provenance.extract_structural_hash(watermarked)
         _ = crc32c(watermarked)
-        return provenance.score_tardos_watermark(arena_bytes, watermarked, code_4608=code)
+        return provenance.score_tardos_watermark(arena_bytes, watermarked, code_7680=code)
 
     score = benchmark(_watermark_and_score)
     assert score > 50.0

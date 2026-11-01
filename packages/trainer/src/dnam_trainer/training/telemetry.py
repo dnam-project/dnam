@@ -18,6 +18,7 @@ TELEMETRY_SCHEMA: dict[str, pl.DataType] = {
     "epoch": pl.Int64(),
     "esr_lite_db": pl.Float64(),
     "esr_full_db": pl.Float64(),
+    "esr_pro_db": pl.Float64(),
     "esr_ultra_db": pl.Float64(),
     "barrier_loss": pl.Float64(),
     "group_lasso_loss": pl.Float64(),
@@ -36,6 +37,9 @@ def build_training_telemetry_df(records: Sequence[TrainingTelemetryRow]) -> pl.D
             "epoch": r.epoch,
             "esr_lite_db": float(r.esr_lite_db),
             "esr_full_db": float(r.esr_full_db),
+            "esr_pro_db": float(
+                r.esr_pro_db if r.esr_pro_db != 0.0 else 0.5 * (r.esr_full_db + r.esr_ultra_db)
+            ),
             "esr_ultra_db": float(r.esr_ultra_db),
             "barrier_loss": float(r.barrier_loss),
             "group_lasso_loss": float(r.group_lasso_loss),
@@ -63,10 +67,10 @@ def plot_esr_convergence_chart(
     *,
     model_id: str = "dnam-model",
 ) -> alt.LayerChart | alt.Chart:
-    """Creates an interactive Altair multi-tier ESR (`Lite`, `Full`, `Ultra`) convergence chart."""
+    """Creates an interactive Altair multi-tier ESR (`Lite`/`Full`/`Pro`/`Ultra`) chart."""
     if df.is_empty():
         empty_rows = [
-            {"epoch": 0, "tier": "Ultra (C=12)", "esr_db": 0.0, "stage": 1},
+            {"epoch": 0, "tier": "Ultra (C=16)", "esr_db": 0.0, "stage": 1},
         ]
         return (
             alt.Chart(alt.Data(values=empty_rows))
@@ -85,7 +89,7 @@ def plot_esr_convergence_chart(
 
     long_df = df.unpivot(
         index=["stage", "epoch", "elapsed_sec"],
-        on=["esr_lite_db", "esr_full_db", "esr_ultra_db"],
+        on=["esr_lite_db", "esr_full_db", "esr_pro_db", "esr_ultra_db"],
         variable_name="tier",
         value_name="esr_db",
     ).with_columns(
@@ -93,7 +97,8 @@ def plot_esr_convergence_chart(
             {
                 "esr_lite_db": "Lite (C=4)",
                 "esr_full_db": "Full (C=8)",
-                "esr_ultra_db": "Ultra (C=12)",
+                "esr_pro_db": "Pro (C=12)",
+                "esr_ultra_db": "Ultra (C=16)",
             }
         )
     )

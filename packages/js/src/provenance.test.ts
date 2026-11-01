@@ -13,6 +13,7 @@ import {
   ed25519PubkeyHex,
   ed25519SignHex,
   extractStructuralHash160d,
+  extractStructuralHash224d,
   generateTardosCode,
   scoreTardosWatermark,
   sealDnamContainer,
@@ -97,20 +98,21 @@ describe("Cryptographic Provenance, ChaCha20, Dual Watermarking (Test 8H) & 160-
       );
     });
 
-    it("embeds Dual-Mechanism Buyer Watermarking (Test 8H) and preserves 160-D structural hash", () => {
+    it("embeds Dual-Mechanism Buyer Watermarking (Test 8H) and preserves 224-D prefix-composable structural hash", () => {
       const container = DnamContainer.createReference(true, backend);
       const fMaster = container.structuralHash();
-      expect(fMaster).toHaveLength(160);
+      expect(fMaster).toHaveLength(224);
+      expect(extractStructuralHash224d(container.arena, backend)).toEqual(fMaster);
       expect(extractStructuralHash160d(container.arena, backend)).toEqual(fMaster);
 
       const secret = new Uint8Array(32).fill(0x99);
       const code = generateTardosCode(secret, "darkglass_b7k", "lic_001", backend);
-      expect(code).toHaveLength(4608);
+      expect(code).toHaveLength(7680);
 
-      const kappa48 = Array.from({ length: 48 }, (_, i) => 1.0 + 0.01 * ((i % 3) - 1));
+      const kappa64 = Array.from({ length: 64 }, (_, i) => 1.0 + 0.01 * ((i % 3) - 1));
       const watermarked = container.withWatermark({
-        kappa48,
-        tardosCode4608: Array.from(code),
+        kappa64,
+        tardosCode7680: Array.from(code),
         tardosEpsilon: 1e-4,
       });
 
@@ -118,13 +120,63 @@ describe("Cryptographic Provenance, ChaCha20, Dual Watermarking (Test 8H) & 160-
       const sim = structuralCosineSimilarity(fMaster, fBuyer, backend);
       expect(sim).toBeGreaterThan(0.9999);
 
+      // Prefix-composable similarity after stripping to Full (2 * 56 = 112-D)
+      const strippedFull = watermarked.stripToTier("full", backend);
+      const fStripped = strippedFull.structuralHash();
+      expect(fStripped).toHaveLength(112);
+      expect(structuralCosineSimilarity(fMaster, fStripped, backend)).toBeGreaterThan(0.9999);
+
       const zScore = scoreTardosWatermark(container.arena, watermarked.arena, code, backend);
       expect(zScore).toBeGreaterThan(60.0);
 
+      // Verify withWatermark on a CreatorVerified container clears stale signatures cleanly
+      const creatorSeed = new Uint8Array(32).fill(0x33);
+      const creatorPub = ed25519PubkeyHex(creatorSeed, backend);
+      const hdrSha = container.immutableHeaderSha256(backend);
+      const masterSha = sha256Hex(container.arena, backend);
+      const tierShas = [
+        sha256Hex(container.arena.subarray(0, 10_752), backend),
+        sha256Hex(container.arena.subarray(0, 22_336), backend),
+        sha256Hex(container.arena.subarray(0, 36_224), backend),
+        masterSha,
+      ] as const;
+      const msg64 = buildCreatorSigningMessage(hdrSha, masterSha, backend);
+      const sigHex = ed25519SignHex(creatorSeed, msg64, backend);
+      const signedContainer = DnamContainer.build({
+        header: {
+          ...container.header,
+          metadata: {
+            ...container.header.metadata,
+            signatures: {
+              immutableHeaderSha256: hdrSha,
+              masterArenaSha256: masterSha,
+              tierArenaSha256: tierShas,
+              creatorSignature: {
+                signerId: "creator-js",
+                pubkeyEd25519: creatorPub,
+                sigEd25519: sigHex,
+              },
+            },
+          },
+        },
+        arenaBytes: container.arena,
+        backend,
+      });
+      expect(signedContainer.verificationStatus).toBe("CreatorVerified");
+      expect(signedContainer.stripToTier("pro", backend).verificationStatus).toBe(
+        "CreatorVerified",
+      );
+      const wmFromSigned = signedContainer.withWatermark({
+        kappa64,
+        tardosCode7680: Array.from(code),
+        tardosEpsilon: 1e-4,
+      });
+      expect(wmFromSigned.verificationStatus).toBe("Unsigned");
+
       // Standalone Mechanism A + B functions
       const qEye = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
-      const arenaA = applyIsometricGaugeWatermark(container.arena, kappa48, qEye, backend);
-      const fGauge = extractStructuralHash160d(arenaA, backend);
+      const arenaA = applyIsometricGaugeWatermark(container.arena, kappa64, qEye, backend);
+      const fGauge = extractStructuralHash224d(arenaA, backend);
       expect(structuralCosineSimilarity(fMaster, fGauge, backend)).toBeGreaterThan(0.999999);
 
       const arenaAB = applyTardosWatermark(arenaA, code, 1e-4, backend);

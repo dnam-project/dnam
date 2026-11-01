@@ -188,8 +188,8 @@ def test_selective_cascade_monotonic_bspline_and_calibration() -> None:
     assert b_full.shape == (512, 16)
     assert b_ultra.shape == (512, 16)
 
-    phi_192 = modulate_tier_blocks_with_controls(b_lite, b_full, b_ultra, (-1.0, 0.0, 1.0))
-    assert phi_192.shape == (512, 192)
+    phi_256 = modulate_tier_blocks_with_controls(b_lite, b_full, b_ultra, (-1.0, 0.0, 1.0))
+    assert phi_256.shape == (512, 256)
 
     # Verify DnamTriPhysicsModel calibration and intrinsic control modulators
     ctrls = [
@@ -205,11 +205,11 @@ def test_selective_cascade_monotonic_bspline_and_calibration() -> None:
     feat_cal = model.extract_calibrated_or_tier_features(
         torch.as_tensor(x_2ch), in_sha="sha_a", u_ctrl_3=u_mod
     )
-    assert feat_cal.shape == (512, 192)
+    assert feat_cal.shape == (512, 256)
     feat_uncal = model.extract_calibrated_or_tier_features(
         torch.as_tensor(x_2ch), in_sha="sha_missing", u_ctrl_3=u_mod
     )
-    assert feat_uncal.shape == (512, 192)
+    assert feat_uncal.shape == (512, 256)
 
 
 def test_lti_cabinet_and_acoustic_space_modeling() -> None:
@@ -366,7 +366,8 @@ def test_multi_control_kronecker_and_base48_gram_cache() -> None:
             )
 
     sol = solve_all_tiers_kronecker_head_float64(stats_mod, z_head_stems, mode="polish")
-    assert sol.w_ultra_5x2x192.shape == (5, 2, 192)
+    assert sol.pro_head_5x2x192.shape == (5, 2, 192)
+    assert sol.w_ultra_5x2x192.shape == (5, 2, 256)
 
 
 def test_wav_32bit_float_unclipped_roundtrip(tmp_path: Path) -> None:
@@ -484,7 +485,7 @@ def test_30stem_10control_tier32_usb_jitter_and_quadratic_besr() -> None:
             _compute_intrinsic_control_modulators(ctrls10, meta), dtype=np.float64
         )
     base_cache_96 = precompute_base48_band_cache(b_lite, b_full, b_ultra, c_knots=c_knots)
-    assert base_cache_96.g48_lf.shape == (96, 96)
+    assert base_cache_96.g48_lf.shape == (128, 128)
     assert base_cache_96.c_knots is not None
 
     f0, f1 = compute_tier32_modulator_vectors((-0.5, 0.25, 0.75))
@@ -515,7 +516,7 @@ def test_30stem_10control_tier32_usb_jitter_and_quadratic_besr() -> None:
             phi_192 = modulate_tier_blocks_with_controls(
                 b_lite, b_full, b_ultra, u_mod, c_knots=c_knots
             )
-            assert phi_192.shape == (t_len, 192)
+            assert phi_192.shape == (t_len, 256)
             st_ref = compute_stem_sufficient_statistics(
                 phi_192,
                 targets_20[s_idx],

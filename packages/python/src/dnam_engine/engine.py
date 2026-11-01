@@ -63,6 +63,9 @@ class DnamEngine:
         settings: DnamEngineSettings | None = None,
         *,
         tier: Tier | int = Tier.FULL,
+        max_supported_tier: Tier | int = Tier.ULTRA,
+        offline_bounce: bool = False,
+        maximize_tier_on_bounce: bool = True,
         sample_rate: float = 48_000.0,
         backend: BackendKind
         | Literal[
@@ -82,6 +85,9 @@ class DnamEngine:
         else:
             self._settings = DnamEngineSettings(
                 tier=_parse_tier(tier),
+                max_supported_tier=_parse_tier(max_supported_tier),
+                offline_bounce=offline_bounce,
+                maximize_tier_on_bounce=maximize_tier_on_bounce,
                 sample_rate_hz=float(sample_rate),
                 backend=_parse_backend(backend),
                 buffer_size=buffer_size,
@@ -94,6 +100,9 @@ class DnamEngine:
             int(self._settings.tier),
             self._sample_rate_hz,
             str(self._settings.backend),
+            int(self._settings.max_supported_tier),
+            self._settings.offline_bounce,
+            self._settings.maximize_tier_on_bounce,
         )
         self._backend = BackendKind(self._native_engine.backend_kind())
         self._controls = self._bind_control_rack()
@@ -112,6 +121,9 @@ class DnamEngine:
         settings: DnamEngineSettings | None = None,
         *,
         tier: Tier | int = Tier.FULL,
+        max_supported_tier: Tier | int = Tier.ULTRA,
+        offline_bounce: bool = False,
+        maximize_tier_on_bounce: bool = True,
         sample_rate: float = 48_000.0,
         backend: BackendKind
         | Literal[
@@ -124,6 +136,9 @@ class DnamEngine:
             DnamContainer.from_bytes(data),
             settings,
             tier=tier,
+            max_supported_tier=max_supported_tier,
+            offline_bounce=offline_bounce,
+            maximize_tier_on_bounce=maximize_tier_on_bounce,
             sample_rate=sample_rate,
             backend=backend,
             buffer_size=buffer_size,
@@ -136,6 +151,9 @@ class DnamEngine:
         settings: DnamEngineSettings | None = None,
         *,
         tier: Tier | int = Tier.FULL,
+        max_supported_tier: Tier | int = Tier.ULTRA,
+        offline_bounce: bool = False,
+        maximize_tier_on_bounce: bool = True,
         sample_rate: float = 48_000.0,
         backend: BackendKind
         | Literal[
@@ -148,6 +166,9 @@ class DnamEngine:
             DnamContainer.from_file(path),
             settings,
             tier=tier,
+            max_supported_tier=max_supported_tier,
+            offline_bounce=offline_bounce,
+            maximize_tier_on_bounce=maximize_tier_on_bounce,
             sample_rate=sample_rate,
             backend=backend,
             buffer_size=buffer_size,
@@ -160,6 +181,9 @@ class DnamEngine:
         core2_active: bool = False,
         is_checkpoint: bool = False,
         tier: Tier | int = Tier.FULL,
+        max_supported_tier: Tier | int = Tier.ULTRA,
+        offline_bounce: bool = False,
+        maximize_tier_on_bounce: bool = True,
         sample_rate: float = 48_000.0,
         backend: BackendKind
         | Literal[
@@ -171,6 +195,9 @@ class DnamEngine:
         return cls(
             DnamContainer.reference(core2_active=core2_active, is_checkpoint=is_checkpoint),
             tier=tier,
+            max_supported_tier=max_supported_tier,
+            offline_bounce=offline_bounce,
+            maximize_tier_on_bounce=maximize_tier_on_bounce,
             sample_rate=sample_rate,
             backend=backend,
             buffer_size=buffer_size,
@@ -214,13 +241,57 @@ class DnamEngine:
 
     @property
     def tier(self) -> Tier:
-        """Returns or switches the active SLIMMABLE execution tier (`Lite`, `Full`, `Ultra`)."""
+        """Returns or switches the requested SLIMMABLE tier (`Lite`, `Full`, `Pro`, `Ultra`)."""
         return Tier(self._native_engine.active_tier())
 
     @tier.setter
     def tier(self, new_tier: Tier | int) -> None:
         t = _parse_tier(new_tier)
         self._native_engine.set_tier(int(t))
+
+    @property
+    def max_available_tier(self) -> Tier:
+        """Returns the highest tier available in the loaded `.dnam` container."""
+        return Tier(self._native_engine.max_available_tier())
+
+    @property
+    def max_supported_tier(self) -> Tier:
+        """Returns or sets the plugin/host ceiling tier (`max_supported_tier`)."""
+        return Tier(self._native_engine.max_supported_tier())
+
+    @max_supported_tier.setter
+    def max_supported_tier(self, new_max_tier: Tier | int) -> None:
+        t = _parse_tier(new_max_tier)
+        self._native_engine.set_max_supported_tier(int(t))
+
+    @property
+    def effective_tier(self) -> Tier:
+        """Returns the effective tier (`min(max_available_tier, max_supported_tier)` when
+        `offline_bounce and maximize_tier_on_bounce`, otherwise `self.tier`)."""
+        return Tier(self._native_engine.effective_tier())
+
+    @property
+    def offline_bounce(self) -> bool:
+        """Returns or sets Offline Bounce mode ($4\\times$ linear-phase polyphase oversampling)."""
+        return self._native_engine.offline_bounce()
+
+    @offline_bounce.setter
+    def offline_bounce(self, enabled: bool) -> None:
+        self._native_engine.set_offline_bounce(enabled)
+
+    @property
+    def maximize_tier_on_bounce(self) -> bool:
+        """Returns or sets automatic tier promotion (`maximize_tier_on_bounce`) on bounce."""
+        return self._native_engine.maximize_tier_on_bounce()
+
+    @maximize_tier_on_bounce.setter
+    def maximize_tier_on_bounce(self, enabled: bool) -> None:
+        self._native_engine.set_maximize_tier_on_bounce(enabled)
+
+    @property
+    def latency_samples(self) -> int:
+        """Returns the Plugin Delay Compensation (`PDC`) latency in host samples (`0` or `12`)."""
+        return self._native_engine.latency_samples()
 
     @property
     def sample_rate(self) -> float:
@@ -429,6 +500,61 @@ class DnamEngine:
         raise DnamValidationError(
             f"DnamEngine expected (N,), (1, N), or (2, N) input; got shape {arr.shape}"
         )
+
+    def render_offline_bounce(
+        self,
+        input_array: ArrayLike,
+        sample_rate: float | None = None,
+        *,
+        reset: bool = True,
+        out: NDArray[np.float32] | None = None,
+    ) -> NDArray[np.float32]:
+        """Renders a 1D mono `(N,)`, 2D mono `(1, N)`, or 2D stereo `(2, N)` buffer in
+        Offline Bounce mode ($4\\times$ oversampling), stripping the 12-sample PDC lead-in."""
+        if sample_rate is not None and round(float(sample_rate)) != self._sample_rate_hz:
+            self.sample_rate = float(sample_rate)
+        if reset:
+            self.reset()
+
+        arr = (
+            input_array
+            if isinstance(input_array, np.ndarray)
+            and input_array.dtype == np.float32
+            and input_array.flags.c_contiguous
+            else np.ascontiguousarray(input_array, dtype=np.float32)
+        )
+        if arr.ndim == 1:
+            n = int(arr.shape[0])
+            l_in = arr
+            r_in = arr
+        elif arr.ndim == 2 and arr.shape[0] == 1:
+            n = int(arr.shape[1])
+            l_in = arr[0]
+            r_in = arr[0]
+        elif arr.ndim == 2 and arr.shape[0] == 2:
+            n = int(arr.shape[1])
+            l_in = arr[0]
+            r_in = arr[1]
+        else:
+            raise DnamValidationError(
+                "DnamEngine.render_offline_bounce expected (N,), (1, N), or (2, N) input; "
+                f"got shape {arr.shape}"
+            )
+
+        if out is not None:
+            _validate_f32_out(out, (2, n))
+            target_2d = out
+        else:
+            target_2d = np.empty((2, n), dtype=np.float32)
+
+        call_native(
+            self._native_engine.render_offline_bounce,
+            l_in,
+            r_in,
+            target_2d[0],
+            target_2d[1],
+        )
+        return target_2d
 
     def __call__(
         self,

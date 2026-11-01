@@ -7,7 +7,7 @@ import {
   useMemo,
   useState,
 } from "react";
-import type { DnamAudioHost, DnamTelemetrySnapshot } from "./types.js";
+import type { DnamAudioHost, DnamModelTier, DnamTelemetrySnapshot } from "./types.js";
 import { WebAudioWorkletHost } from "./web_worklet_host.js";
 
 const DnamAudioHostContext = createContext<DnamAudioHost | null>(null);
@@ -29,6 +29,10 @@ export interface UseDnamAudioHostResult {
   readonly telemetry: DnamTelemetrySnapshot;
   readonly setParameter: (id: string, value: number) => void;
   readonly setSwitchIndex: (id: string, index: number) => void;
+  readonly setTier: (tier: DnamModelTier) => void;
+  readonly setMaxSupportedTier: (tier: DnamModelTier) => void;
+  readonly setOfflineBounce: (enabled: boolean) => void;
+  readonly setMaximizeTierOnBounce: (enabled: boolean) => void;
 }
 
 export function useDnamAudioHost(): UseDnamAudioHostResult {
@@ -58,10 +62,42 @@ export function useDnamAudioHost(): UseDnamAudioHostResult {
     [host],
   );
 
+  const setTier = useCallback(
+    (tier: DnamModelTier) => {
+      host.setTier?.(tier);
+    },
+    [host],
+  );
+
+  const setMaxSupportedTier = useCallback(
+    (tier: DnamModelTier) => {
+      host.setMaxSupportedTier?.(tier);
+    },
+    [host],
+  );
+
+  const setOfflineBounce = useCallback(
+    (enabled: boolean) => {
+      host.setOfflineBounce?.(enabled);
+    },
+    [host],
+  );
+
+  const setMaximizeTierOnBounce = useCallback(
+    (enabled: boolean) => {
+      host.setMaximizeTierOnBounce?.(enabled);
+    },
+    [host],
+  );
+
   return {
     host,
     telemetry,
     setParameter,
     setSwitchIndex,
+    setTier,
+    setMaxSupportedTier,
+    setOfflineBounce,
+    setMaximizeTierOnBounce,
   };
 }

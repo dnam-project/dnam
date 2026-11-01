@@ -38,16 +38,20 @@ pub use verify::{
     verify_container_provenance, verify_oem_device_certificate,
 };
 pub use watermark::{
-    apply_isometric_gauge_watermark, apply_tardos_watermark_4608, extract_structural_hash_160d,
-    generate_tardos_code_4608, rglru_soa_byte_offset, score_tardos_watermark_4608,
-    structural_cosine_similarity,
+    apply_isometric_gauge_watermark, apply_tardos_watermark_4608, apply_tardos_watermark_7680,
+    extract_structural_hash_160d, extract_structural_hash_224d, generate_tardos_code_4608,
+    generate_tardos_code_7680, rglru_soa_byte_offset, score_tardos_watermark_4608,
+    score_tardos_watermark_7680, structural_cosine_similarity,
 };
 
-/// Number of nonlinear dilated convolution weights across `Arena 0..2` (`768 + 1536 + 2304 = 4608`).
-pub const TARDOS_CONV_WEIGHTS: usize = 4608;
+/// Number of nonlinear dilated convolution weights across `Arena 0..3` (`768 + 1536 + 2304 + 3072 = 7680`).
+pub const TARDOS_CONV_WEIGHTS: usize = 7680;
 
-/// Number of RG-LRU complex resonator channels across `Arena 0..2` (`4 blocks × 12 channels = 48`).
-pub const RGLRU_TOTAL_CHANNELS: usize = 48;
+/// Number of RG-LRU complex resonator channels across `Arena 0..3` (`4 blocks × 16 channels = 64`).
+pub const RGLRU_TOTAL_CHANNELS: usize = 64;
 
-/// Dimension of the gauge-invariant structural hash vector $\mathbf{f}_{\text{struct}} \in \mathbb{R}^{160}$.
-pub const STRUCTURAL_HASH_DIM: usize = 160;
+/// Per-tier dimension of the prefix-composable gauge-invariant structural hash (`56-D` per tier).
+pub const STRUCTURAL_HASH_TIER_DIM: usize = 56;
+
+/// Dimension of the 4-tier prefix-composable gauge-invariant structural hash vector $\mathbf{f}_{\text{struct}} \in \mathbb{R}^{224}$ (`4 × 56-D`).
+pub const STRUCTURAL_HASH_DIM: usize = 224;

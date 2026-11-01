@@ -196,7 +196,7 @@ export class DnamAudioWorkletProcessor extends GlobalWorkletBase {
     }
 
     const targetTier = this.sharedBridge.getTargetTier();
-    if (targetTier >= 0 && targetTier <= 2 && targetTier !== this.engine.activeTier) {
+    if (targetTier >= 0 && targetTier <= 3 && targetTier !== this.engine.activeTier) {
       this.engine.activeTier = targetTier;
     }
 

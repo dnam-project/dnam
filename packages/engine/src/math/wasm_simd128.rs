@@ -200,7 +200,7 @@ impl MathBackend for WasmSimd128Backend {
     fn conv6_taps_1group(
         bias: WasmVec4,
         w_tiles: &[[[f32; 4]; 4]; 6],
-        h_taps: &[&[[f32; 4]; 3]; 6],
+        h_taps: &[&[[f32; 4]; 4]; 6],
     ) -> WasmVec4 {
         let mut za0 = bias.0;
         let mut za1 = f32x4_splat(0.0);
@@ -248,7 +248,7 @@ impl MathBackend for WasmSimd128Backend {
     fn conv6_taps_2groups(
         bias: WasmVec4,
         w_tiles: &[[[f32; 4]; 4]; 12],
-        h_taps: &[&[[f32; 4]; 3]; 6],
+        h_taps: &[&[[f32; 4]; 4]; 6],
     ) -> WasmVec4 {
         let mut za0 = bias.0;
         let mut za1 = f32x4_splat(0.0);
@@ -329,7 +329,7 @@ impl MathBackend for WasmSimd128Backend {
     fn conv6_taps_3groups(
         bias: WasmVec4,
         w_tiles: &[[[f32; 4]; 4]; 18],
-        h_taps: &[&[[f32; 4]; 3]; 6],
+        h_taps: &[&[[f32; 4]; 4]; 6],
     ) -> WasmVec4 {
         let mut za0 = bias.0;
         let mut za1 = f32x4_splat(0.0);

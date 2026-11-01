@@ -78,6 +78,7 @@ class MarketplaceReceipt(StrictModel):
     license_tier: str = Field(min_length=1)
     issued_at: str = Field(min_length=1)
     buyer_arena_sha256: str = Field(min_length=64, max_length=64)
+    buyer_tier_arena_sha256: tuple[str, str, str, str] | None = None
     encryption_mode: str = "none"
     arena_nonce_96: str | None = None
     ephemeral_pubkey_x25519: str | None = None
@@ -91,6 +92,7 @@ class ModelSignatures(StrictModel):
 
     immutable_header_sha256: str = Field(min_length=64, max_length=64)
     master_arena_sha256: str = Field(min_length=64, max_length=64)
+    tier_arena_sha256: tuple[str, str, str, str] | None = None
     creator_signature: CreatorSignature
     marketplace_receipt: MarketplaceReceipt | None = None
 
@@ -98,7 +100,7 @@ class ModelSignatures(StrictModel):
 class WatermarkParams(StrictModel):
     """Validated parameters for Dual-Mechanism Buyer Watermarking (`Test 8H`)."""
 
-    kappa_48: tuple[float, ...] = Field(default_factory=lambda: (1.0,) * 48)
+    kappa_64: tuple[float, ...] = Field(default_factory=lambda: (1.0,) * 64)
     q_buyer_4x4: tuple[
         tuple[float, float, float, float],
         tuple[float, float, float, float],
@@ -110,7 +112,7 @@ class WatermarkParams(StrictModel):
         (0.0, 0.0, 1.0, 0.0),
         (0.0, 0.0, 0.0, 1.0),
     )
-    tardos_code_4608: tuple[float, ...] | None = None
+    tardos_code_7680: tuple[float, ...] | None = None
     tardos_epsilon: float = Field(default=1e-4, ge=0.0, le=1e-2)
 
     _f32_bundle: tuple[NDArray[np.float32], NDArray[np.float32], NDArray[np.float32] | None] = (
@@ -118,11 +120,11 @@ class WatermarkParams(StrictModel):
     )
 
     def model_post_init(self, __context: Any) -> None:
-        kappa_f32 = np.ascontiguousarray(self.kappa_48, dtype=np.float32).ravel()
+        kappa_f32 = np.ascontiguousarray(self.kappa_64, dtype=np.float32).ravel()
         q_flat_f32 = np.ascontiguousarray(self.q_buyer_4x4, dtype=np.float32).ravel()
         tardos_f32 = (
-            np.ascontiguousarray(self.tardos_code_4608, dtype=np.float32).ravel()
-            if self.tardos_code_4608 is not None
+            np.ascontiguousarray(self.tardos_code_7680, dtype=np.float32).ravel()
+            if self.tardos_code_7680 is not None
             else None
         )
         self._f32_bundle = (kappa_f32, q_flat_f32, tardos_f32)
@@ -130,23 +132,23 @@ class WatermarkParams(StrictModel):
     def cached_f32_arrays(
         self,
     ) -> tuple[NDArray[np.float32], NDArray[np.float32], NDArray[np.float32] | None]:
-        """Returns cached C-contiguous `float32` `(kappa_48, q_buyer_16, tardos_4608)` arrays."""
+        """Returns cached C-contiguous `float32` `(kappa_64, q_buyer_16, tardos_7680)` arrays."""
         priv: dict[str, Any] = object.__getattribute__(self, "__pydantic_private__")
         return priv["_f32_bundle"]
 
-    @field_validator("kappa_48")
+    @field_validator("kappa_64")
     @classmethod
     def _validate_kappa(cls, v: tuple[float, ...]) -> tuple[float, ...]:
-        if len(v) != 48:
-            raise DnamValidationError(f"kappa_48 must have 48 elements, got {len(v)}")
+        if len(v) != 64:
+            raise DnamValidationError(f"kappa_64 must have 64 elements, got {len(v)}")
         for idx, k in enumerate(v):
             if not (0.985 <= k <= 1.015):
-                raise DnamValidationError(f"kappa_48[{idx}] = {k} must lie within [0.985, 1.015]")
+                raise DnamValidationError(f"kappa_64[{idx}] = {k} must lie within [0.985, 1.015]")
         return v
 
-    @field_validator("tardos_code_4608")
+    @field_validator("tardos_code_7680")
     @classmethod
     def _validate_tardos_code(cls, v: tuple[float, ...] | None) -> tuple[float, ...] | None:
-        if v is not None and len(v) != 4608:
-            raise DnamValidationError(f"tardos_code_4608 must have 4608 elements, got {len(v)}")
+        if v is not None and len(v) != 7680:
+            raise DnamValidationError(f"tardos_code_7680 must have 7680 elements, got {len(v)}")
         return v

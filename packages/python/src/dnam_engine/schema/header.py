@@ -67,11 +67,11 @@ class IoConfig(StrictModel):
 
 
 class TierProfile(StrictModel):
-    """Metadata and prefix checksum for an individual slimmable tier (`lite`, `full`, `ultra`)."""
+    """Metadata and prefix checksum for a slimmable tier (`lite`, `full`, `pro`, `ultra`)."""
 
     channels: int
-    fdn_lines: int = Field(ge=0, le=8)
-    early_taps: int = Field(default=0, ge=0, le=8)
+    fdn_lines: int = Field(ge=0, le=16)
+    early_taps: int = Field(default=0, ge=0, le=16)
     head_svd_rank: int = Field(default=4, ge=1, le=8)
     loudness_lufs: float = -20.5
     output_trim_db: float = 0.0
@@ -82,8 +82,8 @@ class TierProfile(StrictModel):
     @field_validator("channels")
     @classmethod
     def _validate_channels(cls, v: int) -> int:
-        if v not in (4, 8, 12):
-            raise DnamValidationError(f"TierProfile.channels must be 4, 8, or 12; got {v}")
+        if v not in (4, 8, 12, 16):
+            raise DnamValidationError(f"TierProfile.channels must be 4, 8, 12, or 16; got {v}")
         return v
 
     @field_validator("arena_end_byte_offset")
@@ -97,10 +97,11 @@ class TierProfile(StrictModel):
 
 
 class SlimmableTiersConfig(StrictModel):
-    """Slimmable tier profiles (`lite`, `full`, `ultra`)."""
+    """Slimmable tier profiles (`lite`, `full`, `pro`, `ultra`)."""
 
     lite: TierProfile
     full: TierProfile
+    pro: TierProfile
     ultra: TierProfile
 
 
@@ -135,7 +136,7 @@ class Core2Config(StrictModel):
     interp: str = "cubic_lagrange_4tap"
     tzf_reference_tap_samples: float = Field(default=64.0, ge=0.0)
     switch_xfade_samples: int = Field(default=128, ge=0)
-    allpass_delays_samples: tuple[int, int, int, int, int, int, int, int] = (
+    allpass_delays_samples: tuple[int, ...] = (
         19,
         31,
         47,
@@ -144,15 +145,23 @@ class Core2Config(StrictModel):
         139,
         179,
         223,
+        29,
+        53,
+        83,
+        113,
+        151,
+        191,
+        233,
+        251,
     )
     dc_blocker_pole: float = Field(default=0.995, gt=0.9, lt=1.0)
     loop_ceiling: float = Field(default=0.985, gt=0.0, le=2.0)
 
 
 class TensorSliceEntry(StrictModel):
-    """Tensor directory entry describing a 64-byte aligned slice in `Arena 0..3`."""
+    """Tensor directory entry describing a 64-byte aligned slice in `Arena 0..5`."""
 
-    arena: int = Field(ge=0, le=3)
+    arena: int = Field(ge=0, le=5)
     dtype: Literal["f32", "f64", "fp16"] = "f32"
     packing: str | None = None
     feature_dim: int | None = None
@@ -305,19 +314,29 @@ class DnamJsonHeader(StrictModel):
                     channels=4,
                     fdn_lines=4 if core2_active else 0,
                     early_taps=4,
+                    head_svd_rank=4,
                     arena_end_byte_offset=10_752,
                 ),
                 full=TierProfile(
                     channels=8,
                     fdn_lines=8 if core2_active else 0,
                     early_taps=8,
+                    head_svd_rank=4,
                     arena_end_byte_offset=22_336,
                 ),
-                ultra=TierProfile(
+                pro=TierProfile(
                     channels=12,
                     fdn_lines=8 if core2_active else 0,
                     early_taps=8,
+                    head_svd_rank=4,
                     arena_end_byte_offset=36_224,
+                ),
+                ultra=TierProfile(
+                    channels=16,
+                    fdn_lines=16 if core2_active else 0,
+                    early_taps=16,
+                    head_svd_rank=8,
+                    arena_end_byte_offset=64_000,
                 ),
             ),
             core2_mufdn=Core2Config(

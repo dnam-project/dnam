@@ -1,9 +1,10 @@
-//! `.dnam` & `.dnam-ckpt` Hybrid Binary Container Parser, Builder, ZOH Rescaling & `Arena 3` `uplo='U'` Packing (`container`).
+//! `.dnam` & `.dnam-ckpt` Hybrid Binary Container Parser, Builder, ZOH Rescaling & `Arena 4` `uplo='U'` Packing (`container`).
 //!
 //! Implements the wire framing, zero-copy `mmap` loader (`< 50 ns` zero-JSON hardware fast-path),
 //! 4 KB page-aligned in-place JSON header editor, Castagnoli `CRC32C` verification,
-//! `.dnam-ckpt` `Arena 3` column-major upper-triangular (`uplo='U'`) sufficient statistics packing,
-//! and Continuous-Time Zero-Order Hold (ZOH) sample-rate rescaling ($44.1\text{--}96\text{ kHz}$)
+//! `.dnam-ckpt` `Arena 4` column-major upper-triangular (`uplo='U'`) sufficient statistics packing,
+//! and Continuous-Time Zero-Order Hold (ZOH) sample-rate rescaling ($44.1\text{--}96\text{ kHz}$ live,
+//! plus $4\times$ internal ZOH oversampling for offline bounce)
 //! from [`docs/dnam_container_schema.md`](../../../docs/dnam_container_schema.md).
 
 pub mod ckpt;
@@ -23,7 +24,8 @@ pub use ckpt::{
 };
 pub use preamble::DnamPreamble;
 pub use view::{
-    DnamContainerView, build_dnam_container, compute_header_crc32c, update_header_in_place,
+    DnamContainerView, build_dnam_container, compute_header_crc32c, strip_container_to_tier,
+    update_header_in_place,
 };
 pub use zoh::ZohRescaledParams;
 
@@ -42,23 +44,41 @@ pub const CONTAINER_VERSION_MINOR: u16 = 1;
 /// Fixed byte length of `Arena 0 (Lite)` (`168 × 64 B = 10,752 B`).
 pub const ARENA_OFFSET_LITE_END: u32 = 10_752;
 
-/// Fixed cumulative byte end of `Arena 0 + Arena 1 (Full)` (`349 × 64 B = 22,336 B`).
+/// Fixed cumulative byte end of `Arena 0..1 (Full)` (`349 × 64 B = 22,336 B`).
 pub const ARENA_OFFSET_FULL_END: u32 = 22_336;
 
-/// Fixed cumulative byte end of `Arena 0..2 (Ultra)` (`566 × 64 B = 36,224 B`).
-pub const ARENA_OFFSET_ULTRA_END: u32 = 36_224;
+/// Fixed cumulative byte end of `Arena 0..2 (Pro)` (`566 × 64 B = 36,224 B`).
+pub const ARENA_OFFSET_PRO_END: u32 = 36_224;
+
+/// Fixed cumulative byte end of `Arena 0..3 (Ultra)` (`1,000 × 64 B = 64,000 B`).
+pub const ARENA_OFFSET_ULTRA_END: u32 = 64_000;
+
+/// End of `Arena 0 (Lite)` in 64-byte cache lines (`168`).
+pub const ARENA_LITE_END_CL: u16 = 168;
+
+/// End of `Arena 0..1 (Full)` in 64-byte cache lines (`349`).
+pub const ARENA_FULL_END_CL: u16 = 349;
+
+/// End of `Arena 0..2 (Pro)` in 64-byte cache lines (`566`).
+pub const ARENA_PRO_END_CL: u16 = 566;
+
+/// End of `Arena 0..3 (Ultra)` in 64-byte cache lines (`1,000`).
+pub const ARENA_ULTRA_END_CL: u16 = 1_000;
 
 /// Default 4 KB OS virtual-memory page boundary for `tensor_arena_offset` (`0x1000 = 4,096 B`).
 pub const DEFAULT_PAGE_ALIGNED_ARENA_OFFSET: u32 = 4_096;
 
-/// Per-stem `Arena 3` byte length for `Lite` ($N=64$: `16,640 B` `G_audio` + `1,024 B` `C_audio` = `17,664 B`).
+/// Per-stem `.dnam-ckpt` byte length for `Lite` ($N=64$: `16,640 B` `G_audio` + `1,024 B` `C_audio` = `17,664 B`).
 pub const ARENA3_STEM_BYTES_LITE: usize = 17_664;
 
-/// Per-stem `Arena 3` byte length for `Full` ($N=128$: `66,048 B` `G_audio` + `2,048 B` `C_audio` = `68,096 B`).
+/// Per-stem `.dnam-ckpt` byte length for `Full` ($N=128$: `66,048 B` `G_audio` + `2,048 B` `C_audio` = `68,096 B`).
 pub const ARENA3_STEM_BYTES_FULL: usize = 68_096;
 
-/// Per-stem `Arena 3` byte length for `Ultra` ($N=192$: `148,224 B` `G_audio` + `3,072 B` `C_audio` = `151,296 B`).
-pub const ARENA3_STEM_BYTES_ULTRA: usize = 151_296;
+/// Per-stem `.dnam-ckpt` byte length for `Pro` ($N=192$: `148,224 B` `G_audio` + `3,072 B` `C_audio` = `151,296 B`).
+pub const ARENA3_STEM_BYTES_PRO: usize = 151_296;
+
+/// Per-stem `.dnam-ckpt` byte length for `Ultra` ($N=256$: `263,168 B` `G_audio` + `4,096 B` `C_audio` = `267,264 B`).
+pub const ARENA3_STEM_BYTES_ULTRA: usize = 267_264;
 
 // ============================================================================
 // Preamble Flag Bits (`flags: u16`)
@@ -68,26 +88,28 @@ pub const ARENA3_STEM_BYTES_ULTRA: usize = 151_296;
 pub const FLAG_HAS_LITE: u16 = 1 << 0;
 /// Bit 1 (`2`): `Arena 1 (Full Delta)` is present.
 pub const FLAG_HAS_FULL_DELTA: u16 = 1 << 1;
-/// Bit 2 (`4`): `Arena 2 (Ultra Delta)` is present.
-pub const FLAG_HAS_ULTRA_DELTA: u16 = 1 << 2;
-/// Bit 3 (`8`): `Arena 3` `.dnam-ckpt` stem statistics are present.
-pub const FLAG_HAS_CKPT_STEMS: u16 = 1 << 3;
-/// Bit 4 (`16`): Core 1 weights are interleaved in execution order (`Core1BlockSlice`).
-pub const FLAG_EXEC_ORDER_SOA: u16 = 1 << 4;
-/// Bit 5 (`32`): First Lobatto node is anchored at the default preset (`0` flops at Sample 0).
-pub const FLAG_DEFAULT_ANCHORED: u16 = 1 << 5;
-/// Bit 6 (`64`): Core 2 (`M-UFDN`) is active (`0` = bypassed with `0 KB` delay RAM).
-pub const FLAG_CORE2_ACTIVE: u16 = 1 << 6;
-/// Bit 7 (`128`): $3\text{ kHz}$ LFOs and envelope followers are active.
-pub const FLAG_LFO_ENV_ACTIVE: u16 = 1 << 7;
-/// Bit 8 (`256`): Stereo output head enabled (`1 = stereo`, `0 = mono` saving 50% head MACs).
-pub const FLAG_STEREO_OUT: u16 = 1 << 8;
-/// Bit 9 (`512`): Split-payload `Ed25519` signatures are present in `metadata.signatures`.
-pub const FLAG_HAS_SIGNATURES: u16 = 1 << 9;
-/// Bit 10 (`1024`): `Arena 0..2` is `ChaCha20` 64-byte block encrypted for `authorized_devices`.
-pub const FLAG_ENCRYPTED_ARENA: u16 = 1 << 10;
-/// Bit 11 (`2048`): `Arena 4` `.dnam-ckpt` calibration statistics (`DNCA`) are present.
-pub const FLAG_HAS_CALIB_STATS: u16 = 1 << 11;
+/// Bit 2 (`4`): `Arena 2 (Pro Delta)` is present.
+pub const FLAG_HAS_PRO_DELTA: u16 = 1 << 2;
+/// Bit 3 (`8`): `Arena 3 (Ultra Delta)` is present.
+pub const FLAG_HAS_ULTRA_DELTA: u16 = 1 << 3;
+/// Bit 4 (`16`): `.dnam-ckpt` stem statistics are present.
+pub const FLAG_HAS_CKPT_STEMS: u16 = 1 << 4;
+/// Bit 5 (`32`): Core 1 weights are interleaved in execution order (`Core1BlockSlice`).
+pub const FLAG_EXEC_ORDER_SOA: u16 = 1 << 5;
+/// Bit 6 (`64`): First Lobatto node is anchored at the default preset (`0` flops at Sample 0).
+pub const FLAG_DEFAULT_ANCHORED: u16 = 1 << 6;
+/// Bit 7 (`128`): Core 2 (`M-UFDN`) is active (`0` = bypassed with `0 KB` delay RAM).
+pub const FLAG_CORE2_ACTIVE: u16 = 1 << 7;
+/// Bit 8 (`256`): $3\text{ kHz}$ LFOs and envelope followers are active.
+pub const FLAG_LFO_ENV_ACTIVE: u16 = 1 << 8;
+/// Bit 9 (`512`): Stereo output head enabled (`1 = stereo`, `0 = mono` saving 50% head MACs).
+pub const FLAG_STEREO_OUT: u16 = 1 << 9;
+/// Bit 10 (`1024`): Split-payload `Ed25519` signatures are present in `metadata.signatures`.
+pub const FLAG_HAS_SIGNATURES: u16 = 1 << 10;
+/// Bit 11 (`2048`): `Arena 0..3` is `ChaCha20` 64-byte block encrypted for `authorized_devices`.
+pub const FLAG_ENCRYPTED_ARENA: u16 = 1 << 11;
+/// Bit 12 (`4096`): `.dnam-ckpt` calibration statistics (`DNCA`) are present.
+pub const FLAG_HAS_CALIB_STATS: u16 = 1 << 12;
 
 /// Updates an incremental Castagnoli `CRC32C` state with `data` using hardware `CRC32C` on `aarch64`.
 #[inline]

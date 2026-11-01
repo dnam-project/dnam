@@ -182,15 +182,25 @@ export function scoreTardosWatermark(
 }
 
 /**
- * Extracts the 160-Dimensional Gauge-Invariant Structural Hash vector $\mathbf{f}_{\text{struct}} \in \mathbb{R}^{160}$
- * from `arenaBytes`.
+ * Extracts the 224-Dimensional (or prefix `56*T`-D) Gauge-Invariant Structural Hash vector
+ * $\mathbf{f}_{\text{struct}} \in \mathbb{R}^{224}$ from `arenaBytes`.
  */
-export function extractStructuralHash160d(
+export function extractStructuralHash224d(
   arenaBytes: Uint8Array | ArrayBuffer | ArrayBufferView,
   backend?: BackendChoice,
 ): Float64Array {
   const driver = resolveDriver(backend);
   return driver.extractStructuralHash(toUint8Array(arenaBytes));
+}
+
+/**
+ * Alias for `extractStructuralHash224d`.
+ */
+export function extractStructuralHash160d(
+  arenaBytes: Uint8Array | ArrayBuffer | ArrayBufferView,
+  backend?: BackendChoice,
+): Float64Array {
+  return extractStructuralHash224d(arenaBytes, backend);
 }
 
 /**

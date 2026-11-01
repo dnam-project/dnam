@@ -3,12 +3,12 @@
 
 use dnam_engine::container::{seal_dnam_container, unseal_dnam_container};
 use dnam_engine::provenance::{
-    RGLRU_TOTAL_CHANNELS, RustCryptoProvider, STRUCTURAL_HASH_DIM, TARDOS_CONV_WEIGHTS,
-    apply_isometric_gauge_watermark, apply_tardos_watermark_4608, build_creator_signing_message,
-    build_marketplace_receipt_signing_message, chacha20_xor_arena_blocks,
-    compute_immutable_header_sha256, decode_hex_array, encode_hex, extract_structural_hash_160d,
-    generate_tardos_code_4608, score_tardos_watermark_4608, sha256_digest,
-    structural_cosine_similarity, verify_oem_device_certificate,
+    RGLRU_TOTAL_CHANNELS, RustCryptoProvider, STRUCTURAL_HASH_DIM, STRUCTURAL_HASH_TIER_DIM,
+    TARDOS_CONV_WEIGHTS, apply_isometric_gauge_watermark, apply_tardos_watermark_7680,
+    build_creator_signing_message, build_marketplace_receipt_signing_message,
+    chacha20_xor_arena_blocks, compute_immutable_header_sha256, decode_hex_array, encode_hex,
+    extract_structural_hash_224d, generate_tardos_code_7680, score_tardos_watermark_7680,
+    sha256_digest, structural_cosine_similarity, verify_oem_device_certificate,
 };
 use dnam_engine::schema::{DnamJsonHeader, MarketplaceReceipt, OemDeviceCertificate};
 use numpy::{PyArray1, PyReadonlyArray1, PyUntypedArrayMethods};
@@ -91,18 +91,18 @@ pub fn native_chacha20_xor_arena<'py>(
     Ok(PyBytes::new(py, &buf))
 }
 
-/// Applies Mechanism A (48-channel RG-LRU reciprocal scaling + SO(4) SVD head rotation) to `arena_bytes`.
+/// Applies Mechanism A (64-channel RG-LRU reciprocal scaling + SO(4) SVD head rotation) to `arena_bytes`.
 #[pyfunction]
 pub fn native_apply_isometric_gauge_watermark<'py>(
     py: Python<'py>,
     arena_bytes: &[u8],
-    kappa_48: PyReadonlyArray1<'py, f32>,
+    kappa_64: PyReadonlyArray1<'py, f32>,
     q_buyer_flat_16: PyReadonlyArray1<'py, f32>,
 ) -> PyResult<Bound<'py, PyBytes>> {
-    if kappa_48.len() != RGLRU_TOTAL_CHANNELS {
+    if kappa_64.len() != RGLRU_TOTAL_CHANNELS {
         return Err(PyValueError::new_err(format!(
-            "[DNAM-VALIDATION] kappa_48 must have {RGLRU_TOTAL_CHANNELS} elements, got {}",
-            kappa_48.len()
+            "[DNAM-VALIDATION] kappa_64 must have {RGLRU_TOTAL_CHANNELS} elements, got {}",
+            kappa_64.len()
         )));
     }
     if q_buyer_flat_16.len() != 16 {
@@ -111,9 +111,9 @@ pub fn native_apply_isometric_gauge_watermark<'py>(
             q_buyer_flat_16.len()
         )));
     }
-    let k_slice = kappa_48
+    let k_slice = kappa_64
         .as_slice()
-        .map_err(|_| PyValueError::new_err("[DNAM-VALIDATION] kappa_48 must be contiguous"))?;
+        .map_err(|_| PyValueError::new_err("[DNAM-VALIDATION] kappa_64 must be contiguous"))?;
     let q_slice = q_buyer_flat_16
         .as_slice()
         .map_err(|_| PyValueError::new_err("[DNAM-VALIDATION] q_buyer_4x4 must be contiguous"))?;
@@ -130,7 +130,7 @@ pub fn native_apply_isometric_gauge_watermark<'py>(
     Ok(PyBytes::new(py, &buf))
 }
 
-/// Generates a 4,608-chip Tardos binary spread-spectrum watermark code `{-1.0, +1.0}^4608`.
+/// Generates a 7,680-chip Tardos binary spread-spectrum watermark code `{-1.0, +1.0}^7680`.
 #[pyfunction]
 pub fn native_generate_tardos_code<'py>(
     py: Python<'py>,
@@ -144,76 +144,95 @@ pub fn native_generate_tardos_code<'py>(
             marketplace_secret_32.len()
         ))
     })?;
-    let code = generate_tardos_code_4608(secret, model_id, license_id);
+    let code = generate_tardos_code_7680(secret, model_id, license_id);
     Ok(PyArray1::from_slice(py, &code))
 }
 
-/// Embeds Mechanism B (4,608-weight Tardos spread-spectrum watermark) into `arena_bytes`.
+/// Embeds Mechanism B (7,680-weight Tardos spread-spectrum watermark) into `arena_bytes`.
 #[pyfunction]
 pub fn native_apply_tardos_watermark<'py>(
     py: Python<'py>,
     arena_bytes: &[u8],
-    code_4608: PyReadonlyArray1<'py, f32>,
+    code_7680: PyReadonlyArray1<'py, f32>,
     epsilon: f32,
 ) -> PyResult<Bound<'py, PyBytes>> {
-    if code_4608.len() != TARDOS_CONV_WEIGHTS {
+    if code_7680.len() != TARDOS_CONV_WEIGHTS {
         return Err(PyValueError::new_err(format!(
             "[DNAM-VALIDATION] Tardos code must have {TARDOS_CONV_WEIGHTS} elements, got {}",
-            code_4608.len()
+            code_7680.len()
         )));
     }
-    let c_slice = code_4608
+    let c_slice = code_7680
         .as_slice()
-        .map_err(|_| PyValueError::new_err("[DNAM-VALIDATION] code_4608 must be contiguous"))?;
+        .map_err(|_| PyValueError::new_err("[DNAM-VALIDATION] code_7680 must be contiguous"))?;
     let mut code_arr = [1.0_f32; TARDOS_CONV_WEIGHTS];
     code_arr.copy_from_slice(c_slice);
 
     let mut buf = arena_bytes.to_vec();
-    apply_tardos_watermark_4608(&mut buf, &code_arr, epsilon).map_err(dnam_err_to_py)?;
+    apply_tardos_watermark_7680(&mut buf, &code_arr, epsilon).map_err(dnam_err_to_py)?;
     Ok(PyBytes::new(py, &buf))
 }
 
-/// Computes the Tardos matched-filter Z-score (`sigma`) of `suspect_arena` against `master_arena` and `code_4608`.
+/// Computes the Tardos matched-filter Z-score (`sigma`) of `suspect_arena` against `master_arena` and `code_7680`.
 #[pyfunction]
 pub fn native_score_tardos_watermark<'py>(
     master_arena: &[u8],
     suspect_arena: &[u8],
-    code_4608: PyReadonlyArray1<'py, f32>,
+    code_7680: PyReadonlyArray1<'py, f32>,
 ) -> PyResult<f64> {
-    if code_4608.len() != TARDOS_CONV_WEIGHTS {
+    if code_7680.len() != TARDOS_CONV_WEIGHTS {
         return Err(PyValueError::new_err(format!(
             "[DNAM-VALIDATION] Tardos code must have {TARDOS_CONV_WEIGHTS} elements, got {}",
-            code_4608.len()
+            code_7680.len()
         )));
     }
-    let c_slice = code_4608
+    let c_slice = code_7680
         .as_slice()
-        .map_err(|_| PyValueError::new_err("[DNAM-VALIDATION] code_4608 must be contiguous"))?;
+        .map_err(|_| PyValueError::new_err("[DNAM-VALIDATION] code_7680 must be contiguous"))?;
     let mut code_arr = [1.0_f32; TARDOS_CONV_WEIGHTS];
     code_arr.copy_from_slice(c_slice);
 
-    score_tardos_watermark_4608(master_arena, suspect_arena, &code_arr).map_err(dnam_err_to_py)
+    score_tardos_watermark_7680(master_arena, suspect_arena, &code_arr).map_err(dnam_err_to_py)
 }
 
-/// Extracts the 160-Dimensional Gauge-Invariant Structural Hash vector `f_struct in R^160` from `arena_bytes`.
+/// Extracts the prefix-composable `4 × 56-D = 224-D` Gauge-Invariant Structural Hash vector from `arena_bytes`.
 #[pyfunction]
 pub fn native_extract_structural_hash<'py>(
     py: Python<'py>,
     arena_bytes: &[u8],
 ) -> PyResult<Bound<'py, PyArray1<f64>>> {
-    let vec160 = extract_structural_hash_160d(arena_bytes).map_err(dnam_err_to_py)?;
-    Ok(PyArray1::from_slice(py, &vec160))
+    let vec224 = extract_structural_hash_224d(arena_bytes).map_err(dnam_err_to_py)?;
+    let tiers = if arena_bytes.len() >= 64_000 {
+        4
+    } else if arena_bytes.len() >= 36_224 {
+        3
+    } else if arena_bytes.len() >= 22_336 {
+        2
+    } else {
+        1
+    };
+    Ok(PyArray1::from_slice(
+        py,
+        &vec224[..tiers * STRUCTURAL_HASH_TIER_DIM],
+    ))
 }
 
-/// Computes the cosine similarity `cos(a, b) in [-1, +1]` between two 160-D structural hash vectors.
+/// Computes the cosine similarity `cos(a, b) in [-1, +1]` between two structural hash vectors
+/// (comparing their shared tier prefix of `56`, `112`, `168`, or `224` dimensions).
 #[pyfunction]
 pub fn native_structural_cosine_similarity<'py>(
     a: PyReadonlyArray1<'py, f64>,
     b: PyReadonlyArray1<'py, f64>,
 ) -> PyResult<f64> {
-    if a.len() != STRUCTURAL_HASH_DIM || b.len() != STRUCTURAL_HASH_DIM {
+    let min_len = a.len().min(b.len());
+    if min_len == 0
+        || min_len > STRUCTURAL_HASH_DIM
+        || !min_len.is_multiple_of(STRUCTURAL_HASH_TIER_DIM)
+    {
         return Err(PyValueError::new_err(format!(
-            "[DNAM-VALIDATION] Structural hash vectors must have length {STRUCTURAL_HASH_DIM}"
+            "[DNAM-VALIDATION] Structural hash vectors must have prefix length 56, 112, 168, or {STRUCTURAL_HASH_DIM} (got {} and {})",
+            a.len(),
+            b.len()
         )));
     }
     let a_slice = a
@@ -224,8 +243,8 @@ pub fn native_structural_cosine_similarity<'py>(
         .map_err(|_| PyValueError::new_err("[DNAM-VALIDATION] vector b must be contiguous"))?;
     let mut a_arr = [0.0_f64; STRUCTURAL_HASH_DIM];
     let mut b_arr = [0.0_f64; STRUCTURAL_HASH_DIM];
-    a_arr.copy_from_slice(a_slice);
-    b_arr.copy_from_slice(b_slice);
+    a_arr[..min_len].copy_from_slice(&a_slice[..min_len]);
+    b_arr[..min_len].copy_from_slice(&b_slice[..min_len]);
     Ok(structural_cosine_similarity(&a_arr, &b_arr))
 }
 

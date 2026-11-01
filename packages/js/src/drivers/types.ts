@@ -21,6 +21,12 @@ export interface DnamEngineHandle {
   reload(containerBytes: Uint8Array, tier?: number, sampleRateHz?: number): void;
   readonly backend: string;
   activeTier: number;
+  maxSupportedTier: number;
+  readonly maxAvailableTier: number;
+  readonly effectiveTier: number;
+  offlineBounce: boolean;
+  maximizeTierOnBounce: boolean;
+  readonly latencySamples: number;
   sampleRateHz: number;
   setControlValue(ctrlIdx: number, value: number): void;
   setControlImmediate(ctrlIdx: number, value: number): void;
@@ -39,6 +45,11 @@ export interface DnamEngineHandle {
     bufferSize?: number,
   ): void;
   processMono(monoIn: Float32Array, monoOut: Float32Array, bufferSize?: number): void;
+  renderOfflineBounce(
+    leftIn: Float32Array,
+    rightIn: Float32Array,
+    bufferSize?: number,
+  ): [Float32Array, Float32Array];
   processAsync(
     leftIn: Float32Array,
     rightIn?: Float32Array,
@@ -94,6 +105,8 @@ export interface DnamDriver {
   ): Uint8Array;
 
   buildReferenceContainer(core2Active: boolean, isCheckpoint: boolean): Uint8Array;
+
+  stripContainerToTier(containerBytes: Uint8Array, maxTier: number): Uint8Array;
 
   updateHeaderInPlace(containerBytes: Uint8Array, updatedHeaderJson: string): Uint8Array;
 

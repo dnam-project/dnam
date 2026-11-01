@@ -43,6 +43,24 @@ export interface DnamWasmExports extends WebAssembly.Exports {
   dnam_wasm_engine_backend_code(handle: number): number;
   dnam_wasm_engine_active_tier(handle: number): number;
   dnam_wasm_engine_set_tier(handle: number, tier: number): number;
+  dnam_wasm_engine_max_supported_tier(handle: number): number;
+  dnam_wasm_engine_set_max_supported_tier(handle: number, tier: number): number;
+  dnam_wasm_engine_max_available_tier(handle: number): number;
+  dnam_wasm_engine_effective_tier(handle: number): number;
+  dnam_wasm_engine_offline_bounce(handle: number): number;
+  dnam_wasm_engine_set_offline_bounce(handle: number, enabled: number): void;
+  dnam_wasm_engine_maximize_tier_on_bounce(handle: number): number;
+  dnam_wasm_engine_set_maximize_tier_on_bounce(handle: number, enabled: number): void;
+  dnam_wasm_engine_latency_samples(handle: number): number;
+  dnam_wasm_engine_render_offline_bounce(
+    handle: number,
+    leftInPtr: number,
+    rightInPtr: number,
+    leftOutPtr: number,
+    rightOutPtr: number,
+    numSamples: number,
+    bufferSize: number,
+  ): number;
   dnam_wasm_engine_sample_rate(handle: number): number;
   dnam_wasm_engine_set_sample_rate(handle: number, sampleRateHz: number): number;
   dnam_wasm_engine_set_control_value(handle: number, ctrlIdx: number, value: number): void;
@@ -111,6 +129,11 @@ export interface DnamWasmExports extends WebAssembly.Exports {
     encryptedArena: number,
   ): number;
   dnam_wasm_build_reference_container(core2Active: number, isCheckpoint: number): number;
+  dnam_wasm_strip_container_to_tier(
+    containerPtr: number,
+    containerLen: number,
+    maxTier: number,
+  ): number;
   dnam_wasm_update_header_in_place(
     containerPtr: number,
     containerLen: number,
@@ -600,6 +623,51 @@ class WasmEngineHandle implements DnamEngineHandle {
     this.checkRc(this.exports.dnam_wasm_engine_set_tier(this.handle, tier));
   }
 
+  public get maxSupportedTier(): number {
+    this.ensureDisposedNot();
+    return this.exports.dnam_wasm_engine_max_supported_tier(this.handle);
+  }
+
+  public set maxSupportedTier(tier: number) {
+    this.ensureDisposedNot();
+    this.checkRc(this.exports.dnam_wasm_engine_set_max_supported_tier(this.handle, tier));
+  }
+
+  public get maxAvailableTier(): number {
+    this.ensureDisposedNot();
+    return this.exports.dnam_wasm_engine_max_available_tier(this.handle);
+  }
+
+  public get effectiveTier(): number {
+    this.ensureDisposedNot();
+    return this.exports.dnam_wasm_engine_effective_tier(this.handle);
+  }
+
+  public get offlineBounce(): boolean {
+    this.ensureDisposedNot();
+    return this.exports.dnam_wasm_engine_offline_bounce(this.handle) !== 0;
+  }
+
+  public set offlineBounce(enabled: boolean) {
+    this.ensureDisposedNot();
+    this.exports.dnam_wasm_engine_set_offline_bounce(this.handle, enabled ? 1 : 0);
+  }
+
+  public get maximizeTierOnBounce(): boolean {
+    this.ensureDisposedNot();
+    return this.exports.dnam_wasm_engine_maximize_tier_on_bounce(this.handle) !== 0;
+  }
+
+  public set maximizeTierOnBounce(enabled: boolean) {
+    this.ensureDisposedNot();
+    this.exports.dnam_wasm_engine_set_maximize_tier_on_bounce(this.handle, enabled ? 1 : 0);
+  }
+
+  public get latencySamples(): number {
+    this.ensureDisposedNot();
+    return this.exports.dnam_wasm_engine_latency_samples(this.handle);
+  }
+
   public get sampleRateHz(): number {
     this.ensureDisposedNot();
     return this.exports.dnam_wasm_engine_sample_rate(this.handle);
@@ -668,6 +736,50 @@ class WasmEngineHandle implements DnamEngineHandle {
     const outView = this.getScratchF32View();
     leftOut.set(outView.subarray(n * 2, n * 3));
     rightOut.set(outView.subarray(n * 3, n * 4));
+  }
+
+  public renderOfflineBounce(
+    leftIn: Float32Array,
+    rightIn: Float32Array,
+    bufferSize?: number,
+  ): [Float32Array, Float32Array] {
+    this.ensureDisposedNot();
+    const n = leftIn.length;
+    if (rightIn.length !== n) {
+      throw mapTaggedError("[DNAM-VALIDATION] leftIn and rightIn must have identical length");
+    }
+    const leftOut = new Float32Array(n);
+    const rightOut = new Float32Array(n);
+    if (n === 0) {
+      return [leftOut, rightOut];
+    }
+    const basePtr = this.ensureScratchCapacity(n);
+    const byteStride = n * 4;
+    const liPtr = basePtr;
+    const riPtr = basePtr + byteStride;
+    const loPtr = basePtr + byteStride * 2;
+    const roPtr = basePtr + byteStride * 3;
+
+    const inView = this.getScratchF32View();
+    inView.set(leftIn, 0);
+    inView.set(rightIn, n);
+
+    this.checkRc(
+      this.exports.dnam_wasm_engine_render_offline_bounce(
+        this.handle,
+        liPtr,
+        riPtr,
+        loPtr,
+        roPtr,
+        n,
+        bufferSize ?? 0,
+      ),
+    );
+
+    const outView = this.getScratchF32View();
+    leftOut.set(outView.subarray(n * 2, n * 3));
+    rightOut.set(outView.subarray(n * 3, n * 4));
+    return [leftOut, rightOut];
   }
 
   public processMonoToStereo(
@@ -1059,9 +1171,11 @@ export class WasmDriver implements DnamDriver {
               tensorArenaByteLen: v[9] ?? 0,
               arenaOffsetLiteEnd: v[10] ?? 10_752,
               arenaOffsetFullEnd: v[11] ?? 22_336,
-              arenaOffsetUltraEnd: v[12] ?? 36_224,
+              arenaOffsetProEnd: v[26] ?? 36_224,
+              arenaOffsetUltraEnd: v[12] ?? 64_000,
               arenaCrc32cLite: (v[13] ?? 0) >>> 0,
               arenaCrc32cFull: (v[14] ?? 0) >>> 0,
+              arenaCrc32cPro: (v[27] ?? 0) >>> 0,
               arenaCrc32cUltra: (v[15] ?? 0) >>> 0,
               numCkptStems: v[16] ?? 0,
               controlDecimation: v[17] ?? 16,
@@ -1144,6 +1258,13 @@ export class WasmDriver implements DnamDriver {
       this.exports.dnam_wasm_build_reference_container(core2Active ? 1 : 0, isCheckpoint ? 1 : 0),
     );
     return this.readLastResultBytes();
+  }
+
+  public stripContainerToTier(containerBytes: Uint8Array, maxTier: number): Uint8Array {
+    return this.withBytes(containerBytes, (cPtr, cLen) => {
+      this.checkRc(this.exports.dnam_wasm_strip_container_to_tier(cPtr, cLen, maxTier));
+      return this.readLastResultBytes();
+    });
   }
 
   public updateHeaderInPlace(containerBytes: Uint8Array, updatedHeaderJson: string): Uint8Array {
@@ -1693,7 +1814,7 @@ export class WasmDriver implements DnamDriver {
     modelId: string,
     licenseId: string,
   ): Float32Array {
-    return this.withTempScratch(4608 * 4, (outPtr) =>
+    return this.withTempScratch(7680 * 4, (outPtr) =>
       this.withBytes(marketplaceSecret32, (sPtr, sLen) =>
         this.withString(modelId, (mPtr, mLen) =>
           this.withString(licenseId, (lPtr, lLen) => {
@@ -1708,7 +1829,7 @@ export class WasmDriver implements DnamDriver {
                 outPtr,
               ),
             );
-            return new Float32Array(this.exports.memory.buffer, outPtr, 4608).slice();
+            return new Float32Array(this.exports.memory.buffer, outPtr, 7680).slice();
           }),
         ),
       ),
@@ -1717,11 +1838,11 @@ export class WasmDriver implements DnamDriver {
 
   public applyTardosWatermark(
     arenaBytes: Uint8Array,
-    code4608: Float32Array,
+    code7680: Float32Array,
     epsilon: number,
   ): Uint8Array {
     return this.withBytes(arenaBytes, (aPtr, aLen) =>
-      this.withF32Slice(code4608, (cPtr, cLen) => {
+      this.withF32Slice(code7680, (cPtr, cLen) => {
         this.checkRc(
           this.exports.dnam_wasm_apply_tardos_watermark(aPtr, aLen, cPtr, cLen, epsilon),
         );
@@ -1733,11 +1854,11 @@ export class WasmDriver implements DnamDriver {
   public scoreTardosWatermark(
     masterArena: Uint8Array,
     suspectArena: Uint8Array,
-    code4608: Float32Array,
+    code7680: Float32Array,
   ): number {
     return this.withBytes(masterArena, (mPtr, mLen) =>
       this.withBytes(suspectArena, (sPtr, sLen) =>
-        this.withF32Slice(code4608, (cPtr, cLen) => {
+        this.withF32Slice(code7680, (cPtr, cLen) => {
           this.checkRc(
             this.exports.dnam_wasm_score_tardos_watermark(
               mPtr,
@@ -1756,10 +1877,10 @@ export class WasmDriver implements DnamDriver {
   }
 
   public extractStructuralHash(arenaBytes: Uint8Array): Float64Array {
-    return this.withTempScratch(160 * 8, (outPtr) =>
+    return this.withTempScratch(224 * 8, (outPtr) =>
       this.withBytes(arenaBytes, (aPtr, aLen) => {
-        this.checkRc(this.exports.dnam_wasm_extract_structural_hash(aPtr, aLen, outPtr));
-        return new Float64Array(this.exports.memory.buffer, outPtr, 160).slice();
+        const rc = this.checkRc(this.exports.dnam_wasm_extract_structural_hash(aPtr, aLen, outPtr));
+        return new Float64Array(this.exports.memory.buffer, outPtr, rc).slice();
       }),
     );
   }

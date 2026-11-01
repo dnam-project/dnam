@@ -16,22 +16,23 @@ mod reference;
 mod ufdn;
 
 pub use reference::{
-    cubic_lagrange_weights_f64, givens_householder_mix_8ch_f64, mufdn_coercive_step_f64,
-    mufdn_slice_f64,
+    cubic_lagrange_weights_f64, givens_householder_mix_8ch_f64, givens_householder_mix_16ch_f64,
+    mufdn_coercive_step_f64, mufdn_slice_f64,
 };
 pub use ufdn::{ModulatedUfdn, MufdnGroupWeights};
 
-/// Maximum number of FDN delay lines (`4` in `Lite`, `8` in `Full`/`Ultra`).
-pub const CORE2_MAX_LINES: usize = 8;
+/// Maximum number of FDN delay lines (`4` in `Lite`, `8` in `Full`/`Pro`, `16` in `Ultra`).
+pub const CORE2_MAX_LINES: usize = 16;
 
-/// Length of the per-line Schroeder all-pass ring buffer (`256` samples covers max coprime delay `223`).
+/// Length of the per-line Schroeder all-pass ring buffer (`256` samples covers max coprime delay `251`).
 pub const CORE2_ALLPASS_RING_LEN: usize = 256;
 pub(crate) const CORE2_ALLPASS_RING_MASK: usize = CORE2_ALLPASS_RING_LEN - 1;
 
-/// Length of the stereo Through-Zero Flanging (TZF) dry reference ring buffer (`256` samples).
-pub const CORE2_TZF_RING_LEN: usize = 256;
+/// Length of the stereo Through-Zero Flanging (TZF) dry reference ring buffer (`512` samples covers $4\times$ oversampling).
+pub const CORE2_TZF_RING_LEN: usize = 512;
 pub(crate) const CORE2_TZF_RING_MASK: usize = CORE2_TZF_RING_LEN - 1;
 
-/// Canonical coprime Schroeder all-pass delay lengths in samples at $48\text{ kHz}$.
-pub const CORE2_DEFAULT_ALLPASS_DELAYS: [u16; CORE2_MAX_LINES] =
-    [19, 31, 47, 73, 103, 139, 179, 223];
+/// Canonical coprime Schroeder all-pass delay lengths in samples at $48\text{ kHz}$ across all 16 lines.
+pub const CORE2_DEFAULT_ALLPASS_DELAYS: [u16; CORE2_MAX_LINES] = [
+    19, 31, 47, 73, 103, 139, 179, 223, 29, 53, 83, 113, 151, 191, 233, 251,
+];

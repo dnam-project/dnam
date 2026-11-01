@@ -12,7 +12,8 @@
 use std::collections::BTreeMap;
 
 use dnam_engine::container::{
-    ARENA_OFFSET_FULL_END, ARENA_OFFSET_LITE_END, ARENA_OFFSET_ULTRA_END, build_dnam_container,
+    ARENA_OFFSET_FULL_END, ARENA_OFFSET_LITE_END, ARENA_OFFSET_PRO_END, ARENA_OFFSET_ULTRA_END,
+    build_dnam_container,
 };
 use dnam_engine::math::DefaultMathBackend;
 use dnam_engine::memory::{AlignedBuffer, AlignedFp16Block, CacheLine64};
@@ -64,7 +65,7 @@ fn build_demo_model(name: &str, seed: u8) -> AlignedBuffer<CacheLine64> {
                 arena_end_byte_offset: ARENA_OFFSET_FULL_END,
                 prefix_crc32c: 0,
             },
-            ultra: TierProfile {
+            pro: TierProfile {
                 channels: 12,
                 fdn_lines: 8,
                 early_taps: 8,
@@ -72,6 +73,17 @@ fn build_demo_model(name: &str, seed: u8) -> AlignedBuffer<CacheLine64> {
                 loudness_lufs: -20.5,
                 output_trim_db: 0.0,
                 validation_esr_db: -48.0,
+                arena_end_byte_offset: ARENA_OFFSET_PRO_END,
+                prefix_crc32c: 0,
+            },
+            ultra: TierProfile {
+                channels: 16,
+                fdn_lines: 16,
+                early_taps: 16,
+                head_svd_rank: 8,
+                loudness_lufs: -20.5,
+                output_trim_db: 0.0,
+                validation_esr_db: -51.0,
                 arena_end_byte_offset: ARENA_OFFSET_ULTRA_END,
                 prefix_crc32c: 0,
             },
@@ -90,7 +102,7 @@ fn build_demo_model(name: &str, seed: u8) -> AlignedBuffer<CacheLine64> {
         audit_report: None,
     };
 
-    let mut arena = vec![0u8; 36_224];
+    let mut arena = vec![0u8; 64_000];
     for (i, byte) in arena[128..35_200].iter_mut().enumerate() {
         *byte = (((i as u8).wrapping_mul(7)).wrapping_add(seed)) & 0x3F;
     }

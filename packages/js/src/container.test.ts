@@ -11,6 +11,7 @@ import {
   DnamSampleRateError,
   DnamValidationError,
   GramMatrix,
+  stripContainerToTier,
   toUint8Array,
   updateHeaderInPlace,
   validateDnamModel,
@@ -54,6 +55,13 @@ describe.each(BACKENDS)("Container, ZOH & GramMatrix Suite (%s)", (backend) => {
     const ckpt = DnamContainer.buildReference({ core2Active: true, isCheckpoint: true, backend });
     expect(ckpt.preamble.magic).toBe("DNCK");
     expect(ckpt.preamble.core2Active).toBe(true);
+
+    // Strip container to Lite, Full, Pro, Ultra
+    const strippedFull = container.stripToTier("full", backend);
+    expect(strippedFull.preamble.tensorArenaByteLen).toBe(22_336);
+    const strippedLiteBytes = stripContainerToTier(container.bytes, "lite", backend);
+    const strippedLite = DnamContainer.fromBytes(strippedLiteBytes, backend);
+    expect(strippedLite.preamble.tensorArenaByteLen).toBe(10_752);
   });
 
   it("updates JSON header in-place within the 4 KB page boundary without touching arenas", () => {

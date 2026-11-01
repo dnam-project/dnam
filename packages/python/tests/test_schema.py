@@ -67,10 +67,18 @@ def test_exception_hierarchy_and_translation() -> None:
 def test_enums_and_verification_status() -> None:
     assert Tier.LITE.channels == 4
     assert Tier.FULL.channels == 8
-    assert Tier.ULTRA.channels == 12
+    assert Tier.PRO.channels == 12
+    assert Tier.ULTRA.channels == 16
     assert Tier.LITE.fdn_lines == 4
     assert Tier.FULL.fdn_lines == 8
-    assert Tier.ULTRA.fdn_lines == 8
+    assert Tier.PRO.fdn_lines == 8
+    assert Tier.ULTRA.fdn_lines == 16
+    assert Tier.LITE.head_svd_rank == 4
+    assert Tier.ULTRA.head_svd_rank == 8
+    assert Tier.LITE.expected_arena_bytes == 10_752
+    assert Tier.FULL.expected_arena_bytes == 22_336
+    assert Tier.PRO.expected_arena_bytes == 36_224
+    assert Tier.ULTRA.expected_arena_bytes == 64_000
     assert BackendKind.AUTO == "auto"
     assert ControlKind.RANGE == "range"
     assert VerificationStatus.from_rust_debug("Unsigned") == VerificationStatus.UNSIGNED
@@ -174,13 +182,13 @@ def test_schema_validation_errors() -> None:
         SelectiveRgLruParams(r_low=0.95, dr_span=0.10)
 
     with pytest.raises(DnamValidationError):
-        WatermarkParams(kappa_48=(1.0,) * 12)
+        WatermarkParams(kappa_64=(1.0,) * 12)
 
     with pytest.raises(DnamValidationError):
-        WatermarkParams(kappa_48=(1.5,) * 48)
+        WatermarkParams(kappa_64=(1.5,) * 64)
 
     with pytest.raises(DnamValidationError):
-        WatermarkParams(tardos_code_4608=(1.0,) * 10)
+        WatermarkParams(tardos_code_7680=(1.0,) * 10)
 
 
 @given(

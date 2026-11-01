@@ -108,7 +108,7 @@ impl MathBackend for NeonBackend {
     fn conv6_taps_1group(
         bias: NeonVec4,
         w_tiles: &[[[f32; 4]; 4]; 6],
-        h_taps: &[&[[f32; 4]; 3]; 6],
+        h_taps: &[&[[f32; 4]; 4]; 6],
     ) -> NeonVec4 {
         // SAFETY: `aarch64` guarantees baseline NEON availability.
         unsafe { neon_conv6_1group(bias, w_tiles, h_taps) }
@@ -118,7 +118,7 @@ impl MathBackend for NeonBackend {
     fn conv6_taps_2groups(
         bias: NeonVec4,
         w_tiles: &[[[f32; 4]; 4]; 12],
-        h_taps: &[&[[f32; 4]; 3]; 6],
+        h_taps: &[&[[f32; 4]; 4]; 6],
     ) -> NeonVec4 {
         // SAFETY: `aarch64` guarantees baseline NEON availability.
         unsafe { neon_conv6_2groups(bias, w_tiles, h_taps) }
@@ -128,10 +128,20 @@ impl MathBackend for NeonBackend {
     fn conv6_taps_3groups(
         bias: NeonVec4,
         w_tiles: &[[[f32; 4]; 4]; 18],
-        h_taps: &[&[[f32; 4]; 3]; 6],
+        h_taps: &[&[[f32; 4]; 4]; 6],
     ) -> NeonVec4 {
         // SAFETY: `aarch64` guarantees baseline NEON availability.
         unsafe { neon_conv6_3groups(bias, w_tiles, h_taps) }
+    }
+
+    #[inline(always)]
+    fn conv6_taps_4groups(
+        bias: NeonVec4,
+        w_tiles: &[[[f32; 4]; 4]; 24],
+        h_taps: &[&[[f32; 4]; 4]; 6],
+    ) -> NeonVec4 {
+        // SAFETY: `aarch64` guarantees baseline NEON availability.
+        unsafe { neon_conv6_4groups(bias, w_tiles, h_taps) }
     }
 
     #[inline(always)]
@@ -215,7 +225,7 @@ pub(crate) fn neon_fma_mat4x4_vec4(acc: NeonVec4, mat: &[[f32; 4]; 4], x: &[f32;
 pub(crate) fn neon_conv6_1group(
     bias: NeonVec4,
     w_tiles: &[[[f32; 4]; 4]; 6],
-    h_taps: &[&[[f32; 4]; 3]; 6],
+    h_taps: &[&[[f32; 4]; 4]; 6],
 ) -> NeonVec4 {
     let mut za0 = bias.0;
     let mut za1 = vdupq_n_f32(0.0);
@@ -241,7 +251,7 @@ pub(crate) fn neon_conv6_1group(
 pub(crate) fn neon_conv6_2groups(
     bias: NeonVec4,
     w_tiles: &[[[f32; 4]; 4]; 12],
-    h_taps: &[&[[f32; 4]; 3]; 6],
+    h_taps: &[&[[f32; 4]; 4]; 6],
 ) -> NeonVec4 {
     let mut za0 = bias.0;
     let mut za1 = vdupq_n_f32(0.0);
@@ -276,7 +286,7 @@ pub(crate) fn neon_conv6_2groups(
 pub(crate) fn neon_conv6_3groups(
     bias: NeonVec4,
     w_tiles: &[[[f32; 4]; 4]; 18],
-    h_taps: &[&[[f32; 4]; 3]; 6],
+    h_taps: &[&[[f32; 4]; 4]; 6],
 ) -> NeonVec4 {
     let mut za0 = bias.0;
     let mut za1 = vdupq_n_f32(0.0);
@@ -307,6 +317,36 @@ pub(crate) fn neon_conv6_3groups(
         za1 = vfmaq_laneq_f32::<1>(za1, NeonVec4::load(&wt2[1]).0, vx2);
         za2 = vfmaq_laneq_f32::<2>(za2, NeonVec4::load(&wt2[2]).0, vx2);
         za3 = vfmaq_laneq_f32::<3>(za3, NeonVec4::load(&wt2[3]).0, vx2);
+    }
+
+    NeonVec4(vaddq_f32(vaddq_f32(za0, za1), vaddq_f32(za2, za3)))
+}
+
+/// Evaluates a 6-tap dilated convolution over 4 input groups (`24 × 4×4` tiles = 96 FMAs)
+/// using 4 independent NEON lane accumulators (`za0..za3`) with zero `unsafe` blocks.
+#[target_feature(enable = "neon")]
+#[inline]
+pub(crate) fn neon_conv6_4groups(
+    bias: NeonVec4,
+    w_tiles: &[[[f32; 4]; 4]; 24],
+    h_taps: &[&[[f32; 4]; 4]; 6],
+) -> NeonVec4 {
+    let mut za0 = bias.0;
+    let mut za1 = vdupq_n_f32(0.0);
+    let mut za2 = vdupq_n_f32(0.0);
+    let mut za3 = vdupq_n_f32(0.0);
+
+    for tap in 0..6 {
+        let ht = h_taps[tap];
+        let base = tap * 4;
+        for g in 0..4 {
+            let vxg = NeonVec4::load(&ht[g]).0;
+            let wtg = &w_tiles[base + g];
+            za0 = vfmaq_laneq_f32::<0>(za0, NeonVec4::load(&wtg[0]).0, vxg);
+            za1 = vfmaq_laneq_f32::<1>(za1, NeonVec4::load(&wtg[1]).0, vxg);
+            za2 = vfmaq_laneq_f32::<2>(za2, NeonVec4::load(&wtg[2]).0, vxg);
+            za3 = vfmaq_laneq_f32::<3>(za3, NeonVec4::load(&wtg[3]).0, vxg);
+        }
     }
 
     NeonVec4(vaddq_f32(vaddq_f32(za0, za1), vaddq_f32(za2, za3)))

@@ -193,6 +193,10 @@ pub fn format_training_event_line(ev: &TrainingEventMessage) -> Option<String> {
                 .get("esr_ultra_db")
                 .and_then(|v| v.as_f64())
                 .unwrap_or(0.0);
+            let pro = p
+                .get("esr_pro_db")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(ultra);
             let elapsed = p.get("elapsed_sec").and_then(|v| v.as_f64()).unwrap_or(0.0);
             let bands_suffix = match (
                 p.get("esr_lf_db").and_then(|v| v.as_f64()),
@@ -205,7 +209,7 @@ pub fn format_training_event_line(ev: &TrainingEventMessage) -> Option<String> {
                 _ => String::new(),
             };
             Some(format!(
-                "    • Stage {stage} Step {epoch:>2}/{total:<2} | bESR: Lite={lite:+.2} dB, Full={full:+.2} dB, Ultra={ultra:+.2} dB{bands_suffix} ({elapsed:.1}s)"
+                "    • Stage {stage} Step {epoch:>2}/{total:<2} | bESR: Lite={lite:+.2} dB, Full={full:+.2} dB, Pro={pro:+.2} dB, Ultra={ultra:+.2} dB{bands_suffix} ({elapsed:.1}s)"
             ))
         }
         "audit_phase" => {
@@ -236,6 +240,10 @@ pub fn format_training_event_line(ev: &TrainingEventMessage) -> Option<String> {
                 .get("esr_ultra_db")
                 .and_then(|v| v.as_f64())
                 .unwrap_or(0.0);
+            let pro = p
+                .get("esr_pro_db")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(ultra);
             let mut psycho_suffix = String::new();
             if let (Some(lf), Some(mf), Some(hf)) = (
                 p.get("esr_lf_db").and_then(|v| v.as_f64()),
@@ -268,7 +276,7 @@ pub fn format_training_event_line(ev: &TrainingEventMessage) -> Option<String> {
             };
             let elapsed = p.get("elapsed_sec").and_then(|v| v.as_f64()).unwrap_or(0.0);
             Some(format!(
-                "  ✓ Training Complete ({mid}) | Final bESR: Lite={lite:+.2} dB, Full={full:+.2} dB, Ultra={ultra:+.2} dB{psycho_suffix} | Core2={c2} ({elapsed:.1}s)"
+                "  ✓ Training Complete ({mid}) | Final bESR: Lite={lite:+.2} dB, Full={full:+.2} dB, Pro={pro:+.2} dB, Ultra={ultra:+.2} dB{psycho_suffix} | Core2={c2} ({elapsed:.1}s)"
             ))
         }
         _ => None,

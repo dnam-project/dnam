@@ -230,8 +230,8 @@ const RawTierProfileSchema = z
     fdnLines: z.number().int().nonnegative().optional(),
     early_taps: z.number().int().nonnegative().optional(),
     earlyTaps: z.number().int().nonnegative().optional(),
-    head_svd_rank: z.number().int().min(0).max(4).optional(),
-    headSvdRank: z.number().int().min(0).max(4).optional(),
+    head_svd_rank: z.number().int().min(0).max(8).optional(),
+    headSvdRank: z.number().int().min(0).max(8).optional(),
     loudness_lufs: z.number().optional(),
     loudnessLufs: z.number().optional(),
     output_trim_db: z.number().optional(),
@@ -262,16 +262,34 @@ export const TierProfileSchema: z.ZodType<TierProfile, unknown> = RawTierProfile
 export interface SlimmableTiersConfig {
   lite: TierProfile;
   full: TierProfile;
+  pro: TierProfile;
   ultra: TierProfile;
 }
 
-export const SlimmableTiersConfigSchema: z.ZodType<SlimmableTiersConfig, unknown> = z
+const RawSlimmableTiersConfigSchema = z
   .object({
     lite: TierProfileSchema,
     full: TierProfileSchema,
+    pro: TierProfileSchema.optional(),
     ultra: TierProfileSchema,
   })
   .strict();
+
+export const SlimmableTiersConfigSchema: z.ZodType<SlimmableTiersConfig, unknown> =
+  RawSlimmableTiersConfigSchema.transform(
+    (raw): SlimmableTiersConfig => ({
+      lite: raw.lite,
+      full: raw.full,
+      pro: raw.pro ?? {
+        ...raw.ultra,
+        channels: Math.min(raw.ultra.channels, 12),
+        fdnLines: Math.min(raw.ultra.fdnLines, 8),
+        headSvdRank: Math.min(raw.ultra.headSvdRank, 4),
+        arenaEndByteOffset: 36_224,
+      },
+      ultra: raw.ultra,
+    }),
+  );
 
 export interface ControlBusConfig {
   decimation: number;
@@ -351,7 +369,7 @@ export interface Core2Config {
   interp: string;
   tzfReferenceTapSamples: number;
   switchXfadeSamples: number;
-  allpassDelaysSamples: [number, number, number, number, number, number, number, number];
+  allpassDelaysSamples: number[];
   dcBlockerPole: number;
   loopCeiling: number;
 }
@@ -368,30 +386,8 @@ const RawCore2ConfigSchema = z
     tzfReferenceTapSamples: z.number().optional(),
     switch_xfade_samples: z.number().int().nonnegative().optional(),
     switchXfadeSamples: z.number().int().nonnegative().optional(),
-    allpass_delays_samples: z
-      .tuple([
-        z.number(),
-        z.number(),
-        z.number(),
-        z.number(),
-        z.number(),
-        z.number(),
-        z.number(),
-        z.number(),
-      ])
-      .optional(),
-    allpassDelaysSamples: z
-      .tuple([
-        z.number(),
-        z.number(),
-        z.number(),
-        z.number(),
-        z.number(),
-        z.number(),
-        z.number(),
-        z.number(),
-      ])
-      .optional(),
+    allpass_delays_samples: z.array(z.number()).min(4).max(16).optional(),
+    allpassDelaysSamples: z.array(z.number()).min(4).max(16).optional(),
     dc_blocker_pole: z.number().optional(),
     dcBlockerPole: z.number().optional(),
     loop_ceiling: z.number().optional(),
@@ -410,7 +406,9 @@ export const Core2ConfigSchema: z.ZodType<Core2Config, unknown> = RawCore2Config
       tzfReferenceTapSamples: raw.tzfReferenceTapSamples ?? raw.tzf_reference_tap_samples ?? 64.0,
       switchXfadeSamples: raw.switchXfadeSamples ?? raw.switch_xfade_samples ?? 128,
       allpassDelaysSamples: raw.allpassDelaysSamples ??
-        raw.allpass_delays_samples ?? [19, 31, 47, 73, 103, 139, 179, 223],
+        raw.allpass_delays_samples ?? [
+          19, 31, 47, 73, 103, 139, 179, 223, 29, 53, 83, 113, 151, 191, 233, 251,
+        ],
       dcBlockerPole: raw.dcBlockerPole ?? raw.dc_blocker_pole ?? 0.995,
       loopCeiling: raw.loopCeiling ?? raw.loop_ceiling ?? 0.985,
     };
@@ -430,7 +428,7 @@ export interface TensorSliceEntry {
 
 const RawTensorSliceEntrySchema = z
   .object({
-    arena: z.number().int().min(0).max(3),
+    arena: z.number().int().min(0).max(5),
     dtype: z.string(),
     packing: z.string().nullable().optional(),
     feature_dim: z.number().int().positive().nullable().optional(),
@@ -612,7 +610,7 @@ export const AuditReportSchema: z.ZodType<AuditReport, unknown> = RawAuditReport
 
 export const CURRENT_SCHEMA_VERSION = "1.0.0";
 export const SUPPORTED_SCHEMA_MAJOR = 1;
-export const MAX_SUPPORTED_SCHEMA_MINOR = 0;
+export const MAX_SUPPORTED_SCHEMA_MINOR = 1;
 
 export function parseSchemaVersion(versionStr: string): {
   major: number;
@@ -899,6 +897,7 @@ export function dnamJsonHeaderToWire(header: DnamJsonHeader): Record<string, unk
     slimmable_tiers: {
       lite: tierProfileToWire(header.slimmableTiers.lite),
       full: tierProfileToWire(header.slimmableTiers.full),
+      pro: tierProfileToWire(header.slimmableTiers.pro),
       ultra: tierProfileToWire(header.slimmableTiers.ultra),
     },
     controls_schema: header.controlsSchema.map(controlSchemaDefToWire),

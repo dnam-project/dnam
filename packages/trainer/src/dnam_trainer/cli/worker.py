@@ -235,6 +235,7 @@ def run_worker_job(
             "model_id": result.model_id,
             "esr_lite_db": result.esr_lite_db,
             "esr_full_db": result.esr_full_db,
+            "esr_pro_db": result.esr_pro_db,
             "esr_ultra_db": result.esr_ultra_db,
             "esr_lf_db": result.esr_lf_db,
             "esr_mid_db": result.esr_mid_db,

@@ -131,3 +131,10 @@ def test_wt_ufdn_hermite_hann_grain_read_and_12ch_tank_lines() -> None:
     tank_off, wet_off = ufdn_off.forward_tank_lines(x_st)
     assert tank_off.shape == (1, 12, 128)
     assert torch.equal(wet_off, x_st)
+
+    # 16-line Ultra Core 2 UFDN forward_tank_lines returns 16 channels (4 tier groups x 4 lines)
+    ufdn_16 = DifferentiableModulatedUfdn(num_lines=16, active=True, dtype=torch.float32)
+    tank_16, wet_16 = ufdn_16.forward_tank_lines(x_st)
+    assert tank_16.shape == (1, 16, 128)
+    assert wet_16.shape == (1, 2, 128)
+    assert torch.all(torch.isfinite(tank_16))

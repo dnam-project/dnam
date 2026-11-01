@@ -208,7 +208,7 @@ pub trait MathBackend: Copy + Clone + Send + Sync + 'static {
     fn conv6_taps_1group(
         bias: Self::Vec4,
         w_tiles: &[[[f32; 4]; 4]; 6],
-        h_taps: &[&[[f32; 4]; 3]; 6],
+        h_taps: &[&[[f32; 4]; 4]; 6],
     ) -> Self::Vec4 {
         let mut acc0 = bias;
         let mut acc1 = Self::Vec4::zero();
@@ -226,7 +226,7 @@ pub trait MathBackend: Copy + Clone + Send + Sync + 'static {
     fn conv6_taps_2groups(
         bias: Self::Vec4,
         w_tiles: &[[[f32; 4]; 4]; 12],
-        h_taps: &[&[[f32; 4]; 3]; 6],
+        h_taps: &[&[[f32; 4]; 4]; 6],
     ) -> Self::Vec4 {
         let mut acc0 = bias;
         let mut acc1 = Self::Vec4::zero();
@@ -245,12 +245,12 @@ pub trait MathBackend: Copy + Clone + Send + Sync + 'static {
         acc0.add(acc1).add(acc2.add(acc3))
     }
 
-    /// Core 1A (`Ultra`, Tier 2): 6-tap dilated convolution over 3 input groups (`18 × 4×4` tiles).
+    /// Core 1A (`Pro`, Tier 2): 6-tap dilated convolution over 3 input groups (`18 × 4×4` tiles).
     #[inline(always)]
     fn conv6_taps_3groups(
         bias: Self::Vec4,
         w_tiles: &[[[f32; 4]; 4]; 18],
-        h_taps: &[&[[f32; 4]; 3]; 6],
+        h_taps: &[&[[f32; 4]; 4]; 6],
     ) -> Self::Vec4 {
         let mut acc0 = bias;
         let mut acc1 = Self::Vec4::zero();
@@ -263,6 +263,28 @@ pub trait MathBackend: Copy + Clone + Send + Sync + 'static {
             acc2 = Self::fma_mat4x4_vec4(acc2, &w_tiles[base + 2], &ht[2]);
         }
         acc0.add(acc1).add(acc2)
+    }
+
+    /// Core 1A (`Ultra`, Tier 3): 6-tap dilated convolution over 4 input groups (`24 × 4×4` tiles).
+    #[inline(always)]
+    fn conv6_taps_4groups(
+        bias: Self::Vec4,
+        w_tiles: &[[[f32; 4]; 4]; 24],
+        h_taps: &[&[[f32; 4]; 4]; 6],
+    ) -> Self::Vec4 {
+        let mut acc0 = bias;
+        let mut acc1 = Self::Vec4::zero();
+        let mut acc2 = Self::Vec4::zero();
+        let mut acc3 = Self::Vec4::zero();
+        for tap in 0..6 {
+            let ht = h_taps[tap];
+            let base = tap * 4;
+            acc0 = Self::fma_mat4x4_vec4(acc0, &w_tiles[base], &ht[0]);
+            acc1 = Self::fma_mat4x4_vec4(acc1, &w_tiles[base + 1], &ht[1]);
+            acc2 = Self::fma_mat4x4_vec4(acc2, &w_tiles[base + 2], &ht[2]);
+            acc3 = Self::fma_mat4x4_vec4(acc3, &w_tiles[base + 3], &ht[3]);
+        }
+        acc0.add(acc1).add(acc2.add(acc3))
     }
 
     /// Core 1A: 6-tap dilated causal convolution tile for `Lite` (`4 out × 4 in`).
@@ -949,14 +971,16 @@ mod tests {
         let v_mat = B::fma_mat4x4_vec4(B::Vec4::zero(), &mat, &[1.0, 2.0, 3.0, 4.0]);
         assert!(v_mat.horizontal_sum().is_finite());
 
-        let h_frame = [[0.2_f32; 4]; 3];
+        let h_frame = [[0.2_f32; 4]; 4];
         let h_taps = [&h_frame; 6];
         let w1 = [[[0.1_f32; 4]; 4]; 6];
         let w2 = [[[0.1_f32; 4]; 4]; 12];
         let w3 = [[[0.1_f32; 4]; 4]; 18];
+        let w4 = [[[0.1_f32; 4]; 4]; 24];
         let _ = B::conv6_taps_1group(B::Vec4::zero(), &w1, &h_taps);
         let _ = B::conv6_taps_2groups(B::Vec4::zero(), &w2, &h_taps);
         let _ = B::conv6_taps_3groups(B::Vec4::zero(), &w3, &h_taps);
+        let _ = B::conv6_taps_4groups(B::Vec4::zero(), &w4, &h_taps);
 
         let taps6 = [[0.2_f32; 4]; 6];
         let w4x4 = [[[0.1_f32; 4]; 4]; 6];

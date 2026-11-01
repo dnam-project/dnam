@@ -6,7 +6,8 @@
 use std::collections::BTreeMap;
 
 use dnam_engine::container::{
-    ARENA_OFFSET_FULL_END, ARENA_OFFSET_LITE_END, ARENA_OFFSET_ULTRA_END, build_dnam_container,
+    ARENA_OFFSET_FULL_END, ARENA_OFFSET_LITE_END, ARENA_OFFSET_PRO_END, ARENA_OFFSET_ULTRA_END,
+    build_dnam_container,
 };
 use dnam_engine::math::{BackendKind, DefaultMathBackend, ScalarBackend};
 use dnam_engine::schema::{
@@ -57,7 +58,7 @@ fn build_parity_container() -> Vec<u8> {
                 arena_end_byte_offset: ARENA_OFFSET_FULL_END,
                 prefix_crc32c: 0,
             },
-            ultra: TierProfile {
+            pro: TierProfile {
                 channels: 12,
                 fdn_lines: 8,
                 early_taps: 8,
@@ -65,6 +66,17 @@ fn build_parity_container() -> Vec<u8> {
                 loudness_lufs: -20.5,
                 output_trim_db: 0.0,
                 validation_esr_db: -48.0,
+                arena_end_byte_offset: ARENA_OFFSET_PRO_END,
+                prefix_crc32c: 0,
+            },
+            ultra: TierProfile {
+                channels: 16,
+                fdn_lines: 16,
+                early_taps: 16,
+                head_svd_rank: 8,
+                loudness_lufs: -20.5,
+                output_trim_db: 0.0,
+                validation_esr_db: -51.0,
                 arena_end_byte_offset: ARENA_OFFSET_ULTRA_END,
                 prefix_crc32c: 0,
             },
@@ -83,7 +95,7 @@ fn build_parity_container() -> Vec<u8> {
         audit_report: None,
     };
 
-    let mut arena = vec![0u8; 36_224];
+    let mut arena = vec![0u8; 64_000];
     for i in 0..4 {
         let off = (i * 4 + (i % 2)) * 4;
         arena[off..off + 4].copy_from_slice(&0.6_f32.to_le_bytes());
@@ -91,16 +103,18 @@ fn build_parity_container() -> Vec<u8> {
     for t in 0..3 {
         arena[104 + t * 4..108 + t * 4].copy_from_slice(&1.0_f32.to_le_bytes());
     }
+    arena[63_456..63_460].copy_from_slice(&1.0_f32.to_le_bytes());
     arena[116..120].copy_from_slice(&0.2_f32.to_le_bytes());
     arena[120..124].copy_from_slice(&0.8_f32.to_le_bytes());
     arena[124..128].copy_from_slice(&0.9993_f32.to_le_bytes());
 
-    for tier in 0..3 {
+    for tier in 0..4 {
         for blk in 0..4 {
             let (blk_base, adaa0_off, adaa1_off, rg_off) = match tier {
                 0 => (128 + blk * 1024, 384, 832, 896),
                 1 => (10_816 + blk * 1792, 768, 1600, 1664),
-                _ => (22_400 + blk * 2560, 1152, 2368, 2432),
+                2 => (22_400 + blk * 2560, 1152, 2368, 2432),
+                _ => (36_288 + blk * 3328, 1536, 3136, 3200),
             };
             for w in 0..96 {
                 let val = 0.015_f32 * (((blk * 19 + w + tier * 5) % 9) as f32 - 4.0);
@@ -138,7 +152,7 @@ fn build_parity_container() -> Vec<u8> {
         }
     }
 
-    for &hbase in &[4224_usize, 17_984_usize, 32_640_usize] {
+    for &hbase in &[4224_usize, 17_984_usize, 32_640_usize, 49_600_usize] {
         for i in 0..128 {
             let val = 0.04_f32 * (((i * 11 + 3) % 15) as f32 - 7.0);
             let off = hbase + i * 4;
@@ -155,7 +169,7 @@ fn test_cross_backend_parity_and_4_io_topologies() {
     let in_l: Vec<f32> = (0..512).map(|n| 0.4 * ((n as f32) * 0.09).sin()).collect();
     let in_r: Vec<f32> = (0..512).map(|n| 0.4 * ((n as f32) * 0.13).cos()).collect();
 
-    for &tier in &[Tier::Lite, Tier::Full, Tier::Ultra] {
+    for &tier in &[Tier::Lite, Tier::Full, Tier::Pro, Tier::Ultra] {
         let mut eng_scalar =
             DnamEngine::<ScalarBackend>::from_bytes(&container, tier, 48_000).unwrap();
         let mut eng_default =

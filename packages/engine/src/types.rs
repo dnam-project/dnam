@@ -2,59 +2,125 @@
 
 use crate::control::MAX_CONTROLS;
 
-/// Slimmable execution tier (`Lite`, `Full`, or `Ultra`).
+/// Slimmable execution tier (`Lite`, `Full`, `Pro`, or `Ultra`).
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Tier {
-    /// **`Lite` ($C=4$ Core 1 channels, $M=4$ FDN lines, `10.5 KB` `Arena 0`):**
-    /// Ultra-low-power tier (`~920`–`1,850 MACs/sample`).
+    /// **`Lite` ($C=4$ Core 1 channels, $M=4$ FDN lines, $D_h=4$ SVD modes, `10,752 B` `Arena 0`):**
+    /// Mix-Ready / Live Grade (`168` cache lines).
     Lite = 0,
-    /// **`Full` ($C=8$ Core 1 channels, $M=8$ FDN lines, `21.8 KB` `Arena 0..1`):**
-    /// Standard real-time studio/pedalboard tier (`~3,150`–`4,625 MACs/sample`).
+    /// **`Full` ($C=8$ Core 1 channels, $M=8$ FDN lines, $D_h=4$ SVD modes, `22,336 B` `Arena 0..1`):**
+    /// True Studio Quality (`349` cache lines).
     Full = 1,
-    /// **`Ultra` ($C=12$ Core 1 channels, $M=8$ FDN lines, `35.4 KB` `Arena 0..2`):**
-    /// Mastering-grade tier (`~6,300`–`7,775 MACs/sample`, `8 + 4` SIMD loop).
-    Ultra = 2,
+    /// **`Pro` ($C=12$ Core 1 channels, $M=8$ FDN lines, $D_h=4$ SVD modes, `36,224 B` `Arena 0..2`):**
+    /// Mastering / Reference Grade (`566` cache lines, `8 + 4` SIMD loop).
+    Pro = 2,
+    /// **`Ultra` ($C=16$ Core 1 channels, $M=16$ FDN lines, $D_h=8$ SVD modes, `64,000 B` `Arena 0..3`):**
+    /// Unconstrained Workstation Max (`1,000` cache lines, Rank-8 FM + 16-line Householder/Givens FDN).
+    Ultra = 3,
 }
 
 impl Tier {
-    /// Converts a raw `u8` (`0`, `1`, `2`) into a [`Tier`], clamping values $\ge 2$ to [`Tier::Ultra`].
+    /// Converts a raw `u8` (`0`, `1`, `2`, `3`) into a [`Tier`], clamping values $\ge 3$ to [`Tier::Ultra`].
     #[inline]
     pub const fn from_u8(val: u8) -> Self {
         match val {
             0 => Self::Lite,
             1 => Self::Full,
+            2 => Self::Pro,
             _ => Self::Ultra,
         }
     }
 
-    /// Returns the number of active Core 1 channels ($C \in \{4, 8, 12\}$).
+    /// Returns the canonical lowercase string identifier (`"lite"`, `"full"`, `"pro"`, `"ultra"`).
+    #[inline]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Lite => "lite",
+            Self::Full => "full",
+            Self::Pro => "pro",
+            Self::Ultra => "ultra",
+        }
+    }
+
+    /// Parses a tier name (case-insensitive `"lite"`, `"full"`, `"pro"`, `"ultra"`).
+    #[inline]
+    pub fn from_str_name(s: &str) -> Option<Self> {
+        if s.eq_ignore_ascii_case("lite") {
+            Some(Self::Lite)
+        } else if s.eq_ignore_ascii_case("full") {
+            Some(Self::Full)
+        } else if s.eq_ignore_ascii_case("pro") {
+            Some(Self::Pro)
+        } else if s.eq_ignore_ascii_case("ultra") {
+            Some(Self::Ultra)
+        } else {
+            None
+        }
+    }
+
+    /// Returns the number of active Core 1 channels ($C \in \{4, 8, 12, 16\}$).
     #[inline]
     pub const fn channels(self) -> usize {
         match self {
             Self::Lite => 4,
             Self::Full => 8,
-            Self::Ultra => 12,
+            Self::Pro => 12,
+            Self::Ultra => 16,
         }
     }
 
-    /// Returns the number of 4-channel SIMD tier groups in Core 1 (`1`, `2`, or `3`).
+    /// Returns the number of 4-channel SIMD tier groups in Core 1 (`1`, `2`, `3`, or `4`).
     #[inline]
     pub const fn core1_groups(self) -> usize {
         match self {
             Self::Lite => 1,
             Self::Full => 2,
-            Self::Ultra => 3,
+            Self::Pro => 3,
+            Self::Ultra => 4,
         }
     }
 
-    /// Returns the number of 4-line SIMD groups in Core 2 `M-UFDN` (`1` for `Lite`, `2` for `Full`/`Ultra`).
+    /// Returns the number of 4-line SIMD groups in Core 2 `M-UFDN` (`1` for `Lite`, `2` for `Full`/`Pro`, `4` for `Ultra`).
     #[inline]
     pub const fn fdn_groups(self) -> usize {
         match self {
             Self::Lite => 1,
-            Self::Full | Self::Ultra => 2,
+            Self::Full | Self::Pro => 2,
+            Self::Ultra => 4,
         }
+    }
+
+    /// Returns the number of active Core 2 `M-UFDN` delay lines ($M \in \{4, 8, 8, 16\}$).
+    #[inline]
+    pub const fn fdn_lines(self) -> usize {
+        self.fdn_groups() * 4
+    }
+
+    /// Returns the active SVD control subspace rank ($D_h = 4$ for `Lite`/`Full`/`Pro`, $D_h = 8$ for `Ultra`).
+    #[inline]
+    pub const fn svd_control_modes(self) -> usize {
+        match self {
+            Self::Lite | Self::Full | Self::Pro => 4,
+            Self::Ultra => 8,
+        }
+    }
+
+    /// Returns the cumulative arena byte end offset (`10,752`, `22,336`, `36,224`, or `64,000`).
+    #[inline]
+    pub const fn expected_arena_bytes(self) -> usize {
+        match self {
+            Self::Lite => 10_752,
+            Self::Full => 22_336,
+            Self::Pro => 36_224,
+            Self::Ultra => 64_000,
+        }
+    }
+
+    /// Returns the cumulative number of 64-byte cache lines (`168`, `349`, `566`, or `1,000`).
+    #[inline]
+    pub const fn expected_cache_lines(self) -> usize {
+        self.expected_arena_bytes() / 64
     }
 }
 
@@ -139,7 +205,7 @@ impl Drop for FtzDazGuard {
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DnamTelemetrySnapshot {
-    /// Active slimmable tier (`0 = Lite`, `1 = Full`, `2 = Ultra`).
+    /// Active slimmable tier (`0 = Lite`, `1 = Full`, `2 = Pro`, `3 = Ultra`).
     pub active_tier: u8,
     /// `1` if Core 2 (`M-UFDN`) is active, `0` if bypassed (`0 KB` delay RAM).
     pub core2_active: u8,
@@ -159,7 +225,7 @@ pub struct DnamTelemetrySnapshot {
     pub max_effective_loop_gain: f32,
     /// Reported $T_{60}$ decay tail time in milliseconds.
     pub tail_time_ms: f32,
-    /// Current collapsed SVD head coordinates $\mathbf{z}_{\text{head}} \in \mathbb{R}^4$.
+    /// Current collapsed SVD head coordinates $\mathbf{z}_{\text{head}} \in \mathbb{R}^4$ ($\mathbf{z}_{0..3}$).
     pub z_head: [f32; 4],
     /// Current 3-band envelope follower states (`[Low, Mid, High, 0.0]`).
     pub env_states: [f32; 4],
@@ -177,20 +243,54 @@ mod tests {
     fn test_tier_conversions_and_ftz_daz_guard() {
         assert_eq!(Tier::from_u8(0), Tier::Lite);
         assert_eq!(Tier::from_u8(1), Tier::Full);
-        assert_eq!(Tier::from_u8(2), Tier::Ultra);
+        assert_eq!(Tier::from_u8(2), Tier::Pro);
+        assert_eq!(Tier::from_u8(3), Tier::Ultra);
         assert_eq!(Tier::from_u8(99), Tier::Ultra);
+
+        assert_eq!(Tier::Lite.as_str(), "lite");
+        assert_eq!(Tier::Full.as_str(), "full");
+        assert_eq!(Tier::Pro.as_str(), "pro");
+        assert_eq!(Tier::Ultra.as_str(), "ultra");
+
+        assert_eq!(Tier::from_str_name("LITE"), Some(Tier::Lite));
+        assert_eq!(Tier::from_str_name("Full"), Some(Tier::Full));
+        assert_eq!(Tier::from_str_name("pro"), Some(Tier::Pro));
+        assert_eq!(Tier::from_str_name("ultra"), Some(Tier::Ultra));
+        assert_eq!(Tier::from_str_name("invalid"), None);
 
         assert_eq!(Tier::Lite.channels(), 4);
         assert_eq!(Tier::Full.channels(), 8);
-        assert_eq!(Tier::Ultra.channels(), 12);
+        assert_eq!(Tier::Pro.channels(), 12);
+        assert_eq!(Tier::Ultra.channels(), 16);
 
         assert_eq!(Tier::Lite.core1_groups(), 1);
         assert_eq!(Tier::Full.core1_groups(), 2);
-        assert_eq!(Tier::Ultra.core1_groups(), 3);
+        assert_eq!(Tier::Pro.core1_groups(), 3);
+        assert_eq!(Tier::Ultra.core1_groups(), 4);
 
         assert_eq!(Tier::Lite.fdn_groups(), 1);
         assert_eq!(Tier::Full.fdn_groups(), 2);
-        assert_eq!(Tier::Ultra.fdn_groups(), 2);
+        assert_eq!(Tier::Pro.fdn_groups(), 2);
+        assert_eq!(Tier::Ultra.fdn_groups(), 4);
+
+        assert_eq!(Tier::Lite.fdn_lines(), 4);
+        assert_eq!(Tier::Full.fdn_lines(), 8);
+        assert_eq!(Tier::Pro.fdn_lines(), 8);
+        assert_eq!(Tier::Ultra.fdn_lines(), 16);
+
+        assert_eq!(Tier::Lite.svd_control_modes(), 4);
+        assert_eq!(Tier::Pro.svd_control_modes(), 4);
+        assert_eq!(Tier::Ultra.svd_control_modes(), 8);
+
+        assert_eq!(Tier::Lite.expected_arena_bytes(), 10_752);
+        assert_eq!(Tier::Full.expected_arena_bytes(), 22_336);
+        assert_eq!(Tier::Pro.expected_arena_bytes(), 36_224);
+        assert_eq!(Tier::Ultra.expected_arena_bytes(), 64_000);
+
+        assert_eq!(Tier::Lite.expected_cache_lines(), 168);
+        assert_eq!(Tier::Full.expected_cache_lines(), 349);
+        assert_eq!(Tier::Pro.expected_cache_lines(), 566);
+        assert_eq!(Tier::Ultra.expected_cache_lines(), 1000);
 
         let guard1 = FtzDazGuard::default();
         let guard2 = FtzDazGuard::new();

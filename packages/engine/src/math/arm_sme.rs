@@ -153,7 +153,7 @@ impl MathBackend for ArmSmeBackend {
     fn conv6_taps_1group(
         bias: NeonVec4,
         w_tiles: &[[[f32; 4]; 4]; 6],
-        h_taps: &[&[[f32; 4]; 3]; 6],
+        h_taps: &[&[[f32; 4]; 4]; 6],
     ) -> NeonVec4 {
         NeonBackend::conv6_taps_1group(bias, w_tiles, h_taps)
     }
@@ -162,7 +162,7 @@ impl MathBackend for ArmSmeBackend {
     fn conv6_taps_2groups(
         bias: NeonVec4,
         w_tiles: &[[[f32; 4]; 4]; 12],
-        h_taps: &[&[[f32; 4]; 3]; 6],
+        h_taps: &[&[[f32; 4]; 4]; 6],
     ) -> NeonVec4 {
         NeonBackend::conv6_taps_2groups(bias, w_tiles, h_taps)
     }
@@ -171,9 +171,18 @@ impl MathBackend for ArmSmeBackend {
     fn conv6_taps_3groups(
         bias: NeonVec4,
         w_tiles: &[[[f32; 4]; 4]; 18],
-        h_taps: &[&[[f32; 4]; 3]; 6],
+        h_taps: &[&[[f32; 4]; 4]; 6],
     ) -> NeonVec4 {
         NeonBackend::conv6_taps_3groups(bias, w_tiles, h_taps)
+    }
+
+    #[inline(always)]
+    fn conv6_taps_4groups(
+        bias: NeonVec4,
+        w_tiles: &[[[f32; 4]; 4]; 24],
+        h_taps: &[&[[f32; 4]; 4]; 6],
+    ) -> NeonVec4 {
+        NeonBackend::conv6_taps_4groups(bias, w_tiles, h_taps)
     }
 
     #[inline(always)]

@@ -11,6 +11,28 @@ export type DnamBackendAcceleration =
   | "wasm-simd128"
   | "scalar-reference";
 
+export type DnamModelTier = "lite" | "full" | "pro" | "ultra";
+
+export const DNAM_MODEL_TIERS: readonly DnamModelTier[] = ["lite", "full", "pro", "ultra"] as const;
+
+export const DNAM_MODEL_TIER_LABELS: Readonly<Record<DnamModelTier, string>> = {
+  lite: "Lite",
+  full: "Full",
+  pro: "Pro",
+  ultra: "Ultra",
+} as const;
+
+export function tierOrderIndex(tier: DnamModelTier): number {
+  return DNAM_MODEL_TIERS.indexOf(tier);
+}
+
+export function clampTierToMaxSupported(
+  tier: DnamModelTier,
+  maxSupported: DnamModelTier,
+): DnamModelTier {
+  return tierOrderIndex(tier) <= tierOrderIndex(maxSupported) ? tier : maxSupported;
+}
+
 export interface DnamTelemetrySnapshot {
   readonly sampleRateHz: number;
   readonly controlRateHz: number;
@@ -25,6 +47,11 @@ export interface DnamTelemetrySnapshot {
   readonly mahalanobisR2: number;
   readonly activeTrustRegionAlpha: number;
   readonly bypassActive: boolean;
+  readonly activeTier?: DnamModelTier | undefined;
+  readonly effectiveTier?: DnamModelTier | undefined;
+  readonly maxSupportedTier?: DnamModelTier | undefined;
+  readonly offlineBounce?: boolean | undefined;
+  readonly maximizeTierOnBounce?: boolean | undefined;
 }
 
 export interface DnamAudioHost {
@@ -34,6 +61,14 @@ export interface DnamAudioHost {
   setParameter(id: string, value: number): void;
   getSwitchIndex(id: string): number;
   setSwitchIndex(id: string, index: number): void;
+  getTier?(): DnamModelTier;
+  setTier?(tier: DnamModelTier): void;
+  getMaxSupportedTier?(): DnamModelTier;
+  setMaxSupportedTier?(tier: DnamModelTier): void;
+  getOfflineBounce?(): boolean;
+  setOfflineBounce?(enabled: boolean): void;
+  getMaximizeTierOnBounce?(): boolean;
+  setMaximizeTierOnBounce?(enabled: boolean): void;
   getTelemetry(): DnamTelemetrySnapshot;
   subscribe(listener: (snapshot: DnamTelemetrySnapshot) => void): () => void;
 }

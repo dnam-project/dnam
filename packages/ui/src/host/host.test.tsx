@@ -38,6 +38,18 @@ describe("WebAudioWorkletHost and DnamAudioHostProvider", () => {
     expect(host.getParameter("unknown")).toBe(0.5);
     expect(host.getSwitchIndex("voice")).toBe(1);
     expect(host.getSwitchIndex("unknown")).toBe(0);
+    expect(host.getTier()).toBe("full");
+    expect(host.getMaxSupportedTier()).toBe("ultra");
+    expect(host.getOfflineBounce()).toBe(false);
+    expect(host.getMaximizeTierOnBounce()).toBe(true);
+
+    host.setMaxSupportedTier("pro");
+    host.setTier("ultra");
+    expect(host.getTier()).toBe("pro");
+    host.setOfflineBounce(true);
+    expect(host.getTelemetry().effectiveTier).toBe("pro");
+    host.setMaximizeTierOnBounce(false);
+    expect(host.getMaximizeTierOnBounce()).toBe(false);
 
     const snapshots: number[] = [];
     const unsubscribe = host.subscribe((snap) => {

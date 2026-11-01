@@ -68,9 +68,15 @@ pub enum DnamCommand {
         input_wav: PathBuf,
         /// Output rendered 24-bit WAV path.
         output_wav: PathBuf,
-        /// Slimmable tier (`lite`, `full`, `ultra`).
+        /// Slimmable tier (`lite`, `full`, `pro`, `ultra`).
         #[arg(long, default_value = "ultra")]
         tier: String,
+        /// Disable $4\times$ linear-phase ZOH oversampled offline bounce mode.
+        #[arg(long)]
+        no_offline_bounce: bool,
+        /// Disable automatic promotion to the maximum available & supported tier during offline bounce.
+        #[arg(long)]
+        no_maximize_tier_on_bounce: bool,
         /// Optional factory preset ID to apply before rendering.
         #[arg(long)]
         preset: Option<String>,
@@ -86,6 +92,16 @@ pub enum DnamCommand {
         /// Optional 64-character hex `Ed25519` marketplace public key.
         #[arg(long)]
         marketplace_pubkey_hex: Option<String>,
+    },
+    /// Strip higher slimmable tiers from a `.dnam` or `.dnam-ckpt` container without invalidating `Ed25519` signatures.
+    Strip {
+        /// Input `.dnam` or `.dnam-ckpt` container path.
+        input_path: PathBuf,
+        /// Output stripped container path.
+        output_path: PathBuf,
+        /// Maximum tier to retain (`lite`, `full`, `pro`, `ultra`).
+        #[arg(long, default_value = "pro")]
+        max_tier: String,
     },
     /// Manage models in `models/<id>/model.toml` (`add`, `list`, `show`, `update`, `remove`).
     Model {
@@ -201,22 +217,31 @@ pub fn execute_cli(cli: &DnamCli) -> StudioResult<String> {
             input_wav,
             output_wav,
             tier,
+            no_offline_bounce,
+            no_maximize_tier_on_bounce,
             preset,
             set_controls,
             device_id,
             device_key_hex,
             marketplace_pubkey_hex,
-        }) => workspace_cmd::run_render_with_crypto(
+        }) => workspace_cmd::run_render_with_bounce_and_crypto(
             container_path,
             input_wav,
             output_wav,
             tier,
+            !*no_offline_bounce,
+            !*no_maximize_tier_on_bounce,
             preset.as_deref(),
             set_controls,
             device_id.as_deref(),
             device_key_hex.as_deref(),
             marketplace_pubkey_hex.as_deref(),
         ),
+        Some(DnamCommand::Strip {
+            input_path,
+            output_path,
+            max_tier,
+        }) => workspace_cmd::run_strip(input_path, output_path, max_tier),
         Some(DnamCommand::Model { action }) => workspace_cmd::run_model(&cli.workspace, action),
         Some(DnamCommand::Control { action }) => workspace_cmd::run_control(&cli.workspace, action),
         Some(DnamCommand::Preset { action }) => workspace_cmd::run_preset(&cli.workspace, action),
@@ -410,10 +435,12 @@ mod tests {
         let rend = execute_cli(&DnamCli {
             workspace: dir.clone(),
             command: Some(DnamCommand::Render {
-                container_path: c_path,
+                container_path: c_path.clone(),
                 input_wav: in_wav,
                 output_wav: out_wav,
                 tier: "lite".to_string(),
+                no_offline_bounce: false,
+                no_maximize_tier_on_bounce: false,
                 preset: None,
                 set_controls: vec!["gain=5.0".to_string()],
                 device_id: None,
@@ -423,6 +450,19 @@ mod tests {
         })
         .expect("render");
         assert!(rend.contains("Rendered 24-bit WAV"));
+
+        let stripped_path = dir.join("m_pro.dnam");
+        let strip_out = execute_cli(&DnamCli {
+            workspace: dir.clone(),
+            command: Some(DnamCommand::Strip {
+                input_path: c_path,
+                output_path: stripped_path.clone(),
+                max_tier: "pro".to_string(),
+            }),
+        })
+        .expect("strip");
+        assert!(strip_out.contains("Stripped container"));
+        assert!(stripped_path.is_file());
 
         let tr_st = execute_cli(&DnamCli {
             workspace: dir.clone(),

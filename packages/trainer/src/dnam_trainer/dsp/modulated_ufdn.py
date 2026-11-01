@@ -309,8 +309,8 @@ class DifferentiableModulatedUfdn(nn.Module):
         dtype: torch.dtype = torch.float32,
     ) -> None:
         super().__init__()
-        if num_lines not in (4, 8):
-            raise ValueError(f"num_lines must be 4 or 8, got {num_lines}")
+        if num_lines not in (4, 8, 16):
+            raise ValueError(f"num_lines must be 4, 8, or 16, got {num_lines}")
         if not (0.985 <= r_dc <= 0.9999):
             raise ValueError(f"r_dc ({r_dc}) must be in [0.985, 0.9999] per CL-09")
 
@@ -319,7 +319,24 @@ class DifferentiableModulatedUfdn(nn.Module):
         self.tzf_reference_tap_samples = max(4.0, float(tzf_reference_tap_samples))
         self.active = active
 
-        default_delays = [97.0, 151.0, 229.0, 347.0, 509.0, 743.0, 1091.0, 1597.0][:num_lines]
+        default_delays = [
+            97.0,
+            151.0,
+            229.0,
+            347.0,
+            509.0,
+            743.0,
+            1091.0,
+            1597.0,
+            179.0,
+            257.0,
+            373.0,
+            521.0,
+            619.0,
+            887.0,
+            1277.0,
+            2179.0,
+        ][:num_lines]
         init_d = initial_delays_samples if initial_delays_samples is not None else default_delays
 
         self.delay_samples = nn.Parameter(torch.tensor(init_d, dtype=dtype))
@@ -380,9 +397,10 @@ class DifferentiableModulatedUfdn(nn.Module):
             raise ValueError(f"Expected stereo input (B, 2, L), got {tuple(stereo_in.shape)}")
 
         bsz, _, seq_len = inp.shape
+        out_ch = 16 if self.num_lines == 16 else 12
         if not self.active:
-            z12 = torch.zeros((bsz, 12, seq_len), dtype=inp.dtype, device=inp.device)
-            return z12, inp
+            z_out = torch.zeros((bsz, out_ch, seq_len), dtype=inp.dtype, device=inp.device)
+            return z_out, inp
 
         work_dtype = torch.float32
         dev_type = (
@@ -489,7 +507,14 @@ class DifferentiableModulatedUfdn(nn.Module):
                 window_mix=win_m,
             )
 
-            if self.num_lines == 8:
+            if self.num_lines == 16:
+                ch_lite = grain_lines[:, 0:4, :]
+                ch_full = grain_lines[:, 4:8, :]
+                ch_pro = grain_lines[:, 8:12, :]
+                mixed_all = torch.einsum("mn,bnl->bml", u_mat, fdn_lines)
+                ch_ultra = 0.5 * (mixed_all[:, 12:16, :] + grain_lines[:, 12:16, :])
+                tank_ch = torch.cat([ch_lite, ch_full, ch_pro, ch_ultra], dim=1)
+            elif self.num_lines == 8:
                 ch_lite = grain_lines[:, 0:4, :]
                 ch_full = grain_lines[:, 4:8, :]
                 mixed_all = torch.einsum("mn,bnl->bml", u_mat, fdn_lines)
@@ -497,18 +522,19 @@ class DifferentiableModulatedUfdn(nn.Module):
                     torch.cat([mixed_all[:, 0:2, :], mixed_all[:, 6:8, :]], dim=1)
                     + torch.cat([grain_lines[:, 0:2, :], grain_lines[:, 6:8, :]], dim=1)
                 )
+                tank_ch = torch.cat([ch_lite, ch_full, ch_ultra], dim=1)
             else:
                 ch_lite = grain_lines[:, 0:4, :]
                 ch_full = grain_lines[:, 0:4, :]
                 mixed_all = torch.einsum("mn,bnl->bml", u_mat, fdn_lines)
                 ch_ultra = 0.5 * (mixed_all + grain_lines)
+                tank_ch = torch.cat([ch_lite, ch_full, ch_ultra], dim=1)
 
-            tank_12ch = torch.cat([ch_lite, ch_full, ch_ultra], dim=1)
             even_sum = grain_lines[:, 0::2, :].mean(dim=1)
             odd_sum = grain_lines[:, 1::2, :].mean(dim=1)
             wet_stereo = torch.stack([even_sum, odd_sum], dim=1)
 
-        return tank_12ch.to(dtype=inp.dtype), wet_stereo.to(dtype=inp.dtype)
+        return tank_ch.to(dtype=inp.dtype), wet_stereo.to(dtype=inp.dtype)
 
     def forward(
         self,

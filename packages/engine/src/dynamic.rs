@@ -27,6 +27,48 @@ pub enum DynamicDnamEngine<'a> {
 }
 
 impl<'a> DynamicDnamEngine<'a> {
+    fn new_empty(max_supported_tier: Tier, backend: BackendKind) -> Self {
+        match backend {
+            #[cfg(target_arch = "aarch64")]
+            BackendKind::ArmSme => Self::ArmSme(DnamEngine::new_empty(max_supported_tier)),
+            #[cfg(target_arch = "aarch64")]
+            BackendKind::Neon | BackendKind::ArmNeon => {
+                Self::Neon(DnamEngine::new_empty(max_supported_tier))
+            }
+            #[cfg(target_arch = "x86_64")]
+            BackendKind::X86Simd | BackendKind::X86Avx2Fma | BackendKind::X86Sse42 => {
+                Self::X86Simd(DnamEngine::new_empty(max_supported_tier))
+            }
+            #[cfg(target_arch = "wasm32")]
+            BackendKind::WasmSimd128 => {
+                Self::WasmSimd128(DnamEngine::new_empty(max_supported_tier))
+            }
+            _ => Self::Scalar(DnamEngine::new_empty(max_supported_tier)),
+        }
+    }
+
+    fn init_from_view(
+        &mut self,
+        view: crate::container::DnamContainerView<'a>,
+        tier: Tier,
+        max_supported_tier: Tier,
+        sample_rate_hz: u32,
+    ) -> Result<(), DnamError> {
+        match self {
+            Self::Scalar(e) => e.init_from_view(view, tier, max_supported_tier, sample_rate_hz),
+            #[cfg(target_arch = "aarch64")]
+            Self::Neon(e) => e.init_from_view(view, tier, max_supported_tier, sample_rate_hz),
+            #[cfg(target_arch = "aarch64")]
+            Self::ArmSme(e) => e.init_from_view(view, tier, max_supported_tier, sample_rate_hz),
+            #[cfg(target_arch = "x86_64")]
+            Self::X86Simd(e) => e.init_from_view(view, tier, max_supported_tier, sample_rate_hz),
+            #[cfg(target_arch = "wasm32")]
+            Self::WasmSimd128(e) => {
+                e.init_from_view(view, tier, max_supported_tier, sample_rate_hz)
+            }
+        }
+    }
+
     /// Creates a [`DynamicDnamEngine`] using runtime CPU feature detection
     /// ([`crate::math::detect_best_backend`]: `ArmSme` if `FEAT_SME` is supported on `aarch64`,
     /// otherwise `Neon`, `X86Simd`, `WasmSimd128`, or `Scalar`).
@@ -39,6 +81,24 @@ impl<'a> DynamicDnamEngine<'a> {
         )
     }
 
+    /// Creates a [`DynamicDnamEngine`] capped at `max_supported_tier` using runtime CPU feature detection.
+    pub fn from_bytes_with_max_tier(
+        bytes: &'a [u8],
+        tier: Tier,
+        max_supported_tier: Tier,
+        sample_rate_hz: u32,
+    ) -> Result<Self, DnamError> {
+        let crypto = DefaultCryptoProvider::default();
+        let view = crate::container::DnamContainerView::from_bytes_with_max_tier(
+            bytes,
+            &crypto,
+            max_supported_tier,
+        )?;
+        let mut engine = Self::new_empty(max_supported_tier, crate::math::detect_best_backend());
+        engine.init_from_view(view, tier, max_supported_tier, sample_rate_hz)?;
+        Ok(engine)
+    }
+
     /// Creates an owned `'static` [`DynamicDnamEngine`] using runtime CPU feature detection.
     pub fn from_bytes_owned(
         bytes: &[u8],
@@ -47,6 +107,40 @@ impl<'a> DynamicDnamEngine<'a> {
     ) -> Result<DynamicDnamEngine<'static>, DnamError> {
         let crypto = DefaultCryptoProvider::default();
         Self::from_bytes_owned_with_crypto(bytes, tier, sample_rate_hz, &crypto)
+    }
+
+    /// Creates an owned `'static` [`DynamicDnamEngine`] capped at `max_supported_tier` using runtime CPU feature detection.
+    pub fn from_bytes_owned_with_max_tier(
+        bytes: &[u8],
+        tier: Tier,
+        max_supported_tier: Tier,
+        sample_rate_hz: u32,
+    ) -> Result<DynamicDnamEngine<'static>, DnamError> {
+        let crypto = DefaultCryptoProvider::default();
+        let view = crate::container::DnamContainerView::from_bytes_with_max_tier(
+            bytes,
+            &crypto,
+            max_supported_tier,
+        )?;
+        let arena_bytes = view.arena_storage.as_bytes();
+        let mut owned_arena =
+            crate::memory::AlignedBuffer::<crate::memory::CacheLine64>::new_zeroed(
+                arena_bytes.len() / 64,
+            );
+        owned_arena.as_bytes_mut().copy_from_slice(arena_bytes);
+        let owned_view = crate::container::DnamContainerView {
+            preamble: view.preamble,
+            header: view.header,
+            verification_status: view.verification_status,
+            protection_profile: view.protection_profile,
+            arena_storage: crate::memory::ArenaStorage::from_owned_buffer(owned_arena),
+        };
+        let mut engine = DynamicDnamEngine::<'static>::new_empty(
+            max_supported_tier,
+            crate::math::detect_best_backend(),
+        );
+        engine.init_from_view(owned_view, tier, max_supported_tier, sample_rate_hz)?;
+        Ok(engine)
     }
 
     /// Creates an owned `'static` [`DynamicDnamEngine`] using a custom [`CryptoProvider`] and runtime CPU feature detection.
@@ -90,29 +184,23 @@ impl<'a> DynamicDnamEngine<'a> {
         backend: BackendKind,
         crypto: &C,
     ) -> Result<DynamicDnamEngine<'static>, DnamError> {
-        match backend {
-            #[cfg(target_arch = "aarch64")]
-            BackendKind::ArmSme => Ok(DynamicDnamEngine::ArmSme(
-                DnamEngine::from_bytes_owned_with_crypto(bytes, tier, sample_rate_hz, crypto)?,
-            )),
-            #[cfg(target_arch = "aarch64")]
-            BackendKind::Neon | BackendKind::ArmNeon => Ok(DynamicDnamEngine::Neon(
-                DnamEngine::from_bytes_owned_with_crypto(bytes, tier, sample_rate_hz, crypto)?,
-            )),
-            #[cfg(target_arch = "x86_64")]
-            BackendKind::X86Simd | BackendKind::X86Avx2Fma | BackendKind::X86Sse42 => {
-                Ok(DynamicDnamEngine::X86Simd(
-                    DnamEngine::from_bytes_owned_with_crypto(bytes, tier, sample_rate_hz, crypto)?,
-                ))
-            }
-            #[cfg(target_arch = "wasm32")]
-            BackendKind::WasmSimd128 => Ok(DynamicDnamEngine::WasmSimd128(
-                DnamEngine::from_bytes_owned_with_crypto(bytes, tier, sample_rate_hz, crypto)?,
-            )),
-            _ => Ok(DynamicDnamEngine::Scalar(
-                DnamEngine::from_bytes_owned_with_crypto(bytes, tier, sample_rate_hz, crypto)?,
-            )),
-        }
+        let view = crate::container::DnamContainerView::from_bytes(bytes, crypto)?;
+        let arena_bytes = view.arena_storage.as_bytes();
+        let mut owned_arena =
+            crate::memory::AlignedBuffer::<crate::memory::CacheLine64>::new_zeroed(
+                arena_bytes.len() / 64,
+            );
+        owned_arena.as_bytes_mut().copy_from_slice(arena_bytes);
+        let owned_view = crate::container::DnamContainerView {
+            preamble: view.preamble,
+            header: view.header,
+            verification_status: view.verification_status,
+            protection_profile: view.protection_profile,
+            arena_storage: crate::memory::ArenaStorage::from_owned_buffer(owned_arena),
+        };
+        let mut engine = DynamicDnamEngine::<'static>::new_empty(Tier::Ultra, backend);
+        engine.init_from_view(owned_view, tier, Tier::Ultra, sample_rate_hz)?;
+        Ok(engine)
     }
 
     /// Creates a [`DynamicDnamEngine`] with an explicit [`BackendKind`] (falling back to `Scalar`
@@ -123,35 +211,11 @@ impl<'a> DynamicDnamEngine<'a> {
         sample_rate_hz: u32,
         backend: BackendKind,
     ) -> Result<Self, DnamError> {
-        match backend {
-            #[cfg(target_arch = "aarch64")]
-            BackendKind::ArmSme => Ok(Self::ArmSme(DnamEngine::from_bytes(
-                bytes,
-                tier,
-                sample_rate_hz,
-            )?)),
-            #[cfg(target_arch = "aarch64")]
-            BackendKind::Neon | BackendKind::ArmNeon => Ok(Self::Neon(DnamEngine::from_bytes(
-                bytes,
-                tier,
-                sample_rate_hz,
-            )?)),
-            #[cfg(target_arch = "x86_64")]
-            BackendKind::X86Simd | BackendKind::X86Avx2Fma | BackendKind::X86Sse42 => Ok(
-                Self::X86Simd(DnamEngine::from_bytes(bytes, tier, sample_rate_hz)?),
-            ),
-            #[cfg(target_arch = "wasm32")]
-            BackendKind::WasmSimd128 => Ok(Self::WasmSimd128(DnamEngine::from_bytes(
-                bytes,
-                tier,
-                sample_rate_hz,
-            )?)),
-            _ => Ok(Self::Scalar(DnamEngine::from_bytes(
-                bytes,
-                tier,
-                sample_rate_hz,
-            )?)),
-        }
+        let crypto = DefaultCryptoProvider::default();
+        let view = crate::container::DnamContainerView::from_bytes(bytes, &crypto)?;
+        let mut engine = Self::new_empty(Tier::Ultra, backend);
+        engine.init_from_view(view, tier, Tier::Ultra, sample_rate_hz)?;
+        Ok(engine)
     }
 
     /// Returns the active [`BackendKind`].
@@ -199,6 +263,189 @@ impl<'a> DynamicDnamEngine<'a> {
             Self::X86Simd(e) => e.set_tier(tier),
             #[cfg(target_arch = "wasm32")]
             Self::WasmSimd128(e) => e.set_tier(tier),
+        }
+    }
+
+    /// Returns the requested [`Tier`].
+    #[inline]
+    pub const fn tier(&self) -> Tier {
+        match self {
+            Self::Scalar(e) => e.tier(),
+            #[cfg(target_arch = "aarch64")]
+            Self::Neon(e) => e.tier(),
+            #[cfg(target_arch = "aarch64")]
+            Self::ArmSme(e) => e.tier(),
+            #[cfg(target_arch = "x86_64")]
+            Self::X86Simd(e) => e.tier(),
+            #[cfg(target_arch = "wasm32")]
+            Self::WasmSimd128(e) => e.tier(),
+        }
+    }
+
+    /// Returns the highest [`Tier`] present in the loaded `.dnam` container.
+    #[inline]
+    pub const fn max_available_tier(&self) -> Tier {
+        match self {
+            Self::Scalar(e) => e.max_available_tier(),
+            #[cfg(target_arch = "aarch64")]
+            Self::Neon(e) => e.max_available_tier(),
+            #[cfg(target_arch = "aarch64")]
+            Self::ArmSme(e) => e.max_available_tier(),
+            #[cfg(target_arch = "x86_64")]
+            Self::X86Simd(e) => e.max_available_tier(),
+            #[cfg(target_arch = "wasm32")]
+            Self::WasmSimd128(e) => e.max_available_tier(),
+        }
+    }
+
+    /// Returns the plugin/host ceiling [`Tier`] (`max_supported_tier`).
+    #[inline]
+    pub const fn max_supported_tier(&self) -> Tier {
+        match self {
+            Self::Scalar(e) => e.max_supported_tier(),
+            #[cfg(target_arch = "aarch64")]
+            Self::Neon(e) => e.max_supported_tier(),
+            #[cfg(target_arch = "aarch64")]
+            Self::ArmSme(e) => e.max_supported_tier(),
+            #[cfg(target_arch = "x86_64")]
+            Self::X86Simd(e) => e.max_supported_tier(),
+            #[cfg(target_arch = "wasm32")]
+            Self::WasmSimd128(e) => e.max_supported_tier(),
+        }
+    }
+
+    /// Sets the plugin/host ceiling [`Tier`] (`max_supported_tier`).
+    #[inline]
+    pub fn set_max_supported_tier(&mut self, max_tier: Tier) {
+        match self {
+            Self::Scalar(e) => e.set_max_supported_tier(max_tier),
+            #[cfg(target_arch = "aarch64")]
+            Self::Neon(e) => e.set_max_supported_tier(max_tier),
+            #[cfg(target_arch = "aarch64")]
+            Self::ArmSme(e) => e.set_max_supported_tier(max_tier),
+            #[cfg(target_arch = "x86_64")]
+            Self::X86Simd(e) => e.set_max_supported_tier(max_tier),
+            #[cfg(target_arch = "wasm32")]
+            Self::WasmSimd128(e) => e.set_max_supported_tier(max_tier),
+        }
+    }
+
+    /// Returns the effective [`Tier`] (`min(max_available_tier, max_supported_tier)` when
+    /// `offline_bounce && maximize_tier_on_bounce`, otherwise `self.tier()`).
+    #[inline]
+    pub fn effective_tier(&self) -> Tier {
+        match self {
+            Self::Scalar(e) => e.effective_tier(),
+            #[cfg(target_arch = "aarch64")]
+            Self::Neon(e) => e.effective_tier(),
+            #[cfg(target_arch = "aarch64")]
+            Self::ArmSme(e) => e.effective_tier(),
+            #[cfg(target_arch = "x86_64")]
+            Self::X86Simd(e) => e.effective_tier(),
+            #[cfg(target_arch = "wasm32")]
+            Self::WasmSimd128(e) => e.effective_tier(),
+        }
+    }
+
+    /// Returns `true` if Offline Bounce mode ($4\times$ linear-phase polyphase oversampling) is enabled.
+    #[inline]
+    pub const fn offline_bounce(&self) -> bool {
+        match self {
+            Self::Scalar(e) => e.offline_bounce(),
+            #[cfg(target_arch = "aarch64")]
+            Self::Neon(e) => e.offline_bounce(),
+            #[cfg(target_arch = "aarch64")]
+            Self::ArmSme(e) => e.offline_bounce(),
+            #[cfg(target_arch = "x86_64")]
+            Self::X86Simd(e) => e.offline_bounce(),
+            #[cfg(target_arch = "wasm32")]
+            Self::WasmSimd128(e) => e.offline_bounce(),
+        }
+    }
+
+    /// Enables or disables Offline Bounce mode ($4\times$ linear-phase polyphase oversampling).
+    #[inline]
+    pub fn set_offline_bounce(&mut self, enabled: bool) {
+        match self {
+            Self::Scalar(e) => e.set_offline_bounce(enabled),
+            #[cfg(target_arch = "aarch64")]
+            Self::Neon(e) => e.set_offline_bounce(enabled),
+            #[cfg(target_arch = "aarch64")]
+            Self::ArmSme(e) => e.set_offline_bounce(enabled),
+            #[cfg(target_arch = "x86_64")]
+            Self::X86Simd(e) => e.set_offline_bounce(enabled),
+            #[cfg(target_arch = "wasm32")]
+            Self::WasmSimd128(e) => e.set_offline_bounce(enabled),
+        }
+    }
+
+    /// Returns `true` if `maximize_tier_on_bounce` is enabled.
+    #[inline]
+    pub const fn maximize_tier_on_bounce(&self) -> bool {
+        match self {
+            Self::Scalar(e) => e.maximize_tier_on_bounce(),
+            #[cfg(target_arch = "aarch64")]
+            Self::Neon(e) => e.maximize_tier_on_bounce(),
+            #[cfg(target_arch = "aarch64")]
+            Self::ArmSme(e) => e.maximize_tier_on_bounce(),
+            #[cfg(target_arch = "x86_64")]
+            Self::X86Simd(e) => e.maximize_tier_on_bounce(),
+            #[cfg(target_arch = "wasm32")]
+            Self::WasmSimd128(e) => e.maximize_tier_on_bounce(),
+        }
+    }
+
+    /// Enables or disables automatic tier promotion during Offline Bounce.
+    #[inline]
+    pub fn set_maximize_tier_on_bounce(&mut self, enabled: bool) {
+        match self {
+            Self::Scalar(e) => e.set_maximize_tier_on_bounce(enabled),
+            #[cfg(target_arch = "aarch64")]
+            Self::Neon(e) => e.set_maximize_tier_on_bounce(enabled),
+            #[cfg(target_arch = "aarch64")]
+            Self::ArmSme(e) => e.set_maximize_tier_on_bounce(enabled),
+            #[cfg(target_arch = "x86_64")]
+            Self::X86Simd(e) => e.set_maximize_tier_on_bounce(enabled),
+            #[cfg(target_arch = "wasm32")]
+            Self::WasmSimd128(e) => e.set_maximize_tier_on_bounce(enabled),
+        }
+    }
+
+    /// Returns the current Plugin Delay Compensation (`PDC`) latency in host samples (`0` or `12`).
+    #[inline]
+    pub const fn latency_samples(&self) -> usize {
+        match self {
+            Self::Scalar(e) => e.latency_samples(),
+            #[cfg(target_arch = "aarch64")]
+            Self::Neon(e) => e.latency_samples(),
+            #[cfg(target_arch = "aarch64")]
+            Self::ArmSme(e) => e.latency_samples(),
+            #[cfg(target_arch = "x86_64")]
+            Self::X86Simd(e) => e.latency_samples(),
+            #[cfg(target_arch = "wasm32")]
+            Self::WasmSimd128(e) => e.latency_samples(),
+        }
+    }
+
+    /// Renders a complete stereo buffer in Offline Bounce mode, automatically stripping the 12-sample PDC lead-in.
+    #[inline]
+    pub fn render_offline_bounce(
+        &mut self,
+        left_in: &[f32],
+        right_in: &[f32],
+        left_out: &mut [f32],
+        right_out: &mut [f32],
+    ) {
+        match self {
+            Self::Scalar(e) => e.render_offline_bounce(left_in, right_in, left_out, right_out),
+            #[cfg(target_arch = "aarch64")]
+            Self::Neon(e) => e.render_offline_bounce(left_in, right_in, left_out, right_out),
+            #[cfg(target_arch = "aarch64")]
+            Self::ArmSme(e) => e.render_offline_bounce(left_in, right_in, left_out, right_out),
+            #[cfg(target_arch = "x86_64")]
+            Self::X86Simd(e) => e.render_offline_bounce(left_in, right_in, left_out, right_out),
+            #[cfg(target_arch = "wasm32")]
+            Self::WasmSimd128(e) => e.render_offline_bounce(left_in, right_in, left_out, right_out),
         }
     }
 

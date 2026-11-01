@@ -1,4 +1,4 @@
-# Non-Stop 3-Phase Control-Space Audit & Clamp Registry (`CL-01`..`CL-18`)
+# Non-Stop 3-Phase Control-Space Audit & Clamp Registry (`CL-01`..`CL-20`)
 
 Because neural audio training can run unattended for extended periods, **DNAM never blocks or pauses training on user confirmation prompts**. Instead, it executes a **Non-Stop 3-Phase Control-Space Audit & Automatic Clamping Pipeline** that guarantees every exported `.dnam` model is 100% stable across all user knob and switch combinations.
 
@@ -60,7 +60,7 @@ To lift these clamps in < 5 seconds without retraining from scratch, run:
 
 ---
 
-## 3. Canonical Clamp & Limit Registry (`CL-01`..`CL-18`)
+## 3. Canonical Clamp & Limit Registry (`CL-01`..`CL-20`)
 
 Every numerical clamp in the Python reference DSP, PyTorch trainer, Rust native DSP (`dnam-dsp`), and Node.js WASM runtime must adhere to this registry:
 
@@ -84,3 +84,5 @@ Every numerical clamp in the Python reference DSP, PyTorch trainer, Rust native 
 | **`CL-16`** | Audit Phase-2 Stop-Gradient Corner Barrier `L_barrier` | `relu(sg(θ_main) + Δθ_FM - θ_safe)²` | `packages/trainer/src/dnam_trainer/control/audit.py` | Steers 2nd-order FM weights away from unstable corners with 0.00 main-stem interference |
 | **`CL-17`** | Audit Phase-3 Dynamic LFO & Head Spectral Gain Clamps | `[CLAMP-DYNAMIC]` (`τ_min ≥ 4.0`), `[CLAMP-HEAD-GAIN]` (`≤ +6 dB`) | `packages/trainer/src/dnam_trainer/control/audit.py` | Prevents LFO buffer underflow and corner head gain spikes at export |
 | **`CL-18`** | Trainer Exact Device Gram & Batched Host `float64` Solve | `σ_k > 10⁻⁴`, `λ_init = 10⁻³ τ̄`, `λ_polish = 10⁻⁶ τ̄` | `packages/trainer/src/dnam_trainer/training/numerics.py` | Accumulates exact 32-bit device Grams (`ExactGramAccumulator`) and solves batched host `float64` normal equations (`HostDenseSolver`) |
+| **`CL-19`** | Plugin `max_supported_tier` Ceiling & Zero-Re-Sign Stripping | `tier_eff = min(tier_req, tier_max_supported, tier_max_avail)` | `packages/python/src/dnam_engine/container.py` | Caps embedded/plugin arena & delay memory (`M ∈ {4, 8, 16}`) and verifies stripped prefix `tier_arena_sha256[t]` |
+| **`CL-20`** | Offline Bounce 4× ZOH Polyphase Oversampling & Promotion | `f_{s,bounce} = 4 f_s`, `L_{PDC} = 12 samp`, `tier_bounce = min(tier_avail, tier_sup)` | `packages/python/src/dnam_engine/engine.py` | Runs 2-stage linear-phase half-band 4× oversampling (`> 95 dB` stopband) and promotes tier when `maximize_tier_on_bounce` is enabled |

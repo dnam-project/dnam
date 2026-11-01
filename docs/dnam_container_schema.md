@@ -2,8 +2,8 @@
 
 Free from legacy NAM A2 text-JSON weight array constraints and Python `pickle` (`torch.save`) checkpoints, DNAM defines two companion **zero-copy, 64-byte cache-line and SIMD-aligned Hybrid Binary Container formats** engineered for **$< 50\text{ ns}$ `#[no_std]` hardware loading**:
 
-1. **`.dnam` (Magic `b"DNAM"`, Version `1.0`):** The single-file real-time deployment container ($10.5\text{ KB}$ `Lite` / $21.8\text{ KB}$ `Full` / $35.4\text{ KB}$ `Ultra` binary arena) loaded via zero-copy `mmap` or `Float32Array` view by the Rust SIMD engine (`packages/engine`), audio plugin (`packages/plugin`), Python wheel (`packages/python`), and Node.js/WASM runtime (`packages/js`).
-2. **`.dnam-ckpt` (Magic `b"DNCK"`, Version `1.1`):** The deduplicated, `pickle`-free single-file iterative training checkpoint (`1.1` when `Arena 4` calibration stats are present, `1.0` otherwise). Its leading tensor arenas (`Arena 0..2`) are **bit-for-bit identical** to the exported `.dnam` model, followed by `Arena 3` containing the tier-ordered **Column-Major Upper-Triangular (`uplo='U'`) `float64` audio sufficient statistics** $\lbrace \mathrm{pack}_{\text{U}}\big(\mathbf{G}_{\text{audio}}^{(s)}\big), \mathbf{C}_{\text{audio}}^{(s)} \rbrace$ (**$17.25\text{ KB/stem}$ `Lite` / $66.50\text{ KB/stem}$ `Full` / $147.75\text{ KB/stem}$ `Ultra`**—nearly $2\times$ smaller than full matrix storage and 100% 64-byte aligned), and optional `Arena 4` (`HAS_CALIB_STATS` bit `11`, magic `b"DNCA"`) containing portable per-input (`INPC`) and per-stem (`STMC`) calibration statistics (`~3.6 MB` at 30 stems $\times$ 30 s, stripped on `.dnam` export).
+1. **`.dnam` (Magic `b"DNAM"`, Version `1.0`):** The single-file real-time deployment container ($10.5\text{ KB}$ `Lite` / $21.8\text{ KB}$ `Full` / $35.4\text{ KB}$ `Pro` / $62.5\text{ KB}$ `Ultra` binary arena) loaded via zero-copy `mmap` or `Float32Array` view by the Rust SIMD engine (`packages/engine`), audio plugin (`packages/plugin`), Python wheel (`packages/python`), and Node.js/WASM runtime (`packages/js`), with support for `max_supported_tier` plugin ceiling (`CL-19`) and zero-re-signing container tier stripping (`strip_container_to_tier`).
+2. **`.dnam-ckpt` (Magic `b"DNCK"`, Version `1.1`):** The deduplicated, `pickle`-free single-file iterative training checkpoint (`1.1` when `Arena 5` calibration stats are present, `1.0` otherwise). Its leading tensor arenas (`Arena 0..3`, `64,000 B`) are **bit-for-bit identical** to the exported `.dnam` model, followed by `Arena 4` containing the tier-ordered **Column-Major Upper-Triangular (`uplo='U'`) `float64` audio sufficient statistics** $\lbrace \mathrm{pack}_{\text{U}}\big(\mathbf{G}_{\text{audio}}^{(s)}\big), \mathbf{C}_{\text{audio}}^{(s)} \rbrace$ (**$17.25\text{ KB/stem}$ `Lite` / $66.50\text{ KB/stem}$ `Full` / $147.75\text{ KB/stem}$ `Pro` / $261.00\text{ KB/stem}$ `Ultra`**—nearly $2\times$ smaller than full matrix storage and 100% 64-byte aligned), and optional `Arena 5` (`HAS_CALIB_STATS` bit `12`, magic `b"DNCA"`) containing portable per-input (`INPC`) and per-stem (`STMC`) calibration statistics (`~3.6 MB` at 30 stems $\times$ 30 s, stripped on `.dnam` export).
 3. **`.dnam-seal` (Magic `b"DNSL"`, Version `1.0`):** The 100% opaque, immutable 64-byte cache-line aligned OEM hardware wrapper (`DnamSealEnvelope`, `DnamProtectionProfile::EnclaveSealed`) that wraps an inner `ENCRYPTED_ARENA = 1` `.dnam` container (`cek_arena`) inside an outer `ChaCha20` + `X25519` `HPKE` binary envelope (`cek_outer`) for factory-attested hardware TrustZone enclaves (`OemDeviceCertificate`, see [`digital_marketplace_and_provenance.md` §3](digital_marketplace_and_provenance.md#3-pillar-2-hardware-enclave--oem-drm-oemdevicecertificate-attestation--dnam-seal-bdnsl-wrapper)).
 
 ---
@@ -18,25 +18,27 @@ Both `.dnam` and `.dnam-ckpt` share an identical three-region binary layout desi
 |    • Magic: "DNAM" (0x4D414E44) or "DNCK" (0x4B434E44)                |
 |    • Version (u16=1, u16=0), Flags (u16), P (u8), RingLog2 (u8)       |
 |    • Train SR (u32) | JSON Byte Len (u32) | Arena Offset & Len (u32)  |
-|    • Tier Prefix End Offsets & CRC32Cs (Lite/Full/Ultra) | Tail (f32) |
+|    • Tier Prefix End CLs (u16×4) & CRC32Cs (Lite/Full/Pro/Ultra)      |
 +-----------------------------------------------------------------------+ 0x0040 (Byte 64, 64B-aligned)
 | 2. UTF-8 JSON Schema, Essential Metadata, Presets & Tensor Directory  | <- Read by UI / Host / Python only;
 |    • Essential `metadata`, open `user_metadata`, `controls_schema`    |    skipped completely by #[no_std]
 |    • Built-in `presets`, `ui_hints` & prefix `arena_crc32c`           |    real-time DSP engine!
 |    • Space-padded (0x20) to 4 KB OS page boundary (in-place slack!)   |
 +=======================================================================+ tensor_arena_offset (4096B page / 64B-aligned)
-| 3A. Arena 0: Lite Base Tier (C=4, M=4, 10,752 B) [f32, align(64)]     | <- Lite host maps only up to here
-|     • Binary ControlClampDescriptor[P] + Execution-Order Core1 Blocks |
-+-----------------------------------------------------------------------+ arena_offset_lite_end (64B-aligned)
+| 3A. Arena 0: Lite Base Tier (C=4, M=4, 10,752 B = 168 CL) [align(64)] | <- Lite host maps only up to here
++-----------------------------------------------------------------------+ arena_offset_lite_end (10,752 B)
 | 3B. Arena 1: Full Delta Tier (+4 ch, +4 FDN, +11,584 B) [align(64)]   | <- Full host maps only up to here
-+-----------------------------------------------------------------------+ arena_offset_full_end (64B-aligned)
-| 3C. Arena 2: Ultra Delta Tier (+4 ch, +0 FDN, +13,888 B) [align(64)]  | <- .dnam EOF / Ultra host ends here
-+=======================================================================+ arena_offset_ultra_end (64B-aligned)
-| 3D. Arena 3 (.dnam-ckpt only): Per-Stem Packed Upper-Triangular f64   |
++-----------------------------------------------------------------------+ arena_offset_full_end (22,336 B)
+| 3C. Arena 2: Pro Delta Tier (+4 ch, +0 FDN, +13,888 B) [align(64)]    | <- Pro host maps only up to here
++-----------------------------------------------------------------------+ arena_offset_pro_end (36,224 B)
+| 3D. Arena 3: Ultra Delta Tier (+4 ch, +8 FDN, Rank-8 FM + D_h=8 SVD,  | <- .dnam EOF / Ultra host ends here
+|     +27,776 B = 434 CL) [align(64)]                                   |
++=======================================================================+ arena_offset_ultra_end (64,000 B)
+| 3E. Arena 4 (.dnam-ckpt only): Per-Stem Packed Upper-Triangular f64   |
 |     Sufficient Statistics {pack_U(G_audio^(s)), C_audio^(s)}          |
-|     • 17,664 B/stem (Lite) | 68,096 B/stem (Full) | 151,296 B (Ultra) |
-+-----------------------------------------------------------------------+ arena3_end (64B-aligned)
-| 3E. Arena 4 (.dnam-ckpt v1.1 w/ HAS_CALIB_STATS): Portable Calib      |
+|     • 17,664 B (Lite) | 68,096 B (Full) | 151,296 B (Pro) | 267,264 B |
++-----------------------------------------------------------------------+ arena4_end (64B-aligned)
+| 3F. Arena 5 (.dnam-ckpt v1.1 w/ HAS_CALIB_STATS): Portable Calib      |
 |     Statistics (magic "DNCA", 64B INPC + 128B STMC records, stripped  |
 |     automatically on .dnam runtime export)                            |
 +-----------------------------------------------------------------------+ EOF (64B-aligned)
@@ -51,41 +53,44 @@ All fields are naturally aligned with **zero compiler-inserted padding holes** (
 | `0x00..0x04` | `[u8; 4]` | `magic` | `b"DNAM"` (`0x4D414E44`) for `.dnam`; `b"DNCK"` (`0x4B434E44`) for `.dnam-ckpt` |
 | `0x04..0x06` | `u16` | `version_major` | Schema major version (`1`); reject if `!= 1` |
 | `0x06..0x08` | `u16` | `version_minor` | Schema minor version (`1`; `0..=1` accepted by loader) |
-| `0x08..0x0A` | `u16` | `flags` | **Auto-populated by trainer/exporter (except Bit `8`):** Bit `0`: `HAS_LITE` (`1`), Bit `1`: `HAS_FULL_DELTA` (`2`), Bit `2`: `HAS_ULTRA_DELTA` (`4`), Bit `3`: `HAS_CKPT_STEMS` (`8`), Bit `4`: `EXEC_ORDER_SOA` (`16`), Bit `5`: `DEFAULT_ANCHORED` (`32`), Bit `6`: `CORE2_ACTIVE` (`64`, auto-pruned if `0`), Bit `7`: `LFO_ENV_ACTIVE` (`128`, auto-pruned if `0`), Bit `8`: `STEREO_OUT` (`256`, the **only** user-configurable mode flag: `1 = stereo`, `0 = mono`), Bit `9`: `HAS_SIGNATURES` (`512`, auto-set when `metadata.signatures` is present), Bit `10`: `ENCRYPTED_ARENA` (`1024`, auto-set when `Arena 0..2` is `ChaCha20`-wrapped for `authorized_devices`), Bit `11`: `HAS_CALIB_STATS` (`2048`, `.dnam-ckpt` only; auto-set when `Arena 4` calibration stats follow `Arena 3` and stripped on `.dnam` export) |
+| `0x08..0x0A` | `u16` | `flags` | Bit `0`: `HAS_LITE` (`1`), Bit `1`: `HAS_FULL_DELTA` (`2`), Bit `2`: `HAS_PRO_DELTA` (`4`), Bit `3`: `HAS_ULTRA_DELTA` (`8`), Bit `4`: `HAS_CKPT_STEMS` (`16`), Bit `5`: `EXEC_ORDER_SOA` (`32`), Bit `6`: `DEFAULT_ANCHORED` (`64`), Bit `7`: `CORE2_ACTIVE` (`128`), Bit `8`: `LFO_ENV_ACTIVE` (`256`), Bit `9`: `STEREO_OUT` (`512`), Bit `10`: `HAS_SIGNATURES` (`1024`), Bit `11`: `ENCRYPTED_ARENA` (`2048`), Bit `12`: `HAS_CALIB_STATS` (`4096`, `.dnam-ckpt` only) |
 | `0x0A..0x0B` | `u8` | `num_controls` | Total user controls `P = P_range + P_switch ∈ [0, 255]` (`ControlClampDescriptor` count) |
 | `0x0B..0x0C` | `u8` | `ring_buffer_pow2_log2` | Auto-populated by trainer: `0` when `CORE2_ACTIVE == 0`, or `⌈log₂(max_m D_m + ΔD_max + 8)⌉ ∈ [8, 15]` when Core 2 is active |
 | `0x0C..0x10` | `u32` | `sample_rate_train_hz` | Reference training sample rate in Hz (e.g., `48000`) |
 | `0x10..0x14` | `u32` | `json_header_byte_len` | Unpadded UTF-8 byte length of the JSON metadata object starting at fixed offset `0x40` (`64`) |
-| `0x14..0x18` | `u32` | `tensor_arena_offset` | File byte offset of `Arena 0` (`% 64 == 0`, `≥ 64 + L_json`; defaults to `4,096 B` OS page boundary `0x1000` with `0x20` space slack for zero-TLB-split `mmap` and in-place preset/metadata edits) |
+| `0x14..0x18` | `u32` | `tensor_arena_offset` | File byte offset of `Arena 0` (`% 64 == 0`, `≥ 64 + L_json`; defaults to `4,096 B` OS page boundary `0x1000` with `0x20` space slack) |
 | `0x18..0x1C` | `u32` | `tensor_arena_byte_len` | Total byte length of all binary tensor arenas (`% 64 == 0`) |
-| `0x1C..0x20` | `u32` | `arena_offset_lite_end` | Arena-relative byte end of `Arena 0 (Lite)` (`10,752`, `% 64 == 0`) |
-| `0x20..0x24` | `u32` | `arena_offset_full_end` | Arena-relative byte end of `Arena 0 + Arena 1 (Full)` (`22,336`, `% 64 == 0`) |
-| `0x24..0x28` | `u32` | `arena_offset_ultra_end` | Arena-relative byte end of `Arena 0..2 (Ultra)` (`36,224`, `% 64 == 0`; equals `tensor_arena_byte_len` in `.dnam`) |
-| `0x28..0x2C` | `u32` | `arena_crc32c_lite` | Castagnoli `CRC32C` (`0x1EDC6F41`) over `Arena 0` (`arena[0..arena_offset_lite_end]`) |
-| `0x2C..0x30` | `u32` | `arena_crc32c_full` | Castagnoli `CRC32C` over `Arena 0..1` (`arena[0..arena_offset_full_end]`) |
-| `0x30..0x34` | `u32` | `arena_crc32c_ultra` | Castagnoli `CRC32C` over `Arena 0..2` (`arena[0..arena_offset_ultra_end]`) |
-| `0x34..0x36` | `u16` | `num_ckpt_stems` | `0` for `.dnam`; `S ≥ 1` for `.dnam-ckpt` (number of stem records in `Arena 3`) |
+| `0x1C..0x1E` | `u16` | `arena_lite_end_cl` | Arena-relative end of `Arena 0 (Lite)` in 64B cache lines (`168` -> `10,752 B`) |
+| `0x1E..0x20` | `u16` | `arena_full_end_cl` | Arena-relative end of `Arena 0..1 (Full)` in 64B cache lines (`349` -> `22,336 B`) |
+| `0x20..0x22` | `u16` | `arena_pro_end_cl` | Arena-relative end of `Arena 0..2 (Pro)` in 64B cache lines (`566` -> `36,224 B`) |
+| `0x22..0x24` | `u16` | `arena_ultra_end_cl` | Arena-relative end of `Arena 0..3 (Ultra)` in 64B cache lines (`1,000` -> `64,000 B`) |
+| `0x24..0x28` | `u32` | `arena_crc32c_lite` | Castagnoli `CRC32C` (`0x1EDC6F41`) over `Arena 0` (`arena[0..10,752]`) |
+| `0x28..0x2C` | `u32` | `arena_crc32c_full` | Castagnoli `CRC32C` over `Arena 0..1` (`arena[0..22,336]`) |
+| `0x2C..0x30` | `u32` | `arena_crc32c_pro` | Castagnoli `CRC32C` over `Arena 0..2` (`arena[0..36,224]`) |
+| `0x30..0x34` | `u32` | `arena_crc32c_ultra` | Castagnoli `CRC32C` over `Arena 0..3` (`arena[0..64,000]`) |
+| `0x34..0x36` | `u16` | `num_ckpt_stems` | `0` for `.dnam`; `S ≥ 1` for `.dnam-ckpt` (number of stem records in `Arena 4`) |
 | `0x36..0x37` | `u8` | `control_decimation` | Control-bus decimation stride `K_ctrl` at `f_{s,train}` (default `16`) |
-| `0x37..0x38` | `u8` | `head_svd_rank` | Active SVD principal control subspace rank `D_h ∈ [0, 4]` (`CL-18`) |
+| `0x37..0x38` | `u8` | `head_svd_rank` | Active SVD principal control subspace rank `D_h ∈ [0, 8]` (`4` for `Lite/Full/Pro`, `8` for `Ultra`) |
 | `0x38..0x3C` | `f32` | `tail_time_ms` | Auto-computed `T₆₀` decay tail time in milliseconds for DAW host auto-sleep |
 | `0x3C..0x40` | `u32` | `header_crc32c` | Castagnoli `CRC32C` (`0x1EDC6F41`) over `bytes[0x00..tensor_arena_offset]` with `bytes[0x3C..0x40]` zeroed |
 
 > [!TIP]
-> **Zero-JSON Prefix-Verifiable `CRC32C` & 4 KB Page-Aligned In-Place Preset Saving:**
-> 1. **100% Zero-JSON `#[no_std]` Integrity:** Storing `arena_crc32c_lite` (`0x28`), `arena_crc32c_full` (`0x2C`), and `arena_crc32c_ultra` (`0x30`) directly inside the 64-byte preamble allows an embedded `#[no_std]` `Lite`-only (`10.5 KB`) or `Full`-only (`21.8 KB`) loader—or a browser HTTP `Range` request—to verify hardware Castagnoli `CRC32C` (`__crc32cd` on ARMv8-A / SSE4.2) over **only the prefix bytes it loaded**, without parsing a single byte of JSON!
-> 2. **4 KB OS Page Alignment & `< 0.1 ms` In-Place Preset Updates:** By aligning `tensor_arena_offset` (`0x14`) to a `4,096 B` (`0x1000`) OS virtual-memory page boundary and padding `[64 + json_header_byte_len .. tensor_arena_offset]` with `0x20` ASCII spaces, `Arena 0` maps onto an exact hardware page boundary (zero TLB split), while reserving $\sim 1.2\text{–}1.8\text{ KB}$ of slack so DAW plugins and platforms can add/edit `presets` and `user_metadata` **100% in-place** inside the first `4 KB` page without moving `Arena 0..3` or invalidating `arena_crc32c_*`.
+> **Zero-JSON Prefix-Verifiable `CRC32C`, `max_supported_tier` Ceiling (`CL-19`), & Zero-Re-Signing Container Tier Stripping:**
+> 1. **100% Zero-JSON `#[no_std]` Integrity & `max_supported_tier` Ceiling:** Storing `arena_lite_end_cl..arena_ultra_end_cl` (`0x1C..0x24`) and `arena_crc32c_lite..arena_crc32c_ultra` (`0x24..0x34`) directly inside the 64-byte preamble allows an embedded or plugin host configured with `max_supported_tier` (`DnamContainerView::from_bytes_with_max_tier`, `DnamEngine::with_max_tier`) to load, decrypt, and verify hardware Castagnoli `CRC32C` over **only the prefix bytes up to `max_supported_tier`**, capping `ArenaStorage` and `ModulatedUfdn` ring buffer allocations (`4 / 8 / 16` lines) without parsing JSON!
+> 2. **Zero-Re-Signing Container Tier Stripping (`strip_container_to_tier` / `dnam strip`):** Because `ModelSignatures.tier_arena_sha256` and `MarketplaceReceipt.buyer_tier_arena_sha256` commit to all 4 cumulative tier SHA-256 digests (`[lite, full, pro, ultra]`), `strip_container_to_tier(bytes, max_tier)` truncates higher tier arenas (`Arena 1..3`) and updates only the 64-byte binary preamble (`flags`, `tensor_arena_byte_len`, `head_svd_rank`, `header_crc32c`) **without modifying the UTF-8 JSON header**, preserving `immutable_header_sha256`, `creator_signature`, and `marketplace_receipt` with zero re-signing required.
+> 3. **4 KB OS Page Alignment & `< 0.1 ms` In-Place Preset Updates:** By aligning `tensor_arena_offset` (`0x14`) to a `4,096 B` (`0x1000`) OS virtual-memory page boundary and padding `[64 + json_header_byte_len .. tensor_arena_offset]` with `0x20` ASCII spaces, `Arena 0` maps onto an exact hardware page boundary (zero TLB split), while reserving $\sim 1.2\text{–}1.8\text{ KB}$ of slack so DAW plugins and platforms can add/edit `presets` and `user_metadata` **100% in-place** inside the first `4 KB` page without moving `Arena 0..3` or invalidating `arena_crc32c_*`.
 
 ---
 
 ## 2. Five Hardware-Loading Optimizations (`< 50 ns` Zero-Allocation Load)
 
-### 2.1 Eliminating 33.33% Structural Zeros via Contiguous Tier-Delta Arenas
+### 2.1 Eliminating 37.50% Structural Zeros via Contiguous 4-Tier Delta Arenas
 
-In a naive dense $C_{\text{max}} \times C_{\text{max}}$ ($12 \times 12$) lower-block-triangular convolution kernel, `Lite` (`0..3`) never reads channels `4..11` ($4 \times 8 = 32$ zeros/tap) and `Full` (`4..7`) never reads channels `8..11` ($4 \times 4 = 16$ zeros/tap)—wasting **48 / 144 = 33.33% of all convolution weights on structural zeros** and forcing strided cache-line jumps when executing `Lite` or `Full`.
+In a naive dense $C_{\text{max}} \times C_{\text{max}}$ ($16 \times 16$) lower-block-triangular convolution kernel, `Lite` (`0..3`) never reads channels `4..15` ($4 \times 12 = 48$ zeros/tap), `Full` (`4..7`) never reads channels `8..15` ($4 \times 8 = 32$ zeros/tap), and `Pro` (`8..11`) never reads channels `12..15` ($4 \times 4 = 16$ zeros/tap)—wasting **96 / 256 = 37.50% of all convolution weights on structural zeros** and forcing strided cache-line jumps when executing lower tiers.
 
-DNAM eliminates 100% of structural zeros by partitioning the causal convolution matrix $\mathbf{W}_{\text{conv}}^{(\ell)} \in \mathbb{R}^{K \times 12 \times 12}$ ($K = 6$) and all layer parameters into **three contiguous, 64-byte aligned Tier-Delta Arenas**:
+DNAM eliminates 100% of structural zeros by partitioning the causal convolution matrix $\mathbf{W}_{\text{conv}}^{(\ell)} \in \mathbb{R}^{K \times 16 \times 16}$ ($K = 6$) and all layer parameters into **four contiguous, 64-byte aligned Tier-Delta Arenas**:
 
-$$\mathbf{W}_{\text{conv}}^{(\ell)} = \Big[\text{Row}_{\text{Lite}}: \big(\mathbf{W}_{\text{Lite}}^{(\ell)} \in \mathbb{R}^{K \times 4 \times 4}, \mathbf{0}_{K \times 4 \times 8}\big) \Big| \text{Row}_{\text{Full}}: \big(\mathbf{W}_{\text{Full},\Delta}^{(\ell)} \in \mathbb{R}^{K \times 4 \times 8}, \mathbf{0}_{K \times 4 \times 4}\big) \Big| \text{Row}_{\text{Ultra}}: \big(\mathbf{W}_{\text{Ultra},\Delta}^{(\ell)} \in \mathbb{R}^{K \times 4 \times 12}\big)\Big]^\top$$
+$$\mathbf{W}_{\text{conv}}^{(\ell)} = \Big[\text{Row}_{\text{Lite}}: \big(\mathbf{W}_{\text{Lite}}^{(\ell)} \in \mathbb{R}^{K \times 4 \times 4}\big) \Big| \text{Row}_{\text{Full}}: \big(\mathbf{W}_{\text{Full},\Delta}^{(\ell)} \in \mathbb{R}^{K \times 4 \times 8}\big) \Big| \text{Row}_{\text{Pro}}: \big(\mathbf{W}_{\text{Pro},\Delta}^{(\ell)} \in \mathbb{R}^{K \times 4 \times 12}\big) \Big| \text{Row}_{\text{Ultra}}: \big(\mathbf{W}_{\text{Ultra},\Delta}^{(\ell)} \in \mathbb{R}^{K \times 4 \times 16}\big)\Big]^\top$$
 
 ### 2.2 Execution-Order Layer Interleaving (`Core1BlockSlice`) for 100% Linear L1D Prefetching
 
@@ -98,8 +103,9 @@ During the $48\text{ kHz}$ audio loop, Core 1 walks a **single monotonic pointer
 | Tier Arena | Channels / FDN Lines | `Core1BlockSlice` Size (per block × 4 blocks) | Total Arena Slice Size | Runtime Execution & Cache Behavior |
 | :--- | :--- | :---: | :---: | :--- |
 | **`Arena 0: Lite`** | `ch 0..3`, `FDN 0..3` | `1,024 B × 4` = **`4,096 B`** (`16 CL/blk`) | **`10,752 B` (`10.5 KB`)** | **100% self-contained `Lite` prefix** (`168 × 64 B` cache lines). |
-| **`Arena 1: Full Delta`** | `ch 4..7`, `FDN 4..7` | `1,792 B × 4` = **`7,168 B`** (`28 CL/blk`) | **`+11,584 B` (`22,336 B` end)** | Appended to `Arena 0` to form **`Full`** (`21.8 KB`); zero `Ultra` bytes enter L1D cache. |
-| **`Arena 2: Ultra Delta`** | `ch 8..11`, `FDN —` | `2,560 B × 4` = **`10,240 B`** (`40 CL/blk`) | **`+13,888 B` (`36,224 B` end)** | Appended to `Arena 0..1` to form **`Ultra`** (`35.4 KB`); maps 1:1 to Pass 2 of **`8 + 4` NEON loop**! |
+| **`Arena 1: Full Delta`** | `ch 4..7`, `FDN 4..7` | `1,792 B × 4` = **`7,168 B`** (`28 CL/blk`) | **`+11,584 B` (`22,336 B` end)** | Appended to `Arena 0` to form **`Full`** (`21.8 KB`, `349 CL`). |
+| **`Arena 2: Pro Delta`** | `ch 8..11`, `FDN —` | `2,560 B × 4` = **`10,240 B`** (`40 CL/blk`) | **`+13,888 B` (`36,224 B` end)** | Appended to `Arena 0..1` to form **`Pro`** (`35.4 KB`, `566 CL`; Pass 2 of **`8 + 4` NEON loop**). |
+| **`Arena 3: Ultra Delta`** | `ch 12..15`, `FDN 8..15` | `3,328 B × 4` = **`13,312 B`** (`52 CL/blk`) | **`+27,776 B` (`64,000 B` end)** | Appended to `Arena 0..2` to form **`Ultra`** (`62.5 KB`, `1,000 CL`: `M=16` FDN, Rank-8 FM + `D_h=8` SVD). |
 
 ### 2.3 Pre-Packed SIMD Structure-of-Arrays (`SoA`), Division-Free `ControlClampDescriptor` & Pop-Free 3-State DC Equilibrium
 
@@ -287,7 +293,7 @@ The UTF-8 JSON header at byte offset `0x40` contains the model configuration, es
       "arena_end_byte_offset": 22336,
       "prefix_crc32c": 1938475621
     },
-    "ultra": {
+    "pro": {
       "channels": 12,
       "fdn_lines": 8,
       "early_taps": 8,
@@ -297,6 +303,17 @@ The UTF-8 JSON header at byte offset `0x40` contains the model configuration, es
       "validation_esr_db": -47.63,
       "arena_end_byte_offset": 36224,
       "prefix_crc32c": 4019283746
+    },
+    "ultra": {
+      "channels": 16,
+      "fdn_lines": 16,
+      "early_taps": 8,
+      "head_svd_rank": 8,
+      "loudness_lufs": -20.5,
+      "output_trim_db": 0.0,
+      "validation_esr_db": -51.2,
+      "arena_end_byte_offset": 64000,
+      "prefix_crc32c": 3182736455
     }
   },
   "controls_schema": [
@@ -433,10 +450,15 @@ The UTF-8 JSON header at byte offset `0x40` contains the model configuration, es
     "arena1_full_delta.core1_stereo_head_svd": { "arena": 1, "dtype": "f32", "shape": [5, 2, 16, 4], "byte_offset": 17984, "byte_length": 2560 },
     "arena1_full_delta.core2_mufdn_soa": { "arena": 1, "dtype": "f32", "shape": [16, 4], "byte_offset": 20544, "byte_length": 256 },
     "arena1_full_delta.control_bus_proj": { "arena": 1, "dtype": "f32", "shape": [96, 4], "byte_offset": 20800, "byte_length": 1536 },
-    "arena2_ultra_delta.core1_input_proj": { "arena": 2, "dtype": "f32", "shape": [1, 4, 4], "byte_offset": 22336, "byte_length": 64 },
-    "arena2_ultra_delta.core1_exec_blocks_soa": { "arena": 2, "dtype": "f32", "shape": [4, 640], "byte_offset": 22400, "byte_length": 10240 },
-    "arena2_ultra_delta.core1_stereo_head_svd": { "arena": 2, "dtype": "f32", "shape": [5, 2, 16, 4], "byte_offset": 32640, "byte_length": 2560 },
-    "arena2_ultra_delta.control_bus_proj": { "arena": 2, "dtype": "f32", "shape": [64, 4], "byte_offset": 35200, "byte_length": 1024 }
+    "arena2_pro_delta.core1_input_proj": { "arena": 2, "dtype": "f32", "shape": [1, 4, 4], "byte_offset": 22336, "byte_length": 64 },
+    "arena2_pro_delta.core1_exec_blocks_soa": { "arena": 2, "dtype": "f32", "shape": [4, 640], "byte_offset": 22400, "byte_length": 10240 },
+    "arena2_pro_delta.core1_stereo_head_svd": { "arena": 2, "dtype": "f32", "shape": [5, 2, 16, 4], "byte_offset": 32640, "byte_length": 2560 },
+    "arena2_pro_delta.control_bus_proj": { "arena": 2, "dtype": "f32", "shape": [64, 4], "byte_offset": 35200, "byte_length": 1024 },
+    "arena3_ultra_delta.core1_input_proj": { "arena": 3, "dtype": "f32", "shape": [1, 4, 4], "byte_offset": 36224, "byte_length": 64 },
+    "arena3_ultra_delta.core1_exec_blocks_soa": { "arena": 3, "dtype": "f32", "shape": [4, 832], "byte_offset": 36288, "byte_length": 13312 },
+    "arena3_ultra_delta.core1_stereo_head_svd": { "arena": 3, "dtype": "f32", "shape": [9, 2, 16, 4], "byte_offset": 49600, "byte_length": 10240 },
+    "arena3_ultra_delta.core2_mufdn_soa": { "arena": 3, "dtype": "f32", "shape": [32, 4], "byte_offset": 59840, "byte_length": 512 },
+    "arena3_ultra_delta.control_bus_proj": { "arena": 3, "dtype": "f32", "shape": [228, 4], "byte_offset": 60352, "byte_length": 3648 }
   }
 }
 ```
@@ -448,33 +470,35 @@ The UTF-8 JSON header at byte offset `0x40` contains the model configuration, es
 ### 6.1 Zero Weight Duplication & Zero `pickle` Vulnerability
 
 Unlike legacy checkpoints that store both an exported model dictionary and a redundant PyTorch `state_dict` via `torch.save` (`pickle`), `.dnam-ckpt` (`magic = b"DNCK"`):
-1. **Stores Model Weights Exactly Once (`Arena 0..2`):** The first `arena_offset_ultra_end` (`36,224`) bytes of the `.dnam-ckpt` tensor arena ARE the exact `Arena 0..2` runtime tensors of the `.dnam` model. Exporting a `.dnam` after a Tier-1 Kronecker stem addition updates the SVD head tensors in `Arena 0..2` and writes the prefix directly.
+1. **Stores Model Weights Exactly Once (`Arena 0..3`):** The first `arena_offset_ultra_end` (`64,000`) bytes of the `.dnam-ckpt` tensor arena ARE the exact `Arena 0..3` runtime tensors of the `.dnam` model. Exporting a `.dnam` after a Tier-1 Kronecker stem addition updates the SVD head tensors in `Arena 0..3` and writes the prefix directly.
 2. **Eliminates Python `pickle`:** `.dnam-ckpt` is a pure Hybrid Binary Container (`DNCK` preamble + JSON metadata + `f32`/`f64` IEEE-754 arrays) that is 100% safe against arbitrary code execution and directly readable from Rust, Python, and TypeScript/WASM.
 
 ### 6.2 Tier-Ordered Column-Major Upper-Triangular Packing (`uplo='U'`) for $\mathbf{G}_{\text{audio}}^{(s)}$
 
-For each recorded training stem $s \in \lbrace 1, \dots, S \rbrace$, let $\mathbf{\Phi}_s \in \mathbb{R}^{L_s \times N}$ ($N = 16C \in \lbrace 64, 128, 192 \rbrace$) be the 16-tap unfolded Core 1 feature matrix, ordered by **Slimmable Tier**:
+For each recorded training stem $s \in \lbrace 1, \dots, S \rbrace$, let $\mathbf{\Phi}_s \in \mathbb{R}^{L_s \times N}$ ($N = 16C \in \lbrace 64, 128, 192, 256 \rbrace$) be the 16-tap unfolded Core 1 feature matrix, ordered by **Slimmable Tier**:
 - Indices `0..63`: `Lite` channels (`ch 0..3` $\times$ 16 taps)
 - Indices `64..127`: `Full` delta channels (`ch 4..7` $\times$ 16 taps)
-- Indices `128..191`: `Ultra` delta channels (`ch 8..11` $\times$ 16 taps)
+- Indices `128..191`: `Pro` delta channels (`ch 8..11` $\times$ 16 taps)
+- Indices `192..255`: `Ultra` delta channels (`ch 12..15` $\times$ 16 taps)
 
-Because the per-stem audio Gram matrix $\mathbf{G}_{\text{audio}}^{(s)} = \mathbf{\Phi}_s^\top \mathbf{\Phi}_s \in \mathbb{R}^{N \times N}$ is **symmetric positive semi-definite** ($\mathbf{G}_{i,j}^{(s)} = \mathbf{G}_{j,i}^{(s)}$), storing the full $N \times N$ matrix wastes $\frac{N(N-1)}{2}$ redundant `float64` entries (49.7% of the matrix). Instead, `Arena 3` packs the upper triangle ($0 \le i \le j < N$) in **Column-Major Order (`LAPACK uplo='U'`)**:
+Because the per-stem audio Gram matrix $\mathbf{G}_{\text{audio}}^{(s)} = \mathbf{\Phi}_s^\top \mathbf{\Phi}_s \in \mathbb{R}^{N \times N}$ is **symmetric positive semi-definite** ($\mathbf{G}_{i,j}^{(s)} = \mathbf{G}_{j,i}^{(s)}$), storing the full $N \times N$ matrix wastes $\frac{N(N-1)}{2}$ redundant `float64` entries (49.8% of the matrix). Instead, `Arena 4` packs the upper triangle ($0 \le i \le j < N$) in **Column-Major Order (`LAPACK uplo='U'`)**:
 
 $$\mathrm{pack}_{\text{U}}\big(\mathbf{G}_{\text{audio}}^{(s)}\big)\left[i + \frac{j(j + 1)}{2}\right] = \mathbf{G}_{\text{audio}}^{(s)}[i, j], \qquad 0 \le i \le j < N$$
 
 > [!IMPORTANT]
 > **The Nested Principal Submatrix Prefix Theorem & Exact 64-Byte Cache Alignment:**
-> Because column-major upper-triangular index mapping $\text{idx}(i, j) = i + \frac{j(j+1)}{2}$ depends only on $i \le j$, the packed upper triangle of any leading principal submatrix of dimension $N_{\text{tier}} \in \lbrace 64, 128, 192 \rbrace$ occupies the **exact contiguous prefix** $\big[0 \dots \frac{N_{\text{tier}}(N_{\text{tier}} + 1)}{2} - 1\big]$ of the `Ultra` packed array! Furthermore, every tier's packed $\mathrm{pack}_{\text{U}}(\mathbf{G}_{\text{audio}}^{(s)})$ and tier-ordered $\mathbf{C}_{\text{audio}}^{(s)} \in \mathbb{R}^{N \times 2}$ are **exact integer multiples of 64 bytes** with zero padding overhead:
+> Because column-major upper-triangular index mapping $\text{idx}(i, j) = i + \frac{j(j+1)}{2}$ depends only on $i \le j$, the packed upper triangle of any leading principal submatrix of dimension $N_{\text{tier}} \in \lbrace 64, 128, 192, 256 \rbrace$ occupies the **exact contiguous prefix** $\big[0 \dots \frac{N_{\text{tier}}(N_{\text{tier}} + 1)}{2} - 1\big]$ of the `Ultra` packed array! Furthermore, every tier's packed $\mathrm{pack}_{\text{U}}(\mathbf{G}_{\text{audio}}^{(s)})$ and tier-ordered $\mathbf{C}_{\text{audio}}^{(s)} \in \mathbb{R}^{N \times 2}$ are **exact integer multiples of 64 bytes** with zero padding overhead:
 
-| Slimmable Tier | Feature Dim `N = 16C` | Unpacked `G_audio^(s)` (`f64`) | Packed `pack_U(G_audio^(s))` (`f64`) | Cross-Corr `C_audio^(s)` (`f64`) | Total Per-Stem `Arena 3` Record | 64-Byte Cache Lines |
+| Slimmable Tier | Feature Dim `N = 16C` | Unpacked `G_audio^(s)` (`f64`) | Packed `pack_U(G_audio^(s))` (`f64`) | Cross-Corr `C_audio^(s)` (`f64`) | Total Per-Stem `Arena 4` Record | 64-Byte Cache Lines |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: |
 | **`Lite` (`C=4`)** | `N = 64` | `32,768 B` | `2,080 f64` = **`16,640 B`** | `128 f64` = **`1,024 B`** | **`17,664 B` (`17.25 KB/stem`)** | Exact `276 × 64 B` |
 | **`Full` (`C=8`)** | `N = 128` | `131,072 B` | `8,256 f64` = **`66,048 B`** | `256 f64` = **`2,048 B`** | **`68,096 B` (`66.50 KB/stem`)** | Exact `1,064 × 64 B` |
-| **`Ultra` (`C=12`)** | `N = 192` | `294,912 B` | `18,528 f64` = **`148,224 B`** | `384 f64` = **`3,072 B`** | **`151,296 B` (`147.75 KB/stem`)** | Exact `2,364 × 64 B` |
+| **`Pro` (`C=12`)** | `N = 192` | `294,912 B` | `18,528 f64` = **`148,224 B`** | `384 f64` = **`3,072 B`** | **`151,296 B` (`147.75 KB/stem`)** | Exact `2,364 × 64 B` |
+| **`Ultra` (`C=16`)** | `N = 256` | `524,288 B` | `32,896 f64` = **`263,168 B`** | `512 f64` = **`4,096 B`** | **`267,264 B` (`261.00 KB/stem`)** | Exact `4,176 × 64 B` |
 
-### 6.3 `.dnam-ckpt` JSON Header Extensions (`stems_registry` with Per-Stem PCM Provenance & `Arena 3` `CRC32C`)
+### 6.3 `.dnam-ckpt` JSON Header Extensions (`stems_registry` with Per-Stem PCM Provenance & `Arena 4` `CRC32C`)
 
-In addition to all standard `.dnam` JSON fields (`metadata`, `user_metadata`, `controls_schema`, `presets`, `tensor_directory`), a `.dnam-ckpt` JSON header sets `"container_kind": "dnam-ckpt"` and appends `stems_registry` and `audit_report`, recording each stem's **platform-agnostic IEEE-754 PCM SHA-256 digests** (`input_pcm_sha256`, `target_pcm_sha256`), per-stem `stem_arena3_crc32c` (`u32`, Castagnoli `CRC32C` over that stem's $151,296\text{ B}$ `Arena 3` record so individual stem replacements only recompute 1 stem's checksum), optional `user_metadata`, and 64-byte aligned slice inside `Arena 3`:
+In addition to all standard `.dnam` JSON fields (`metadata`, `user_metadata`, `controls_schema`, `presets`, `tensor_directory`), a `.dnam-ckpt` JSON header sets `"container_kind": "dnam-ckpt"` and appends `stems_registry` and `audit_report`, recording each stem's **platform-agnostic IEEE-754 PCM SHA-256 digests** (`input_pcm_sha256`, `target_pcm_sha256`), per-stem `stem_arena3_crc32c` (`u32`, Castagnoli `CRC32C` over that stem's $267,264\text{ B}$ `Arena 4` record so individual stem replacements only recompute 1 stem's checksum), optional `user_metadata`, and 64-byte aligned slice inside `Arena 4`:
 
 ```json
 {
@@ -498,20 +522,20 @@ In addition to all standard `.dnam` JSON fields (`metadata`, `user_metadata`, `c
         "detected_pitch_shift_semitones": 0.0
       },
       "g_audio_uplo_u_f64": {
-        "arena": 3,
+        "arena": 4,
         "dtype": "f64",
         "packing": "uplo_upper_col_major_tier_ordered",
-        "feature_dim": 192,
-        "packed_len": 18528,
-        "byte_offset": 36224,
-        "byte_length": 148224
+        "feature_dim": 256,
+        "packed_len": 32896,
+        "byte_offset": 64000,
+        "byte_length": 263168
       },
       "c_audio_tier_f64": {
-        "arena": 3,
+        "arena": 4,
         "dtype": "f64",
-        "shape": [3, 64, 2],
-        "byte_offset": 184448,
-        "byte_length": 3072
+        "shape": [4, 64, 2],
+        "byte_offset": 327168,
+        "byte_length": 4096
       }
     }
   ],
@@ -528,12 +552,12 @@ In addition to all standard `.dnam` JSON fields (`metadata`, `user_metadata`, `c
 }
 ```
 
-### 6.4 `Arena 4` (`DNCA`, `HAS_CALIB_STATS` Bit 11) & Workspace `.dnam-cache` Sidecar
+### 6.4 `Arena 5` (`DNCA`, `HAS_CALIB_STATS` Bit 12) & Workspace `.dnam-cache` Sidecar
 
-When `HAS_CALIB_STATS` (Bit `11` = `0x0800`) is set in a `.dnam-ckpt` preamble (`version_major = 1, version_minor = 1`), `Arena 4` immediately follows `Arena 3` at 64-byte alignment and stores compact, portable calibration statistics (`magic = b"DNCA"`):
+When `HAS_CALIB_STATS` (Bit `12` = `0x1000`) is set in a `.dnam-ckpt` preamble (`version_major = 1, version_minor = 1`), `Arena 5` immediately follows `Arena 4` at 64-byte alignment and stores compact, portable calibration statistics (`magic = b"DNCA"`):
 
 1. **`DNCA` Arena Header (`64 B`, `align(64)`):**
-   - `magic = b"DNCA"`, `schema_version = 1`, `num_inputs` (`u16`), `num_stems` (`u16`), `total_byte_len` (`u64`, `% 64 == 0`), and `arena4_crc32c` (`u32`, Castagnoli `CRC32C` over the entire `Arena 4` payload with the checksum field zeroed).
+   - `magic = b"DNCA"`, `schema_version = 1`, `num_inputs` (`u16`), `num_stems` (`u16`), `total_byte_len` (`u64`, `% 64 == 0`), and `arena4_crc32c` (`u32`, Castagnoli `CRC32C` over the entire `DNCA` calibration payload with the checksum field zeroed).
 2. **Per-Input Calibration Record (`INPC`, `64 B` Header + 64B-Padded Payload):**
    - Keyed by `input_pcm_sha256` (`32 B`), `sample_rate_hz` (`u32`), `num_samples` (`u32`), `num_seg_windows` (`u16`), `seg_feat_dim` (`u16`), `s1_in_dim` (`u16`), and `s1_out_dim` (`u16`).
    - Stores per-window segmentation Gram matrices (`uplo='U'` `float32`) and Stage-1 orthonormal projector weights (`float32`), enabling instant DP regime segmentation (`segment_regimes_dp`) and Stage-1 basis projection on resume without re-evaluating full-length nonlinear sweeps.
@@ -550,12 +574,12 @@ When `HAS_CALIB_STATS` (Bit `11` = `0x0800`) is set in a `.dnam-ckpt` preamble (
 > [!IMPORTANT]
 > **Canonical Marketplace Specification:** See **[`digital_marketplace_and_provenance.md`](digital_marketplace_and_provenance.md)** for the complete 4-Pillar Security Architecture, 3 Container Protection Profiles (`Open`, `DeviceAllowlisted`, `EnclaveSealed`), creator-signed `DistributionPolicy`, `.dnam-seal` (`b"DNSL"`) 64-byte binary envelope, `OemDeviceCertificate` factory key attestation, Isometric Gauge-Space & Spread-Spectrum Tardos Traitor-Tracing proofs, and `TiDB Cloud Starter` schema.
 
-To support commercial model distribution across open desktop DAWs (`Open`), device-bound desktop/mobile plugins (`DeviceAllowlisted`, `ENCRYPTED_ARENA = 1`), and factory-attested OEM hardware pedalboards (`EnclaveSealed`, `.dnam-seal` `b"DNSL"`), `.dnam` defines an optional creator-signed `metadata.distribution_policy` and `metadata.signatures` envelope (`HAS_SIGNATURES` bit `9` in preamble `flags`):
+To support commercial model distribution across open desktop DAWs (`Open`), device-bound desktop/mobile plugins (`DeviceAllowlisted`, `ENCRYPTED_ARENA = 1`), and factory-attested OEM hardware pedalboards (`EnclaveSealed`, `.dnam-seal` `b"DNSL"`), `.dnam` defines an optional creator-signed `metadata.distribution_policy` and `metadata.signatures` envelope (`HAS_SIGNATURES` bit `10` in preamble `flags`):
 
-1. **Preset-Safe `immutable_header_sha256`, Creator `DistributionPolicy` & 2-Certificate `Ed25519` Delegation Chain (`< 80 µs` Offline UI Verification, See [`digital_marketplace_and_provenance.md` §2](digital_marketplace_and_provenance.md#2-pillar-1-cryptographic-provenance-ed25519-split-payload-chain--creator-signed-distributionpolicy)):**
+1. **Preset-Safe `immutable_header_sha256`, 4-Tier `tier_arena_sha256`, Creator `DistributionPolicy` & 2-Certificate `Ed25519` Delegation Chain (`< 80 µs` Offline UI Verification, See [`digital_marketplace_and_provenance.md` §2](digital_marketplace_and_provenance.md#2-pillar-1-cryptographic-provenance-ed25519-split-payload-chain--creator-signed-distributionpolicy)):**
    - `immutable_header_sha256` hashes the RFC 8785 canonical JSON header **including** `metadata.distribution_policy` (`allowed_protection_profiles`, `allowed_oem_vendors` supporting `"darkglass"` and `"darkglass:anagram_rk3582"`) while **excluding** `presets`, `user_metadata`, `metadata.signatures`, and `slimmable_tiers.*.prefix_crc32c`, allowing buyers to save custom DAW presets in-place (`0x40..0x1000`) on `.dnam` files without invalidating either signature.
-   - **`creator_signature`:** Signed once offline by the creator's `Ed25519` private key over `immutable_header_sha256 || master_arena_sha256`.
-   - **`marketplace_receipt`:** Counter-signed on download (`< 0.1 ms`) by the marketplace's `Ed25519` key binding `master_arena_sha256` $\to$ `buyer_arena_sha256`, `license_id`, `buyer_hash`, `license_tier`, `authorized_devices`, and optional `royalty_splits`:
+   - **`creator_signature`:** Signed once offline by the creator's `Ed25519` private key over `immutable_header_sha256 || master_arena_sha256` (plus optional `tier_arena_sha256: [lite, full, pro, ultra]` enabling zero-re-signing container tier stripping).
+   - **`marketplace_receipt`:** Counter-signed on download (`< 0.1 ms`) by the marketplace's `Ed25519` key binding `master_arena_sha256` $\to$ `buyer_arena_sha256` (plus optional `buyer_tier_arena_sha256: [lite, full, pro, ultra]`), `license_id`, `buyer_hash`, `license_tier`, `authorized_devices`, and optional `royalty_splits`:
 
 ```json
 {
@@ -593,12 +617,12 @@ To support commercial model distribution across open desktop DAWs (`Open`), devi
 }
 ```
 
-2. **Dual-Mechanism Buyer Watermarking in `Arena 0..2` (`< 0.2 ms` Edge Personalization, See [`digital_marketplace_and_provenance.md` §4](digital_marketplace_and_provenance.md#4-pillar-3-forensic-traitor-tracing--02-ms-dual-mechanism-buyer-watermarking)):**
-   - **Mechanism A (Exact Isometric Gauge Watermark, `0.0000 dB` Audio Distortion):** Applies 48-channel RG-LRU reciprocal scaling ($\kappa_{b,c}$ on $b_{\gamma,b,c}$ and $\kappa_{b,c}^{-1}$ on $(c_{\text{real},b,c}, c_{\text{imag},b,c})$) plus SVD control subspace orthogonal rotation ($\mathbf{Q}_{\text{buyer}} \in SO(D_h)$).
-   - **Mechanism B (Coupled Spread-Spectrum Tardos Watermark, `+36.63 dB` Gain across `4,608` Conv Weights):** Survives JSON header stripping, RG-LRU gauge canonicalization, `f32 -> fp16` truncation, and multi-buyer weight-averaging collusion (`min(Z_colluder) >= 24.98 sigma` in `Test 8H`).
+2. **Dual-Mechanism Buyer Watermarking in `Arena 0..3` (`< 0.2 ms` Edge Personalization, See [`digital_marketplace_and_provenance.md` §4](digital_marketplace_and_provenance.md#4-pillar-3-forensic-traitor-tracing--02-ms-dual-mechanism-buyer-watermarking)):**
+   - **Mechanism A (Exact Isometric Gauge Watermark, `0.0000 dB` Audio Distortion):** Applies 64-channel RG-LRU reciprocal scaling (`16` per tier across `Lite`/`Full`/`Pro`/`Ultra`: $\kappa_{b,c}$ on $b_{\gamma,b,c}$ and $\kappa_{b,c}^{-1}$ on $(c_{\text{real},b,c}, c_{\text{imag},b,c})$) plus SVD control subspace orthogonal rotation ($\mathbf{Q}_{\text{buyer}} \in SO(4) \oplus SO(4)$).
+   - **Mechanism B (Coupled Spread-Spectrum Tardos Watermark across `7,680` Conv Weights):** Prefix-composable across tiers (`768` chips in `Lite`, `2,304` in `Full`, `4,608` in `Pro`, `7,680` in `Ultra`); survives JSON header stripping, container tier stripping, RG-LRU gauge canonicalization, `f32 -> fp16` truncation, and multi-buyer weight-averaging collusion (`min(Z_colluder) >= 24.98 sigma` in `Test 8H`).
 3. **3-Tier Protection Profiles & `.dnam-seal` (`b"DNSL"`) Hardware Enclave Wrapper (See [`digital_marketplace_and_provenance.md` §3](digital_marketplace_and_provenance.md#3-pillar-2-hardware-enclave--oem-drm-oemdevicecertificate-attestation--dnam-seal-bdnsl-wrapper) & [`§6`](digital_marketplace_and_provenance.md#6-three-container-protection-profiles-dnamprotectionprofile--loader-auto-detection)):**
    - **`Open` (`"open"`):** Standard `.dnam` (`ENCRYPTED_ARENA = 0`).
-   - **`DeviceAllowlisted` (`"device_allowlisted"`):** `.dnam` (`ENCRYPTED_ARENA = 1`) with plaintext `4 KB` header for DAW/OS indexing and `ChaCha20`-encrypted `Arena 0..2` (`cek_arena`).
+   - **`DeviceAllowlisted` (`"device_allowlisted"`):** `.dnam` (`ENCRYPTED_ARENA = 1`) with plaintext `4 KB` header for DAW/OS indexing and `ChaCha20`-encrypted `Arena 0..3` (`cek_arena`).
    - **`EnclaveSealed` (`"enclave_sealed"`):** Canonical `.dnam-seal` (`b"DNSL"`) 64-byte aligned binary wrapper (`DnamSealEnvelope`) encrypting 100% of an inner `ENCRYPTED_ARENA = 1` `.dnam` container (`cek_outer` + inner `cek_arena`) for factory-attested OEM hardware TrustZone enclaves (`OemDeviceCertificate`).
 
 

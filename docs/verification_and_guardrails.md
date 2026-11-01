@@ -580,32 +580,32 @@ def test_8_parametric_control_bus_and_multistem_conditioning() -> None:
     # Verify 64-byte DnamPreamble, 64-byte ControlClampDescriptor, 3-state PolyADAA DC equilibrium & ZOH rho_ctrl
     import struct
 
-    assert struct.calcsize("<4s3H2B10IH2BfI") == 64
+    assert struct.calcsize("<4s3H2B4I4H4IH2BfI") == 64
     assert struct.calcsize("<2BH9f4B1f4B1f4B1f") == 64
     u_rest = max(-1.0, min(1.0, (2.0 / 3.0) * 0.42))
     g_rest = 0.85 * u_rest * (1.5 - 0.5 * u_rest**2) + 0.25 * (u_rest**2 - u_rest**4)
     assert abs((0.875 * g_rest + 0.125 * g_rest) - (0.9993 * g_rest + 0.0007 * g_rest)) == 0.0
 
     # Verify Isometric Gauge Watermarking (0.00 dB distortion), 4-Buyer Collusion + fp16 Tardos Detection,
-    # and OEM 64-Byte Block-Aligned Arena Wrapping (Lite=168, Full=349, Ultra=566 blocks, 0 B overhead)
+    # and OEM 64-Byte Block-Aligned Arena Wrapping (Lite=168, Full=349, Pro=566, Ultra=1000 blocks, 0 B overhead)
     rng_wm = np.random.default_rng(777)
     b_m, c_m, kap = (
-        rng_wm.uniform(0.3, 0.9, 48),
-        rng_wm.standard_normal(48),
-        rng_wm.uniform(0.985, 1.015, 48),
+        rng_wm.uniform(0.3, 0.9, 64),
+        rng_wm.standard_normal(64),
+        rng_wm.uniform(0.985, 1.015, 64),
     )
     assert float(np.max(np.abs((b_m * kap) * (c_m / kap) - b_m * c_m))) < 1e-14
-    w_m = rng_wm.standard_normal(4608)
-    codes = rng_wm.choice([-1.0, 1.0], size=(64, 4608))
+    w_m = rng_wm.standard_normal(7680)
+    codes = rng_wm.choice([-1.0, 1.0], size=(64, 7680))
     w_pirated = (
         np.mean([w_m + 2e-3 * codes[k] for k in (3, 19, 41, 58)], axis=0)
         .astype(np.float16)
         .astype(np.float64)
     )
-    z_sc = (codes @ np.sign(w_pirated - w_m)) / math.sqrt(4608)
+    z_sc = (codes @ np.sign(w_pirated - w_m)) / math.sqrt(7680)
     assert min(z_sc[k] for k in (3, 19, 41, 58)) > 10.0
-    assert (10752 // 64, 22336 // 64, 36224 // 64) == (168, 349, 566)
-    assert (10752 % 64, 22336 % 64, 36224 % 64) == (0, 0, 0)
+    assert (10752 // 64, 22336 // 64, 36224 // 64, 64000 // 64) == (168, 349, 566, 1000)
+    assert (10752 % 64, 22336 % 64, 36224 % 64, 64000 % 64) == (0, 0, 0, 0)
 ```
 
 ---
@@ -615,5 +615,5 @@ def test_8_parametric_control_bus_and_multistem_conditioning() -> None:
 In addition to `test_dnam_verification.py`, `packages/trainer/tests/test_guardrails.py` must enforce:
 1. **`test_guardrail_agents_md_progressive_disclosure_budgets`:** Verifies that root [`AGENTS.md`](../AGENTS.md) is `< 5,000` bytes and every scoped `AGENTS.md` is `< 2,500` bytes.
 2. **`test_guardrail_documentation_markdown_links_valid`:** Parses all Markdown files (`AGENTS.md`, `README.md`, `CONTRIBUTING.md`, `CLA.md`, and `docs/**/*.md`), strips fenced code blocks and inline code spans, and verifies that every relative link resolves to an existing file on disk.
-3. **`test_guardrail_clamp_registry_integrity`:** Parses `CL-01`..`CL-18` in [`clamp_and_audit_registry.md`](clamp_and_audit_registry.md) and verifies that all 18 clamps are present and map to existing modules under `packages/trainer/src/dnam_trainer/`.
-4. **`test_guardrail_fail_fast_schema_validation`:** Verifies that `.dnam` and `.dnam-ckpt` Hybrid Binary Container loading (`DNAM`/`DNCK` 64-byte preamble, `CRC32C` checksum, 64-byte arena alignment, and JSON metadata) raises explicit `ValueError` / `ValidationError` on invalid magic bytes, checksum mismatch, unaligned tensor offsets (`% 64 != 0`), missing `controls_schema`, invalid sample rates, or unaligned channel counts ($C \notin \lbrace 4, 8, 12 \rbrace$).
+3. **`test_guardrail_clamp_registry_integrity`:** Parses `CL-01`..`CL-20` in [`clamp_and_audit_registry.md`](clamp_and_audit_registry.md) and verifies that all 20 clamps are present and map to existing modules under `packages/trainer/src/dnam_trainer/` and `packages/python/src/dnam_engine/`.
+4. **`test_guardrail_fail_fast_schema_validation`:** Verifies that `.dnam` and `.dnam-ckpt` Hybrid Binary Container loading (`DNAM`/`DNCK` 64-byte preamble, `CRC32C` checksum, 64-byte arena alignment, and JSON metadata) raises explicit `ValueError` / `ValidationError` on invalid magic bytes, checksum mismatch, unaligned tensor offsets (`% 64 != 0`), missing `controls_schema`, invalid sample rates, or unaligned channel counts ($C \notin \lbrace 4, 8, 12, 16 \rbrace$).

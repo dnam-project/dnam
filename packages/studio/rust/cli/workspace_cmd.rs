@@ -14,7 +14,8 @@ use crate::project::{
 };
 use crate::runner::{
     detect_native_backend_str, inspect_container, inspect_container_with_crypto,
-    render_wav_with_crypto, render_wav_with_options,
+    render_wav_with_bounce_and_crypto, render_wav_with_crypto, render_wav_with_options,
+    strip_container_file,
 };
 
 /// Subcommands under `dnam model`.
@@ -426,6 +427,63 @@ pub fn run_render_with_crypto(
         "Rendered 24-bit WAV to {} (tier={})",
         output_wav.display(),
         tier
+    ))
+}
+
+/// Executes `dnam render` with explicit offline bounce flags and optional device/marketplace keys.
+#[allow(clippy::too_many_arguments)]
+pub fn run_render_with_bounce_and_crypto(
+    container_path: &Path,
+    input_wav: &Path,
+    output_wav: &Path,
+    tier: &str,
+    offline_bounce: bool,
+    maximize_tier_on_bounce: bool,
+    preset: Option<&str>,
+    set_controls: &[String],
+    device_id: Option<&str>,
+    device_key_hex: Option<&str>,
+    marketplace_pubkey_hex: Option<&str>,
+) -> StudioResult<String> {
+    let mut overrides = BTreeMap::new();
+    for item in set_controls {
+        for part in item.split(',') {
+            if let Some((k, v)) = part.trim().split_once('=') {
+                overrides.insert(k.trim().to_string(), v.trim().to_string());
+            }
+        }
+    }
+    render_wav_with_bounce_and_crypto(
+        container_path,
+        input_wav,
+        output_wav,
+        tier,
+        preset,
+        &overrides,
+        offline_bounce,
+        maximize_tier_on_bounce,
+        device_id,
+        device_key_hex,
+        marketplace_pubkey_hex,
+    )?;
+    Ok(format!(
+        "Rendered 24-bit WAV to {} (tier={}, offline_bounce={}, maximize_tier_on_bounce={})",
+        output_wav.display(),
+        tier,
+        offline_bounce,
+        maximize_tier_on_bounce
+    ))
+}
+
+/// Executes `dnam strip`.
+pub fn run_strip(input_path: &Path, output_path: &Path, max_tier: &str) -> StudioResult<String> {
+    let byte_len = strip_container_file(input_path, output_path, max_tier)?;
+    Ok(format!(
+        "Stripped container {} -> {} (max_tier={}, {} bytes)",
+        input_path.display(),
+        output_path.display(),
+        max_tier,
+        byte_len
     ))
 }
 

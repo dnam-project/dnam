@@ -3,10 +3,11 @@
 
 use std::collections::BTreeMap;
 
+use dnam_engine::Tier;
 use dnam_engine::container::{
     ARENA_OFFSET_ULTRA_END, DnamContainerView, DnamPreamble, ZohRescaledParams,
-    build_dnam_container, crc32c_compute, pack_uplo_u_f64, unpack_uplo_u_f64,
-    update_header_in_place, uplo_u_packed_len,
+    build_dnam_container, crc32c_compute, pack_uplo_u_f64, strip_container_to_tier,
+    unpack_uplo_u_f64, update_header_in_place, uplo_u_packed_len,
 };
 use dnam_engine::control::{ControlClampDescriptor, MAX_CONTROLS};
 use dnam_engine::provenance::{RustCryptoProvider, decode_hex_array};
@@ -313,6 +314,12 @@ pub fn build_reference_container_core(
     arena[20..24].copy_from_slice(&1.0_f32.to_le_bytes());
     arena[4224..4228].copy_from_slice(&0.25_f32.to_le_bytes());
     arena[4480..4484].copy_from_slice(&0.25_f32.to_le_bytes());
+    // Populate Arena 1 (Full), Arena 2 (Pro), and Arena 3 (Ultra) non-zero weights
+    arena[10816..10820].copy_from_slice(&0.35_f32.to_le_bytes());
+    arena[22400..22404].copy_from_slice(&0.35_f32.to_le_bytes());
+    arena[36288..36292].copy_from_slice(&0.35_f32.to_le_bytes());
+    arena[49600..49604].copy_from_slice(&0.10_f32.to_le_bytes());
+    arena[62400..62404].copy_from_slice(&0.20_f32.to_le_bytes());
 
     let descriptors = header
         .compile_clamp_descriptors()
@@ -323,6 +330,19 @@ pub fn build_reference_container_core(
     }
 
     build_dnam_container(&mut header, &arena, &arena, false)
+        .map_err(|e| format_tagged_dnam_error(&e))
+}
+
+/// Strips a `.dnam` or `.dnam-ckpt` container down to `max_tier` (`0..=3`) without invalidating
+/// `Ed25519` creator or marketplace signatures (`tier_arena_sha256`).
+pub fn strip_container_to_tier_core(
+    container_bytes: &[u8],
+    max_tier: u8,
+) -> Result<Vec<u8>, String> {
+    if !(0..=3).contains(&max_tier) {
+        return Err(format!("[DNAM-VALIDATION] Invalid tier: {max_tier}"));
+    }
+    strip_container_to_tier(container_bytes, Tier::from_u8(max_tier))
         .map_err(|e| format_tagged_dnam_error(&e))
 }
 

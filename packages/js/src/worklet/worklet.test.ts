@@ -150,10 +150,10 @@ describe("WebAudio AudioWorklet Processor, SharedArrayBuffer Bridge & Controller
     expect(harness.processor.process([[inL]], [[outL]])).toBe(true);
     expect(harness.processor.process([], [])).toBe(true);
 
-    expect(controller.activeTier).toBe(2);
+    expect(controller.activeTier).toBe(3);
     expect(controller.activeTierName).toBe("ultra");
     const telem = controller.telemetry();
-    expect(telem.activeTier).toBe(2);
+    expect(telem.activeTier).toBe(3);
 
     // Hot-swap reload in SharedArrayBuffer mode
     const cLite = DnamContainer.createReference(false, "wasm");

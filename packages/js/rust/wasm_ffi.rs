@@ -6,8 +6,8 @@ use std::slice;
 
 use crate::container::{
     ControlSpaceCore, build_container_core, build_reference_container_core, compute_zoh_core,
-    crc32c_core, pack_uplo_u_core, unpack_uplo_u_core, update_header_in_place_core,
-    validate_container_with_key_core,
+    crc32c_core, pack_uplo_u_core, strip_container_to_tier_core, unpack_uplo_u_core,
+    update_header_in_place_core, validate_container_with_key_core,
 };
 use crate::dsp::{
     cubic_lagrange_weights_core, eval_chebyshev_lfo_core, eval_chebyshev_lfo_slice_core,
@@ -214,6 +214,127 @@ pub extern "C" fn dnam_wasm_engine_set_tier(handle: *mut EngineCore, tier: u8) -
     let engine = unsafe { &mut *handle };
     match engine.set_tier(tier) {
         Ok(()) => 0,
+        Err(e) => set_error(e),
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn dnam_wasm_engine_max_supported_tier(handle: *const EngineCore) -> u8 {
+    if handle.is_null() {
+        return 3;
+    }
+    let engine = unsafe { &*handle };
+    engine.max_supported_tier()
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn dnam_wasm_engine_set_max_supported_tier(
+    handle: *mut EngineCore,
+    tier: u8,
+) -> i32 {
+    if handle.is_null() {
+        return set_error("[DNAM-VALIDATION] Null engine handle".to_string());
+    }
+    let engine = unsafe { &mut *handle };
+    match engine.set_max_supported_tier(tier) {
+        Ok(()) => 0,
+        Err(e) => set_error(e),
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn dnam_wasm_engine_max_available_tier(handle: *const EngineCore) -> u8 {
+    if handle.is_null() {
+        return 3;
+    }
+    let engine = unsafe { &*handle };
+    engine.max_available_tier()
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn dnam_wasm_engine_effective_tier(handle: *const EngineCore) -> u8 {
+    if handle.is_null() {
+        return 0;
+    }
+    let engine = unsafe { &*handle };
+    engine.effective_tier()
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn dnam_wasm_engine_offline_bounce(handle: *const EngineCore) -> u8 {
+    if handle.is_null() {
+        return 0;
+    }
+    let engine = unsafe { &*handle };
+    u8::from(engine.offline_bounce())
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn dnam_wasm_engine_set_offline_bounce(handle: *mut EngineCore, enabled: u8) {
+    if !handle.is_null() {
+        let engine = unsafe { &mut *handle };
+        engine.set_offline_bounce(enabled != 0);
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn dnam_wasm_engine_maximize_tier_on_bounce(handle: *const EngineCore) -> u8 {
+    if handle.is_null() {
+        return 1;
+    }
+    let engine = unsafe { &*handle };
+    u8::from(engine.maximize_tier_on_bounce())
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn dnam_wasm_engine_set_maximize_tier_on_bounce(
+    handle: *mut EngineCore,
+    enabled: u8,
+) {
+    if !handle.is_null() {
+        let engine = unsafe { &mut *handle };
+        engine.set_maximize_tier_on_bounce(enabled != 0);
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn dnam_wasm_engine_latency_samples(handle: *const EngineCore) -> u32 {
+    if handle.is_null() {
+        return 0;
+    }
+    let engine = unsafe { &*handle };
+    engine.latency_samples() as u32
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn dnam_wasm_engine_render_offline_bounce(
+    handle: *mut EngineCore,
+    left_in_ptr: *const f32,
+    right_in_ptr: *const f32,
+    left_out_ptr: *mut f32,
+    right_out_ptr: *mut f32,
+    num_samples: usize,
+    buffer_size: usize,
+) -> i32 {
+    if handle.is_null() {
+        return set_error("[DNAM-VALIDATION] Null engine handle".to_string());
+    }
+    let engine = unsafe { &mut *handle };
+    let left_in = unsafe { slice_from_raw(left_in_ptr, num_samples) };
+    let right_in = unsafe { slice_from_raw(right_in_ptr, num_samples) };
+    let left_out = unsafe { slice_from_raw_mut(left_out_ptr, num_samples) };
+    let right_out = unsafe { slice_from_raw_mut(right_out_ptr, num_samples) };
+    let opt_chunk = if buffer_size > 0 {
+        Some(buffer_size)
+    } else {
+        None
+    };
+    match engine.render_offline_bounce(left_in, right_in, opt_chunk) {
+        Ok((out_l, out_r)) => {
+            left_out.copy_from_slice(&out_l);
+            right_out.copy_from_slice(&out_r);
+            0
+        }
         Err(e) => set_error(e),
     }
 }
@@ -493,7 +614,7 @@ pub extern "C" fn dnam_wasm_validate_container_with_key(
         Err(e) => return set_error(e),
     };
     let p = info.preamble;
-    let out = unsafe { slice_from_raw_mut(out_f64_ptr, 26) };
+    let out = unsafe { slice_from_raw_mut(out_f64_ptr, 28) };
     out[0] = if info.magic_str == "DNCK" { 1.0 } else { 0.0 };
     out[1] = f64::from(p.version_major);
     out[2] = f64::from(p.version_minor);
@@ -504,9 +625,9 @@ pub extern "C" fn dnam_wasm_validate_container_with_key(
     out[7] = f64::from(p.json_header_byte_len);
     out[8] = f64::from(p.tensor_arena_offset);
     out[9] = f64::from(p.tensor_arena_byte_len);
-    out[10] = f64::from(p.arena_offset_lite_end);
-    out[11] = f64::from(p.arena_offset_full_end);
-    out[12] = f64::from(p.arena_offset_ultra_end);
+    out[10] = f64::from(p.arena_offset_lite_end());
+    out[11] = f64::from(p.arena_offset_full_end());
+    out[12] = f64::from(p.arena_offset_ultra_end());
     out[13] = f64::from(p.arena_crc32c_lite);
     out[14] = f64::from(p.arena_crc32c_full);
     out[15] = f64::from(p.arena_crc32c_ultra);
@@ -528,10 +649,25 @@ pub extern "C" fn dnam_wasm_validate_container_with_key(
         "enclave_sealed" => 2.0,
         _ => 0.0,
     };
+    out[26] = f64::from(p.arena_offset_pro_end());
+    out[27] = f64::from(p.arena_crc32c_pro);
     LAST_ARENA.with(|a| {
         *a.borrow_mut() = info.arena_bytes;
     });
     set_result(info.header_json.into_bytes())
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn dnam_wasm_strip_container_to_tier(
+    container_ptr: *const u8,
+    container_len: usize,
+    max_tier: u8,
+) -> i32 {
+    let container = unsafe { slice_from_raw(container_ptr, container_len) };
+    match strip_container_to_tier_core(container, max_tier) {
+        Ok(bytes) => set_result(bytes),
+        Err(e) => set_error(e),
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -1183,14 +1319,14 @@ pub extern "C" fn dnam_wasm_score_tardos_watermark(
 pub extern "C" fn dnam_wasm_extract_structural_hash(
     arena_ptr: *const u8,
     arena_len: usize,
-    out_160_ptr: *mut f64,
+    out_224_ptr: *mut f64,
 ) -> i32 {
     let arena = unsafe { slice_from_raw(arena_ptr, arena_len) };
     match extract_structural_hash_core(arena) {
-        Ok(vec160) => {
-            let out = unsafe { slice_from_raw_mut(out_160_ptr, vec160.len()) };
-            out.copy_from_slice(&vec160);
-            0
+        Ok(vec_hash) => {
+            let out = unsafe { slice_from_raw_mut(out_224_ptr, vec_hash.len()) };
+            out.copy_from_slice(&vec_hash);
+            vec_hash.len() as i32
         }
         Err(e) => set_error(e),
     }

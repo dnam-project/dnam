@@ -1,6 +1,6 @@
 # Core 2: Unified Stereo In-Loop Diffusive Modulated & Windowed Time-Warped Unitary FDN (`M-UFDN` / `WT-UFDN`)
 
-Core 2 models all time-varying delay, modulation, spatial, dispersion, reverberant, **granular synthesis / pitch-shimmer**, and **infinite spectral freeze** phenomena within a single mode-free **Windowed Time-Warped Modulated Unitary Feedback Delay Network (`M-UFDN` / `WT-UFDN`)** with $M = 4$ (`Lite`) or $M = 8$ (`Full` & `Ultra`) `fp16` delay lines and a shared-buffer 8-tap early reflection & 64-sample Through-Zero Flanger reference tap:
+Core 2 models all time-varying delay, modulation, spatial, dispersion, reverberant, **granular synthesis / pitch-shimmer**, and **infinite spectral freeze** phenomena within a single mode-free **Windowed Time-Warped Modulated Unitary Feedback Delay Network (`M-UFDN` / `WT-UFDN`)** with $M = 4$ (`Lite`), $M = 8$ (`Full` & `Pro`), or $M = 16$ (`Ultra`) `fp16` delay lines and a shared-buffer 8-tap early reflection & 64-sample Through-Zero Flanger reference tap:
 
 - **Micro Horizon ($0.2\text{–}8\text{ ms}$):** True Through-Zero Flanging ($\Delta\tau = 0.0\text{ ms}$), Resonant Jet Flanging, and Double-Tracking Comb Filters.
 - **Short Horizon ($8\text{–}45\text{ ms}$):** Quadrature Stereo Chorus, 3D Leslie Rotary Doppler Pitch Shift, Vibrato, and Slapback Doubling.
@@ -38,7 +38,7 @@ To model analog tape **Through-Zero Flanging** (where the modulated "variable" r
 ## 2. In-Loop Schroeder All-Pass Diffusers & Givens + Householder Stereo Mixing
 
 ### 2.1 Co-Prime In-Loop Schroeder All-Pass Diffusers (`InLoopAP`, `CL-08`)
-Each delay line $m$ includes a fixed-integer Schroeder all-pass filter with co-prime delay length $D_{\text{ap},m} \in \lbrace 19, 31, 47, 73, 103, 139, 179, 223 \rbrace$ and clamped all-pass coefficient $a_{\text{diff},m} \in [-0.75, +0.75]$ (`CL-08`):
+Each delay line $m$ includes a fixed-integer Schroeder all-pass filter with co-prime delay length $D_{\text{ap},m} \in \lbrace 19, 31, 47, 73, 103, 139, 179, 223 \rbrace$ (lines $0\dots 7$ for `Lite`/`Full`/`Pro`) and $\lbrace 29, 53, 83, 113, 151, 191, 233, 251 \rbrace$ (lines $8\dots 15$ for `Ultra`) and clamped all-pass coefficient $a_{\text{diff},m} \in [-0.75, +0.75]$ (`CL-08`):
 $$v_{\text{ap},m}[n] = d_m[n] - a_{\text{diff},m} u_{\text{ap},m}[n - D_{\text{ap},m}], \qquad p_m[n] = a_{\text{diff},m} v_{\text{ap},m}[n] + u_{\text{ap},m}[n - D_{\text{ap},m}]$$
 Because $|H_{\text{ap}}(e^{i\omega})| \equiv 1.0 \forall\omega$, the diffuser is strictly lossless and unifies three distinct physical regimes via a single parameter:
 - **$a_{\text{diff},m} = 0.0$:** Pure delay line for **Crisp Digital / Analog Tape Echoes, Chorus, and Flangers**.
@@ -46,7 +46,7 @@ Because $|H_{\text{ap}}(e^{i\omega})| \equiv 1.0 \forall\omega$, the diffuser is
 - **$a_{\text{diff},m} \in [-0.75, 0.0)$:** Frequency-dependent group-delay dispersion (chirp) for ** Tank Spring Reverb "Drip"**.
 
 ### 2.2 $O(M)$ Givens + Householder Orthogonal Stereo Feedback Matrix $\mathbf{U}(\psi, \mathbf{v})$
-Instead of a fixed permutation (which cannot smoothly interpolate between Dual-Mono and Ping-Pong) or a dense $M \times M$ matrix ($64\text{ MACs}$), DNAM pairs a block-diagonal $2\times 2$ **Givens Stereo Rotation** $\mathbf{R}(\psi)$ (evaluated at $3\text{ kHz}$ via the algebraic unit-circle rotor `CL-03`) with a unit-norm **Householder Reflection** $\mathbf{H}(\mathbf{v}) = \mathbf{I}_M - 2\mathbf{v}\mathbf{v}^\top$ ($\Vert \mathbf{v}\Vert _2 = 1$):
+Instead of a fixed permutation (which cannot smoothly interpolate between Dual-Mono and Ping-Pong) or a dense $M \times M$ matrix ($64\text{–}256\text{ MACs}$), DNAM pairs a block-diagonal $2\times 2$ **Givens Stereo Rotation** $\mathbf{R}(\psi)$ (evaluated at $3\text{ kHz}$ via the algebraic unit-circle rotor `CL-03`, with 8 pairwise Givens rotations in `Ultra` coupling lines $0\dots 7$ with lines $8\dots 15$) with a unit-norm **Householder Reflection** $\mathbf{H}(\mathbf{v}) = \mathbf{I}_M - 2\mathbf{v}\mathbf{v}^\top$ ($\Vert \mathbf{v}\Vert _2 = 1$, using exact $1/8 = 0.125$ Householder scale in `Ultra` $M = 16$):
 $$\mathbf{U}(\psi, \mathbf{v}) = \mathbf{H}(\mathbf{v}) \mathbf{R}(\psi), \qquad \mathbf{q}[n] = \mathbf{U}(\psi, \mathbf{v}) \mathbf{p}[n]$$
 In `Test 5`, $\mathbf{U}(\psi, \mathbf{v})$ satisfies $\Vert \mathbf{U}^\top \mathbf{U} - \mathbf{I}_M\Vert _\infty < 10^{-14}$ with all $|\lambda_i(\mathbf{U})| \equiv 1.000000000000$, smoothly spanning:
 - **$\psi = 0, \mathbf{v} = \mathbf{0}$:** Independent **Dual-Mono** delay lines.
@@ -80,7 +80,7 @@ When paired with Core 1B's crossover poles and Core 2's quadrature Doppler delay
 
 ---
 
-## 4. Mode-Free $3\text{ kHz}$ State-Space Windowed Time-Warped Unitary FDN (`WT-UFDN`) & 3-Tier Pre-Head Kronecker Routing
+## 4. Mode-Free $3\text{ kHz}$ State-Space Windowed Time-Warped Unitary FDN (`WT-UFDN`) & 4-Tier Pre-Head Kronecker Routing
 
 Rather than branching on a discrete mode enum, `Core 2` unifies standard delay/reverb, granular clouds, pitch-shifted shimmer, and infinite spectral freeze into a **single continuous state-space law** modulated at $3\text{ kHz}$ (`16×` decimated) by the 8-element control-bus state $\mathbf{q}_8[k] = [z_{\text{head},0..3}, l_{\text{lfo},0}, l_{\text{lfo},1}, e_{\text{sustain}}, \Delta e_{\text{onset}}]^\top$ via the `8 × 32` (`1,024 B`) projection matrix $\mathbf{W}_{\text{ctrl,core2}}$ at `bytes 9216..10240` of `Arena 0`:
 $$\boldsymbol{\theta}_{\text{core2}}[k] = \boldsymbol{\theta}_{\text{core2},0} + \mathbf{W}_{\text{ctrl,core2}}^\top \mathbf{q}_8[k] \in \mathbb{R}^{32}$$
@@ -110,11 +110,12 @@ where $\nu_m[k] = 1 - 2^{\Delta p_m / 12} \in [-2, +2]$ is the time-warp / pitch
 2. **Continuous & Latching Unitary Spectral Freeze ($\alpha_{\text{freeze}} \in [0, 1]$):**
    Driven by a `ControlCalibrationRole::FreezeLatch` switch/knob or [`DnamEngine::set_freeze`](../packages/engine/src/engine.rs), $\alpha_{\text{freeze}}[n] \in [0, 1]$ slews input injection to $(1 - \alpha_{\text{freeze}}[n])\mathbf{u}_{\text{in}}[n]$ and interpolates the loop gain $g_{\text{lin},m}$ onto the coercive limit-cycle sphere (`1.0035`, bounded by $V_{\text{ceil},m} \le 0.985$, `CL-10`–`CL-11`). When `io_config.capabilities.freeze_mutes_dry == false` (default **Sound-on-Sound** mode), live dry + `Core 1` solo notes continue playing over the infinite frozen `Core 2` pad.
 
-### 4.3 3-Tier (`Lite` / `Full` / `Ultra`) Pre-Head Kronecker Routing + Direct Stereo Wet Sum (`0` Extra $48\text{ kHz}$ MACs)
-Whenever `core2.active` is `true`, `ModulatedUfdn` exposes 12 channels across 3 4-lane groups (`latest_ap_out: [[f32; 4]; 3]`):
+### 4.3 4-Tier (`Lite` / `Full` / `Pro` / `Ultra`) Pre-Head Kronecker Routing + Direct Stereo Wet Sum (`0` Extra $48\text{ kHz}$ MACs)
+Whenever `core2.active` is `true`, `ModulatedUfdn` exposes 16 channels across 4 4-lane groups (`latest_ap_out: [[f32; 4]; 4]`):
 - **Group 0 (`latest_ap_out[0]`, lines `0..3`):** Injected into `Lite` (`h0`, `64` taps) via `head_tap_inject_gain` before pushing into the 16-tap `Lite` delay buffer.
 - **Group 1 (`latest_ap_out[1]`, lines `4..7`):** Injected into `Full` (`h1`, `128` taps) before pushing into the 16-tap `Full` delay buffer.
-- **Group 2 (`latest_ap_out[2]`, cross-diffused post-Givens + early-reflection/grain taps):** Injected into `Ultra` (`h2`, `192` taps) before pushing into the 16-tap `Ultra` delay buffer.
+- **Group 2 (`latest_ap_out[2]`, cross-diffused post-Givens + early-reflection/grain taps):** Injected into `Pro` (`h2`, `192` taps) before pushing into the 16-tap `Pro` delay buffer.
+- **Group 3 (`latest_ap_out[3]`, `Ultra` extended diffuser lines `8..15` coupled via 8 Givens rotations):** Injected into `Ultra` (`h3`, `256` taps) before pushing into the 16-tap `Ultra` delay buffer.
 
-Evaluating the existing 16-tap `192-D` Kronecker Head $\mathbf{W}_{\text{head}}(\mathbf{z}_{\text{head}})$ on those combined features—summed with `Core 2`'s direct stereo wet output (`c2[0..1]`)—gives every `Core 2` line a **learned 16-tap stereo FIR + Rank-4 control-dependent tone/post-filter** with **`0` extra $48\text{ kHz}$ MACs**!
+Evaluating the existing 16-tap `64 / 128 / 192 / 256-D` Kronecker Head $\mathbf{W}_{\text{head}}(\mathbf{z}_{\text{head}})$ (`D_h = 4` for `Lite`/`Full`/`Pro`, `D_h = 8` for `Ultra`) on those combined features—summed with `Core 2`'s direct stereo wet output (`c2[0..1]`)—gives every `Core 2` line a **learned 16-tap stereo FIR + Rank-4/Rank-8 control-dependent tone/post-filter** with **`0` extra $48\text{ kHz}$ MACs**!
 

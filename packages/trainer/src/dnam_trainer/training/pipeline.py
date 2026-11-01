@@ -88,6 +88,7 @@ from dnam_trainer.training.accelerator import resolve_accelerator_runtime
 from dnam_trainer.training.arena import (
     ARENA_OFFSET_FULL_END,
     ARENA_OFFSET_LITE_END,
+    ARENA_OFFSET_PRO_END,
     ARENA_OFFSET_ULTRA_END,
     ArenaWeightLayout,
     build_signed_dnam_containers,
@@ -106,8 +107,9 @@ from dnam_trainer.training.kronecker_head import (
     compute_modulated_stem_sufficient_statistics,
     compute_stem_sufficient_statistics,
     compute_svd_control_projector,
+    compute_svd_control_projector_ultra,
     evaluate_kronecker_head_features,
-    evaluate_stem_besr_from_sufficient_stats,
+    evaluate_stem_besr_4tier_from_sufficient_stats,
     merge_stem_statistics_for_resume,
     precompute_base48_band_cache,
     solve_all_tiers_kronecker_head_float64,
@@ -398,11 +400,15 @@ def _calibrate_capabilities_and_leveling(
     default_features_192: NDArray[np.floating[Any]] | None,
     stem_stats: Sequence[StemSufficientStatistics],
 ) -> tuple[
-    ModelCapabilities, LevelingConfig, tuple[float, float, float], tuple[float, float, float]
+    ModelCapabilities,
+    LevelingConfig,
+    tuple[float, float, float, float],
+    tuple[float, float, float, float],
 ]:
     """Computes `ModelCapabilities`, `LevelingConfig` anchored strictly at default control settings
     (`controls_schema[*].default`, normalized `u = 0`, `z_head = 0`), tier loudness
-    `(L_lite, L_full, L_ultra)`, and inter-tier parity trims `(trim_lite_db, trim_full_db, 0.0)`.
+    `(L_lite, L_full, L_pro, L_ultra)`, and inter-tier parity trims
+    `(trim_lite_db, trim_full_db, trim_pro_db, 0.0)`.
     """
     cfg_blend = getattr(config, "blend_mode", "auto")
     resolved_blend: Literal["none", "host_parallel", "modeled_control"]
@@ -478,22 +484,28 @@ def _calibrate_capabilities_and_leveling(
         y_full = evaluate_kronecker_head_features(
             default_features_192, z_zero, head_sol.w_full_5x2x128
         )
+        y_pro = evaluate_kronecker_head_features(
+            default_features_192, z_zero, head_sol.pro_head_5x2x192
+        )
         y_ultra = evaluate_kronecker_head_features(
             default_features_192, z_zero, head_sol.w_ultra_5x2x192
         )
         l_lite = measure_gated_loudness_db(y_lite, sample_rate_hz=sample_rate_hz, metric=metric)
         l_full = measure_gated_loudness_db(y_full, sample_rate_hz=sample_rate_hz, metric=metric)
+        l_pro = measure_gated_loudness_db(y_pro, sample_rate_hz=sample_rate_hz, metric=metric)
         l_ultra = measure_gated_loudness_db(y_ultra, sample_rate_hz=sample_rate_hz, metric=metric)
     elif stem_stats:
         from dnam_engine.container import GramMatrix
 
         stat_idx = min(best_idx, len(stem_stats) - 1)
         st0 = stem_stats[stat_idx]
+        u_dim = int(head_sol.w_ultra_5x2x192.shape[2])
         tier_quads: list[float] = []
         for tier_dim, w_head in (
             (64, head_sol.w_lite_5x2x64),
             (128, head_sol.w_full_5x2x128),
-            (192, head_sol.w_ultra_5x2x192),
+            (192, head_sol.pro_head_5x2x192),
+            (u_dim, head_sol.w_ultra_5x2x192),
         ):
             w_dc = np.asarray(w_head[0], dtype=np.float64)  # (2, tier_dim) at z_head = 0
             g_sub = GramMatrix.unpack(st0.g_audio_uplo_u_f64, dim=tier_dim)
@@ -504,15 +516,17 @@ def _calibrate_capabilities_and_leveling(
                 targets_list[best_idx], sample_rate_hz=sample_rate_hz, metric=metric
             )
             l_ultra = base_wet_db
-            l_full = base_wet_db + 10.0 * math.log10(tier_quads[1] / tier_quads[2])
-            l_lite = base_wet_db + 10.0 * math.log10(tier_quads[0] / tier_quads[2])
+            l_pro = base_wet_db + 10.0 * math.log10(tier_quads[2] / tier_quads[3])
+            l_full = base_wet_db + 10.0 * math.log10(tier_quads[1] / tier_quads[3])
+            l_lite = base_wet_db + 10.0 * math.log10(tier_quads[0] / tier_quads[3])
         else:
             n_frames = float(max(1, st0.num_frames))
             l_lite = float(10.0 * math.log10(max(tier_quads[0] / (2.0 * n_frames), 1.0e-12)))
             l_full = float(10.0 * math.log10(max(tier_quads[1] / (2.0 * n_frames), 1.0e-12)))
-            l_ultra = float(10.0 * math.log10(max(tier_quads[2] / (2.0 * n_frames), 1.0e-12)))
+            l_pro = float(10.0 * math.log10(max(tier_quads[2] / (2.0 * n_frames), 1.0e-12)))
+            l_ultra = float(10.0 * math.log10(max(tier_quads[3] / (2.0 * n_frames), 1.0e-12)))
     else:
-        l_lite, l_full, l_ultra = ref_in_db, ref_in_db, ref_in_db
+        l_lite, l_full, l_pro, l_ultra = ref_in_db, ref_in_db, ref_in_db, ref_in_db
 
     unity_offset_db = round(ref_in_db - l_ultra, 3)
     cal_trim_db = round((unity_offset_db + target_gain_db) if auto_unity else target_gain_db, 3)
@@ -527,11 +541,12 @@ def _calibrate_capabilities_and_leveling(
     )
     trim_lite = float(np.clip(round(l_ultra - l_lite, 3), -12.0, 12.0))
     trim_full = float(np.clip(round(l_ultra - l_full, 3), -12.0, 12.0))
+    trim_pro = float(np.clip(round(l_ultra - l_pro, 3), -12.0, 12.0))
     return (
         capabilities,
         leveling,
-        (round(l_lite, 3), round(l_full, 3), round(l_ultra, 3)),
-        (trim_lite, trim_full, 0.0),
+        (round(l_lite, 3), round(l_full, 3), round(l_pro, 3), round(l_ultra, 3)),
+        (trim_lite, trim_full, trim_pro, 0.0),
     )
 
 
@@ -615,8 +630,8 @@ def _compute_intrinsic_control_modulators(
 
 
 class DnamTriPhysicsModel(nn.Module):
-    """Differentiable Tri-Physics PyTorch model producing 3-tier nested 192-D features (`64` Lite,
-    `128` Full, `192` Ultra) and stereo Kronecker output predictions.
+    """Differentiable Tri-Physics PyTorch model producing 4-tier nested 256-D features (`64` Lite,
+    `128` Full, `192` Pro, `256` Ultra) and stereo Kronecker output predictions.
     """
 
     def __init__(
@@ -636,35 +651,36 @@ class DnamTriPhysicsModel(nn.Module):
 
         self.dilations = (1, 3, 7, 19)
         self.tier_in_proj = nn.ParameterList(
-            [nn.Parameter(torch.empty(4, 2, dtype=torch.float32)) for _ in range(3)]
+            [nn.Parameter(torch.empty(4, 2, dtype=torch.float32)) for _ in range(4)]
         )
         self.tier_conv_weights = nn.ParameterList(
-            [nn.Parameter(torch.empty(4, 4, 6, dtype=torch.float32)) for _ in range(3)]
+            [nn.Parameter(torch.empty(4, 4, 6, dtype=torch.float32)) for _ in range(4)]
         )
-        self.poly_adaa_tiers = nn.ModuleList([DifferentiablePolyAdaa(4) for _ in range(3)])
+        self.poly_adaa_tiers = nn.ModuleList([DifferentiablePolyAdaa(4) for _ in range(4)])
         self.rglru_tiers = nn.ModuleList(
             [
                 DifferentiableSelectiveRgLru(4, sample_rate_hz=float(sample_rate_hz))
-                for _ in range(3)
+                for _ in range(4)
             ]
         )
         self.core2_ufdn: DifferentiableModulatedUfdn | None = (
-            DifferentiableModulatedUfdn(num_lines=8, active=True) if core2_active else None
+            DifferentiableModulatedUfdn(num_lines=16, active=True) if core2_active else None
         )
 
-        # Stereo Kronecker head weights: 3 tiers * (5 modes, 2 stereo, 64 features)
+        # Stereo Kronecker head weights: 4 tiers * (5 modes, 2 stereo, 64 features)
         self.w_head_tiers = nn.ParameterList(
-            [nn.Parameter(torch.zeros(5, 2, 64, dtype=torch.float32)) for _ in range(3)]
+            [nn.Parameter(torch.zeros(5, 2, 64, dtype=torch.float32)) for _ in range(4)]
         )
         self.w_head_full = nn.Parameter(torch.zeros(5, 2, 128, dtype=torch.float32))
-        self.w_head_ultra = nn.Parameter(torch.zeros(5, 2, 192, dtype=torch.float32))
+        self.w_head_pro = nn.Parameter(torch.zeros(5, 2, 192, dtype=torch.float32))
+        self.w_head_ultra = nn.Parameter(torch.zeros(5, 2, 256, dtype=torch.float32))
         self.b_head = nn.Parameter(torch.zeros(5, 2, dtype=torch.float32))
         self.register_buffer("p_svd_16x4", torch.zeros(16, 4, dtype=torch.float32))
 
         self._reset_deterministic_parameters()
 
     def _reset_deterministic_parameters(self) -> None:
-        """Initializes all 3 tier groups deterministically with log-spaced poles and rich multi-tap
+        """Initializes all 4 tier groups deterministically with log-spaced poles and rich multi-tap
         basis."""
         gen = torch.Generator(device="cpu")
         gen.manual_seed(20261023)
@@ -672,15 +688,17 @@ class DnamTriPhysicsModel(nn.Module):
             (0.8, 3.0, 11.0, 40.0),
             (1.4, 5.0, 18.0, 60.0),
             (0.5, 1.8, 6.5, 25.0),
+            (2.2, 8.0, 28.0, 85.0),
         )
         tier_freqs = (
             (35.0, 160.0, 750.0, 3500.0),
             (65.0, 300.0, 1400.0, 6500.0),
             (25.0, 105.0, 480.0, 2200.0),
+            (95.0, 440.0, 2100.0, 9200.0),
         )
         sr = float(self.sample_rate_hz)
         with torch.no_grad():
-            for tier_idx in range(3):
+            for tier_idx in range(4):
                 drives = torch.tensor(tier_drives[tier_idx], dtype=torch.float32)
                 in_w = (
                     torch.tensor(
@@ -726,10 +744,11 @@ class DnamTriPhysicsModel(nn.Module):
                 self.tier_conv_weights[tier_idx].copy_(conv_w)
 
     def extract_tier_ordered_features(self, x_stereo: torch.Tensor) -> torch.Tensor:
-        """Extracts the 192-dimensional tier-ordered feature tensor `(B, T, 192)`:
+        """Extracts the 256-dimensional tier-ordered feature tensor `(B, T, 256)`:
         - `[:, :, 0:64]`: `Lite` ($C=4$) features,
         - `[:, :, 64:128]`: `Full` ($C=8$) delta features,
-        - `[:, :, 128:192]`: `Ultra` ($C=12$) delta features.
+        - `[:, :, 128:192]`: `Pro` ($C=12$) delta features,
+        - `[:, :, 192:256]`: `Ultra` ($C=16$) delta features.
         """
         if x_stereo.ndim == 2:
             x_stereo = x_stereo.unsqueeze(0)
@@ -738,8 +757,15 @@ class DnamTriPhysicsModel(nn.Module):
             x_stereo = x_stereo.expand(bsz, num_frames, 2)
 
         sr = float(self.sample_rate_hz)
+        tank_bcl: torch.Tensor | None = None
+        wet_bt2: torch.Tensor | None = None
+        if self.core2_ufdn is not None:
+            u0_bcl = torch.matmul(x_stereo, self.tier_in_proj[0].t()).transpose(1, 2)
+            tank_bcl, wet_2_bcl = self.core2_ufdn.forward_tank_lines(u0_bcl[:, :2, :])
+            wet_bt2 = wet_2_bcl.transpose(1, 2)
+
         tier_features: list[torch.Tensor] = []
-        for tier_idx in range(3):
+        for tier_idx in range(4):
             in_proj = self.tier_in_proj[tier_idx]  # (4, 2)
             u_base = torch.matmul(x_stereo, in_proj.t())  # (B, T, 4)
             u_base_bcl = u_base.transpose(1, 2)  # (B, 4, T)
@@ -814,10 +840,9 @@ class DnamTriPhysicsModel(nn.Module):
                 dil_feats[2] + 0.5 * dil_feats[3],
             ]
             feat_64 = torch.cat(raw_16, dim=-1)  # (B, T, 64)
-            if self.core2_ufdn is not None:
-                tank_12_bcl, wet_2_bcl = self.core2_ufdn.forward_tank_lines(u_base_bcl[:, :2, :])
-                tank_g_bt4 = tank_12_bcl[:, 4 * tier_idx : 4 * (tier_idx + 1), :].transpose(1, 2)
-                wet_bt2 = wet_2_bcl.transpose(1, 2)
+            if self.core2_ufdn is not None and tank_bcl is not None and wet_bt2 is not None:
+                c0 = min(4 * tier_idx, tank_bcl.shape[1] - 4)
+                tank_g_bt4 = tank_bcl[:, c0 : c0 + 4, :].transpose(1, 2)
                 inject_gain = torch.sigmoid(self.core2_ufdn.head_tap_inject_gain) * 0.1
                 feat_64 = (
                     feat_64
@@ -826,7 +851,7 @@ class DnamTriPhysicsModel(nn.Module):
                 )
             tier_features.append(feat_64)
 
-        return torch.cat(tier_features, dim=-1)  # (B, T, 192)
+        return torch.cat(tier_features, dim=-1)  # (B, T, 256)
 
     def calibrate_selective_cascade(
         self,
@@ -1005,9 +1030,10 @@ class DnamTriPhysicsModel(nn.Module):
         z_head_4: torch.Tensor,
         *,
         tier: str = "ultra",
+        z_head_ultra_4: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        """Evaluates the slimmable Kronecker head (`'lite'`, `'full'`, or `'ultra'`) on
-        `features_192`."""
+        """Evaluates the slimmable Kronecker head (`'lite'`, `'full'`, `'pro'`, or `'ultra'`) on
+        `features_192` (`(B, T, 256)` or `(B, T, 192)`)."""
         if z_head_4.ndim == 1:
             z_head_4 = z_head_4.unsqueeze(0)
         bsz = features_192.shape[0]
@@ -1021,10 +1047,33 @@ class DnamTriPhysicsModel(nn.Module):
             out = torch.einsum(
                 "bm,mcf,btf->btc", psi_tilde, self.w_head_full, features_192[:, :, :128]
             )
-        else:
+        elif tier == "pro":
             out = torch.einsum(
-                "bm,mcf,btf->btc", psi_tilde, self.w_head_ultra, features_192[:, :, :192]
+                "bm,mcf,btf->btc", psi_tilde, self.w_head_pro, features_192[:, :, :192]
             )
+        else:
+            u_dim = min(features_192.shape[2], self.w_head_ultra.shape[2])
+            out = torch.einsum(
+                "bm,mcf,btf->btc",
+                psi_tilde,
+                self.w_head_ultra[:, :, :u_dim],
+                features_192[:, :, :u_dim],
+            )
+            w_u_modes = getattr(self, "_w_head_ultra_modes5to8", None)
+            if z_head_ultra_4 is not None and w_u_modes is not None:
+                if z_head_ultra_4.ndim == 1:
+                    z_head_ultra_4 = z_head_ultra_4.unsqueeze(0)
+                w_u_t = (
+                    torch.as_tensor(w_u_modes, device=features_192.device, dtype=features_192.dtype)
+                    .permute(1, 2, 0, 3)
+                    .reshape(4, 2, 256)
+                )
+                out = out + torch.einsum(
+                    "bm,mcf,btf->btc",
+                    z_head_ultra_4.to(dtype=features_192.dtype),
+                    w_u_t[:, :, :u_dim],
+                    features_192[:, :, :u_dim],
+                )
 
         b_eff = torch.einsum("bm,mc->bc", psi_tilde, self.b_head).unsqueeze(1)
         return out + b_eff
@@ -1035,16 +1084,20 @@ class DnamTriPhysicsModel(nn.Module):
         z_head_4: torch.Tensor,
         *,
         tier: str = "ultra",
+        z_head_ultra_4: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Full forward pass from `x_stereo` `(B, T, 2)` and `z_head_4` `(B, 4)` to stereo `(B, T,
         2)`."""
         feats = self.extract_tier_ordered_features(x_stereo)
-        return self.forward_head_from_features(feats, z_head_4, tier=tier)
+        return self.forward_head_from_features(
+            feats, z_head_4, tier=tier, z_head_ultra_4=z_head_ultra_4
+        )
 
     def load_kronecker_solution(
         self,
         sol: MultiTierKroneckerHeadSolution,
         p_svd_16x4: NDArray[np.float32],
+        p_svd_ultra_16x4: NDArray[np.float32] | None = None,
     ) -> None:
         """Loads a `float64` [`MultiTierKroneckerHeadSolution`] into the `nn.Module` parameters."""
         device = self.w_head_tiers[0].device
@@ -1062,21 +1115,35 @@ class DnamTriPhysicsModel(nn.Module):
                     sol.arena2_head_delta_5x2x64_f32, device=device, dtype=torch.float32
                 )
             )
+            self.w_head_tiers[3].copy_(
+                torch.as_tensor(
+                    sol.arena3_head_delta_5x2x64_f32, device=device, dtype=torch.float32
+                )
+            )
             self.w_head_full.copy_(
                 torch.as_tensor(sol.w_full_5x2x128, device=device, dtype=torch.float32)
             )
+            self.w_head_pro.copy_(
+                torch.as_tensor(sol.pro_head_5x2x192, device=device, dtype=torch.float32)
+            )
             self.w_head_ultra.copy_(
-                torch.as_tensor(sol.w_ultra_5x2x192, device=device, dtype=torch.float32)
+                torch.as_tensor(sol.ultra_head_5x2x256, device=device, dtype=torch.float32)
             )
             self.b_head.zero_()
             p_svd_buf = self.get_buffer("p_svd_16x4")
             p_svd_buf.copy_(torch.as_tensor(p_svd_16x4, device=device, dtype=torch.float32))
+            self._w_head_ultra_modes5to8 = sol.arena3_ultra_modes5to8_4x4x2x64_f32
+            self._p_svd_ultra_16x4 = (
+                np.ascontiguousarray(p_svd_ultra_16x4, dtype=np.float32).reshape((16, 4))
+                if p_svd_ultra_16x4 is not None
+                else np.zeros((16, 4), dtype=np.float32)
+            )
 
     def to_arena_weight_layout(self) -> ArenaWeightLayout:
         """Exports the trained model parameters into a 64-byte aligned [`ArenaWeightLayout`]."""
         layout = ArenaWeightLayout()
         with torch.no_grad():
-            for tier_idx in range(3):
+            for tier_idx in range(4):
                 rglru = self.rglru_tiers[tier_idx]
                 assert isinstance(rglru, DifferentiableSelectiveRgLru)
                 r_low_t, dr_span_t = rglru.clamped_radii()
@@ -1139,20 +1206,45 @@ class DnamTriPhysicsModel(nn.Module):
                         conv_flat[cursor : cursor + n_sub] = tiled
                         cursor += n_sub
             layout.conv_weights_4608 = conv_flat
+
+            conv_ultra = np.zeros(3072, dtype=np.float32)
+            w_tier3 = self.tier_conv_weights[3].detach().cpu().numpy().astype(np.float32).ravel()
+            u_cursor = 0
+            for _blk in range(4):
+                for _sub in range(2):
+                    reps = math.ceil(384 / len(w_tier3))
+                    conv_ultra[u_cursor : u_cursor + 384] = np.tile(w_tier3, reps)[:384]
+                    u_cursor += 384
+            layout.conv_weights_ultra_3072 = conv_ultra
+
             layout.b_head = self.b_head.detach().cpu().numpy().astype(np.float32)
             p_svd_buf = self.get_buffer("p_svd_16x4")
             layout.p_svd_16x4 = p_svd_buf.detach().cpu().numpy().astype(np.float32)
+            w_u_modes = getattr(self, "_w_head_ultra_modes5to8", None)
+            if w_u_modes is not None:
+                layout.w_head_ultra_modes5to8 = np.ascontiguousarray(
+                    w_u_modes, dtype=np.float32
+                ).reshape((4, 4, 2, 64))
+            p_svd_u = getattr(self, "_p_svd_ultra_16x4", None)
+            if p_svd_u is not None:
+                layout.p_svd_ultra_16x4 = np.ascontiguousarray(p_svd_u, dtype=np.float32).reshape(
+                    (16, 4)
+                )
             if self.core2_ufdn is not None:
                 taus, _, _, _, _ = self.core2_ufdn.clamped_loop_params()
                 taus_np = taus.detach().cpu().numpy().astype(np.float32)
-                layout.mufdn_delays_8[: len(taus_np)] = taus_np[:8]
+                n_base = min(8, len(taus_np))
+                layout.mufdn_delays_8[:n_base] = taus_np[:n_base]
+                if len(taus_np) > 8:
+                    n_ultra = min(8, len(taus_np) - 8)
+                    layout.mufdn_delays_ultra_8[:n_ultra] = taus_np[8 : 8 + n_ultra]
                 grain_len_t, grain_warp_t, win_mix_t, spray_t, fb_mix_t = (
                     self.core2_ufdn.clamped_grain_params()
                 )
                 grain_len_np = grain_len_t.detach().cpu().numpy().astype(np.float32)
                 grain_warp_np = grain_warp_t.detach().cpu().numpy().astype(np.float32)
-                layout.mufdn_grain_len_8[: len(grain_len_np)] = grain_len_np[:8]
-                layout.mufdn_grain_warp_8[: len(grain_warp_np)] = grain_warp_np[:8]
+                layout.mufdn_grain_len_8[: min(8, len(grain_len_np))] = grain_len_np[:8]
+                layout.mufdn_grain_warp_8[: min(8, len(grain_warp_np))] = grain_warp_np[:8]
                 head_inj_val = float(
                     torch.sigmoid(self.core2_ufdn.head_tap_inject_gain).detach().cpu().item()
                 )
@@ -1266,21 +1358,24 @@ class DnamTrainer:
         head_sol: MultiTierKroneckerHeadSolution,
         stem_ids: Sequence[str],
         *,
+        z_head_ultra_stems: NDArray[np.float64] | None = None,
         sample_rate_hz: int = 48_000,
         full_psychoacoustics: bool = False,
         silent_stem_flags: Sequence[bool] | None = None,
         stem_noise_floors_dbfs: Sequence[tuple[float, float, float]] | None = None,
     ) -> tuple[float, float, float, dict[str, float], PsychoacousticMetricsReport]:
         """Computes dataset Floor-Regularized Band-Balanced ESR (`bESR` in dB) across `Lite`
-        ($N=64$), `Full` ($N=128$), and `Ultra` ($N=192$), plus the multi-band and psychoacoustic
-        evaluation suite across active stems.
+        ($N=64$), `Full` ($N=128$), `Pro` ($N=192, D_h=4$), and `Ultra` ($N=192..256, D_h=8$),
+        plus the multi-band and psychoacoustic evaluation suite across active stems.
         """
         active_l: list[float] = []
         active_f: list[float] = []
+        active_p: list[float] = []
         active_u: list[float] = []
         active_reports: list[PsychoacousticMetricsReport] = []
         fallback_l: list[float] = []
         fallback_f: list[float] = []
+        fallback_p: list[float] = []
         fallback_u: list[float] = []
         fallback_reports: list[PsychoacousticMetricsReport] = []
         per_stem_ultra: dict[str, float] = {}
@@ -1288,9 +1383,21 @@ class DnamTrainer:
         for s_idx, y in enumerate(targets_list):
             phi = features_list(s_idx) if callable(features_list) else features_list[s_idx]
             z_s = z_head_stems[s_idx]
+            z_u_s = (
+                z_head_ultra_stems[s_idx]
+                if z_head_ultra_stems is not None and s_idx < len(z_head_ultra_stems)
+                else None
+            )
             pred_l = evaluate_kronecker_head_features(phi, z_s, head_sol.w_lite_5x2x64)
             pred_f = evaluate_kronecker_head_features(phi, z_s, head_sol.w_full_5x2x128)
-            pred_u = evaluate_kronecker_head_features(phi, z_s, head_sol.w_ultra_5x2x192)
+            pred_p = evaluate_kronecker_head_features(phi, z_s, head_sol.pro_head_5x2x192)
+            pred_u = evaluate_kronecker_head_features(
+                phi,
+                z_s,
+                head_sol.w_ultra_5x2x192,
+                z_head_ultra_4=z_u_s,
+                w_ultra_modes5to8_4x2x_tier=head_sol.w_ultra_modes5to8_4x2x192,
+            )
             del phi
             y_f64 = np.asarray(y, dtype=np.float64)
             band_floors = (
@@ -1308,6 +1415,13 @@ class DnamTrainer:
             )
             besr_f = compute_floor_regularized_besr_db(
                 pred_f,
+                y_f64,
+                sample_rate_hz=sample_rate_hz,
+                floor_dbfs=DEFAULT_NOISE_FLOOR_DBFS,
+                band_floors_dbfs=band_floors,
+            )
+            besr_p = compute_floor_regularized_besr_db(
+                pred_p,
                 y_f64,
                 sample_rate_hz=sample_rate_hz,
                 floor_dbfs=DEFAULT_NOISE_FLOOR_DBFS,
@@ -1345,6 +1459,7 @@ class DnamTrainer:
 
             fallback_l.append(besr_l)
             fallback_f.append(besr_f)
+            fallback_p.append(besr_p)
             fallback_u.append(rep_u.besr_db)
             fallback_reports.append(rep_u)
 
@@ -1363,17 +1478,21 @@ class DnamTrainer:
                 per_stem_ultra[stem_ids[s_idx]] = rep_u.besr_db
                 active_l.append(besr_l)
                 active_f.append(besr_f)
+                active_p.append(besr_p)
                 active_u.append(rep_u.besr_db)
                 active_reports.append(rep_u)
 
         use_l = active_l if active_l else fallback_l
         use_f = active_f if active_f else fallback_f
+        use_p = active_p if active_p else fallback_p
         use_u = active_u if active_u else fallback_u
         use_reps = active_reports if active_reports else fallback_reports
 
         mean_l = float(np.mean(use_l)) if use_l else 0.0
         mean_f = float(np.mean(use_f)) if use_f else 0.0
+        mean_p = float(np.mean(use_p)) if use_p else 0.0
         mean_u = float(np.mean(use_u)) if use_u else 0.0
+        self._last_esr_pro_db = mean_p
         if use_reps:
             summary_rep = PsychoacousticMetricsReport(
                 besr_db=mean_u,
@@ -1464,6 +1583,14 @@ class DnamTrainer:
             psi_stems,
             svd_tol=request.config.svd_singular_floor,
             max_rank=request.config.max_head_svd_rank,
+        )
+        _p_svd_u, p_svd_ultra_16x4, active_svd_rank_ultra, z_head_ultra_stems = (
+            compute_svd_control_projector_ultra(
+                psi_stems,
+                _p_svd,
+                base_active_rank=active_svd_rank,
+                svd_tol=request.config.svd_singular_floor,
+            )
         )
         u_ctrl_stems = [
             _compute_intrinsic_control_modulators(request.controls_schema, c)
@@ -1567,10 +1694,11 @@ class DnamTrainer:
         head_init_sol = solve_all_tiers_kronecker_head_float64(
             stem_stats_s2,
             z_head_stems,
+            z_head_ultra_stems=z_head_ultra_stems,
             mode="init",
             solver=solver,
         )
-        model.load_kronecker_solution(head_init_sol, p_svd_16x4)
+        model.load_kronecker_solution(head_init_sol, p_svd_16x4, p_svd_ultra_16x4)
 
         esr_l0, esr_f0, esr_u0, _, psycho_s2 = self._evaluate_multi_tier_esr(
             features_list_s2,
@@ -1578,11 +1706,13 @@ class DnamTrainer:
             z_head_stems,
             head_init_sol,
             stem_ids,
+            z_head_ultra_stems=z_head_ultra_stems,
             sample_rate_hz=sr,
             full_psychoacoustics=False,
             silent_stem_flags=silent_stem_flags,
             stem_noise_floors_dbfs=stem_noise_floors_dbfs,
         )
+        esr_p0 = float(getattr(self, "_last_esr_pro_db", 0.5 * (esr_f0 + esr_u0)))
         s2_elapsed = max(0.0, time.perf_counter() - t0)
         telemetry_rows: list[TrainingTelemetryRow] = [
             TrainingTelemetryRow(
@@ -1590,6 +1720,7 @@ class DnamTrainer:
                 epoch=1,
                 esr_lite_db=esr_l0,
                 esr_full_db=esr_f0,
+                esr_pro_db=esr_p0,
                 esr_ultra_db=esr_u0,
                 barrier_loss=0.0,
                 group_lasso_loss=0.0,
@@ -1604,6 +1735,7 @@ class DnamTrainer:
                 total_epochs=1,
                 esr_lite_db=esr_l0,
                 esr_full_db=esr_f0,
+                esr_pro_db=esr_p0,
                 esr_ultra_db=esr_u0,
                 esr_lf_db=psycho_s2.esr_lf_db,
                 esr_mid_db=psycho_s2.esr_mid_db,
@@ -1943,6 +2075,7 @@ class DnamTrainer:
         head_polish_sol = solve_all_tiers_kronecker_head_float64(
             stem_stats_s4,
             z_head_stems,
+            z_head_ultra_stems=z_head_ultra_stems,
             mode="polish",
             solver=solver,
         )
@@ -1953,16 +2086,19 @@ class DnamTrainer:
                 z_head_stems,
                 head_polish_sol,
                 stem_ids,
+                z_head_ultra_stems=z_head_ultra_stems,
                 sample_rate_hz=sr,
                 full_psychoacoustics=True,
                 silent_stem_flags=silent_stem_flags,
                 stem_noise_floors_dbfs=stem_noise_floors_dbfs,
             )
         )
+        esr_p_final = float(getattr(self, "_last_esr_pro_db", 0.5 * (esr_f_final + esr_u_final)))
         if not use_selective_cascade and not audit_only and request.config.epochs > 0:
             head_polish_s2 = solve_all_tiers_kronecker_head_float64(
                 stem_stats_s2,
                 z_head_stems,
+                z_head_ultra_stems=z_head_ultra_stems,
                 mode="polish",
                 solver=solver,
             )
@@ -1973,24 +2109,27 @@ class DnamTrainer:
                     z_head_stems,
                     head_polish_s2,
                     stem_ids,
+                    z_head_ultra_stems=z_head_ultra_stems,
                     sample_rate_hz=sr,
                     full_psychoacoustics=True,
                     silent_stem_flags=silent_stem_flags,
                     stem_noise_floors_dbfs=stem_noise_floors_dbfs,
                 )
             )
+            esr_p_s2p = float(getattr(self, "_last_esr_pro_db", 0.5 * (esr_f_s2p + esr_u_s2p)))
             if esr_u_s2p < esr_u_final:
                 model.load_state_dict(s2_state_dict)
                 head_polish_sol = head_polish_s2
                 stem_stats_s4 = stem_stats_s2
-                esr_l_final, esr_f_final, esr_u_final, per_stem_ultra, psycho_final = (
+                esr_l_final, esr_f_final, esr_p_final, esr_u_final, per_stem_ultra, psycho_final = (
                     esr_l_s2p,
                     esr_f_s2p,
+                    esr_p_s2p,
                     esr_u_s2p,
                     per_stem_s2p,
                     psycho_s2p,
                 )
-        model.load_kronecker_solution(head_polish_sol, p_svd_16x4)
+        model.load_kronecker_solution(head_polish_sol, p_svd_16x4, p_svd_ultra_16x4)
         s4_elapsed = max(0.0, time.perf_counter() - t0)
         telemetry_rows.append(
             TrainingTelemetryRow(
@@ -1998,6 +2137,7 @@ class DnamTrainer:
                 epoch=1,
                 esr_lite_db=esr_l_final,
                 esr_full_db=esr_f_final,
+                esr_pro_db=esr_p_final,
                 esr_ultra_db=esr_u_final,
                 barrier_loss=0.0,
                 group_lasso_loss=0.0,
@@ -2012,6 +2152,7 @@ class DnamTrainer:
                 total_epochs=1,
                 esr_lite_db=esr_l_final,
                 esr_full_db=esr_f_final,
+                esr_pro_db=esr_p_final,
                 esr_ultra_db=esr_u_final,
                 esr_lf_db=psycho_final.esr_lf_db,
                 esr_mid_db=psycho_final.esr_mid_db,
@@ -2046,19 +2187,22 @@ class DnamTrainer:
                     u_ctrl_3=(0.0, 0.0, 0.0),
                 )
 
-        capabilities, leveling_cfg, (l_lite, l_full, l_ultra), (trim_l, trim_f, trim_u) = (
-            _calibrate_capabilities_and_leveling(
-                controls_schema=updated_ctrls,
-                config=request.config,
-                core2_active=core2_active,
-                head_sol=head_polish_sol,
-                sample_rate_hz=sr,
-                inputs_list=inputs_list,
-                targets_list=targets_list,
-                stems_controls=stems_controls,
-                default_features_192=default_phi_192,
-                stem_stats=stem_stats_s4,
-            )
+        (
+            capabilities,
+            leveling_cfg,
+            (l_lite, l_full, l_pro, l_ultra),
+            (trim_l, trim_f, trim_p, trim_u),
+        ) = _calibrate_capabilities_and_leveling(
+            controls_schema=updated_ctrls,
+            config=request.config,
+            core2_active=core2_active,
+            head_sol=head_polish_sol,
+            sample_rate_hz=sr,
+            inputs_list=inputs_list,
+            targets_list=targets_list,
+            stems_controls=stems_controls,
+            default_features_192=default_phi_192,
+            stem_stats=stem_stats_s4,
         )
         ring_log2 = _estimate_core2_ring_buffer_log2(updated_ctrls, tail_time_ms, sr, core2_active)
 
@@ -2114,11 +2258,21 @@ class DnamTrainer:
                     validation_esr_db=round(esr_f_final, 3),
                     arena_end_byte_offset=ARENA_OFFSET_FULL_END,
                 ),
-                ultra=TierProfile(
+                pro=TierProfile(
                     channels=12,
                     fdn_lines=8 if core2_active else 0,
                     early_taps=8 if core2_active else 0,
                     head_svd_rank=active_svd_rank,
+                    loudness_lufs=l_pro,
+                    output_trim_db=trim_p,
+                    validation_esr_db=round(esr_p_final, 3),
+                    arena_end_byte_offset=ARENA_OFFSET_PRO_END,
+                ),
+                ultra=TierProfile(
+                    channels=16,
+                    fdn_lines=16 if core2_active else 0,
+                    early_taps=16 if core2_active else 0,
+                    head_svd_rank=active_svd_rank_ultra,
                     loudness_lufs=l_ultra,
                     output_trim_db=trim_u,
                     validation_esr_db=round(esr_u_final, 3),
@@ -2154,6 +2308,7 @@ class DnamTrainer:
                 model_id=request.model_id,
                 esr_lite_db=esr_l_final,
                 esr_full_db=esr_f_final,
+                esr_pro_db=esr_p_final,
                 esr_ultra_db=esr_u_final,
                 esr_lf_db=psycho_final.esr_lf_db,
                 esr_mid_db=psycho_final.esr_mid_db,
@@ -2298,6 +2453,9 @@ class DnamTrainer:
                 kept_existing.append(ex)
 
         evaluated_stats: list[StemSufficientStatistics] = []
+        existing_is_192 = bool(existing_stats) and all(
+            ex.active_feature_dim == 192 for ex in existing_stats
+        )
         with torch.no_grad():
             for idx, slot in enumerate(resolved_slots):
                 if slot is not None:
@@ -2312,6 +2470,8 @@ class DnamTrainer:
                         .numpy()
                         .astype(np.float32)
                     )
+                    if existing_is_192:
+                        phi_np = phi_np[:, :192]
                     stat = compute_stem_sufficient_statistics(
                         phi_np,
                         targets_list[idx],
@@ -2347,13 +2507,22 @@ class DnamTrainer:
             svd_tol=resume_request.config.svd_singular_floor,
             max_rank=resume_request.config.max_head_svd_rank,
         )
+        _p_svd_u, p_svd_ultra_16x4, active_svd_rank_ultra, z_head_ultra_stems = (
+            compute_svd_control_projector_ultra(
+                psi_stems,
+                _p_svd,
+                base_active_rank=active_svd_rank,
+                svd_tol=resume_request.config.svd_singular_floor,
+            )
+        )
         head_polish_sol = solve_all_tiers_kronecker_head_float64(
             final_stats,
             z_head_stems,
+            z_head_ultra_stems=z_head_ultra_stems,
             mode="polish",
             solver=solver,
         )
-        model.load_kronecker_solution(head_polish_sol, p_svd_16x4)
+        model.load_kronecker_solution(head_polish_sol, p_svd_16x4, p_svd_ultra_16x4)
 
         # Evaluate Floor-Regularized Band-Balanced ESR (`bESR`) on the provided stems
         offset = len(kept_existing)
@@ -2364,17 +2533,19 @@ class DnamTrainer:
             if all_reused_long:
                 active_l: list[float] = []
                 active_f: list[float] = []
+                active_p: list[float] = []
                 active_u: list[float] = []
                 per_stem_ultra: dict[str, float] = {}
                 for idx, st_stat in enumerate(evaluated_stats):
                     band_floors_i = (
                         stem_noise_floors_dbfs[idx] if idx < len(stem_noise_floors_dbfs) else None
                     )
-                    bl, bf, bu = evaluate_stem_besr_from_sufficient_stats(
+                    bl, bf, bp, bu = evaluate_stem_besr_4tier_from_sufficient_stats(
                         st_stat,
                         z_head_stems[offset + idx],
                         head_polish_sol,
                         targets_list[idx],
+                        z_head_ultra_4=z_head_ultra_stems[offset + idx],
                         band_floors_dbfs=band_floors_i,
                     )
                     is_silent_i = (
@@ -2389,9 +2560,11 @@ class DnamTrainer:
                         per_stem_ultra[stem_ids[idx]] = bu
                         active_l.append(bl)
                         active_f.append(bf)
+                        active_p.append(bp)
                         active_u.append(bu)
                 esr_l_final = float(np.mean(active_l)) if active_l else -40.0
                 esr_f_final = float(np.mean(active_f)) if active_f else -42.0
+                esr_p_final = float(np.mean(active_p)) if active_p else -44.0
                 esr_u_final = float(np.mean(active_u)) if active_u else -45.0
                 psycho_resume = PsychoacousticMetricsReport(
                     besr_db=esr_u_final,
@@ -2407,7 +2580,7 @@ class DnamTrainer:
 
                 def _get_resume_stem_features(idx: int) -> NDArray[np.float32]:
                     with torch.no_grad():
-                        return (
+                        phi_out = (
                             model.extract_tier_ordered_features(
                                 torch.as_tensor(
                                     inputs_list[idx], device=device, dtype=torch.float32
@@ -2419,6 +2592,7 @@ class DnamTrainer:
                             .numpy()
                             .astype(np.float32)
                         )
+                        return phi_out[:, :192] if existing_is_192 else phi_out
 
                 esr_l_final, esr_f_final, esr_u_final, per_stem_ultra, psycho_resume = (
                     self._evaluate_multi_tier_esr(
@@ -2427,14 +2601,24 @@ class DnamTrainer:
                         z_head_stems[offset : offset + len(stem_ids)],
                         head_polish_sol,
                         stem_ids,
+                        z_head_ultra_stems=z_head_ultra_stems[offset : offset + len(stem_ids)],
                         sample_rate_hz=sr,
                         full_psychoacoustics=True,
                         silent_stem_flags=silent_stem_flags,
                         stem_noise_floors_dbfs=stem_noise_floors_dbfs,
                     )
                 )
+                esr_p_final = float(
+                    getattr(self, "_last_esr_pro_db", 0.5 * (esr_f_final + esr_u_final))
+                )
         else:
-            esr_l_final, esr_f_final, esr_u_final, per_stem_ultra = -40.0, -42.0, -45.0, {}
+            esr_l_final, esr_f_final, esr_p_final, esr_u_final, per_stem_ultra = (
+                -40.0,
+                -42.0,
+                -44.0,
+                -45.0,
+                {},
+            )
             psycho_resume = PsychoacousticMetricsReport(
                 besr_db=-45.0,
                 esr_lf_db=-45.0,
@@ -2466,22 +2650,29 @@ class DnamTrainer:
         if user_metadata:
             merged_user_meta.update(user_metadata)
 
-        arena_layout = ArenaWeightLayout.from_arena012_bytes(raw_arena)
-        arena_layout.with_kronecker_solution(head_polish_sol, p_svd_16x4)
+        weights_end = min(
+            (e.g_audio_uplo_u_f64.byte_offset for e in existing_entries),
+            default=min(len(raw_arena), ARENA_OFFSET_ULTRA_END),
+        )
+        arena_layout = ArenaWeightLayout.from_arena012_bytes(raw_arena[:weights_end])
+        arena_layout.with_kronecker_solution(head_polish_sol, p_svd_16x4, p_svd_ultra_16x4)
 
-        capabilities, leveling_cfg, (l_lite, l_full, l_ultra), (trim_l, trim_f, trim_u) = (
-            _calibrate_capabilities_and_leveling(
-                controls_schema=updated_ctrls,
-                config=resume_request.config,
-                core2_active=core2_active,
-                head_sol=head_polish_sol,
-                sample_rate_hz=sr,
-                inputs_list=inputs_list,
-                targets_list=targets_list,
-                stems_controls=stems_controls if stems_controls else all_controls,
-                default_features_192=None,
-                stem_stats=final_stats,
-            )
+        (
+            capabilities,
+            leveling_cfg,
+            (l_lite, l_full, l_pro, l_ultra),
+            (trim_l, trim_f, trim_p, trim_u),
+        ) = _calibrate_capabilities_and_leveling(
+            controls_schema=updated_ctrls,
+            config=resume_request.config,
+            core2_active=core2_active,
+            head_sol=head_polish_sol,
+            sample_rate_hz=sr,
+            inputs_list=inputs_list,
+            targets_list=targets_list,
+            stems_controls=stems_controls if stems_controls else all_controls,
+            default_features_192=None,
+            stem_stats=final_stats,
         )
         updated_io_config = ckpt_container.header.io_config.model_copy(
             update={
@@ -2512,9 +2703,17 @@ class DnamTrainer:
                     "validation_esr_db": round(esr_f_final, 3),
                 }
             ),
-            ultra=ckpt_container.header.slimmable_tiers.ultra.model_copy(
+            pro=ckpt_container.header.slimmable_tiers.pro.model_copy(
                 update={
                     "head_svd_rank": active_svd_rank,
+                    "loudness_lufs": l_pro,
+                    "output_trim_db": trim_p,
+                    "validation_esr_db": round(esr_p_final, 3),
+                }
+            ),
+            ultra=ckpt_container.header.slimmable_tiers.ultra.model_copy(
+                update={
+                    "head_svd_rank": active_svd_rank_ultra,
                     "loudness_lufs": l_ultra,
                     "output_trim_db": trim_u,
                     "validation_esr_db": round(esr_u_final, 3),
@@ -2548,6 +2747,7 @@ class DnamTrainer:
             epoch=0,
             esr_lite_db=esr_l_final,
             esr_full_db=esr_f_final,
+            esr_pro_db=esr_p_final,
             esr_ultra_db=esr_u_final,
             barrier_loss=0.0,
             group_lasso_loss=0.0,

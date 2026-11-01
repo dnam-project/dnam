@@ -49,6 +49,12 @@ interface NativeEngineInstance {
   reload(containerBytes: Uint8Array, tier?: number | null, sampleRateHz?: number | null): void;
   readonly backend: string;
   activeTier: number;
+  maxSupportedTier: number;
+  readonly maxAvailableTier: number;
+  readonly effectiveTier: number;
+  offlineBounce: boolean;
+  maximizeTierOnBounce: boolean;
+  readonly latencySamples: number;
   sampleRateHz: number;
   setControlValue(ctrlIdx: number, value: number): void;
   setControlImmediate(ctrlIdx: number, value: number): void;
@@ -67,6 +73,11 @@ interface NativeEngineInstance {
     bufferSize?: number | null,
   ): void;
   processMono(monoIn: Float32Array, monoOut: Float32Array, bufferSize?: number | null): void;
+  renderOfflineBounce(
+    leftIn: Float32Array,
+    rightIn: Float32Array,
+    bufferSize?: number | null,
+  ): Float32Array[];
   processAsync(
     leftIn: Float32Array,
     rightIn?: Float32Array | null,
@@ -102,9 +113,11 @@ interface NativeValidatedContainerBinding {
   tensorArenaByteLen: number;
   arenaOffsetLiteEnd: number;
   arenaOffsetFullEnd: number;
+  arenaOffsetProEnd: number;
   arenaOffsetUltraEnd: number;
   arenaCrc32cLite: number;
   arenaCrc32cFull: number;
+  arenaCrc32cPro: number;
   arenaCrc32cUltra: number;
   numCkptStems: number;
   controlDecimation: number;
@@ -152,6 +165,7 @@ interface NativeAddonExports {
     encryptedArena?: boolean,
   ): Uint8Array;
   nativeBuildReferenceContainer(core2Active: boolean, isCheckpoint: boolean): Uint8Array;
+  nativeStripContainerToTier(containerBytes: Uint8Array, maxTier: number): Uint8Array;
   nativeUpdateHeaderInPlace(containerBytes: Uint8Array, updatedHeaderJson: string): Uint8Array;
   nativeComputeZoh(
     sampleRateTrainHz: number,
@@ -453,6 +467,48 @@ class NativeEngineHandleWrapper implements DnamEngineHandle {
     });
   }
 
+  public get maxSupportedTier(): number {
+    return callNative(() => this.engine.maxSupportedTier);
+  }
+
+  public set maxSupportedTier(tier: number) {
+    callNative(() => {
+      this.engine.maxSupportedTier = tier;
+    });
+  }
+
+  public get maxAvailableTier(): number {
+    return callNative(() => this.engine.maxAvailableTier);
+  }
+
+  public get effectiveTier(): number {
+    return callNative(() => this.engine.effectiveTier);
+  }
+
+  public get offlineBounce(): boolean {
+    return callNative(() => this.engine.offlineBounce);
+  }
+
+  public set offlineBounce(enabled: boolean) {
+    callNative(() => {
+      this.engine.offlineBounce = enabled;
+    });
+  }
+
+  public get maximizeTierOnBounce(): boolean {
+    return callNative(() => this.engine.maximizeTierOnBounce);
+  }
+
+  public set maximizeTierOnBounce(enabled: boolean) {
+    callNative(() => {
+      this.engine.maximizeTierOnBounce = enabled;
+    });
+  }
+
+  public get latencySamples(): number {
+    return callNative(() => this.engine.latencySamples);
+  }
+
   public get sampleRateHz(): number {
     return callNative(() => this.engine.sampleRateHz);
   }
@@ -501,6 +557,17 @@ class NativeEngineHandleWrapper implements DnamEngineHandle {
   public processMono(monoIn: Float32Array, monoOut: Float32Array, bufferSize?: number): void {
     callNative(() => {
       this.engine.processMono(monoIn, monoOut, bufferSize ?? null);
+    });
+  }
+
+  public renderOfflineBounce(
+    leftIn: Float32Array,
+    rightIn: Float32Array,
+    bufferSize?: number,
+  ): [Float32Array, Float32Array] {
+    return callNative(() => {
+      const pair = this.engine.renderOfflineBounce(leftIn, rightIn, bufferSize ?? null);
+      return [pair[0] ?? new Float32Array(0), pair[1] ?? new Float32Array(0)];
     });
   }
 
@@ -651,9 +718,11 @@ export class NativeDriver implements DnamDriver {
         tensorArenaByteLen: v.tensorArenaByteLen,
         arenaOffsetLiteEnd: v.arenaOffsetLiteEnd,
         arenaOffsetFullEnd: v.arenaOffsetFullEnd,
+        arenaOffsetProEnd: v.arenaOffsetProEnd,
         arenaOffsetUltraEnd: v.arenaOffsetUltraEnd,
         arenaCrc32cLite: v.arenaCrc32cLite >>> 0,
         arenaCrc32cFull: v.arenaCrc32cFull >>> 0,
+        arenaCrc32cPro: v.arenaCrc32cPro >>> 0,
         arenaCrc32cUltra: v.arenaCrc32cUltra >>> 0,
         numCkptStems: v.numCkptStems,
         controlDecimation: v.controlDecimation,
@@ -700,6 +769,10 @@ export class NativeDriver implements DnamDriver {
 
   public buildReferenceContainer(core2Active: boolean, isCheckpoint: boolean): Uint8Array {
     return callNative(() => this.addon.nativeBuildReferenceContainer(core2Active, isCheckpoint));
+  }
+
+  public stripContainerToTier(containerBytes: Uint8Array, maxTier: number): Uint8Array {
+    return callNative(() => this.addon.nativeStripContainerToTier(containerBytes, maxTier));
   }
 
   public updateHeaderInPlace(containerBytes: Uint8Array, updatedHeaderJson: string): Uint8Array {

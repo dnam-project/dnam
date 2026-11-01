@@ -215,6 +215,8 @@ export const RoyaltySplitSchema: z.ZodType<RoyaltySplit, unknown> = RawRoyaltySp
   }),
 );
 
+const TierArenaSha256TupleSchema = z.tuple([z.string(), z.string(), z.string(), z.string()]);
+
 export interface MarketplaceReceipt {
   marketplaceId: string;
   licenseId: string;
@@ -222,6 +224,7 @@ export interface MarketplaceReceipt {
   licenseTier: string;
   issuedAt: string;
   buyerArenaSha256: string;
+  buyerTierArenaSha256?: [string, string, string, string] | undefined;
   encryptionMode: string;
   arenaNonce96?: string | undefined;
   ephemeralPubkeyX25519?: string | undefined;
@@ -244,6 +247,8 @@ const RawMarketplaceReceiptSchema = z
     issuedAt: z.string().optional(),
     buyer_arena_sha256: z.string().optional(),
     buyerArenaSha256: z.string().optional(),
+    buyer_tier_arena_sha256: TierArenaSha256TupleSchema.nullable().optional(),
+    buyerTierArenaSha256: TierArenaSha256TupleSchema.nullable().optional(),
     encryption_mode: z.string().optional(),
     encryptionMode: z.string().optional(),
     arena_nonce_96: z.string().nullable().optional(),
@@ -268,6 +273,7 @@ export const MarketplaceReceiptSchema: z.ZodType<MarketplaceReceipt, unknown> =
       licenseTier: raw.licenseTier ?? raw.license_tier ?? "",
       issuedAt: raw.issuedAt ?? raw.issued_at ?? "",
       buyerArenaSha256: raw.buyerArenaSha256 ?? raw.buyer_arena_sha256 ?? "",
+      buyerTierArenaSha256: raw.buyerTierArenaSha256 ?? raw.buyer_tier_arena_sha256 ?? undefined,
       encryptionMode: raw.encryptionMode ?? raw.encryption_mode ?? "none",
       arenaNonce96: raw.arenaNonce96 ?? raw.arena_nonce_96 ?? undefined,
       ephemeralPubkeyX25519: raw.ephemeralPubkeyX25519 ?? raw.ephemeral_pubkey_x25519 ?? undefined,
@@ -280,6 +286,7 @@ export const MarketplaceReceiptSchema: z.ZodType<MarketplaceReceipt, unknown> =
 export interface ModelSignatures {
   immutableHeaderSha256: string;
   masterArenaSha256: string;
+  tierArenaSha256?: [string, string, string, string] | undefined;
   creatorSignature: CreatorSignature;
   marketplaceReceipt?: MarketplaceReceipt | undefined;
 }
@@ -290,6 +297,8 @@ const RawModelSignaturesSchema = z
     immutableHeaderSha256: z.string().optional(),
     master_arena_sha256: z.string().optional(),
     masterArenaSha256: z.string().optional(),
+    tier_arena_sha256: TierArenaSha256TupleSchema.nullable().optional(),
+    tierArenaSha256: TierArenaSha256TupleSchema.nullable().optional(),
     creator_signature: CreatorSignatureSchema.optional(),
     creatorSignature: CreatorSignatureSchema.optional(),
     marketplace_receipt: MarketplaceReceiptSchema.nullable().optional(),
@@ -313,6 +322,7 @@ export const ModelSignaturesSchema: z.ZodType<ModelSignatures, unknown> =
     return {
       immutableHeaderSha256: raw.immutableHeaderSha256 ?? raw.immutable_header_sha256 ?? "",
       masterArenaSha256: raw.masterArenaSha256 ?? raw.master_arena_sha256 ?? "",
+      tierArenaSha256: raw.tierArenaSha256 ?? raw.tier_arena_sha256 ?? undefined,
       creatorSignature: rawCreator,
       marketplaceReceipt: rawReceipt ?? undefined,
     };
@@ -359,6 +369,9 @@ export function marketplaceReceiptToWire(receipt: MarketplaceReceipt): Record<st
     license_tier: receipt.licenseTier,
     issued_at: receipt.issuedAt,
     buyer_arena_sha256: receipt.buyerArenaSha256,
+    ...(receipt.buyerTierArenaSha256 !== undefined
+      ? { buyer_tier_arena_sha256: receipt.buyerTierArenaSha256 }
+      : {}),
     encryption_mode: receipt.encryptionMode,
     arena_nonce_96: receipt.arenaNonce96 ?? null,
     ephemeral_pubkey_x25519: receipt.ephemeralPubkeyX25519 ?? null,
@@ -372,6 +385,7 @@ export function modelSignaturesToWire(sigs: ModelSignatures): Record<string, unk
   return {
     immutable_header_sha256: sigs.immutableHeaderSha256,
     master_arena_sha256: sigs.masterArenaSha256,
+    ...(sigs.tierArenaSha256 !== undefined ? { tier_arena_sha256: sigs.tierArenaSha256 } : {}),
     creator_signature: creatorSignatureToWire(sigs.creatorSignature),
     marketplace_receipt: sigs.marketplaceReceipt
       ? marketplaceReceiptToWire(sigs.marketplaceReceipt)

@@ -102,10 +102,39 @@ def test_engine_constructors_properties_planar_and_reload(
         assert eng.sample_rate == 44_100.0
         assert eng.container.header == ref_container_core1.header
 
+        eng.tier = Tier.PRO
+        assert eng.tier == Tier.PRO
         eng.tier = Tier.ULTRA
         assert eng.tier == Tier.ULTRA
         eng.sample_rate = 96_000.0
         assert eng.sample_rate == 96_000.0
+
+        # Offline bounce & max_supported_tier ceiling
+        assert not eng.offline_bounce
+        assert eng.maximize_tier_on_bounce
+        assert eng.latency_samples == 0
+        assert eng.max_available_tier == Tier.ULTRA
+        assert eng.max_supported_tier == Tier.ULTRA
+        assert eng.effective_tier == Tier.ULTRA
+
+        eng.tier = Tier.LITE
+        assert eng.effective_tier == Tier.LITE
+        eng.offline_bounce = True
+        assert eng.offline_bounce
+        assert eng.latency_samples == 12
+        assert eng.effective_tier == Tier.ULTRA
+        eng.max_supported_tier = Tier.PRO
+        assert eng.effective_tier == Tier.PRO
+        eng.maximize_tier_on_bounce = False
+        assert eng.effective_tier == Tier.LITE
+        eng.offline_bounce = False
+        eng.maximize_tier_on_bounce = True
+        eng.max_supported_tier = Tier.ULTRA
+        eng.tier = Tier.ULTRA
+
+        bounce_out = eng.render_offline_bounce(np.ones((2, 32), dtype=np.float32) * 0.1)
+        assert bounce_out.shape == (2, 32)
+        assert np.all(np.isfinite(bounce_out))
 
         # pedalboard sample_rate positional argument auto-updates engine.sample_rate
         x_f64 = np.linspace(-0.5, 0.5, 64, dtype=np.float64)

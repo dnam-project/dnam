@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 
-use dnam_engine::container::DnamContainerView;
+use dnam_engine::container::{DnamContainerView, FLAG_HAS_CKPT_STEMS, strip_container_to_tier};
 use dnam_engine::math::{BackendKind, detect_best_backend};
 use dnam_engine::provenance::DefaultCryptoProvider;
 use dnam_engine::{DynamicDnamEngine, Tier};
@@ -151,7 +151,7 @@ pub fn inspect_container_bytes_with_crypto(
         magic: String::from_utf8_lossy(&preamble.magic).into_owned(),
         version_major: preamble.version_major,
         version_minor: preamble.version_minor,
-        is_checkpoint: preamble.magic == *b"DNCK" || (preamble.flags & (1 << 3)) != 0,
+        is_checkpoint: preamble.magic == *b"DNCK" || (preamble.flags & FLAG_HAS_CKPT_STEMS) != 0,
         model_name: view.header.metadata.name.clone(),
         author: view
             .header
@@ -161,8 +161,8 @@ pub fn inspect_container_bytes_with_crypto(
             .unwrap_or_else(|| "Unknown".to_string()),
         verification_status: verif,
         protection_profile: profile_str.to_string(),
-        core2_active: (preamble.flags & (1 << 6)) != 0 || view.header.core2_mufdn.active,
-        lfo_env_active: (preamble.flags & (1 << 7)) != 0
+        core2_active: preamble.is_core2_active() || view.header.core2_mufdn.active,
+        lfo_env_active: preamble.is_lfo_env_active()
             || view.header.control_bus.envelopes > 0
             || view.header.control_bus.lfo_oscillators > 0,
         sample_rate_train_hz: preamble.sample_rate_train_hz,
@@ -176,6 +176,31 @@ pub fn inspect_container_bytes_with_crypto(
         num_presets: view.header.presets.len(),
         byte_len: bytes.len(),
     })
+}
+
+fn parse_tier_str(tier_str: &str) -> Tier {
+    match tier_str.trim().to_ascii_lowercase().as_str() {
+        "lite" | "0" => Tier::Lite,
+        "full" | "1" => Tier::Full,
+        "pro" | "2" => Tier::Pro,
+        _ => Tier::Ultra,
+    }
+}
+
+/// Strips higher slimmable tiers from a `.dnam` or `.dnam-ckpt` container on disk down to `max_tier_str`,
+/// preserving `Ed25519` `tier_arena_sha256` signatures without re-signing.
+pub fn strip_container_file(
+    input_path: impl AsRef<Path>,
+    output_path: impl AsRef<Path>,
+    max_tier_str: &str,
+) -> StudioResult<usize> {
+    let bytes = fs::read(input_path)?;
+    let max_tier = parse_tier_str(max_tier_str);
+    let stripped = strip_container_to_tier(&bytes, max_tier)
+        .map_err(|e| StudioError::Engine(format!("{e:?}")))?;
+    let len = stripped.len();
+    fs::write(output_path, stripped)?;
+    Ok(len)
 }
 
 /// Renders an input WAV file through a `.dnam` container with tier, preset, and control overrides.
@@ -213,16 +238,43 @@ pub fn render_wav_with_crypto(
     device_key_hex: Option<&str>,
     marketplace_pubkey_hex: Option<&str>,
 ) -> StudioResult<()> {
+    render_wav_with_bounce_and_crypto(
+        container_path,
+        input_wav_path,
+        output_wav_path,
+        tier_str,
+        preset_id,
+        control_overrides,
+        true,
+        true,
+        device_id,
+        device_key_hex,
+        marketplace_pubkey_hex,
+    )
+}
+
+/// Renders an input WAV file through a `.dnam` or `.dnam-seal` container with explicit
+/// `offline_bounce` ($4\times$ ZOH oversampling) and `maximize_tier_on_bounce` flags.
+#[allow(clippy::too_many_arguments)]
+pub fn render_wav_with_bounce_and_crypto(
+    container_path: impl AsRef<Path>,
+    input_wav_path: impl AsRef<Path>,
+    output_wav_path: impl AsRef<Path>,
+    tier_str: &str,
+    preset_id: Option<&str>,
+    control_overrides: &BTreeMap<String, String>,
+    offline_bounce: bool,
+    maximize_tier_on_bounce: bool,
+    device_id: Option<&str>,
+    device_key_hex: Option<&str>,
+    marketplace_pubkey_hex: Option<&str>,
+) -> StudioResult<()> {
     let container_bytes = fs::read(container_path)?;
     let crypto = build_crypto_provider(device_id, device_key_hex, marketplace_pubkey_hex)?;
     let view = DnamContainerView::from_bytes(&container_bytes, &crypto)
         .map_err(|e| StudioError::Engine(format!("{e:?}")))?;
     let input = read_wav(input_wav_path)?;
-    let tier = match tier_str.to_ascii_lowercase().as_str() {
-        "lite" => Tier::Lite,
-        "full" => Tier::Full,
-        _ => Tier::Ultra,
-    };
+    let tier = parse_tier_str(tier_str);
     let mut engine = DynamicDnamEngine::from_bytes_owned_with_backend_and_crypto(
         &container_bytes,
         tier,
@@ -231,6 +283,8 @@ pub fn render_wav_with_crypto(
         &crypto,
     )
     .map_err(|e| StudioError::Engine(format!("{e:?}")))?;
+    engine.set_offline_bounce(offline_bounce);
+    engine.set_maximize_tier_on_bounce(maximize_tier_on_bounce);
 
     if let Some(pid) = preset_id
         && let Some(preset) = view
@@ -283,7 +337,11 @@ pub fn render_wav_with_crypto(
 
     let mut out_l = vec![0.0_f32; num_frames];
     let mut out_r = vec![0.0_f32; num_frames];
-    engine.process_mono_to_stereo(&mono_in, &mut out_l, &mut out_r);
+    if offline_bounce {
+        engine.render_offline_bounce(&mono_in, &mono_in, &mut out_l, &mut out_r);
+    } else {
+        engine.process_mono_to_stereo(&mono_in, &mut out_l, &mut out_r);
+    }
 
     let mut stereo_interleaved = Vec::with_capacity(num_frames * 2);
     for i in 0..num_frames {
@@ -475,11 +533,26 @@ mod tests {
             &dnam_path,
             &in_mono_path,
             &out_wav,
+            "pro",
+            None,
+            &BTreeMap::new(),
+        )
+        .expect("render pro");
+        render_wav_with_options(
+            &dnam_path,
+            &in_mono_path,
+            &out_wav,
             "ultra",
             None,
             &BTreeMap::new(),
         )
         .expect("render ultra");
+        let stripped_path = dir.join("ref_pro.dnam");
+        let stripped_len =
+            strip_container_file(&dnam_path, &stripped_path, "pro").expect("strip to pro");
+        assert!(stripped_len < dnam_bytes.len());
+        let stripped_summary = inspect_container(&stripped_path).expect("inspect stripped");
+        assert_eq!(stripped_summary.tensor_arena_byte_len, 36_224);
 
         let decoded = read_wav(&out_wav).expect("read rendered wav");
         assert_eq!(decoded.sample_rate_hz, 48_000);

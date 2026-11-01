@@ -4,16 +4,16 @@
 use std::collections::BTreeMap;
 
 use dnam_engine::container::{
-    ARENA_OFFSET_FULL_END, ARENA_OFFSET_LITE_END, ARENA_OFFSET_ULTRA_END, DnamContainerView,
-    build_dnam_container, update_header_in_place,
+    ARENA_OFFSET_FULL_END, ARENA_OFFSET_LITE_END, ARENA_OFFSET_PRO_END, ARENA_OFFSET_ULTRA_END,
+    DnamContainerView, build_dnam_container, strip_container_to_tier, update_header_in_place,
 };
 use dnam_engine::math::{DefaultMathBackend, f32_to_fp16_bits, fp16_bits_to_f32};
 use dnam_engine::provenance::{
     DNSL_MAGIC, RGLRU_TOTAL_CHANNELS, RustCryptoProvider, TARDOS_CONV_WEIGHTS, VerificationStatus,
-    apply_isometric_gauge_watermark, apply_tardos_watermark_4608, build_creator_signing_message,
+    apply_isometric_gauge_watermark, apply_tardos_watermark_7680, build_creator_signing_message,
     build_marketplace_receipt_signing_message, chacha20_xor_arena_blocks,
-    compute_immutable_header_sha256, encode_hex, extract_structural_hash_160d,
-    generate_tardos_code_4608, score_tardos_watermark_4608, seal_dnam_container, sha256_digest,
+    compute_immutable_header_sha256, encode_hex, extract_structural_hash_224d,
+    generate_tardos_code_7680, score_tardos_watermark_7680, seal_dnam_container, sha256_digest,
     structural_cosine_similarity, unseal_dnam_container, verify_oem_device_certificate,
 };
 use dnam_engine::schema::{
@@ -153,7 +153,7 @@ fn build_reference_header_and_arena(core2_active: bool) -> (DnamJsonHeader, Vec<
                 arena_end_byte_offset: ARENA_OFFSET_FULL_END,
                 prefix_crc32c: 0,
             },
-            ultra: TierProfile {
+            pro: TierProfile {
                 channels: 12,
                 fdn_lines: if core2_active { 8 } else { 0 },
                 early_taps: 8,
@@ -161,6 +161,17 @@ fn build_reference_header_and_arena(core2_active: bool) -> (DnamJsonHeader, Vec<
                 loudness_lufs: -20.5,
                 output_trim_db: 0.0,
                 validation_esr_db: -47.63,
+                arena_end_byte_offset: ARENA_OFFSET_PRO_END,
+                prefix_crc32c: 0,
+            },
+            ultra: TierProfile {
+                channels: 16,
+                fdn_lines: if core2_active { 16 } else { 0 },
+                early_taps: 16,
+                head_svd_rank: 8,
+                loudness_lufs: -20.5,
+                output_trim_db: 0.0,
+                validation_esr_db: -50.8,
                 arena_end_byte_offset: ARENA_OFFSET_ULTRA_END,
                 prefix_crc32c: 0,
             },
@@ -185,7 +196,7 @@ fn build_reference_header_and_arena(core2_active: bool) -> (DnamJsonHeader, Vec<
         audit_report: None,
     };
 
-    let mut arena = vec![0u8; 36_224];
+    let mut arena = vec![0u8; 64_000];
     let compiled = header.compile_clamp_descriptors().unwrap();
     for (p, desc) in compiled.iter().enumerate() {
         let off = 7040 + p * 64;
@@ -195,20 +206,24 @@ fn build_reference_header_and_arena(core2_active: bool) -> (DnamJsonHeader, Vec<
     for i in 0..4 {
         let off = (i * 4 + (i % 2)) * 4;
         arena[off..off + 4].copy_from_slice(&0.5_f32.to_le_bytes());
+        let off_u = 36_224 + (i * 4 + (i % 2)) * 4;
+        arena[off_u..off_u + 4].copy_from_slice(&0.5_f32.to_le_bytes());
     }
     for t in 0..3 {
         arena[104 + t * 4..108 + t * 4].copy_from_slice(&1.0_f32.to_le_bytes());
     }
+    arena[63_456..63_460].copy_from_slice(&1.0_f32.to_le_bytes());
     arena[116..120].copy_from_slice(&0.25_f32.to_le_bytes());
     arena[120..124].copy_from_slice(&0.75_f32.to_le_bytes());
     arena[124..128].copy_from_slice(&0.9993_f32.to_le_bytes());
 
-    for tier in 0..3 {
+    for tier in 0..4 {
         for blk in 0..4 {
             let (blk_base, adaa0_off, adaa1_off, rg_off) = match tier {
                 0 => (128 + blk * 1024, 384, 832, 896),
                 1 => (10_816 + blk * 1792, 768, 1600, 1664),
-                _ => (22_400 + blk * 2560, 1152, 2368, 2432),
+                2 => (22_400 + blk * 2560, 1152, 2368, 2432),
+                _ => (36_288 + blk * 3328, 1536, 3136, 3200),
             };
             for w in 0..96 {
                 let val = 0.01_f32 * (((blk * 17 + w + tier * 7) % 11) as f32 - 5.0);
@@ -253,20 +268,30 @@ fn build_reference_header_and_arena(core2_active: bool) -> (DnamJsonHeader, Vec<
         }
     }
 
-    for &hbase in &[4224_usize, 17_984_usize, 32_640_usize] {
+    for &hbase in &[4224_usize, 17_984_usize, 32_640_usize, 49_600_usize] {
         for i in 0..640 {
             let val = 0.02_f32 * (((i * 13 + 3) % 19) as f32 - 9.0);
             let off = hbase + i * 4;
             arena[off..off + 4].copy_from_slice(&val.to_le_bytes());
         }
     }
+    for i in 0..2048 {
+        let val = 0.015_f32 * (((i * 11 + 5) % 17) as f32 - 8.0);
+        let off = 52_160 + i * 4;
+        arena[off..off + 4].copy_from_slice(&val.to_le_bytes());
+    }
     for i in 0..64 {
         let val = 0.05_f32 * (((i * 7 + 1) % 13) as f32 - 6.0);
         let off = 8960 + i * 4;
         arena[off..off + 4].copy_from_slice(&val.to_le_bytes());
+        let off_u = 63_168 + i * 4;
+        arena[off_u..off_u + 4].copy_from_slice(&val.to_le_bytes());
     }
 
-    for (g, &c2base) in [6784_usize, 20_544_usize].iter().enumerate() {
+    for (g, &c2base) in [6784_usize, 20_544_usize, 62_400_usize, 62_656_usize]
+        .iter()
+        .enumerate()
+    {
         for lane in 0..4 {
             let tau0 = 64.0_f32 + ((g * 4 + lane) as f32) * 29.0;
             let v_ceil = 0.985_f32;
@@ -317,13 +342,13 @@ fn test_marketplace_provenance_enclave_encryption_and_gauge_audio_equivalence() 
     ];
     apply_isometric_gauge_watermark(&mut buyer_arena, &kappa, &q_buyer).unwrap();
 
-    // 1. Structural hash cosine similarity must be 1.00000000000000
-    let hash_master = extract_structural_hash_160d(&master_arena).unwrap();
-    let hash_buyer = extract_structural_hash_160d(&buyer_arena).unwrap();
+    // 1. Structural hash cosine similarity must be 1.00000000000000 across all 4 tiers (224-D) and prefixes!
+    let hash_master = extract_structural_hash_224d(&master_arena).unwrap();
+    let hash_buyer = extract_structural_hash_224d(&buyer_arena).unwrap();
     let cos_sim = structural_cosine_similarity(&hash_master, &hash_buyer);
     assert!(
         (cos_sim - 1.0).abs() < 1e-12,
-        "160-D structural hash not gauge-invariant: cos_sim={cos_sim}"
+        "224-D structural hash not gauge-invariant: cos_sim={cos_sim}"
     );
 
     // 2. Render audio through master and Mechanism-A watermarked model (with non-zero z_head preset!) -> < 1e-5 diff
@@ -355,21 +380,21 @@ fn test_marketplace_provenance_enclave_encryption_and_gauge_audio_equivalence() 
         "Isometric gauge watermark altered audio output by {max_audio_diff:e}"
     );
 
-    // 3. Verify Mechanism B (4,608-Weight Spread-Spectrum Tardos Watermark) under 4-buyer collusion + fp16 truncation
+    // 3. Verify Mechanism B (7,680-Weight Spread-Spectrum Tardos Watermark) under 4-buyer collusion + fp16 truncation
     let mp_secret = *b"dnam-marketplace-master-key-2026";
     let colluder_ids = ["lic_017", "lic_042", "lic_108", "lic_163"];
     let mut colluder_arenas = Vec::new();
     let mut colluder_codes = Vec::new();
     for &cid in &colluder_ids {
-        let code = generate_tardos_code_4608(&mp_secret, "tape_echo_v1", cid);
+        let code = generate_tardos_code_7680(&mp_secret, "tape_echo_v1", cid);
         let mut a = master_arena.clone();
-        apply_tardos_watermark_4608(&mut a, &code, 2e-3).unwrap();
+        apply_tardos_watermark_7680(&mut a, &code, 2e-3).unwrap();
         colluder_arenas.push(a);
         colluder_codes.push(code);
     }
 
     let mut pirated_arena = master_arena.clone();
-    for off in (128..32_640).step_by(4) {
+    for off in (128..49_600).step_by(4) {
         let mut sum = 0.0_f32;
         for ca in &colluder_arenas {
             sum += f32::from_le_bytes([ca[off], ca[off + 1], ca[off + 2], ca[off + 3]]);
@@ -380,22 +405,22 @@ fn test_marketplace_provenance_enclave_encryption_and_gauge_audio_equivalence() 
     }
 
     for (idx, code) in colluder_codes.iter().enumerate() {
-        let z = score_tardos_watermark_4608(&master_arena, &pirated_arena, code).unwrap();
+        let z = score_tardos_watermark_7680(&master_arena, &pirated_arena, code).unwrap();
         assert!(
             z > 12.0,
             "Colluder {idx} Tardos Z-score too low: {z:.2} sigma"
         );
     }
-    let innocent_code = generate_tardos_code_4608(&mp_secret, "tape_echo_v1", "innocent_buyer_999");
+    let innocent_code = generate_tardos_code_7680(&mp_secret, "tape_echo_v1", "innocent_buyer_999");
     let z_innocent =
-        score_tardos_watermark_4608(&master_arena, &pirated_arena, &innocent_code).unwrap();
+        score_tardos_watermark_7680(&master_arena, &pirated_arena, &innocent_code).unwrap();
     assert!(
-        z_innocent.abs() < 4.5 && TARDOS_CONV_WEIGHTS == 4608,
+        z_innocent.abs() < 4.5 && TARDOS_CONV_WEIGHTS == 7680,
         "Innocent buyer false positive: {z_innocent:.2} sigma"
     );
 
-    // 4. Verify Split-Payload Ed25519 Signatures, X25519 + ChaCha20 64B-Block Arena Encryption,
-    // and 4 KB In-Place Header Preset Updates
+    // 4. Verify Split-Payload Ed25519 Signatures, 4-Tier Prefix Digests, X25519 + ChaCha20 64B-Block Arena Encryption,
+    // 4 KB In-Place Header Preset Updates, and Zero-Re-Signing Container Tier Stripping!
     use ed25519_dalek::{Signer, SigningKey};
     use x25519_dalek::{PublicKey as XPublicKey, StaticSecret as XSecret};
 
@@ -419,6 +444,30 @@ fn test_marketplace_provenance_enclave_encryption_and_gauge_audio_equivalence() 
     let imm_sha = compute_immutable_header_sha256(&header).unwrap();
     let master_sha = sha256_digest(&master_arena);
     let buyer_sha = sha256_digest(&buyer_arena);
+    let master_tier_shas = [
+        encode_hex(&sha256_digest(
+            &master_arena[..ARENA_OFFSET_LITE_END as usize],
+        )),
+        encode_hex(&sha256_digest(
+            &master_arena[..ARENA_OFFSET_FULL_END as usize],
+        )),
+        encode_hex(&sha256_digest(
+            &master_arena[..ARENA_OFFSET_PRO_END as usize],
+        )),
+        encode_hex(&master_sha),
+    ];
+    let buyer_tier_shas = [
+        encode_hex(&sha256_digest(
+            &buyer_arena[..ARENA_OFFSET_LITE_END as usize],
+        )),
+        encode_hex(&sha256_digest(
+            &buyer_arena[..ARENA_OFFSET_FULL_END as usize],
+        )),
+        encode_hex(&sha256_digest(
+            &buyer_arena[..ARENA_OFFSET_PRO_END as usize],
+        )),
+        encode_hex(&buyer_sha),
+    ];
 
     let creator_msg = build_creator_signing_message(&imm_sha, &master_sha);
     let creator_sig = creator_sk.sign(&creator_msg).to_bytes();
@@ -430,6 +479,7 @@ fn test_marketplace_provenance_enclave_encryption_and_gauge_audio_equivalence() 
         license_tier: "personal".to_string(),
         issued_at: "2026-10-23T00:00:00Z".to_string(),
         buyer_arena_sha256: encode_hex(&buyer_sha),
+        buyer_tier_arena_sha256: Some(buyer_tier_shas),
         encryption_mode: "x25519_chacha20_arena".to_string(),
         arena_nonce_96: Some(encode_hex(&nonce_96)),
         ephemeral_pubkey_x25519: Some(encode_hex(&eph_pk_bytes)),
@@ -449,6 +499,7 @@ fn test_marketplace_provenance_enclave_encryption_and_gauge_audio_equivalence() 
     header.metadata.signatures = Some(ModelSignatures {
         immutable_header_sha256: encode_hex(&imm_sha),
         master_arena_sha256: encode_hex(&master_sha),
+        tier_arena_sha256: Some(master_tier_shas),
         creator_signature: CreatorSignature {
             signer_id: "did:web:studio.example".to_string(),
             pubkey_ed25519: encode_hex(&creator_pk),
@@ -459,7 +510,7 @@ fn test_marketplace_provenance_enclave_encryption_and_gauge_audio_equivalence() 
 
     let mut encrypted_arena = buyer_arena.clone();
     chacha20_xor_arena_blocks(&mut encrypted_arena, &cek, &nonce_96, 0).unwrap();
-    assert_eq!(encrypted_arena.len(), 36_224);
+    assert_eq!(encrypted_arena.len(), 64_000);
 
     let mut container_bytes =
         build_dnam_container(&mut header, &buyer_arena, &encrypted_arena, true).unwrap();
@@ -489,6 +540,30 @@ fn test_marketplace_provenance_enclave_encryption_and_gauge_audio_equivalence() 
         }
     );
     assert_eq!(loaded_view.arena_storage.as_bytes(), buyer_arena.as_slice());
+
+    // 5. Strip the signed+encrypted container down to Lite, Full, and Pro WITHOUT re-signing!
+    for max_tier in [Tier::Lite, Tier::Full, Tier::Pro] {
+        let stripped = strip_container_to_tier(&container_bytes, max_tier).unwrap();
+        let expected_arena_len = max_tier.expected_arena_bytes();
+        assert_eq!(
+            stripped.len(),
+            (loaded_view.preamble.tensor_arena_offset as usize) + expected_arena_len
+        );
+        let stripped_view = DnamContainerView::from_bytes(&stripped, &crypto).unwrap();
+        assert_eq!(
+            stripped_view.verification_status,
+            VerificationStatus::MarketplaceVerified {
+                signer_id: "did:web:studio.example".to_string(),
+                marketplace_id: "dnam.store".to_string(),
+                license_id: "0192b6c0-7e4a-7000-8000-1a2b3c4d5e6f".to_string(),
+                license_tier: "personal".to_string(),
+            }
+        );
+        assert_eq!(
+            stripped_view.arena_storage.as_bytes(),
+            &buyer_arena[..expected_arena_len]
+        );
+    }
 }
 
 #[test]
@@ -559,6 +634,7 @@ fn test_dnam_seal_dnsl_envelope_oem_certificate_and_distribution_policy() {
         license_tier: "oem_bundle".to_string(),
         issued_at: "2026-10-27T00:00:00Z".to_string(),
         buyer_arena_sha256: encode_hex(&master_sha),
+        buyer_tier_arena_sha256: None,
         encryption_mode: "x25519_chacha20_arena".to_string(),
         arena_nonce_96: Some(encode_hex(&nonce_arena)),
         ephemeral_pubkey_x25519: Some(encode_hex(&eph_inner_pk)),
@@ -579,6 +655,7 @@ fn test_dnam_seal_dnsl_envelope_oem_certificate_and_distribution_policy() {
     header.metadata.signatures = Some(ModelSignatures {
         immutable_header_sha256: encode_hex(&imm_sha),
         master_arena_sha256: encode_hex(&master_sha),
+        tier_arena_sha256: None,
         creator_signature: CreatorSignature {
             signer_id: "did:web:darkglass.com".to_string(),
             pubkey_ed25519: encode_hex(&creator_pk),

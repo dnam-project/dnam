@@ -50,12 +50,15 @@ pub struct NativeDnamEngine {
 #[pymethods]
 impl NativeDnamEngine {
     #[new]
-    #[pyo3(signature = (container_bytes, tier = 1, sample_rate_hz = 48_000, backend = "auto"))]
+    #[pyo3(signature = (container_bytes, tier = 1, sample_rate_hz = 48_000, backend = "auto", max_supported_tier = None, offline_bounce = false, maximize_tier_on_bounce = true))]
     pub fn new(
         container_bytes: &[u8],
         tier: u8,
         sample_rate_hz: u32,
         backend: &str,
+        max_supported_tier: Option<u8>,
+        offline_bounce: bool,
+        maximize_tier_on_bounce: bool,
     ) -> PyResult<Self> {
         let preamble = DnamPreamble::from_bytes(container_bytes).map_err(dnam_err_to_py)?;
         let sample_rate_train_hz = preamble.sample_rate_train_hz;
@@ -63,13 +66,39 @@ impl NativeDnamEngine {
 
         let backend_enum = parse_backend_kind(backend)?;
         let tier_enum = Tier::from_u8(tier);
-        let inner = DynamicDnamEngine::from_bytes_owned_with_backend(
-            container_bytes,
-            tier_enum,
-            sample_rate_hz,
-            backend_enum,
-        )
-        .map_err(dnam_err_to_py)?;
+        let max_tier_enum = max_supported_tier.map_or(Tier::Ultra, Tier::from_u8);
+        let mut inner = if max_tier_enum < Tier::Ultra {
+            let mut eng = DynamicDnamEngine::from_bytes_owned_with_max_tier(
+                container_bytes,
+                tier_enum,
+                max_tier_enum,
+                sample_rate_hz,
+            )
+            .map_err(dnam_err_to_py)?;
+            if eng.backend_kind() != backend_enum {
+                eng = DynamicDnamEngine::from_bytes_owned_with_backend(
+                    container_bytes,
+                    tier_enum,
+                    sample_rate_hz,
+                    backend_enum,
+                )
+                .map_err(dnam_err_to_py)?;
+                eng.set_max_supported_tier(max_tier_enum);
+            }
+            eng
+        } else {
+            DynamicDnamEngine::from_bytes_owned_with_backend(
+                container_bytes,
+                tier_enum,
+                sample_rate_hz,
+                backend_enum,
+            )
+            .map_err(dnam_err_to_py)?
+        };
+        inner.set_maximize_tier_on_bounce(maximize_tier_on_bounce);
+        if offline_bounce {
+            inner.set_offline_bounce(true);
+        }
 
         let zoh = ZohRescaledParams::compute(
             sample_rate_train_hz,
@@ -133,11 +162,47 @@ impl NativeDnamEngine {
     }
 
     pub fn active_tier(&self) -> u8 {
-        self.inner.telemetry_snapshot().active_tier
+        self.inner.tier() as u8
     }
 
     pub fn set_tier(&mut self, tier: u8) {
         self.inner.set_tier(Tier::from_u8(tier));
+    }
+
+    pub fn max_available_tier(&self) -> u8 {
+        self.inner.max_available_tier() as u8
+    }
+
+    pub fn max_supported_tier(&self) -> u8 {
+        self.inner.max_supported_tier() as u8
+    }
+
+    pub fn set_max_supported_tier(&mut self, tier: u8) {
+        self.inner.set_max_supported_tier(Tier::from_u8(tier));
+    }
+
+    pub fn effective_tier(&self) -> u8 {
+        self.inner.effective_tier() as u8
+    }
+
+    pub fn offline_bounce(&self) -> bool {
+        self.inner.offline_bounce()
+    }
+
+    pub fn set_offline_bounce(&mut self, enabled: bool) {
+        self.inner.set_offline_bounce(enabled);
+    }
+
+    pub fn maximize_tier_on_bounce(&self) -> bool {
+        self.inner.maximize_tier_on_bounce()
+    }
+
+    pub fn set_maximize_tier_on_bounce(&mut self, enabled: bool) {
+        self.inner.set_maximize_tier_on_bounce(enabled);
+    }
+
+    pub fn latency_samples(&self) -> usize {
+        self.inner.latency_samples()
     }
 
     pub fn sample_rate_hz(&self) -> u32 {
@@ -172,6 +237,40 @@ impl NativeDnamEngine {
 
     pub fn reset(&mut self) {
         self.inner.reset_to_dc_equilibrium();
+    }
+
+    /// Renders a complete stereo buffer in Offline Bounce mode ($4\times$ linear-phase polyphase oversampling),
+    /// automatically stripping the 12-sample PDC lead-in.
+    pub fn render_offline_bounce<'py>(
+        &mut self,
+        py: Python<'py>,
+        left_in: PyReadonlyArray1<'py, f32>,
+        right_in: PyReadonlyArray1<'py, f32>,
+        mut left_out: PyReadwriteArray1<'py, f32>,
+        mut right_out: PyReadwriteArray1<'py, f32>,
+    ) -> PyResult<()> {
+        let n = left_in.len();
+        if right_in.len() != n || left_out.len() != n || right_out.len() != n {
+            return Err(PyValueError::new_err(
+                "[DNAM-VALIDATION] left_in, right_in, left_out, and right_out must have identical length",
+            ));
+        }
+        let l_in = left_in
+            .as_slice()
+            .map_err(|_| PyValueError::new_err("[DNAM-VALIDATION] left_in must be contiguous"))?;
+        let r_in = right_in
+            .as_slice()
+            .map_err(|_| PyValueError::new_err("[DNAM-VALIDATION] right_in must be contiguous"))?;
+        let l_out = left_out
+            .as_slice_mut()
+            .map_err(|_| PyValueError::new_err("[DNAM-VALIDATION] left_out must be contiguous"))?;
+        let r_out = right_out
+            .as_slice_mut()
+            .map_err(|_| PyValueError::new_err("[DNAM-VALIDATION] right_out must be contiguous"))?;
+        py.detach(|| {
+            self.inner.render_offline_bounce(l_in, r_in, l_out, r_out);
+        });
+        Ok(())
     }
 
     /// Processes stereo planar `float32` slices in-place into `left_out` and `right_out`,

@@ -350,7 +350,7 @@ class TrainingConfig(StrictModel):
     ridge_init: float = Field(default=1.0e-3, gt=0.0)
     ridge_polish: float = Field(default=1.0e-6, gt=0.0)
     svd_singular_floor: float = Field(default=1.0e-4, gt=0.0)
-    max_head_svd_rank: int = Field(default=4, ge=1, le=4)
+    max_head_svd_rank: int = Field(default=4, ge=1, le=8)
     barrier_weight: float = Field(default=10.0, ge=0.0)
     group_lasso_weight: float = Field(default=1.0e-4, ge=0.0)
     tier2_esr_threshold_db: float = Field(default=-30.0, le=0.0)
@@ -378,6 +378,7 @@ class TrainingTelemetryRow(StrictModel):
     epoch: int = Field(ge=0)
     esr_lite_db: float
     esr_full_db: float
+    esr_pro_db: float = 0.0
     esr_ultra_db: float
     barrier_loss: float = Field(ge=0.0)
     group_lasso_loss: float = Field(ge=0.0)
@@ -480,6 +481,14 @@ class TrainingJobResult(StrictModel):
     def esr_full_db(self) -> float:
         """Final stage `esr_full_db` from `self.telemetry`."""
         return self.telemetry[-1].esr_full_db if self.telemetry else 0.0
+
+    @property
+    def esr_pro_db(self) -> float:
+        """Final stage `esr_pro_db` from `self.telemetry`."""
+        if not self.telemetry:
+            return 0.0
+        last = self.telemetry[-1]
+        return last.esr_pro_db if last.esr_pro_db != 0.0 else last.esr_ultra_db
 
     @property
     def esr_ultra_db(self) -> float:

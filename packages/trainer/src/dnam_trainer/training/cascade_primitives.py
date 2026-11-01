@@ -603,27 +603,56 @@ def compute_tier32_modulator_vectors(
     return f0, f1
 
 
+def synthesize_4th_tier_base_block(
+    b_lite: NDArray[np.float32],
+    b_full: NDArray[np.float32],
+    b_pro: NDArray[np.float32],
+) -> NDArray[np.float32]:
+    """Constructs the 4th (`Tier::Ultra`, features `192..256`) RMS-balanced quadrature &
+    differential harmonic base block from `(b_lite, b_full, b_pro)`."""
+    t_len, n_cols = b_pro.shape
+    half = n_cols // 2
+    diff_pro = np.empty((t_len, half), dtype=np.float32)
+    diff_pro[0, :] = b_pro[0, :half]
+    if t_len > 1:
+        diff_pro[1:, :] = b_pro[1:, :half] - b_pro[:-1, :half]
+    cross = (b_full[:, : n_cols - half] * b_pro[:, : n_cols - half]).astype(np.float32)
+    cross = cross - np.mean(cross, axis=0, keepdims=True)
+    raw = np.concatenate([diff_pro, cross], axis=-1)
+    rms = np.sqrt(np.mean(raw * raw, axis=0, keepdims=True) + np.float32(1.0e-18))
+    target_rms = np.sqrt(np.mean(b_pro * b_pro, axis=0, keepdims=True) + np.float32(1.0e-18))
+    mean_target_rms = np.mean(target_rms).astype(np.float32)
+    scale = mean_target_rms / np.maximum(rms, np.float32(1.0e-7))
+    return np.ascontiguousarray(raw * scale, dtype=np.float32)
+
+
 def modulate_tier_blocks_with_controls(
     b_lite_16: NDArray[np.float32],
     b_full_16: NDArray[np.float32],
     b_ultra_16: NDArray[np.float32],
     u_ctrl_3: Sequence[float],
     *,
+    b_ultra_extra_16: NDArray[np.float32] | None = None,
     c_knots: NDArray[np.float64] | None = None,
 ) -> NDArray[np.float32]:
-    """Forms the 192-D bilinear control-modulated feature tensor `(T, 192)` from 16-channel or
-    32-channel tier base blocks.
+    """Forms the 256-D bilinear control-modulated feature tensor `(T, 256)` from 16-channel or
+    32-channel tier base blocks (`Lite` `0..64`, `Full` `64..128`, `Pro` `128..192`,
+    `Ultra` `192..256`).
     """
+    b_u4 = (
+        b_ultra_extra_16
+        if b_ultra_extra_16 is not None
+        else synthesize_4th_tier_base_block(b_lite_16, b_full_16, b_ultra_16)
+    )
     if b_lite_16.shape[1] == 32:
         f0, f1 = compute_tier32_modulator_vectors(u_ctrl_3, c_knots)
         f0_32 = f0.astype(np.float32)[None, :]
         f1_32 = f1.astype(np.float32)[None, :]
         f_lite = np.concatenate([b_lite_16 * f0_32, b_lite_16 * f1_32], axis=-1).astype(np.float32)
         f_full = np.concatenate([b_full_16 * f0_32, b_full_16 * f1_32], axis=-1).astype(np.float32)
-        f_ultra = np.concatenate([b_ultra_16 * f0_32, b_ultra_16 * f1_32], axis=-1).astype(
-            np.float32
-        )
-        return np.concatenate([f_lite, f_full, f_ultra], axis=-1)
+        f_pro = np.concatenate([b_ultra_16 * f0_32, b_ultra_16 * f1_32], axis=-1).astype(np.float32)
+        f_ultra = np.concatenate([b_u4 * f0_32, b_u4 * f1_32], axis=-1).astype(np.float32)
+        return np.concatenate([f_lite, f_full, f_pro, f_ultra], axis=-1)
 
     u0 = float(u_ctrl_3[0]) if len(u_ctrl_3) > 0 else 0.0
     u1 = float(u_ctrl_3[1]) if len(u_ctrl_3) > 1 else 0.0
@@ -631,5 +660,6 @@ def modulate_tier_blocks_with_controls(
     factors = (1.0, u0, u1, u2)
     f_lite = np.concatenate([m * b_lite_16 for m in factors], axis=-1).astype(np.float32)
     f_full = np.concatenate([m * b_full_16 for m in factors], axis=-1).astype(np.float32)
-    f_ultra = np.concatenate([m * b_ultra_16 for m in factors], axis=-1).astype(np.float32)
-    return np.concatenate([f_lite, f_full, f_ultra], axis=-1)
+    f_pro = np.concatenate([m * b_ultra_16 for m in factors], axis=-1).astype(np.float32)
+    f_ultra = np.concatenate([m * b_u4 for m in factors], axis=-1).astype(np.float32)
+    return np.concatenate([f_lite, f_full, f_pro, f_ultra], axis=-1)

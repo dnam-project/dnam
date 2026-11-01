@@ -3,14 +3,15 @@
 use core::mem::{align_of, size_of};
 
 use crate::schema::DnamError;
+use crate::types::Tier;
 
 use super::{
     CONTAINER_VERSION_MAJOR, CONTAINER_VERSION_MINOR, DNAM_MAGIC, DNCK_MAGIC, FLAG_CORE2_ACTIVE,
-    FLAG_ENCRYPTED_ARENA, FLAG_HAS_CALIB_STATS, FLAG_HAS_SIGNATURES, FLAG_LFO_ENV_ACTIVE,
-    FLAG_STEREO_OUT,
+    FLAG_ENCRYPTED_ARENA, FLAG_HAS_CALIB_STATS, FLAG_HAS_FULL_DELTA, FLAG_HAS_PRO_DELTA,
+    FLAG_HAS_SIGNATURES, FLAG_HAS_ULTRA_DELTA, FLAG_LFO_ENV_ACTIVE, FLAG_STEREO_OUT,
 };
 
-/// Fixed 64-byte binary preamble (`#[repr(C, align(64))]`, `<4s3H2B10IH2BfI`) at byte offset `0x0000`.
+/// Fixed 64-byte binary preamble (`#[repr(C, align(64))]`, `<4s3H2B4I4H4IH2BfI`) at byte offset `0x0000`.
 #[repr(C, align(64))]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DnamPreamble {
@@ -18,7 +19,7 @@ pub struct DnamPreamble {
     pub magic: [u8; 4],
     /// Schema major version (`1`).
     pub version_major: u16,
-    /// Schema minor version (`0`).
+    /// Schema minor version (`0` or `1`).
     pub version_minor: u16,
     /// Bitmask of `FLAG_*` constants.
     pub flags: u16,
@@ -34,23 +35,27 @@ pub struct DnamPreamble {
     pub tensor_arena_offset: u32,
     /// Total byte length of all binary tensor arenas (`% 64 == 0`).
     pub tensor_arena_byte_len: u32,
-    /// Arena-relative byte end of `Arena 0 (Lite)` (`10,752`).
-    pub arena_offset_lite_end: u32,
-    /// Arena-relative byte end of `Arena 0..1 (Full)` (`22,336`).
-    pub arena_offset_full_end: u32,
-    /// Arena-relative byte end of `Arena 0..2 (Ultra)` (`36,224`).
-    pub arena_offset_ultra_end: u32,
+    /// Arena-relative end of `Arena 0 (Lite)` in 64B cache lines (`168` $\to$ `10,752 B`).
+    pub arena_lite_end_cl: u16,
+    /// Arena-relative end of `Arena 0..1 (Full)` in 64B cache lines (`349` $\to$ `22,336 B`).
+    pub arena_full_end_cl: u16,
+    /// Arena-relative end of `Arena 0..2 (Pro)` in 64B cache lines (`566` $\to$ `36,224 B`).
+    pub arena_pro_end_cl: u16,
+    /// Arena-relative end of `Arena 0..3 (Ultra)` in 64B cache lines (`1,000` $\to$ `64,000 B`).
+    pub arena_ultra_end_cl: u16,
     /// Castagnoli `CRC32C` over `arena[0..arena_offset_lite_end]`.
     pub arena_crc32c_lite: u32,
     /// Castagnoli `CRC32C` over `arena[0..arena_offset_full_end]`.
     pub arena_crc32c_full: u32,
+    /// Castagnoli `CRC32C` over `arena[0..arena_offset_pro_end]`.
+    pub arena_crc32c_pro: u32,
     /// Castagnoli `CRC32C` over `arena[0..arena_offset_ultra_end]`.
     pub arena_crc32c_ultra: u32,
-    /// Number of stem records in `Arena 3` (`0` for `.dnam`, $\ge 1$ for `.dnam-ckpt`).
+    /// Number of stem records in `Arena 4` (`0` for `.dnam`, $\ge 1$ for `.dnam-ckpt`).
     pub num_ckpt_stems: u16,
     /// Control-bus decimation stride $K_{\text{ctrl}}$ at $f_{s,\text{train}}$ (`16`).
     pub control_decimation: u8,
-    /// Active SVD principal control subspace rank $D_h \in [0, 4]$.
+    /// Active SVD principal control subspace rank $D_h \in [0, 8]$.
     pub head_svd_rank: u8,
     /// Estimated $T_{60}$ decay tail time in milliseconds for DAW sleep management.
     pub tail_time_ms: f32,
@@ -90,14 +95,13 @@ impl DnamPreamble {
         let tensor_arena_offset = u32::from_le_bytes([bytes[20], bytes[21], bytes[22], bytes[23]]);
         let tensor_arena_byte_len =
             u32::from_le_bytes([bytes[24], bytes[25], bytes[26], bytes[27]]);
-        let arena_offset_lite_end =
-            u32::from_le_bytes([bytes[28], bytes[29], bytes[30], bytes[31]]);
-        let arena_offset_full_end =
-            u32::from_le_bytes([bytes[32], bytes[33], bytes[34], bytes[35]]);
-        let arena_offset_ultra_end =
-            u32::from_le_bytes([bytes[36], bytes[37], bytes[38], bytes[39]]);
-        let arena_crc32c_lite = u32::from_le_bytes([bytes[40], bytes[41], bytes[42], bytes[43]]);
-        let arena_crc32c_full = u32::from_le_bytes([bytes[44], bytes[45], bytes[46], bytes[47]]);
+        let arena_lite_end_cl = u16::from_le_bytes([bytes[28], bytes[29]]);
+        let arena_full_end_cl = u16::from_le_bytes([bytes[30], bytes[31]]);
+        let arena_pro_end_cl = u16::from_le_bytes([bytes[32], bytes[33]]);
+        let arena_ultra_end_cl = u16::from_le_bytes([bytes[34], bytes[35]]);
+        let arena_crc32c_lite = u32::from_le_bytes([bytes[36], bytes[37], bytes[38], bytes[39]]);
+        let arena_crc32c_full = u32::from_le_bytes([bytes[40], bytes[41], bytes[42], bytes[43]]);
+        let arena_crc32c_pro = u32::from_le_bytes([bytes[44], bytes[45], bytes[46], bytes[47]]);
         let arena_crc32c_ultra = u32::from_le_bytes([bytes[48], bytes[49], bytes[50], bytes[51]]);
         let num_ckpt_stems = u16::from_le_bytes([bytes[52], bytes[53]]);
         let control_decimation = bytes[54];
@@ -108,9 +112,6 @@ impl DnamPreamble {
         for (field, offset) in [
             ("tensor_arena_offset", tensor_arena_offset),
             ("tensor_arena_byte_len", tensor_arena_byte_len),
-            ("arena_offset_lite_end", arena_offset_lite_end),
-            ("arena_offset_full_end", arena_offset_full_end),
-            ("arena_offset_ultra_end", arena_offset_ultra_end),
         ] {
             if (offset & 0x3F) != 0 {
                 return Err(DnamError::UnalignedOffset { field, offset });
@@ -128,11 +129,13 @@ impl DnamPreamble {
             json_header_byte_len,
             tensor_arena_offset,
             tensor_arena_byte_len,
-            arena_offset_lite_end,
-            arena_offset_full_end,
-            arena_offset_ultra_end,
+            arena_lite_end_cl,
+            arena_full_end_cl,
+            arena_pro_end_cl,
+            arena_ultra_end_cl,
             arena_crc32c_lite,
             arena_crc32c_full,
+            arena_crc32c_pro,
             arena_crc32c_ultra,
             num_ckpt_stems,
             control_decimation,
@@ -155,11 +158,13 @@ impl DnamPreamble {
         out[16..20].copy_from_slice(&self.json_header_byte_len.to_le_bytes());
         out[20..24].copy_from_slice(&self.tensor_arena_offset.to_le_bytes());
         out[24..28].copy_from_slice(&self.tensor_arena_byte_len.to_le_bytes());
-        out[28..32].copy_from_slice(&self.arena_offset_lite_end.to_le_bytes());
-        out[32..36].copy_from_slice(&self.arena_offset_full_end.to_le_bytes());
-        out[36..40].copy_from_slice(&self.arena_offset_ultra_end.to_le_bytes());
-        out[40..44].copy_from_slice(&self.arena_crc32c_lite.to_le_bytes());
-        out[44..48].copy_from_slice(&self.arena_crc32c_full.to_le_bytes());
+        out[28..30].copy_from_slice(&self.arena_lite_end_cl.to_le_bytes());
+        out[30..32].copy_from_slice(&self.arena_full_end_cl.to_le_bytes());
+        out[32..34].copy_from_slice(&self.arena_pro_end_cl.to_le_bytes());
+        out[34..36].copy_from_slice(&self.arena_ultra_end_cl.to_le_bytes());
+        out[36..40].copy_from_slice(&self.arena_crc32c_lite.to_le_bytes());
+        out[40..44].copy_from_slice(&self.arena_crc32c_full.to_le_bytes());
+        out[44..48].copy_from_slice(&self.arena_crc32c_pro.to_le_bytes());
         out[48..52].copy_from_slice(&self.arena_crc32c_ultra.to_le_bytes());
         out[52..54].copy_from_slice(&self.num_ckpt_stems.to_le_bytes());
         out[54] = self.control_decimation;
@@ -169,37 +174,97 @@ impl DnamPreamble {
         out
     }
 
-    /// Returns `true` if `CORE2_ACTIVE` (`bit 6`) is set.
+    /// Arena-relative byte end of `Arena 0 (Lite)` (`arena_lite_end_cl * 64`).
+    #[inline]
+    pub const fn arena_offset_lite_end(&self) -> u32 {
+        (self.arena_lite_end_cl as u32) * 64
+    }
+
+    /// Arena-relative byte end of `Arena 0..1 (Full)` (`arena_full_end_cl * 64`).
+    #[inline]
+    pub const fn arena_offset_full_end(&self) -> u32 {
+        (self.arena_full_end_cl as u32) * 64
+    }
+
+    /// Arena-relative byte end of `Arena 0..2 (Pro)` (`arena_pro_end_cl * 64`).
+    #[inline]
+    pub const fn arena_offset_pro_end(&self) -> u32 {
+        (self.arena_pro_end_cl as u32) * 64
+    }
+
+    /// Arena-relative byte end of `Arena 0..3 (Ultra)` (`arena_ultra_end_cl * 64`).
+    #[inline]
+    pub const fn arena_offset_ultra_end(&self) -> u32 {
+        (self.arena_ultra_end_cl as u32) * 64
+    }
+
+    /// Returns the highest tier present in the container based on `flags` (`FLAG_HAS_*_DELTA`).
+    #[inline]
+    pub const fn highest_tier(&self) -> Tier {
+        if (self.flags & FLAG_HAS_ULTRA_DELTA) != 0 {
+            Tier::Ultra
+        } else if (self.flags & FLAG_HAS_PRO_DELTA) != 0 {
+            Tier::Pro
+        } else if (self.flags & FLAG_HAS_FULL_DELTA) != 0 {
+            Tier::Full
+        } else {
+            Tier::Lite
+        }
+    }
+
+    /// Returns the cumulative byte end offset for `tier`.
+    #[inline]
+    pub const fn arena_end_for_tier(&self, tier: Tier) -> usize {
+        match tier {
+            Tier::Lite => self.arena_offset_lite_end() as usize,
+            Tier::Full => self.arena_offset_full_end() as usize,
+            Tier::Pro => self.arena_offset_pro_end() as usize,
+            Tier::Ultra => self.arena_offset_ultra_end() as usize,
+        }
+    }
+
+    /// Returns the cumulative Castagnoli `CRC32C` for `tier`.
+    #[inline]
+    pub const fn crc32c_for_tier(&self, tier: Tier) -> u32 {
+        match tier {
+            Tier::Lite => self.arena_crc32c_lite,
+            Tier::Full => self.arena_crc32c_full,
+            Tier::Pro => self.arena_crc32c_pro,
+            Tier::Ultra => self.arena_crc32c_ultra,
+        }
+    }
+
+    /// Returns `true` if `CORE2_ACTIVE` (`bit 7`) is set.
     #[inline]
     pub const fn is_core2_active(&self) -> bool {
         (self.flags & FLAG_CORE2_ACTIVE) != 0
     }
 
-    /// Returns `true` if `LFO_ENV_ACTIVE` (`bit 7`) is set.
+    /// Returns `true` if `LFO_ENV_ACTIVE` (`bit 8`) is set.
     #[inline]
     pub const fn is_lfo_env_active(&self) -> bool {
         (self.flags & FLAG_LFO_ENV_ACTIVE) != 0
     }
 
-    /// Returns `true` if `STEREO_OUT` (`bit 8`) is set.
+    /// Returns `true` if `STEREO_OUT` (`bit 9`) is set.
     #[inline]
     pub const fn is_stereo_out(&self) -> bool {
         (self.flags & FLAG_STEREO_OUT) != 0
     }
 
-    /// Returns `true` if `HAS_SIGNATURES` (`bit 9`) is set.
+    /// Returns `true` if `HAS_SIGNATURES` (`bit 10`) is set.
     #[inline]
     pub const fn has_signatures(&self) -> bool {
         (self.flags & FLAG_HAS_SIGNATURES) != 0
     }
 
-    /// Returns `true` if `ENCRYPTED_ARENA` (`bit 10`) is set.
+    /// Returns `true` if `ENCRYPTED_ARENA` (`bit 11`) is set.
     #[inline]
     pub const fn is_encrypted_arena(&self) -> bool {
         (self.flags & FLAG_ENCRYPTED_ARENA) != 0
     }
 
-    /// Returns `true` if `HAS_CALIB_STATS` (`bit 11`) is set.
+    /// Returns `true` if `HAS_CALIB_STATS` (`bit 12`) is set.
     #[inline]
     pub const fn has_calib_stats(&self) -> bool {
         (self.flags & FLAG_HAS_CALIB_STATS) != 0

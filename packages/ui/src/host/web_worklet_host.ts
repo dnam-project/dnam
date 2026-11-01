@@ -1,10 +1,20 @@
 import { clampNumber } from "../lib/utils.js";
-import type { DnamAudioHost, DnamBackendAcceleration, DnamTelemetrySnapshot } from "./types.js";
+import {
+  clampTierToMaxSupported,
+  type DnamAudioHost,
+  type DnamBackendAcceleration,
+  type DnamModelTier,
+  type DnamTelemetrySnapshot,
+} from "./types.js";
 
 export interface WebAudioWorkletHostOptions {
   readonly sampleRateHz?: number | undefined;
   readonly controlRateHz?: number | undefined;
   readonly backend?: DnamBackendAcceleration | undefined;
+  readonly initialTier?: DnamModelTier | undefined;
+  readonly maxSupportedTier?: DnamModelTier | undefined;
+  readonly offlineBounce?: boolean | undefined;
+  readonly maximizeTierOnBounce?: boolean | undefined;
   readonly initialParameters?: Readonly<Record<string, number>> | undefined;
   readonly initialSwitches?: Readonly<Record<string, number>> | undefined;
   readonly onParameterChange?: ((id: string, value: number) => void) | undefined;
@@ -23,12 +33,20 @@ export class WebAudioWorkletHost implements DnamAudioHost {
   private readonly listeners = new Set<(snapshot: DnamTelemetrySnapshot) => void>();
   private readonly onParameterChange?: ((id: string, value: number) => void) | undefined;
   private readonly onSwitchChange?: ((id: string, index: number) => void) | undefined;
+  private activeTier: DnamModelTier;
+  private maxSupportedTier: DnamModelTier;
+  private offlineBounce: boolean;
+  private maximizeTierOnBounce: boolean;
   private telemetryState: DnamTelemetrySnapshot;
 
   public constructor(options: WebAudioWorkletHostOptions = {}) {
     this.backend = options.backend ?? "wasm-simd128";
     this.onParameterChange = options.onParameterChange;
     this.onSwitchChange = options.onSwitchChange;
+    this.maxSupportedTier = options.maxSupportedTier ?? "ultra";
+    this.activeTier = clampTierToMaxSupported(options.initialTier ?? "full", this.maxSupportedTier);
+    this.offlineBounce = options.offlineBounce ?? false;
+    this.maximizeTierOnBounce = options.maximizeTierOnBounce ?? true;
     if (options.initialParameters) {
       for (const [key, val] of Object.entries(options.initialParameters)) {
         this.parameters.set(key, val);
@@ -53,7 +71,67 @@ export class WebAudioWorkletHost implements DnamAudioHost {
       mahalanobisR2: 0.42,
       activeTrustRegionAlpha: 1.0,
       bypassActive: false,
+      activeTier: this.activeTier,
+      effectiveTier:
+        this.offlineBounce && this.maximizeTierOnBounce ? this.maxSupportedTier : this.activeTier,
+      maxSupportedTier: this.maxSupportedTier,
+      offlineBounce: this.offlineBounce,
+      maximizeTierOnBounce: this.maximizeTierOnBounce,
     };
+  }
+
+  private computeEffectiveTier(): DnamModelTier {
+    if (this.offlineBounce && this.maximizeTierOnBounce) {
+      return this.maxSupportedTier;
+    }
+    return this.activeTier;
+  }
+
+  private syncTierTelemetry(): void {
+    this.updateTelemetry({
+      activeTier: this.activeTier,
+      effectiveTier: this.computeEffectiveTier(),
+      maxSupportedTier: this.maxSupportedTier,
+      offlineBounce: this.offlineBounce,
+      maximizeTierOnBounce: this.maximizeTierOnBounce,
+    });
+  }
+
+  public getTier(): DnamModelTier {
+    return this.activeTier;
+  }
+
+  public setTier(tier: DnamModelTier): void {
+    this.activeTier = clampTierToMaxSupported(tier, this.maxSupportedTier);
+    this.syncTierTelemetry();
+  }
+
+  public getMaxSupportedTier(): DnamModelTier {
+    return this.maxSupportedTier;
+  }
+
+  public setMaxSupportedTier(tier: DnamModelTier): void {
+    this.maxSupportedTier = tier;
+    this.activeTier = clampTierToMaxSupported(this.activeTier, this.maxSupportedTier);
+    this.syncTierTelemetry();
+  }
+
+  public getOfflineBounce(): boolean {
+    return this.offlineBounce;
+  }
+
+  public setOfflineBounce(enabled: boolean): void {
+    this.offlineBounce = enabled;
+    this.syncTierTelemetry();
+  }
+
+  public getMaximizeTierOnBounce(): boolean {
+    return this.maximizeTierOnBounce;
+  }
+
+  public setMaximizeTierOnBounce(enabled: boolean): void {
+    this.maximizeTierOnBounce = enabled;
+    this.syncTierTelemetry();
   }
 
   public getParameter(id: string): number {

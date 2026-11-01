@@ -7,26 +7,27 @@ import type { StandardSchemaV1 } from "@standard-schema/spec";
 import { z } from "zod";
 import { DnamValidationError } from "../errors.js";
 
-export type TierName = "lite" | "full" | "ultra";
-export type TierCode = 0 | 1 | 2;
-export type TierInput = TierName | "Lite" | "Full" | "Ultra" | TierCode | number;
+export type TierName = "lite" | "full" | "pro" | "ultra";
+export type TierCode = 0 | 1 | 2 | 3;
+export type TierInput = TierName | "Lite" | "Full" | "Pro" | "Ultra" | TierCode | number;
 
 export const TierSchema = z.union([
-  z.enum(["lite", "full", "ultra", "Lite", "Full", "Ultra"]),
+  z.enum(["lite", "full", "pro", "ultra", "Lite", "Full", "Pro", "Ultra"]),
   z.literal(0),
   z.literal(1),
   z.literal(2),
+  z.literal(3),
 ]);
 
 /**
- * Normalizes a tier name (`"lite"`, `"full"`, `"ultra"`) or code (`0`, `1`, `2`) into `0 | 1 | 2`.
+ * Normalizes a tier name (`"lite"`, `"full"`, `"pro"`, `"ultra"`) or code (`0`, `1`, `2`, `3`) into `0 | 1 | 2 | 3`.
  */
 export function parseTier(tier: TierInput): TierCode {
   if (typeof tier === "number") {
-    if (tier === 0 || tier === 1 || tier === 2) {
+    if (tier === 0 || tier === 1 || tier === 2 || tier === 3) {
       return tier;
     }
-    throw new DnamValidationError(`Invalid tier number: ${String(tier)} (expected 0, 1, or 2)`);
+    throw new DnamValidationError(`Invalid tier number: ${String(tier)} (expected 0, 1, 2, or 3)`);
   }
   const lower = tier.toLowerCase();
   if (lower === "lite") {
@@ -35,16 +36,19 @@ export function parseTier(tier: TierInput): TierCode {
   if (lower === "full") {
     return 1;
   }
-  if (lower === "ultra") {
+  if (lower === "pro") {
     return 2;
   }
+  if (lower === "ultra") {
+    return 3;
+  }
   throw new DnamValidationError(
-    `Invalid tier name: '${tier}' (expected 'lite', 'full', or 'ultra')`,
+    `Invalid tier name: '${tier}' (expected 'lite', 'full', 'pro', or 'ultra')`,
   );
 }
 
 /**
- * Converts a numeric tier code (`0`, `1`, `2`) into its canonical lowercase name (`"lite"`, `"full"`, `"ultra"`).
+ * Converts a numeric tier code (`0`, `1`, `2`, `3`) into its canonical lowercase name (`"lite"`, `"full"`, `"pro"`, `"ultra"`).
  */
 export function tierToName(tier: number): TierName {
   if (tier === 0) {
@@ -54,6 +58,9 @@ export function tierToName(tier: number): TierName {
     return "full";
   }
   if (tier === 2) {
+    return "pro";
+  }
+  if (tier === 3) {
     return "ultra";
   }
   throw new DnamValidationError(`Invalid tier code: ${String(tier)}`);

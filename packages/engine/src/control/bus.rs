@@ -33,6 +33,8 @@ pub struct ControlBus<B: MathBackend> {
     pub is_dirty: bool,
     /// Current collapsed SVD control coordinates $\mathbf{z}_{\text{head}} \in \mathbb{R}^4$ after trust-region soft-clip (`CL-15`).
     pub z_head: [f32; SVD_HEAD_RANK],
+    /// Current `Ultra`-tier (`Tier::Ultra`, modes `5..8`) collapsed SVD control coordinates $\mathbf{z}_{\text{head,ultra}} \in \mathbb{R}^4$.
+    pub z_head_ultra: [f32; SVD_HEAD_RANK],
     /// Current 3-band envelope follower states $\mathbf{e}[k] \in \mathbb{R}^3$ (`Low`, `Mid`, `High`) + pad.
     pub env_states: [f32; 4],
     /// Envelope 1-pole smoothing poles $R_{\text{env},b}$ at host control rate.
@@ -43,8 +45,8 @@ pub struct ControlBus<B: MathBackend> {
     pub lfo_rotors: [[f32; 2]; 2],
     /// Current 4-harmonic Chebyshev LFO waves $\mathbf{l}[k] \in [-1, +1]^8$ ($T_1..T_4$ for LFO 0 and LFO 1).
     pub lfo_harmonics: [f32; 8],
-    /// Core 1 per-channel modulation offsets ($\Delta\theta_{\text{core1}} \in \mathbb{R}^{12}$).
-    pub core1_mod_offsets: [f32; 12],
+    /// Core 1 per-channel modulation offsets ($\Delta\theta_{\text{core1}} \in \mathbb{R}^{16}$).
+    pub core1_mod_offsets: [f32; 16],
     /// Core 2 per-line delay modulation offsets in samples ($\Delta D_m[k] \in \mathbb{R}^8$).
     pub core2_delay_mod_samples: [f32; 8],
     /// Core 2 per-line quiet-state feedback gain modulation offsets ($\Delta g_{\text{lin},m}[k] \in \mathbb{R}^8$).
@@ -79,12 +81,13 @@ impl<B: MathBackend> ControlBus<B> {
             anti_zipper_pole: DEFAULT_ANTI_ZIPPER_POLE,
             is_dirty: false,
             z_head: [0.0; SVD_HEAD_RANK],
+            z_head_ultra: [0.0; SVD_HEAD_RANK],
             env_states: [0.0; 4],
             env_poles: [0.985, 0.960, 0.910, 0.0],
             lfo_phasors: [[1.0, 0.0], [1.0, 0.0]],
             lfo_rotors: [[1.0, 0.0], [1.0, 0.0]],
             lfo_harmonics: [0.0; 8],
-            core1_mod_offsets: [0.0; 12],
+            core1_mod_offsets: [0.0; 16],
             core2_delay_mod_samples: [0.0; 8],
             core2_gain_targets: [0.0; 8],
             core2_warp_mod: [0.0; 8],
@@ -114,6 +117,13 @@ impl<B: MathBackend> ControlBus<B> {
             }
         }
 
+        self.update_sample_rate_params(arena0_bytes, rho_ctrl);
+        self.reset_to_defaults();
+    }
+
+    /// Updates sample-rate-dependent LFO phasor increments and envelope follower poles from `Arena 0`
+    /// without resetting user control values (`raw_values`, `current_u_norm`, `target_u_norm`).
+    pub fn update_sample_rate_params(&mut self, arena0_bytes: &[u8], rho_ctrl: f64) {
         let global_base = 8064_usize;
         if arena0_bytes.len() >= global_base + 64 {
             for j in 0..2 {
@@ -155,8 +165,15 @@ impl<B: MathBackend> ControlBus<B> {
                 self.inv_trust_radius_mh2 = 1.0 / (mh_val * mh_val);
             }
         }
+    }
 
-        self.reset_to_defaults();
+    /// Resets dynamic LFO phasor and envelope follower states to zero-input equilibrium
+    /// without altering user control values.
+    #[inline]
+    pub fn reset_dynamic_state(&mut self) {
+        self.lfo_phasors = [[1.0, 0.0], [1.0, 0.0]];
+        self.lfo_harmonics = [0.0; 8];
+        self.env_states = [0.0; 4];
     }
 
     /// Snaps all controls immediately to their default values (`z_head = 0`, `is_dirty = false`).
@@ -170,7 +187,8 @@ impl<B: MathBackend> ControlBus<B> {
         }
         self.recompute_targets(true);
         self.z_head = [0.0; SVD_HEAD_RANK];
-        self.core1_mod_offsets = [0.0; 12];
+        self.z_head_ultra = [0.0; SVD_HEAD_RANK];
+        self.core1_mod_offsets = [0.0; 16];
         self.core2_delay_mod_samples = [0.0; 8];
         self.core2_gain_targets = [0.0; 8];
         self.core2_warp_mod = [0.0; 8];
@@ -315,6 +333,24 @@ impl<B: MathBackend> ControlBus<B> {
             }
         }
 
+        self.evaluate_static_control_basis(arena_bytes);
+
+        self.is_dirty = still_slewing;
+        true
+    }
+
+    /// Snaps `current_u_norm` to `target_u_norm`, evaluates `z_head`, `z_head_ultra`, and
+    /// `evaluate_core2_modulation` at the current control positions and LFO/envelope states
+    /// **without** advancing LFO phasors or envelope followers, and clears `is_dirty`.
+    #[inline]
+    pub fn refresh_static_state(&mut self, arena_bytes: &[u8]) {
+        self.current_u_norm = self.target_u_norm;
+        self.evaluate_static_control_basis(arena_bytes);
+        self.is_dirty = false;
+    }
+
+    #[inline]
+    fn evaluate_static_control_basis(&mut self, arena_bytes: &[u8]) {
         let mut basis_16 = [0.0_f32; 16];
         let mut b_idx = 0_usize;
         for p in 0..self.num_controls {
@@ -391,10 +427,59 @@ impl<B: MathBackend> ControlBus<B> {
             1.0 - (1.0 / 3.0) * t * t * (3.0 - 2.0 * t)
         };
         self.z_head = z_raw.mul(B::Vec4::splat(radial_scale)).to_array();
-        self.evaluate_core2_modulation(arena_bytes);
 
-        self.is_dirty = still_slewing;
-        true
+        // Evaluate `Arena 3` (`Tier::Ultra`) Rank-8 FM (`V_int_ultra` at 62,912..63,168)
+        // and Nested SVD Prefix modes 5..8 (`P_svd_ultra` at 63,168..63,424) when present.
+        const FM_ULTRA_BASE: usize = 62_912;
+        const P_SVD_ULTRA_BASE: usize = 63_168;
+        if arena_bytes.len() >= P_SVD_ULTRA_BASE + 256 {
+            let mut sum_vx_u = B::Vec4::zero();
+            let mut sum_v2x2_u = B::Vec4::zero();
+            for row in 0..12 {
+                let x_val = basis_16[row];
+                if x_val.abs() > 1e-12 {
+                    let x_vec = B::Vec4::splat(x_val);
+                    let v_off = FM_ULTRA_BASE + row * 16;
+                    let v_row = read_vec4_le::<B>(arena_bytes, v_off);
+                    let vx = v_row.mul(x_vec);
+                    sum_vx_u = sum_vx_u.add(vx);
+                    sum_v2x2_u = sum_v2x2_u.fma(vx, vx);
+                }
+            }
+            let fm_u_arr = sum_vx_u
+                .mul(sum_vx_u)
+                .sub(sum_v2x2_u)
+                .mul(B::Vec4::splat(0.5))
+                .to_array();
+            let mut basis_ultra_16 = basis_16;
+            for m in 0..4 {
+                if 12 + m >= b_idx {
+                    basis_ultra_16[12 + m] = fm_u_arr[m];
+                }
+            }
+            let mut z_raw_u = B::Vec4::zero();
+            for (row, &x_val) in basis_ultra_16.iter().enumerate() {
+                if x_val.abs() > 1e-12 {
+                    let x_vec = B::Vec4::splat(x_val);
+                    let p_off = P_SVD_ULTRA_BASE + row * 16;
+                    let p_row = read_vec4_le::<B>(arena_bytes, p_off);
+                    z_raw_u = z_raw_u.fma(x_vec, p_row);
+                }
+            }
+            let z_u_norm_sq =
+                (z_raw_u.mul(z_raw_u).horizontal_sum() * self.inv_trust_radius_mh2).min(1.0);
+            let radial_scale_u = if z_u_norm_sq <= 0.25 {
+                1.0
+            } else {
+                let t = (z_u_norm_sq - 0.25) * (4.0 / 3.0);
+                1.0 - (1.0 / 3.0) * t * t * (3.0 - 2.0 * t)
+            };
+            self.z_head_ultra = z_raw_u.mul(B::Vec4::splat(radial_scale_u)).to_array();
+        } else {
+            self.z_head_ultra = [0.0; SVD_HEAD_RANK];
+        }
+
+        self.evaluate_core2_modulation(arena_bytes);
     }
 
     /// Evaluates the $3\text{ kHz}$ `8 × 32` Control/LFO/Envelope $\to$ Core 2 state-space projection

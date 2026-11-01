@@ -49,6 +49,7 @@ from dnam_trainer.training.cascade_primitives import (
     solve_lti_cabinet_and_space_stage,
     solve_lti_cabinet_and_space_stage_with_ir,
     split_bezout_3band,
+    synthesize_4th_tier_base_block,
 )
 from dnam_trainer.training.cascade_selective_stages import (
     build_interstage_basis,
@@ -451,4 +452,5 @@ __all__ = [
     "solve_lti_cabinet_and_space_stage_with_ir",
     "solve_selective_stage_3band",
     "split_bezout_3band",
+    "synthesize_4th_tier_base_block",
 ]

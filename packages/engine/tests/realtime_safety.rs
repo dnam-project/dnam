@@ -10,7 +10,8 @@ use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use dnam_engine::container::{
-    ARENA_OFFSET_FULL_END, ARENA_OFFSET_LITE_END, ARENA_OFFSET_ULTRA_END, build_dnam_container,
+    ARENA_OFFSET_FULL_END, ARENA_OFFSET_LITE_END, ARENA_OFFSET_PRO_END, ARENA_OFFSET_ULTRA_END,
+    build_dnam_container,
 };
 use dnam_engine::math::DefaultMathBackend;
 use dnam_engine::memory::{AlignedBuffer, AlignedFp16Block, CacheLine64};
@@ -94,7 +95,7 @@ fn make_test_container(core2_active: bool) -> AlignedBuffer<CacheLine64> {
                 arena_end_byte_offset: ARENA_OFFSET_FULL_END,
                 prefix_crc32c: 0,
             },
-            ultra: TierProfile {
+            pro: TierProfile {
                 channels: 12,
                 fdn_lines: if core2_active { 8 } else { 0 },
                 early_taps: 8,
@@ -102,6 +103,17 @@ fn make_test_container(core2_active: bool) -> AlignedBuffer<CacheLine64> {
                 loudness_lufs: -20.5,
                 output_trim_db: 0.0,
                 validation_esr_db: -48.0,
+                arena_end_byte_offset: ARENA_OFFSET_PRO_END,
+                prefix_crc32c: 0,
+            },
+            ultra: TierProfile {
+                channels: 16,
+                fdn_lines: if core2_active { 16 } else { 0 },
+                early_taps: 16,
+                head_svd_rank: 8,
+                loudness_lufs: -20.5,
+                output_trim_db: 0.0,
+                validation_esr_db: -51.0,
                 arena_end_byte_offset: ARENA_OFFSET_ULTRA_END,
                 prefix_crc32c: 0,
             },
@@ -120,7 +132,7 @@ fn make_test_container(core2_active: bool) -> AlignedBuffer<CacheLine64> {
         audit_report: None,
     };
 
-    let arena = vec![0u8; 36_224];
+    let arena = vec![0u8; 64_000];
     let vec_bytes = build_dnam_container(&mut header, &arena, &arena, false).unwrap();
     let mut aligned = AlignedBuffer::<CacheLine64>::new_zeroed(vec_bytes.len() / 64);
     aligned.as_bytes_mut().copy_from_slice(&vec_bytes);
@@ -166,10 +178,12 @@ fn test_zero_heap_allocations_in_all_realtime_paths_and_embedded_scratch_loader(
     eng_embedded.process_mono(&in_l, &mut out_l);
     eng_embedded.set_tier(Tier::Lite);
     eng_embedded.set_tier(Tier::Full);
+    eng_embedded.set_tier(Tier::Pro);
     eng_embedded.set_tier(Tier::Ultra);
     eng_embedded.set_control_value(0, 5.0);
     eng_embedded.set_control_immediate(0, 5.0);
     eng_embedded.reset_to_dc_equilibrium();
+    eng_embedded.render_offline_bounce(&in_l, &in_r, &mut out_l, &mut out_r);
     let _snap = eng_embedded.telemetry_snapshot();
     assert_eq!(
         current_alloc_count(),
@@ -177,12 +191,13 @@ fn test_zero_heap_allocations_in_all_realtime_paths_and_embedded_scratch_loader(
         "Real-time audio/control path allocated heap memory!"
     );
 
-    // 4. Verify reload_model_in_place on a pre-allocated engine performs ZERO heap allocations!
+    // 4. Verify reload_model_in_place and render_offline_bounce on a pre-allocated engine perform ZERO heap allocations!
     let mut eng_pool = DnamEngine::<DefaultMathBackend>::with_max_capacity(12);
     reset_alloc_counters();
     eng_pool
         .reload_model_in_place(container_active.as_bytes(), Tier::Full, 48_000)
         .unwrap();
+    eng_pool.render_offline_bounce(&in_l, &in_r, &mut out_l, &mut out_r);
     eng_pool
         .reload_model_in_place(container_core1_only.as_bytes(), Tier::Lite, 48_000)
         .unwrap();

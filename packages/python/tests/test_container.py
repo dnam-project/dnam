@@ -15,6 +15,7 @@ from dnam_engine import (
     DnamSampleRateError,
     DnamValidationError,
     GramMatrix,
+    Tier,
     VerificationStatus,
     crc32c,
 )
@@ -31,12 +32,22 @@ def test_container_reference_and_file_roundtrip(
     assert not ref_container_core1.is_checkpoint
     assert ref_container_core1.verification == VerificationStatus.UNSIGNED
     assert ref_container_core1.preamble.header_capacity_bytes >= 3000
-    assert len(ref_container_core1.arena) == 36_224
+    assert len(ref_container_core1.arena) == 64_000
     assert "gain" in ref_container_core1.controls
     assert "boost" in ref_container_core1.controls
     assert "warm_slapback" in ref_container_core1.presets
     assert ref_checkpoint_container.is_checkpoint
     assert ref_container_core2.header.core2_mufdn.active
+
+    for max_tier, expected_bytes in [
+        (Tier.LITE, 10_752),
+        (Tier.FULL, 22_336),
+        (Tier.PRO, 36_224),
+        (Tier.ULTRA, 64_000),
+    ]:
+        stripped = ref_container_core2.strip_to_tier(max_tier)
+        assert len(stripped.arena) == expected_bytes
+        assert stripped.header == ref_container_core2.header
 
     out_path = ref_container_core2.save(tmp_path / "model.dnam")
     loaded = DnamContainer.from_file(out_path)

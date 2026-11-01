@@ -11,7 +11,9 @@ from dnam_trainer.training.kronecker_head import (
     StemSufficientStatistics,
     compute_stem_sufficient_statistics,
     compute_svd_control_projector,
+    compute_svd_control_projector_ultra,
     evaluate_kronecker_head_features,
+    evaluate_stem_besr_4tier_from_sufficient_stats,
     merge_stem_statistics_for_resume,
     solve_all_tiers_kronecker_head_float64,
 )
@@ -65,14 +67,14 @@ def test_stem_sufficient_statistics_arena3_roundtrip_and_multi_tier_kronecker_so
     # Verify Arena 3 serialization and CRC32C verification
     entry1, payload1 = stat1.to_registry_entry(0)
     assert len(payload1) == ARENA3_STEM_BYTE_LEN
-    fake_arena = b"\x00" * 36_224 + payload1
+    fake_arena = b"\x00" * 64_000 + payload1
     restored1 = StemSufficientStatistics.from_checkpoint_entry(entry1, fake_arena)
     assert np.allclose(restored1.g_audio_uplo_u_f64, stat1.g_audio_uplo_u_f64)
     assert np.allclose(restored1.c_audio_tier_f64, stat1.c_audio_tier_f64)
 
     # Tampered Arena 3 raises CRC32C mismatch
     corrupted = bytearray(fake_arena)
-    corrupted[36_224] ^= 0xFF
+    corrupted[64_000] ^= 0xFF
     with pytest.raises(ValueError, match="CRC32C mismatch"):
         StemSufficientStatistics.from_checkpoint_entry(entry1, bytes(corrupted))
 
@@ -191,3 +193,73 @@ def test_stem_sufficient_statistics_arena3_roundtrip_and_multi_tier_kronecker_so
         device=dev_str,
     )
     assert stat_mod_sil.num_frames == 128
+
+
+def test_4tier_svd_ultra_modes5to8_and_monotonic_besr() -> None:
+    """Verify `compute_svd_control_projector_ultra`, `w_ultra_modes5to8_4x2x192`,
+    and strict 4-tier monotonic `bESR` improvement on a `> 4`-control manifold."""
+    rng = np.random.default_rng(2027)
+    num_stems = 10
+    num_frames = 512
+
+    # 8-column control basis with 8 independent modes (4 base + 4 ultra modes)
+    psi_raw = rng.standard_normal((num_stems, 8)).astype(np.float64)
+    p_svd_base, p_svd_16x4, active_rank_4, z_head = compute_svd_control_projector(psi_raw)
+    p_svd_ultra, p_svd_ultra_16x4, active_rank_ultra, z_head_ultra = (
+        compute_svd_control_projector_ultra(
+            psi_raw,
+            p_svd_base,
+            base_active_rank=active_rank_4,
+        )
+    )
+    assert active_rank_4 == 4
+    assert active_rank_ultra == 8
+    assert p_svd_16x4.shape == (16, 4)
+    assert p_svd_ultra_16x4.shape == (16, 4)
+    # Ultra projector modes 5..8 are orthogonal to base projector modes 1..4
+    cross = p_svd_base.T @ p_svd_ultra
+    assert float(np.max(np.abs(cross))) < 1e-10
+
+    # Ground-truth head weights across all 192 features and all 8 SVD modes
+    w_true_base = rng.standard_normal((5, 2, 192)).astype(np.float64) * 0.04
+    w_true_ultra = rng.standard_normal((4, 2, 192)).astype(np.float64) * 0.03
+
+    stats: list[StemSufficientStatistics] = []
+    targets: list[np.ndarray] = []
+    for s in range(num_stems):
+        phi_s = rng.standard_normal((num_frames, 192)).astype(np.float32) * 0.25
+        psi_tilde = np.concatenate([[1.0], z_head[s]])
+        w_eff = np.tensordot(psi_tilde, w_true_base, axes=(0, 0)) + np.tensordot(
+            z_head_ultra[s], w_true_ultra, axes=(0, 0)
+        )
+        y_s = (phi_s.astype(np.float64) @ w_eff.T).astype(np.float32)
+        targets.append(y_s)
+        stats.append(
+            compute_stem_sufficient_statistics(
+                phi_s,
+                y_s,
+                stem_id=f"stem_{s}",
+                controls_meta={"idx": float(s)},
+                input_pcm_sha256=f"{s:02x}" * 32,
+                target_pcm_sha256=f"{(s + 16):02x}" * 32,
+                window_size=128,
+            )
+        )
+
+    sol = solve_all_tiers_kronecker_head_float64(
+        stats,
+        z_head,
+        mode="polish",
+        z_head_ultra_stems=z_head_ultra,
+    )
+    assert sol.arena3_ultra_modes5to8_4x4x2x64_f32.shape == (4, 4, 2, 64)
+
+    esr_lite, esr_full, esr_pro, esr_ultra = evaluate_stem_besr_4tier_from_sufficient_stats(
+        stats[0],
+        z_head[0],
+        sol,
+        targets[0],
+        z_head_ultra_4=z_head_ultra[0],
+    )
+    assert esr_ultra < esr_pro < esr_full < esr_lite
+    assert esr_ultra < esr_pro - 6.0

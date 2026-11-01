@@ -1,4 +1,4 @@
-//! Dual-Mechanism Buyer Watermarking (`Test 8H`) & 160-D Gauge-Invariant Structural Hash.
+//! Dual-Mechanism Buyer Watermarking (`Test 8H`) & Prefix-Composable `4 × 56-D = 224-D` Gauge-Invariant Structural Hash.
 
 use alloc::vec::Vec;
 
@@ -6,7 +6,7 @@ use crate::schema::DnamError;
 
 use super::chacha20::chacha20_block_64b;
 use super::sha256::sha256_digest;
-use super::{RGLRU_TOTAL_CHANNELS, STRUCTURAL_HASH_DIM, TARDOS_CONV_WEIGHTS};
+use super::{STRUCTURAL_HASH_DIM, STRUCTURAL_HASH_TIER_DIM, TARDOS_CONV_WEIGHTS};
 
 #[inline]
 fn read_f32_le(arena: &[u8], byte_offset: usize) -> f32 {
@@ -24,49 +24,73 @@ fn write_f32_le(arena: &mut [u8], byte_offset: usize, val: f32) {
     arena[byte_offset..byte_offset + 4].copy_from_slice(&b);
 }
 
+#[inline]
+const fn max_tiers_for_arena_len(arena_len: usize) -> usize {
+    if arena_len >= 64_000 {
+        4
+    } else if arena_len >= 36_224 {
+        3
+    } else if arena_len >= 22_336 {
+        2
+    } else if arena_len >= 10_752 {
+        1
+    } else {
+        0
+    }
+}
+
 /// Returns the byte offset of the 128-byte `SelectiveRgLru` SoA struct for `(tier, block_idx)`
-/// inside `Arena 0..2`:
+/// inside `Arena 0..3`:
 /// - `tier == 0` (`Lite`, `ch 0..3`): `128 + block_idx * 1024 + 896`
 /// - `tier == 1` (`Full`, `ch 4..7`): `10816 + block_idx * 1792 + 1664`
-/// - `tier == 2` (`Ultra`, `ch 8..11`): `22400 + block_idx * 2560 + 2432`
+/// - `tier == 2` (`Pro`, `ch 8..11`): `22400 + block_idx * 2560 + 2432`
+/// - `tier == 3` (`Ultra`, `ch 12..15`): `36288 + block_idx * 3328 + 3200`
 #[inline]
 pub const fn rglru_soa_byte_offset(tier: usize, block_idx: usize) -> usize {
     match tier {
         0 => 128 + block_idx * 1024 + 896,
-        1 => 10816 + block_idx * 1792 + 1664,
-        _ => 22400 + block_idx * 2560 + 2432,
+        1 => 10_816 + block_idx * 1792 + 1664,
+        2 => 22_400 + block_idx * 2560 + 2432,
+        _ => 36_288 + block_idx * 3328 + 3200,
     }
 }
 
-/// Applies **Mechanism A (Exact Isometric Gauge Watermark)** in-place on a `36,224 B` `Arena 0..2` buffer:
+/// Applies **Mechanism A (Exact Isometric Gauge Watermark)** in-place on a prefix-composable
+/// `Arena 0..3` buffer (`10,752 B`, `22,336 B`, `36,224 B`, or `64,000 B`):
 /// 1. Scales $b_{\gamma,b,c}$ by $\kappa_{b,c} \in [0.985, 1.015]$ and $(c_{\text{real},b,c}, c_{\text{imag},b,c})$
-///    by $\kappa_{b,c}^{-1}$ across all 48 RG-LRU channels (`0.0000 dB` audio distortion).
-/// 2. Rotates the SVD stereo output head basis $\mathbf{W}_{\text{head},1..4}$ by $\mathbf{Q}_{\text{buyer}}^\top \in SO(4)$
-///    and the SVD control subspace projection matrix $\mathbf{P}_{\text{svd}}$ by $\mathbf{Q}_{\text{buyer}}$.
+///    by $\kappa_{b,c}^{-1}$ across all present RG-LRU channels (`16` per tier, up to `64` in `Ultra`; `0.0000 dB` audio distortion).
+/// 2. Rotates the SVD stereo output head basis $\mathbf{W}_{\text{head},1..4}$ (and `Ultra` modes `5..8` when present)
+///    by $\mathbf{Q}_{\text{buyer}}^\top \in SO(4)$ and the SVD control subspace projection matrix $\mathbf{P}_{\text{svd}}$
+///    (and $\mathbf{P}_{\text{svd,ultra}}$) by $\mathbf{Q}_{\text{buyer}}$.
 pub fn apply_isometric_gauge_watermark(
     arena: &mut [u8],
-    kappa_48: &[f32; RGLRU_TOTAL_CHANNELS],
+    kappa: &[f32],
     q_buyer_4x4: &[[f32; 4]; 4],
 ) -> Result<(), DnamError> {
-    if arena.len() < 36_224 {
+    let max_tiers = max_tiers_for_arena_len(arena.len());
+    if max_tiers == 0 {
         return Err(DnamError::BufferTooSmall {
-            expected: 36_224,
+            expected: 10_752,
             actual: arena.len(),
         });
     }
+    let required_channels = max_tiers * 16;
+    if kappa.len() < required_channels {
+        return Err(DnamError::BufferTooSmall {
+            expected: required_channels,
+            actual: kappa.len(),
+        });
+    }
 
-    // 1. 48-channel RG-LRU reciprocal scaling gauge (b_gamma * kappa, c_real / kappa, c_imag / kappa)
-    for tier in 0..3 {
+    // 1. RG-LRU reciprocal scaling gauge (b_gamma * kappa, c_real / kappa, c_imag / kappa)
+    for tier in 0..max_tiers {
         for blk in 0..4 {
             let base = rglru_soa_byte_offset(tier, blk);
             for lane in 0..4 {
                 let ch_global = tier * 16 + blk * 4 + lane;
-                let kappa = kappa_48[ch_global];
-                let inv_kappa = 1.0 / kappa;
+                let k_val = kappa[ch_global];
+                let inv_kappa = 1.0 / k_val;
 
-                // In SelectiveRgLru SoA (32 floats = 128 B):
-                // [0..4]: r_low, [4..8]: dr_span, [8..12]: theta0_rad, [12..16]: b_gamma_norm,
-                // [16..20]: w_sel, [20..24]: c_real, [24..28]: c_imag, [28..32]: u_rot_init
                 let b_gamma_off = base + (12 + lane) * 4;
                 let c_real_off = base + (20 + lane) * 4;
                 let c_imag_off = base + (24 + lane) * 4;
@@ -75,7 +99,7 @@ pub fn apply_isometric_gauge_watermark(
                 let c_real = read_f32_le(arena, c_real_off);
                 let c_imag = read_f32_le(arena, c_imag_off);
 
-                write_f32_le(arena, b_gamma_off, b_gamma * kappa);
+                write_f32_le(arena, b_gamma_off, b_gamma * k_val);
                 write_f32_le(arena, c_real_off, c_real * inv_kappa);
                 write_f32_le(arena, c_imag_off, c_imag * inv_kappa);
             }
@@ -83,11 +107,9 @@ pub fn apply_isometric_gauge_watermark(
     }
 
     // 2. Rotate SVD stereo head basis W_head[1..5] (each mode has 2*16*4 = 128 floats = 512 B)
-    // across Arena 0 (4224..6784), Arena 1 (17984..20544), and Arena 2 (32640..35200):
-    // W_head_buyer[k, i] = sum_{m=0..3} Q_buyer[m][k] * W_head_master[m, i]  (i.e. Q^T @ W_head)
-    let head_arena_offsets = [4224_usize, 17984_usize, 32640_usize];
-    for &head_base in &head_arena_offsets {
-        // Mode 0 (base head W_head,0) is at head_base + 0..512; Modes 1..=4 are at head_base + 512..2560
+    // across Arena 0 (4224..6784), Arena 1 (17984..20544), Arena 2 (32640..35200), Arena 3 (49600..52160):
+    let head_arena_offsets = [4224_usize, 17_984_usize, 32_640_usize, 49_600_usize];
+    for &head_base in head_arena_offsets.iter().take(max_tiers) {
         for elem_idx in 0..128 {
             let mut old_vals = [0.0_f32; 4];
             for m in 0..4 {
@@ -122,8 +144,7 @@ pub fn apply_isometric_gauge_watermark(
         }
     }
 
-    // 3. Rotate P_svd (16 rows x 4 cols = 64 floats = 256 B) in Arena 0 control_bus_and_clamp_table
-    // Global control bus weights start at 7040 + 1024 = 8064; P_svd occupies 8064 + 896 .. 8064 + 1152 (256 B):
+    // 3. Rotate P_svd (16 rows x 4 cols = 64 floats = 256 B) in Arena 0 (8960..9216):
     let p_svd_base = 8960_usize;
     for row in 0..16 {
         let mut old_row = [0.0_f32; 4];
@@ -139,30 +160,89 @@ pub fn apply_isometric_gauge_watermark(
         }
     }
 
+    // 4. When Arena 3 (Tier::Ultra, 64,000 B) is present, also rotate modes 5..8 (52,160..60,352),
+    //    b_head_modes_5_to_8 (63,424..63,456), and P_svd_ultra (63,168..63,424):
+    if max_tiers >= 4 {
+        for tier in 0..4 {
+            let ultra_mode_base = 52_160 + tier * 2048;
+            for elem_idx in 0..128 {
+                let mut old_vals = [0.0_f32; 4];
+                for m in 0..4 {
+                    let off = ultra_mode_base + m * 512 + elem_idx * 4;
+                    old_vals[m] = read_f32_le(arena, off);
+                }
+                for k in 0..4 {
+                    let mut rotated = 0.0_f32;
+                    for m in 0..4 {
+                        rotated += q_buyer_4x4[m][k] * old_vals[m];
+                    }
+                    let off = ultra_mode_base + k * 512 + elem_idx * 4;
+                    write_f32_le(arena, off, rotated);
+                }
+            }
+        }
+        for lr in 0..2 {
+            let mut old_b = [0.0_f32; 4];
+            for m in 0..4 {
+                let off = 63_424 + (m * 2 + lr) * 4;
+                old_b[m] = read_f32_le(arena, off);
+            }
+            for k in 0..4 {
+                let mut rotated = 0.0_f32;
+                for m in 0..4 {
+                    rotated += q_buyer_4x4[m][k] * old_b[m];
+                }
+                let off = 63_424 + (k * 2 + lr) * 4;
+                write_f32_le(arena, off, rotated);
+            }
+        }
+        let p_svd_ultra_base = 63_168_usize;
+        for row in 0..16 {
+            let mut old_row = [0.0_f32; 4];
+            for m in 0..4 {
+                old_row[m] = read_f32_le(arena, p_svd_ultra_base + (row * 4 + m) * 4);
+            }
+            for k in 0..4 {
+                let mut rotated = 0.0_f32;
+                for m in 0..4 {
+                    rotated += old_row[m] * q_buyer_4x4[m][k];
+                }
+                write_f32_le(arena, p_svd_ultra_base + (row * 4 + k) * 4, rotated);
+            }
+        }
+    }
+
     Ok(())
 }
 
-/// Extracts the **160-Dimensional Gauge-Invariant Structural Vector** $\mathbf{f}_{\text{struct}} \in \mathbb{R}^{160}$
-/// directly from a `36,224 B` `Arena 0..2` buffer:
-/// - `[0..48]`: 48 RG-LRU invariant composite pole signatures $r_{\text{low},b,c} + 0.5\,\Delta r_{b,c} + 0.1\,\theta_{0,b,c}$,
-/// - `[48..96]`: 48 gauge-invariant real products $I_{\text{real},b,c} = b_{\gamma,b,c} \cdot c_{\text{real},b,c}$,
-/// - `[96..144]`: 48 gauge-invariant imaginary products $I_{\text{imag},b,c} = b_{\gamma,b,c} \cdot c_{\text{imag},b,c}$,
-/// - `[144..152]`: 8 Core 2 `M-UFDN` base delay anchors $\tau_{0,m}$,
-/// - `[152..160]`: 8 base stereo output head $\mathbf{W}_{\text{head},0}$ block energy invariants.
-pub fn extract_structural_hash_160d(arena: &[u8]) -> Result<[f64; STRUCTURAL_HASH_DIM], DnamError> {
-    if arena.len() < 36_224 {
+/// Extracts the **Prefix-Composable `4 × 56-D = 224-D` Gauge-Invariant Structural Vector**
+/// $\mathbf{f}_{\text{struct}} \in \mathbb{R}^{224}$ directly from an `Arena 0..3` buffer (`>= 10,752 B`).
+///
+/// Ordered strictly by tier $t \in \{0, 1, 2, 3\}$ (`[56*t .. 56*(t+1)]`):
+/// - `[0..16]`: 16 RG-LRU invariant composite pole signatures $r_{\text{low},b,c} + 0.5\,\Delta r_{b,c} + 0.1\,\theta_{0,b,c}$,
+/// - `[16..32]`: 16 gauge-invariant real products $I_{\text{real},b,c} = b_{\gamma,b,c} \cdot c_{\text{real},b,c}$,
+/// - `[32..48]`: 16 gauge-invariant imaginary products $I_{\text{imag},b,c} = b_{\gamma,b,c} \cdot c_{\text{imag},b,c}$,
+/// - `[48..52]`: 4 Core 2 `M-UFDN` delay invariants for tier $t$,
+/// - `[52..56]`: 4 base stereo output head $\mathbf{W}_{\text{head},0}$ block energy invariants for tier $t$.
+///
+/// Any stripped higher tier remains zero-filled, enabling exact prefix cosine similarity across tier-stripped containers.
+pub fn extract_structural_hash_224d(arena: &[u8]) -> Result<[f64; STRUCTURAL_HASH_DIM], DnamError> {
+    let max_tiers = max_tiers_for_arena_len(arena.len());
+    if max_tiers == 0 {
         return Err(DnamError::BufferTooSmall {
-            expected: 36_224,
+            expected: 10_752,
             actual: arena.len(),
         });
     }
-    let mut vec160 = [0.0_f64; STRUCTURAL_HASH_DIM];
+    let mut vec224 = [0.0_f64; STRUCTURAL_HASH_DIM];
+    let head_arena_offsets = [4224_usize, 17_984_usize, 32_640_usize, 49_600_usize];
 
-    for tier in 0..3 {
+    for tier in 0..max_tiers {
+        let t_base = tier * STRUCTURAL_HASH_TIER_DIM;
         for blk in 0..4 {
             let base = rglru_soa_byte_offset(tier, blk);
             for lane in 0..4 {
-                let idx = tier * 16 + blk * 4 + lane;
+                let ch_in_tier = blk * 4 + lane;
                 let r_low = read_f32_le(arena, base + lane * 4) as f64;
                 let dr = read_f32_le(arena, base + (4 + lane) * 4) as f64;
                 let theta = read_f32_le(arena, base + (8 + lane) * 4) as f64;
@@ -170,42 +250,69 @@ pub fn extract_structural_hash_160d(arena: &[u8]) -> Result<[f64; STRUCTURAL_HAS
                 let c_real = read_f32_le(arena, base + (20 + lane) * 4) as f64;
                 let c_imag = read_f32_le(arena, base + (24 + lane) * 4) as f64;
 
-                vec160[idx] = r_low + 0.5 * dr + 0.1 * theta;
-                vec160[48 + idx] = b_gamma * c_real;
-                vec160[96 + idx] = b_gamma * c_imag;
+                vec224[t_base + ch_in_tier] = r_low + 0.5 * dr + 0.1 * theta;
+                vec224[t_base + 16 + ch_in_tier] = b_gamma * c_real;
+                vec224[t_base + 32 + ch_in_tier] = b_gamma * c_imag;
             }
         }
-    }
 
-    // 8 M-UFDN base delays (4 in Arena 0 at 6784, 4 in Arena 1 at 20544)
-    for lane in 0..4 {
-        vec160[144 + lane] = read_f32_le(arena, 6784 + lane * 4) as f64;
-        vec160[148 + lane] = read_f32_le(arena, 20544 + lane * 4) as f64;
-    }
-
-    // 8 Base stereo head W_head,0 energy norms (unaffected by Q_buyer rotation on modes 1..4)
-    for seg in 0..8 {
-        let mut energy = 0.0_f64;
-        for i in 0..16 {
-            let v = read_f32_le(arena, 4224 + (seg * 16 + i) * 4) as f64;
-            energy += v * v;
+        // 4 Core 2 delay invariants for this tier
+        let delay_base = match tier {
+            0 => 6784_usize,
+            1 => 20_544_usize,
+            2 => 35_200_usize,
+            _ => 62_400_usize,
+        };
+        for lane in 0..4 {
+            vec224[t_base + 48 + lane] = read_f32_le(arena, delay_base + lane * 4) as f64;
         }
-        vec160[152 + seg] = energy;
+
+        // 4 Base stereo head W_head,0 energy norms for this tier (32 floats per segment × 4 segments = 128 floats)
+        let head_base = head_arena_offsets[tier];
+        for seg in 0..4 {
+            let mut energy = 0.0_f64;
+            for i in 0..32 {
+                let v = read_f32_le(arena, head_base + (seg * 32 + i) * 4) as f64;
+                energy += v * v;
+            }
+            vec224[t_base + 52 + seg] = energy;
+        }
     }
 
-    Ok(vec160)
+    Ok(vec224)
 }
 
-/// Computes the cosine similarity $\cos(\mathbf{f}_1, \mathbf{f}_2) \in [-1, +1]$ between two 160-D structural hashes.
+/// Alias for [`extract_structural_hash_224d`].
+#[inline]
+pub fn extract_structural_hash_160d(arena: &[u8]) -> Result<[f64; STRUCTURAL_HASH_DIM], DnamError> {
+    extract_structural_hash_224d(arena)
+}
+
+#[inline]
+fn populated_tier_count(v: &[f64; STRUCTURAL_HASH_DIM]) -> usize {
+    let mut tiers = 1_usize;
+    for t in 1..4 {
+        let slice = &v[t * STRUCTURAL_HASH_TIER_DIM..(t + 1) * STRUCTURAL_HASH_TIER_DIM];
+        if slice.iter().any(|&x| x.abs() > 1e-30) {
+            tiers = t + 1;
+        }
+    }
+    tiers
+}
+
+/// Computes the prefix-composable cosine similarity $\cos(\mathbf{f}_1, \mathbf{f}_2) \in [-1, +1]$
+/// over the shared populated tier prefix (`56 * min(tiers_a, tiers_b)` dimensions).
 pub fn structural_cosine_similarity(
     a: &[f64; STRUCTURAL_HASH_DIM],
     b: &[f64; STRUCTURAL_HASH_DIM],
 ) -> f64 {
+    let shared_tiers = populated_tier_count(a).min(populated_tier_count(b));
+    let active_dim = shared_tiers * STRUCTURAL_HASH_TIER_DIM;
     let mut dot = 0.0_f64;
     let mut na = 0.0_f64;
     let mut nb = 0.0_f64;
     let mut i = 0;
-    while i < STRUCTURAL_HASH_DIM {
+    while i < active_dim {
         dot += a[i] * b[i];
         na += a[i] * a[i];
         nb += b[i] * b[i];
@@ -215,51 +322,76 @@ pub fn structural_cosine_similarity(
     if denom <= 1e-30 { 0.0 } else { dot / denom }
 }
 
-/// Visits the byte offsets of all $N_{\text{conv}} = 4,608$ nonlinear dilated convolution `f32` weights
-/// across `Arena 0` (`768` floats), `Arena 1` (`1,536` floats), and `Arena 2` (`2,304` floats).
-fn for_each_conv_weight_offset<F: FnMut(usize, usize)>(mut f: F) {
+/// Visits the byte offsets of all nonlinear dilated convolution `f32` weights present in `arena_len`:
+/// - `Arena 0` (`Lite`, `10,752 B`): `768` weights (`0..768`)
+/// - `Arena 1` (`Full`, `22,336 B`): `+1,536` weights (`768..2,304`)
+/// - `Arena 2` (`Pro`, `36,224 B`): `+2,304` weights (`2,304..4,608`)
+/// - `Arena 3` (`Ultra`, `64,000 B`): `+3,072` weights (`4,608..7,680`)
+fn for_each_conv_weight_offset_up_to<F: FnMut(usize, usize)>(arena_len: usize, mut f: F) -> usize {
+    let max_tiers = max_tiers_for_arena_len(arena_len);
     let mut idx = 0_usize;
-    // Arena 0 (Lite): 4 blocks * 1024 B/block starting at 128; Conv0 is 0..384, Conv1 is 448..832
-    for blk in 0..4 {
-        let base = 128 + blk * 1024;
-        for w in 0..96 {
-            f(idx, base + w * 4);
-            idx += 1;
-        }
-        for w in 0..96 {
-            f(idx, base + 448 + w * 4);
-            idx += 1;
-        }
-    }
-    // Arena 1 (Full Delta): 4 blocks * 1792 B/block starting at 10816; Conv0 is 0..768, Conv1 is 832..1600
-    for blk in 0..4 {
-        let base = 10816 + blk * 1792;
-        for w in 0..192 {
-            f(idx, base + w * 4);
-            idx += 1;
-        }
-        for w in 0..192 {
-            f(idx, base + 832 + w * 4);
-            idx += 1;
+    if max_tiers >= 1 {
+        // Arena 0 (Lite): 4 blocks * 1024 B/block starting at 128; Conv0 is 0..384, Conv1 is 448..832
+        for blk in 0..4 {
+            let base = 128 + blk * 1024;
+            for w in 0..96 {
+                f(idx, base + w * 4);
+                idx += 1;
+            }
+            for w in 0..96 {
+                f(idx, base + 448 + w * 4);
+                idx += 1;
+            }
         }
     }
-    // Arena 2 (Ultra Delta): 4 blocks * 2560 B/block starting at 22400; Conv0 is 0..1152, Conv1 is 1216..2368
-    for blk in 0..4 {
-        let base = 22400 + blk * 2560;
-        for w in 0..288 {
-            f(idx, base + w * 4);
-            idx += 1;
-        }
-        for w in 0..288 {
-            f(idx, base + 1216 + w * 4);
-            idx += 1;
+    if max_tiers >= 2 {
+        // Arena 1 (Full Delta): 4 blocks * 1792 B/block starting at 10816; Conv0 is 0..768, Conv1 is 832..1600
+        for blk in 0..4 {
+            let base = 10_816 + blk * 1792;
+            for w in 0..192 {
+                f(idx, base + w * 4);
+                idx += 1;
+            }
+            for w in 0..192 {
+                f(idx, base + 832 + w * 4);
+                idx += 1;
+            }
         }
     }
+    if max_tiers >= 3 {
+        // Arena 2 (Pro Delta): 4 blocks * 2560 B/block starting at 22400; Conv0 is 0..1152, Conv1 is 1216..2368
+        for blk in 0..4 {
+            let base = 22_400 + blk * 2560;
+            for w in 0..288 {
+                f(idx, base + w * 4);
+                idx += 1;
+            }
+            for w in 0..288 {
+                f(idx, base + 1216 + w * 4);
+                idx += 1;
+            }
+        }
+    }
+    if max_tiers >= 4 {
+        // Arena 3 (Ultra Delta): 4 blocks * 3328 B/block starting at 36288; Conv0 is 0..1536, Conv1 is 1600..3136
+        for blk in 0..4 {
+            let base = 36_288 + blk * 3328;
+            for w in 0..384 {
+                f(idx, base + w * 4);
+                idx += 1;
+            }
+            for w in 0..384 {
+                f(idx, base + 1600 + w * 4);
+                idx += 1;
+            }
+        }
+    }
+    idx
 }
 
-/// Deterministically generates a 4,608-chip Tardos binary spread-spectrum watermark code
-/// $\mathbf{c}^{(\text{buyer})} \in \{-1.0, +1.0\}^{4608}$ from `(marketplace_secret, model_id, license_id)`.
-pub fn generate_tardos_code_4608(
+/// Deterministically generates a 7,680-chip Tardos binary spread-spectrum watermark code
+/// $\mathbf{c}^{(\text{buyer})} \in \{-1.0, +1.0\}^{7680}$ from `(marketplace_secret, model_id, license_id)`.
+pub fn generate_tardos_code_7680(
     marketplace_secret: &[u8; 32],
     model_id: &str,
     license_id: &str,
@@ -292,42 +424,90 @@ pub fn generate_tardos_code_4608(
     code
 }
 
-/// Embeds **Mechanism B (4,608-Weight Spread-Spectrum Tardos Watermark)** into `Arena 0..2`:
+/// Alias for [`generate_tardos_code_7680`].
+#[inline]
+pub fn generate_tardos_code_4608(
+    marketplace_secret: &[u8; 32],
+    model_id: &str,
+    license_id: &str,
+) -> [f32; TARDOS_CONV_WEIGHTS] {
+    generate_tardos_code_7680(marketplace_secret, model_id, license_id)
+}
+
+/// Embeds **Mechanism B (Prefix-Composable Spread-Spectrum Tardos Watermark)** into `Arena 0..3`
+/// (`768`, `2,304`, `4,608`, or `7,680` weights depending on container tier):
 /// $$W_{\text{conv},i}^{(\text{buyer})} = W_{\text{conv},i}^{(\text{master})} + \epsilon \, c_i^{(\text{buyer})}$$
-pub fn apply_tardos_watermark_4608(
+pub fn apply_tardos_watermark_7680(
     arena: &mut [u8],
-    code: &[f32; TARDOS_CONV_WEIGHTS],
+    code: &[f32],
     epsilon: f32,
 ) -> Result<(), DnamError> {
-    if arena.len() < 36_224 {
+    let max_tiers = max_tiers_for_arena_len(arena.len());
+    if max_tiers == 0 {
         return Err(DnamError::BufferTooSmall {
-            expected: 36_224,
+            expected: 10_752,
             actual: arena.len(),
         });
     }
-    for_each_conv_weight_offset(|idx, byte_off| {
+    let needed_chips = match max_tiers {
+        1 => 768,
+        2 => 2304,
+        3 => 4608,
+        _ => 7680,
+    };
+    if code.len() < needed_chips {
+        return Err(DnamError::BufferTooSmall {
+            expected: needed_chips,
+            actual: code.len(),
+        });
+    }
+    for_each_conv_weight_offset_up_to(arena.len(), |idx, byte_off| {
         let w = read_f32_le(arena, byte_off);
         write_f32_le(arena, byte_off, w + epsilon * code[idx]);
     });
     Ok(())
 }
 
-/// Computes the Tardos matched-filter Z-score ($\sigma$) of a suspect `Arena 0..2` against
-/// `master_arena` and a candidate buyer's `code`:
-/// $$Z = \frac{1}{\sqrt{4608}} \sum_{i=0}^{4607} c_i^{(\text{buyer})} \operatorname{sign}\!\big(W_{\text{conv},i}^{(\text{suspect})} - W_{\text{conv},i}^{(\text{master})}\big)$$
-pub fn score_tardos_watermark_4608(
+/// Alias for [`apply_tardos_watermark_7680`].
+#[inline]
+pub fn apply_tardos_watermark_4608(
+    arena: &mut [u8],
+    code: &[f32],
+    epsilon: f32,
+) -> Result<(), DnamError> {
+    apply_tardos_watermark_7680(arena, code, epsilon)
+}
+
+/// Computes the Tardos matched-filter Z-score ($\sigma$) of a suspect `Arena 0..3` (including
+/// tier-stripped containers down to `10,752 B` `Lite`) against `master_arena` and a candidate buyer's `code`:
+/// $$Z = \frac{1}{\sqrt{N_{\text{prefix}}}} \sum_{i=0}^{N_{\text{prefix}}-1} c_i^{(\text{buyer})} \operatorname{sign}\!\big(W_{\text{conv},i}^{(\text{suspect})} - W_{\text{conv},i}^{(\text{master})}\big)$$
+pub fn score_tardos_watermark_7680(
     master_arena: &[u8],
     suspect_arena: &[u8],
-    code: &[f32; TARDOS_CONV_WEIGHTS],
+    code: &[f32],
 ) -> Result<f64, DnamError> {
-    if master_arena.len() < 36_224 || suspect_arena.len() < 36_224 {
+    let shared_len = master_arena.len().min(suspect_arena.len());
+    let max_tiers = max_tiers_for_arena_len(shared_len);
+    if max_tiers == 0 {
         return Err(DnamError::BufferTooSmall {
-            expected: 36_224,
-            actual: master_arena.len().min(suspect_arena.len()),
+            expected: 10_752,
+            actual: shared_len,
+        });
+    }
+    let needed_chips = match max_tiers {
+        1 => 768,
+        2 => 2304,
+        3 => 4608,
+        _ => 7680,
+    };
+    if code.len() < needed_chips {
+        return Err(DnamError::BufferTooSmall {
+            expected: needed_chips,
+            actual: code.len(),
         });
     }
     let mut corr = 0.0_f64;
-    for_each_conv_weight_offset(|idx, byte_off| {
+    let count = for_each_conv_weight_offset_up_to(shared_len, |idx, byte_off| {
         let w_m = read_f32_le(master_arena, byte_off);
         let w_s = read_f32_le(suspect_arena, byte_off);
         let diff = w_s - w_m;
@@ -340,13 +520,23 @@ pub fn score_tardos_watermark_4608(
         };
         corr += (code[idx] as f64) * sign;
     });
-    // 1.0 / sqrt(4608.0) = 1.0 / 67.88225099390857
-    Ok(corr * (1.0 / 67.882_250_993_908_57))
+    Ok(corr / crate::schema::cold_sqrt_f64(count as f64))
+}
+
+/// Alias for [`score_tardos_watermark_7680`].
+#[inline]
+pub fn score_tardos_watermark_4608(
+    master_arena: &[u8],
+    suspect_arena: &[u8],
+    code: &[f32],
+) -> Result<f64, DnamError> {
+    score_tardos_watermark_7680(master_arena, suspect_arena, code)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::provenance::RGLRU_TOTAL_CHANNELS;
     use proptest::prelude::*;
 
     #[test]

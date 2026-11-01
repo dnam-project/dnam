@@ -10,12 +10,12 @@ use std::hint::black_box;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use dnam_engine::container::{
-    ARENA_OFFSET_FULL_END, ARENA_OFFSET_LITE_END, ARENA_OFFSET_ULTRA_END, DnamContainerView,
-    ZohRescaledParams, build_dnam_container,
+    ARENA_OFFSET_FULL_END, ARENA_OFFSET_LITE_END, ARENA_OFFSET_PRO_END, ARENA_OFFSET_ULTRA_END,
+    DnamContainerView, ZohRescaledParams, build_dnam_container,
 };
 use dnam_engine::math::{DefaultMathBackend, MathBackend, ScalarBackend};
 use dnam_engine::memory::{AlignedBuffer, CacheLine64};
-use dnam_engine::provenance::{DefaultCryptoProvider, extract_structural_hash_160d};
+use dnam_engine::provenance::{DefaultCryptoProvider, extract_structural_hash_224d};
 use dnam_engine::schema::{
     ControlBusConfig, ControlKind, ControlSchemaDef, ControlUiHints, Core1Config, Core2Config,
     DatasetProvenance, DnamJsonHeader, IoConfig, ModelMetadata, SlimmableTiersConfig, TierProfile,
@@ -64,7 +64,7 @@ fn make_bench_container(core2_active: bool) -> AlignedBuffer<CacheLine64> {
                 arena_end_byte_offset: ARENA_OFFSET_FULL_END,
                 prefix_crc32c: 0,
             },
-            ultra: TierProfile {
+            pro: TierProfile {
                 channels: 12,
                 fdn_lines: if core2_active { 8 } else { 0 },
                 early_taps: 8,
@@ -72,6 +72,17 @@ fn make_bench_container(core2_active: bool) -> AlignedBuffer<CacheLine64> {
                 loudness_lufs: -20.5,
                 output_trim_db: 0.0,
                 validation_esr_db: -48.0,
+                arena_end_byte_offset: ARENA_OFFSET_PRO_END,
+                prefix_crc32c: 0,
+            },
+            ultra: TierProfile {
+                channels: 16,
+                fdn_lines: if core2_active { 16 } else { 0 },
+                early_taps: 16,
+                head_svd_rank: 8,
+                loudness_lufs: -20.5,
+                output_trim_db: 0.0,
+                validation_esr_db: -51.0,
                 arena_end_byte_offset: ARENA_OFFSET_ULTRA_END,
                 prefix_crc32c: 0,
             },
@@ -108,8 +119,8 @@ fn make_bench_container(core2_active: bool) -> AlignedBuffer<CacheLine64> {
         audit_report: None,
     };
 
-    let mut arena = vec![0u8; 36_224];
-    for (i, byte) in arena[128..35_200].iter_mut().enumerate() {
+    let mut arena = vec![0u8; 64_000];
+    for (i, byte) in arena[128..62_000].iter_mut().enumerate() {
         *byte = ((i * 7 + 3) & 0x3F) as u8;
     }
     let raw = build_dnam_container(&mut header, &arena, &arena, false).unwrap();
@@ -313,7 +324,7 @@ fn bench_isolated_subsystems(c: &mut Criterion) {
         });
     });
 
-    let core1_tap = [[0.1_f32; 4]; 2];
+    let core1_tap = [[0.1_f32; 4]; 4];
     let delay_mod = [0.5_f32; 8];
     sub_group.bench_function("core2_sample_full_8lines", |b| {
         b.iter(|| {
@@ -342,8 +353,8 @@ fn bench_isolated_subsystems(c: &mut Criterion) {
         });
     });
 
-    sub_group.bench_function("provenance_160d_structural_hash", |b| {
-        b.iter(|| black_box(extract_structural_hash_160d(black_box(arena)).unwrap()));
+    sub_group.bench_function("provenance_224d_structural_hash", |b| {
+        b.iter(|| black_box(extract_structural_hash_224d(black_box(arena)).unwrap()));
     });
 
     sub_group.finish();

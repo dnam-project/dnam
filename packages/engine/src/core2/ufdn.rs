@@ -91,17 +91,23 @@ pub struct ModulatedUfdn<'a, B: MathBackend> {
     pub ring_log2: u8,
     /// Maximum pre-allocated $\log_2(N_{\text{ring}})$ capacity in `delay_scratch`.
     pub max_capacity_log2: u8,
+    /// Maximum number of 4-line FDN groups supported by `delay_scratch` (`1` = `Lite`, `2` = `Full`/`Pro`, `4` = `Ultra`).
+    pub alloc_fdn_groups: usize,
     /// Bitmask $(2^{\text{ring\_log2}} - 1)$ for branchless power-of-two delay wrapping.
     pub ring_mask: usize,
     /// Write cursor into the `fp16` delay ring buffer (`0..ring_mask`).
     pub write_pos: usize,
 
-    /// Unpacked weights for Group 0 (`FDN 0..3`, `Lite`) and Group 1 (`FDN 4..7`, `Full`/`Ultra`).
-    pub groups: [MufdnGroupWeights; 2],
+    /// Unpacked weights for Groups `0..3` (`FDN 0..3` `Lite`, `FDN 4..7` `Full`/`Pro`, `FDN 8..15` `Ultra`).
+    pub groups: [MufdnGroupWeights; 4],
     /// Stereo Givens rotation angle $\psi_{\text{givens}}$ and pre-computed $(\cos\psi, \sin\psi)$.
     pub givens_cos: f32,
     /// Pre-computed $\sin\psi_{\text{givens}}$.
     pub givens_sin: f32,
+    /// Pre-computed cross-group Givens rotation $\cos\phi_m$ (`m = 0..7`) for `Tier::Ultra` 16-line mixing.
+    pub givens_ultra_cos: [f32; 8],
+    /// Pre-computed cross-group Givens rotation $\sin\phi_m$ (`m = 0..7`) for `Tier::Ultra` 16-line mixing.
+    pub givens_ultra_sin: [f32; 8],
     /// Native training $5\text{ Hz}$ DC blocker pole $R_{\text{dc}}(f_{s,\text{train}})$.
     pub r_dc_train: f32,
     /// Host ZOH-rescaled $5\text{ Hz}$ DC blocker pole $R_{\text{dc}}(f_{s,\text{host}})$.
@@ -120,32 +126,32 @@ pub struct ModulatedUfdn<'a, B: MathBackend> {
     pub delay_slew_pole: f32,
 
     // ---- Real-Time State Arrays ----
-    /// Smoothed current base delay $\bar{\tau}_{0,m}[n]$ for each of the 8 lines.
-    pub tau0_smoothed: [[f32; 4]; 2],
+    /// Smoothed current base delay $\bar{\tau}_{0,m}[n]$ for each of the 16 lines.
+    pub tau0_smoothed: [[f32; 4]; 4],
     /// Dual-tap switch crossfade old delay anchor $\tau_{\text{old},m}$ (`CL-07`).
-    pub xfade_old_tau: [[f32; 4]; 2],
+    pub xfade_old_tau: [[f32; 4]; 4],
     /// Remaining crossfade samples per line (`0` = no active switch crossfade).
-    pub xfade_remaining: [[u32; 4]; 2],
+    pub xfade_remaining: [[u32; 4]; 4],
 
     /// Previous input $u_{\text{mix},m}[n-1]$ to the $5\text{ Hz}$ in-loop DC blocker (`CL-09`).
-    pub dc_x_prev: [[f32; 4]; 2],
+    pub dc_x_prev: [[f32; 4]; 4],
     /// Previous output $y_{\text{dc},m}[n-1]$ of the $5\text{ Hz}$ in-loop DC blocker (`CL-09`).
-    pub dc_y_prev: [[f32; 4]; 2],
+    pub dc_y_prev: [[f32; 4]; 4],
 
-    /// Schroeder all-pass ring buffers (`[2 groups][4 lines][256 samples]`).
-    pub allpass_ring: [[[f32; CORE2_ALLPASS_RING_LEN]; 4]; 2],
-    /// Write cursor into `allpass_ring` (`0..255`).
+    /// Schroeder all-pass ring buffers (`[4 groups][4 lines][2048 samples]`).
+    pub allpass_ring: [[[f32; CORE2_ALLPASS_RING_LEN]; 4]; 4],
+    /// Write cursor into `allpass_ring`.
     pub allpass_write_pos: usize,
 
-    /// Stereo TZF dry reference ring buffer (`[256 samples][L, R]`).
+    /// Stereo TZF dry reference ring buffer (`[1024 samples][L, R]`).
     pub tzf_dry_ring: [[f32; 2]; CORE2_TZF_RING_LEN],
-    /// Write cursor into `tzf_dry_ring` (`0..255`).
+    /// Write cursor into `tzf_dry_ring`.
     pub tzf_write_pos: usize,
 
     /// Peak effective feedback loop gain $\max_m g_{\text{eff},m}[n]$ observed in the current block (for telemetry).
     pub max_effective_loop_gain: f32,
-    /// Pre-computed maximum `g_lin` for 1 group (`Lite`) and 2 groups (`Full`/`Ultra`).
-    cached_max_loop_gain: [f32; 2],
+    /// Pre-computed maximum `g_lin` for 1..=4 groups.
+    cached_max_loop_gain: [f32; 4],
 
     // ---- WT-UFDN Windowed Time-Warp & Unitary Spectral Freeze State ----
     /// Base complementary Hermite-Hann grain window mix $\kappa_{\text{win},0} \in [0.0, 1.0]$.
@@ -174,16 +180,16 @@ pub struct ModulatedUfdn<'a, B: MathBackend> {
     pub freeze_alpha_smoothed: f32,
     /// Causal attack onset threshold for automatic grain phase re-sync & auto-freeze ducking (`0.0` = disabled).
     pub onset_sync_threshold: f32,
-    /// Normalized grain phasor $\phi_m[n] \in [0.0, 1.0)$ per line (`[2 groups][4 lines]`).
-    pub grain_phasor: [[f32; 4]; 2],
-    /// Current random spray offset in samples for Tap A (`[2 groups][4 lines]`).
-    pub grain_spray_offset_a: [[f32; 4]; 2],
-    /// Current random spray offset in samples for Tap B (`[2 groups][4 lines]`).
-    pub grain_spray_offset_b: [[f32; 4]; 2],
+    /// Normalized grain phasor $\phi_m[n] \in [0.0, 1.0)$ per line (`[4 groups][4 lines]`).
+    pub grain_phasor: [[f32; 4]; 4],
+    /// Current random spray offset in samples for Tap A (`[4 groups][4 lines]`).
+    pub grain_spray_offset_a: [[f32; 4]; 4],
+    /// Current random spray offset in samples for Tap B (`[4 groups][4 lines]`).
+    pub grain_spray_offset_b: [[f32; 4]; 4],
     /// Deterministic LCG PRNG state (`0x9E37_79B9`) for click-free grain spray at $\phi = 0$.
     pub prng_state: u32,
-    /// Latest 12-channel (`[Lite 4ch, Full 4ch, Ultra 4ch]`) tank/grain output fed into `Core1Stack::head_tap_hist`.
-    pub latest_ap_out: [[f32; 4]; 3],
+    /// Latest 16-channel (`[Lite 4ch, Full 4ch, Pro 4ch, Ultra 4ch]`) tank/grain output fed into `Core1Stack::head_tap_hist`.
+    pub latest_ap_out: [[f32; 4]; 4],
 
     /// Dynamic 64-byte aligned `fp16` delay storage (`0 KB` when inactive; up to `8 × 32,768 × 2 B = 512 KB` or `256 KB`).
     /// Packed as `[ring_len][2 groups * 4 lines = 8 u16]`, where 4 consecutive sample frames = 1 `AlignedFp16Block` (64 B).
@@ -199,11 +205,14 @@ impl<'a, B: MathBackend> ModulatedUfdn<'a, B> {
             active: false,
             ring_log2: 0,
             max_capacity_log2: 0,
+            alloc_fdn_groups: 2,
             ring_mask: 0,
             write_pos: 0,
-            groups: [MufdnGroupWeights::default(); 2],
+            groups: [MufdnGroupWeights::default(); 4],
             givens_cos: 1.0,
             givens_sin: 0.0,
+            givens_ultra_cos: [1.0; 8],
+            givens_ultra_sin: [0.0; 8],
             r_dc_train: 0.995,
             r_dc_host: 0.995,
             tau_ref_train: 64.0,
@@ -212,17 +221,17 @@ impl<'a, B: MathBackend> ModulatedUfdn<'a, B> {
             xfade_samples_host: 128,
             inv_xfade_samples_host: 1.0 / 128.0,
             delay_slew_pole: 0.9986,
-            tau0_smoothed: [[64.0; 4]; 2],
-            xfade_old_tau: [[64.0; 4]; 2],
-            xfade_remaining: [[0; 4]; 2],
-            dc_x_prev: [[0.0; 4]; 2],
-            dc_y_prev: [[0.0; 4]; 2],
-            allpass_ring: [[[0.0; CORE2_ALLPASS_RING_LEN]; 4]; 2],
+            tau0_smoothed: [[64.0; 4]; 4],
+            xfade_old_tau: [[64.0; 4]; 4],
+            xfade_remaining: [[0; 4]; 4],
+            dc_x_prev: [[0.0; 4]; 4],
+            dc_y_prev: [[0.0; 4]; 4],
+            allpass_ring: [[[0.0; CORE2_ALLPASS_RING_LEN]; 4]; 4],
             allpass_write_pos: 0,
             tzf_dry_ring: [[0.0; 2]; CORE2_TZF_RING_LEN],
             tzf_write_pos: 0,
             max_effective_loop_gain: 0.0,
-            cached_max_loop_gain: [0.0; 2],
+            cached_max_loop_gain: [0.0; 4],
             grain_window_mix_base: 0.0,
             eff_grain_window_mix_scalar: 0.0,
             grain_feedback_mix_base: 0.0,
@@ -236,25 +245,42 @@ impl<'a, B: MathBackend> ModulatedUfdn<'a, B> {
             freeze_target: 0.0,
             freeze_alpha_smoothed: 0.0,
             onset_sync_threshold: 0.0,
-            grain_phasor: [[0.0; 4]; 2],
-            grain_spray_offset_a: [[0.0; 4]; 2],
-            grain_spray_offset_b: [[0.0; 4]; 2],
+            grain_phasor: [
+                [0.0, 0.25, 0.50, 0.75],
+                [0.125, 0.375, 0.625, 0.875],
+                [0.0625, 0.3125, 0.5625, 0.8125],
+                [0.1875, 0.4375, 0.6875, 0.9375],
+            ],
+            grain_spray_offset_a: [[0.0; 4]; 4],
+            grain_spray_offset_b: [[0.0; 4]; 4],
             prng_state: 0x9E37_79B9,
-            latest_ap_out: [[0.0; 4]; 3],
+            latest_ap_out: [[0.0; 4]; 4],
             delay_scratch: DelayScratchStorage::empty(),
             _backend: PhantomData,
         }
     }
 
     /// Creates a [`ModulatedUfdn`] pre-allocated with `max_ring_log2` capacity (`0` or `8..=18`)
-    /// so subsequent `reload_from_arena` calls never allocate heap memory.
+    /// for 4 FDN groups (`16` lines, up to `Tier::Ultra`) so subsequent `reload_from_arena` calls
+    /// never allocate heap memory.
     pub fn with_max_capacity(max_ring_log2: u8) -> Self {
+        Self::with_max_capacity_for_groups(max_ring_log2, 4)
+    }
+
+    /// Creates a [`ModulatedUfdn`] pre-allocated with `max_ring_log2` capacity (`0` or `8..=18`)
+    /// and `max_fdn_groups` (`1` for `Lite`, `2` for `Full`/`Pro`, `4` for `Ultra`).
+    pub fn with_max_capacity_for_groups(max_ring_log2: u8, max_fdn_groups: usize) -> Self {
         let mut s = Self::new_inactive();
+        let groups = match max_fdn_groups {
+            0 | 1 => 1,
+            2 | 3 => 2,
+            _ => 4,
+        };
+        s.alloc_fdn_groups = groups;
         if max_ring_log2 >= 8 {
             let clamped_log2 = max_ring_log2.min(18);
             let ring_len = 1_usize << clamped_log2;
-            // Each sample frame across 8 FDN lines is 8 x u16 = 16 bytes; 4 frames = 64 bytes (1 AlignedFp16Block)
-            let num_blocks = (ring_len * 8) / 32;
+            let num_blocks = (ring_len * (groups * 4)) / 32;
             s.delay_scratch = DelayScratchStorage::new_owned(num_blocks);
             s.max_capacity_log2 = clamped_log2;
         }
@@ -265,13 +291,22 @@ impl<'a, B: MathBackend> ModulatedUfdn<'a, B> {
     /// (zero heap allocation even during cold init).
     pub fn with_borrowed_scratch(scratch: &'a mut [AlignedFp16Block], ring_log2: u8) -> Self {
         let mut s = Self::new_inactive();
+        let clamped_log2 = ring_log2.clamp(8, 18);
+        let ring_len = 1_usize << clamped_log2;
+        let max_groups = ((scratch.len() * 8) / ring_len).clamp(1, 4);
+        s.alloc_fdn_groups = match max_groups {
+            0 | 1 => 1,
+            2 | 3 => 2,
+            _ => 4,
+        };
         s.delay_scratch = DelayScratchStorage::Borrowed(scratch);
         s.max_capacity_log2 = ring_log2.min(18);
         s
     }
 
-    /// Loads `core2_mufdn_soa` weights from `Arena 0` (`6784..7040`) and `Arena 1` (`20544..20800`),
-    /// resizes or reuses `delay_scratch` (`0 KB` if `!core2_active`), and applies ZOH rescaling.
+    /// Loads `core2_mufdn_soa` weights from `Arena 0` (`6784..7040`), `Arena 1` (`20544..20800`),
+    /// and `Arena 3` (`62400..62912`), resizes or reuses `delay_scratch` (`0 KB` if `!core2_active`),
+    /// and applies ZOH rescaling.
     pub fn load_from_arena(
         &mut self,
         arena: &[u8],
@@ -287,21 +322,53 @@ impl<'a, B: MathBackend> ModulatedUfdn<'a, B> {
             return;
         }
 
-        let target_log2 = ring_log2.clamp(8, 18);
-        if target_log2 > self.max_capacity_log2 {
+        let mut target_log2 = ring_log2.clamp(8, 18);
+        if matches!(self.delay_scratch, DelayScratchStorage::Borrowed(_)) {
+            let max_frames =
+                (self.delay_scratch.as_slice().len() * 32) / (self.alloc_fdn_groups.max(1) * 4);
+            if max_frames < 256 {
+                self.active = false;
+                self.ring_log2 = 0;
+                self.ring_mask = 0;
+                self.max_effective_loop_gain = 0.0;
+                return;
+            }
+            let max_borrowed_log2 = (max_frames.ilog2() as u8).min(self.max_capacity_log2.max(8));
+            target_log2 = target_log2.min(max_borrowed_log2).max(8);
+        } else {
             let ring_len = 1_usize << target_log2;
-            let num_blocks = (ring_len * 8) / 32;
-            self.delay_scratch = DelayScratchStorage::new_owned(num_blocks);
-            self.max_capacity_log2 = target_log2;
+            let required_blocks = (ring_len * (self.alloc_fdn_groups * 4)) / 32;
+            if target_log2 > self.max_capacity_log2
+                || self.delay_scratch.as_slice().len() < required_blocks
+            {
+                self.delay_scratch = DelayScratchStorage::new_owned(required_blocks);
+                self.max_capacity_log2 = target_log2;
+            }
         }
         self.ring_log2 = target_log2;
         self.ring_mask = (1_usize << target_log2) - 1;
 
-        // Unpack Group 0 (Arena 0 at 6784..7040 = 64 floats = 16 x [f32; 4])
-        // and Group 1 (Arena 1 at 20544..20800 = 64 floats = 16 x [f32; 4])
-        let group_bases = [6784_usize, 20_544_usize];
+        // Unpack Group 0 (Arena 0 at 6784..7040), Group 1 (Arena 1 at 20544..20800),
+        // Group 2 (Arena 3 at 62400..62656), and Group 3 (Arena 3 at 62656..62912).
+        let group_bases = [6784_usize, 20_544_usize, 62_400_usize, 62_656_usize];
+        let mut psi_base = 0.35_f32;
         for (g, &base) in group_bases.iter().enumerate() {
             if arena.len() < base + 256 {
+                if g >= 2 {
+                    let src = self.groups[g & 1];
+                    let gw = &mut self.groups[g];
+                    *gw = src;
+                    for lane in 0..4 {
+                        let (_, dap_h) = zoh.rescale_core2_delays(
+                            64.0,
+                            CORE2_DEFAULT_ALLPASS_DELAYS[g * 4 + lane] as f32,
+                        );
+                        gw.d_ap_samples[lane] = dap_h;
+                        gw.tau0_target_samples[lane] = (src.tau0_target_samples[lane]
+                            + 23.0 * ((g - 1) as f32))
+                            .min((self.ring_mask.saturating_sub(8)) as f32);
+                    }
+                }
                 continue;
             }
             let tau0_tr = read_f32x4_le(arena, base);
@@ -381,6 +448,7 @@ impl<'a, B: MathBackend> ModulatedUfdn<'a, B> {
 
             if g == 0 {
                 let psi = globals[0];
+                psi_base = psi;
                 let (c_psi, s_psi) = B::fast_unit_phasor(
                     psi.clamp(-core::f32::consts::PI + 1e-4, core::f32::consts::PI - 1e-4),
                 );
@@ -414,10 +482,30 @@ impl<'a, B: MathBackend> ModulatedUfdn<'a, B> {
                 } else {
                     0.1
                 };
-            } else {
+            } else if g == 1 {
                 self.freeze_alpha_base = grain_meta[0].clamp(0.0, 1.0);
                 self.onset_sync_threshold = grain_meta[2].max(0.0);
             }
+        }
+
+        // Pre-compute 8 cross-group Givens rotation angles for Tier::Ultra (Arena 3 at 63,460..63,492)
+        for m in 0..8 {
+            let raw_ang = if arena.len() >= 63_492 {
+                let off = 63_460 + m * 4;
+                f32::from_le_bytes([arena[off], arena[off + 1], arena[off + 2], arena[off + 3]])
+            } else {
+                0.0
+            };
+            let ang = if raw_ang.abs() > 1e-5 {
+                raw_ang
+            } else {
+                psi_base + (m as f32 + 1.0) * 0.196_349_54
+            };
+            let (cu, su) = B::fast_unit_phasor(
+                ang.clamp(-core::f32::consts::PI + 1e-4, core::f32::consts::PI - 1e-4),
+            );
+            self.givens_ultra_cos[m] = cu;
+            self.givens_ultra_sin[m] = su;
         }
 
         self.freeze_target = self
@@ -433,7 +521,9 @@ impl<'a, B: MathBackend> ModulatedUfdn<'a, B> {
 
         let max_g0 = self.groups[0].g_lin.iter().copied().fold(0.0_f32, f32::max);
         let max_g1 = self.groups[1].g_lin.iter().copied().fold(max_g0, f32::max);
-        self.cached_max_loop_gain = [max_g0, max_g1];
+        let max_g2 = self.groups[2].g_lin.iter().copied().fold(max_g1, f32::max);
+        let max_g3 = self.groups[3].g_lin.iter().copied().fold(max_g2, f32::max);
+        self.cached_max_loop_gain = [max_g0, max_g1, max_g2, max_g3];
 
         self.reset_state();
     }
@@ -443,20 +533,25 @@ impl<'a, B: MathBackend> ModulatedUfdn<'a, B> {
         self.write_pos = 0;
         self.allpass_write_pos = 0;
         self.tzf_write_pos = 0;
-        self.dc_x_prev = [[0.0; 4]; 2];
-        self.dc_y_prev = [[0.0; 4]; 2];
-        self.allpass_ring = [[[0.0; CORE2_ALLPASS_RING_LEN]; 4]; 2];
+        self.dc_x_prev = [[0.0; 4]; 4];
+        self.dc_y_prev = [[0.0; 4]; 4];
+        self.allpass_ring = [[[0.0; CORE2_ALLPASS_RING_LEN]; 4]; 4];
         self.tzf_dry_ring = [[0.0; 2]; CORE2_TZF_RING_LEN];
-        self.xfade_remaining = [[0; 4]; 2];
+        self.xfade_remaining = [[0; 4]; 4];
         self.max_effective_loop_gain = 0.0;
         self.freeze_alpha_smoothed = self.freeze_target;
-        self.grain_phasor = [[0.0, 0.25, 0.50, 0.75], [0.125, 0.375, 0.625, 0.875]];
-        self.grain_spray_offset_a = [[0.0; 4]; 2];
-        self.grain_spray_offset_b = [[0.0; 4]; 2];
+        self.grain_phasor = [
+            [0.0, 0.25, 0.50, 0.75],
+            [0.125, 0.375, 0.625, 0.875],
+            [0.0625, 0.3125, 0.5625, 0.8125],
+            [0.1875, 0.4375, 0.6875, 0.9375],
+        ];
+        self.grain_spray_offset_a = [[0.0; 4]; 4];
+        self.grain_spray_offset_b = [[0.0; 4]; 4];
         self.prng_state = 0x9E37_79B9;
-        self.latest_ap_out = [[0.0; 4]; 3];
+        self.latest_ap_out = [[0.0; 4]; 4];
 
-        for g in 0..2 {
+        for g in 0..4 {
             self.tau0_smoothed[g] = self.groups[g].tau0_target_samples;
             self.xfade_old_tau[g] = self.groups[g].tau0_target_samples;
         }
@@ -472,7 +567,7 @@ impl<'a, B: MathBackend> ModulatedUfdn<'a, B> {
         let base_w = self.eff_grain_window_mix_scalar;
         let spray_w = (0.25 * self.eff_grain_spray_samples).clamp(0.0, 1.0);
         let floor_w = base_w.max(spray_w);
-        for g in 0..2 {
+        for g in 0..4 {
             for lane in 0..4 {
                 let warp_w =
                     (64.0 * self.groups[g].eff_grain_warp_rate[lane].abs()).clamp(0.0, 1.0);
@@ -516,7 +611,7 @@ impl<'a, B: MathBackend> ModulatedUfdn<'a, B> {
         if let Some(ms) = size_ms {
             let glen = (ms.max(1.0) * 0.001 * sr).clamp(16.0, max_glen);
             let inv_glen = 1.0 / glen;
-            for g in 0..2 {
+            for g in 0..4 {
                 for lane in 0..4 {
                     self.groups[g].grain_len_samples[lane] = glen;
                     self.groups[g].eff_grain_len_samples[lane] = glen;
@@ -528,7 +623,7 @@ impl<'a, B: MathBackend> ModulatedUfdn<'a, B> {
             let ratio =
                 crate::schema::cold_pow_f64(2.0, (st.clamp(-24.0, 24.0) as f64) / 12.0) as f32;
             let warp_c = (1.0 - ratio).clamp(-2.0, 2.0);
-            for g in 0..2 {
+            for g in 0..4 {
                 for lane in 0..4 {
                     self.groups[g].grain_warp_rate[lane] = warp_c;
                     self.groups[g].eff_grain_warp_rate[lane] = warp_c;
@@ -547,10 +642,15 @@ impl<'a, B: MathBackend> ModulatedUfdn<'a, B> {
         self.recompute_self_activating_windows();
     }
 
-    /// Re-synchronizes all 8 grain phasors to a staggered 8-phase constellation on note attack onset.
+    /// Re-synchronizes all 16 grain phasors to a staggered phase constellation on note attack onset.
     #[inline]
     pub fn trigger_onset_phase_sync(&mut self) {
-        self.grain_phasor = [[0.0, 0.25, 0.50, 0.75], [0.125, 0.375, 0.625, 0.875]];
+        self.grain_phasor = [
+            [0.0, 0.25, 0.50, 0.75],
+            [0.125, 0.375, 0.625, 0.875],
+            [0.0625, 0.3125, 0.5625, 0.8125],
+            [0.1875, 0.4375, 0.6875, 0.9375],
+        ];
     }
 
     /// Applies $3\text{ kHz}$ Control-Bus state-space modulation (`W_ctrl_core2`) to Core 2's
@@ -565,11 +665,11 @@ impl<'a, B: MathBackend> ModulatedUfdn<'a, B> {
         onset_env: f32,
     ) {
         let max_glen = (self.ring_mask.saturating_sub(16).max(16)) as f32;
-        for g in 0..2 {
+        for g in 0..4 {
             let l_scale = (1.0 + len_scale[g]).clamp(0.25, 4.0);
             let gw = &mut self.groups[g];
             for lane in 0..4 {
-                let idx = g * 4 + lane;
+                let idx = (g & 1) * 4 + lane;
                 gw.eff_g_lin[lane] = (gw.g_lin[lane] + gain_mod[idx]).clamp(0.0, 0.9990);
                 gw.eff_grain_warp_rate[lane] =
                     (gw.grain_warp_rate[lane] + warp_mod[idx]).clamp(-2.0, 2.0);
@@ -588,7 +688,17 @@ impl<'a, B: MathBackend> ModulatedUfdn<'a, B> {
             .iter()
             .copied()
             .fold(max_g0, f32::max);
-        self.cached_max_loop_gain = [max_g0, max_g1];
+        let max_g2 = self.groups[2]
+            .eff_g_lin
+            .iter()
+            .copied()
+            .fold(max_g1, f32::max);
+        let max_g3 = self.groups[3]
+            .eff_g_lin
+            .iter()
+            .copied()
+            .fold(max_g2, f32::max);
+        self.cached_max_loop_gain = [max_g0, max_g1, max_g2, max_g3];
 
         let base_freeze = self.freeze_user_override.unwrap_or(self.freeze_alpha_base);
         self.freeze_target = (base_freeze + state_mod[0]).clamp(0.0, 1.0);
@@ -640,15 +750,30 @@ impl<'a, B: MathBackend> ModulatedUfdn<'a, B> {
     /// hardware `B::f32x4_to_fp16x4` (`FCVTN` on `aarch64`).
     #[inline(always)]
     fn write_fp16_group(&mut self, g: usize, write_idx: usize, vals: &[f32; 4]) {
+        let alloc_groups = self.alloc_fdn_groups;
+        let ring_mask = self.ring_mask;
         let blocks = self.delay_scratch.as_slice_mut();
         if blocks.is_empty() {
             return;
         }
-        let blk_idx = (write_idx >> 2) & (blocks.len() - 1);
-        let sub_frame = write_idx & 3;
-        let base_word = (sub_frame << 3) | ((g & 1) << 2);
         let half_words = B::f32x4_to_fp16x4(vals);
-        blocks[blk_idx].0[base_word..base_word + 4].copy_from_slice(&half_words);
+        if alloc_groups == 1 {
+            let blk_idx = (write_idx >> 3) & (blocks.len() - 1);
+            let base_word = (write_idx & 7) << 2;
+            blocks[blk_idx].0[base_word..base_word + 4].copy_from_slice(&half_words);
+        } else {
+            let pair_blocks = ((ring_mask + 1) >> 2).max(1);
+            let pair_mask = pair_blocks - 1;
+            let pair_base = if g >= 2 && blocks.len() >= pair_blocks * 2 {
+                pair_blocks
+            } else {
+                0
+            };
+            let blk_idx = (pair_base + ((write_idx >> 2) & pair_mask)) & (blocks.len() - 1);
+            let sub_frame = write_idx & 3;
+            let base_word = (sub_frame << 3) | ((g & 1) << 2);
+            blocks[blk_idx].0[base_word..base_word + 4].copy_from_slice(&half_words);
+        }
     }
 
     /// Evaluates a 4-tap Cubic Lagrange fractional delay read (`CL-06`) across 4 FDN lines in group `g`
@@ -660,6 +785,13 @@ impl<'a, B: MathBackend> ModulatedUfdn<'a, B> {
             return [0.0; 4];
         }
         let blk_mask = blocks.len() - 1;
+        let pair_blocks = ((self.ring_mask + 1) >> 2).max(1);
+        let pair_mask = pair_blocks - 1;
+        let pair_base = if g >= 2 && blocks.len() >= pair_blocks * 2 {
+            pair_blocks
+        } else {
+            0
+        };
         let g_bits = (g & 1) << 2;
 
         let max_delay = (self.ring_mask.saturating_sub(4)) as f32;
@@ -682,21 +814,39 @@ impl<'a, B: MathBackend> ModulatedUfdn<'a, B> {
 
         let w_pos = self.write_pos;
         let mask = self.ring_mask;
-        for lane in 0..4 {
-            let di = d_int[lane];
-            let lane_bits = g_bits | lane;
+        if self.alloc_fdn_groups == 1 {
+            for lane in 0..4 {
+                let di = d_int[lane];
+                let r_m1 = w_pos.wrapping_sub(di - 1) & mask;
+                bits_m1[lane] = blocks[(r_m1 >> 3) & blk_mask].0[((r_m1 & 7) << 2) | lane];
+                let r_0 = w_pos.wrapping_sub(di) & mask;
+                bits_0[lane] = blocks[(r_0 >> 3) & blk_mask].0[((r_0 & 7) << 2) | lane];
+                let r_p1 = w_pos.wrapping_sub(di + 1) & mask;
+                bits_p1[lane] = blocks[(r_p1 >> 3) & blk_mask].0[((r_p1 & 7) << 2) | lane];
+                let r_p2 = w_pos.wrapping_sub(di + 2) & mask;
+                bits_p2[lane] = blocks[(r_p2 >> 3) & blk_mask].0[((r_p2 & 7) << 2) | lane];
+            }
+        } else {
+            for lane in 0..4 {
+                let di = d_int[lane];
+                let lane_bits = g_bits | lane;
 
-            let r_m1 = w_pos.wrapping_sub(di - 1) & mask;
-            bits_m1[lane] = blocks[(r_m1 >> 2) & blk_mask].0[((r_m1 & 3) << 3) | lane_bits];
+                let r_m1 = w_pos.wrapping_sub(di - 1) & mask;
+                let b_m1 = (pair_base + ((r_m1 >> 2) & pair_mask)) & blk_mask;
+                bits_m1[lane] = blocks[b_m1].0[((r_m1 & 3) << 3) | lane_bits];
 
-            let r_0 = w_pos.wrapping_sub(di) & mask;
-            bits_0[lane] = blocks[(r_0 >> 2) & blk_mask].0[((r_0 & 3) << 3) | lane_bits];
+                let r_0 = w_pos.wrapping_sub(di) & mask;
+                let b_0 = (pair_base + ((r_0 >> 2) & pair_mask)) & blk_mask;
+                bits_0[lane] = blocks[b_0].0[((r_0 & 3) << 3) | lane_bits];
 
-            let r_p1 = w_pos.wrapping_sub(di + 1) & mask;
-            bits_p1[lane] = blocks[(r_p1 >> 2) & blk_mask].0[((r_p1 & 3) << 3) | lane_bits];
+                let r_p1 = w_pos.wrapping_sub(di + 1) & mask;
+                let b_p1 = (pair_base + ((r_p1 >> 2) & pair_mask)) & blk_mask;
+                bits_p1[lane] = blocks[b_p1].0[((r_p1 & 3) << 3) | lane_bits];
 
-            let r_p2 = w_pos.wrapping_sub(di + 2) & mask;
-            bits_p2[lane] = blocks[(r_p2 >> 2) & blk_mask].0[((r_p2 & 3) << 3) | lane_bits];
+                let r_p2 = w_pos.wrapping_sub(di + 2) & mask;
+                let b_p2 = (pair_base + ((r_p2 >> 2) & pair_mask)) & blk_mask;
+                bits_p2[lane] = blocks[b_p2].0[((r_p2 & 3) << 3) | lane_bits];
+            }
         }
 
         let s_m1 = B::fp16x4_to_f32x4(&bits_m1);
@@ -720,7 +870,7 @@ impl<'a, B: MathBackend> ModulatedUfdn<'a, B> {
         &mut self,
         dry_left: f32,
         dry_right: f32,
-        core1_tap: &[[f32; 4]; 2],
+        core1_tap: &[[f32; 4]],
         delay_mod_samples: &[f32; 8],
         active_fdn_groups: usize,
     ) -> [f32; 4] {
@@ -733,7 +883,7 @@ impl<'a, B: MathBackend> ModulatedUfdn<'a, B> {
         self.tzf_write_pos = (tzf_w + 1) & CORE2_TZF_RING_MASK;
 
         if !self.active || active_fdn_groups == 0 {
-            self.latest_ap_out = [[0.0; 4]; 3];
+            self.latest_ap_out = [[0.0; 4]; 4];
             return [0.0, 0.0, dry_left, dry_right];
         }
 
@@ -743,14 +893,19 @@ impl<'a, B: MathBackend> ModulatedUfdn<'a, B> {
         let alpha_freeze = self.freeze_alpha_smoothed;
         let fb_mix = self.eff_grain_feedback_mix * (1.0 - alpha_freeze);
 
-        let groups = active_fdn_groups.clamp(1, 2);
+        let raw_groups = active_fdn_groups.clamp(1, self.alloc_fdn_groups);
+        let groups = match raw_groups {
+            1 => 1,
+            2 | 3 => 2,
+            _ => 4,
+        };
         let slew_v = B::Vec4::splat(self.delay_slew_pole);
         let one_minus_slew_v = B::Vec4::splat(1.0 - self.delay_slew_pole);
         let four_v = B::Vec4::splat(4.0);
         let ap_w = self.allpass_write_pos & CORE2_ALLPASS_RING_MASK;
 
-        let mut u_ap_out = [[0.0_f32; 4]; 2];
-        let mut d_early_all = [[0.0_f32; 4]; 2];
+        let mut u_ap_out = [[0.0_f32; 4]; 4];
+        let mut d_early_all = [[0.0_f32; 4]; 4];
         let mut wet_l = 0.0_f32;
         let mut wet_r = 0.0_f32;
         let (mod_chunks, _) = delay_mod_samples.as_chunks::<4>();
@@ -762,7 +917,7 @@ impl<'a, B: MathBackend> ModulatedUfdn<'a, B> {
             let sm_v = sm_prev_v.mul(slew_v).fma(one_minus_slew_v, tgt_v);
             sm_v.store(&mut self.tau0_smoothed[g]);
             let mut tau_eff = [0.0_f32; 4];
-            sm_v.add(B::Vec4::load(&mod_chunks[g]))
+            sm_v.add(B::Vec4::load(&mod_chunks[g & 1]))
                 .max(four_v)
                 .store(&mut tau_eff);
 
@@ -894,7 +1049,7 @@ impl<'a, B: MathBackend> ModulatedUfdn<'a, B> {
         self.allpass_write_pos = (ap_w + 1) & CORE2_ALLPASS_RING_MASK;
 
         // 2. Orthogonal Givens + Householder Mixing Matrix U(psi) (CL-08, Test 5)
-        let mut u_mixed = [[0.0_f32; 4]; 2];
+        let mut u_mixed = [[0.0_f32; 4]; 4];
         let c_psi = self.givens_cos;
         let s_psi = self.givens_sin;
         for g in 0..groups {
@@ -909,40 +1064,74 @@ impl<'a, B: MathBackend> ModulatedUfdn<'a, B> {
             u_mixed[g][3] = s_psi * x2 + c_psi * x3;
         }
 
-        // Symmetric Householder reflection H_M = I_M - (2/M) 1 1^T (M=4 for Lite, M=8 for Full/Ultra)
+        // Symmetric Householder reflection H_M = I_M - (2/M) 1 1^T (M=4 for Lite, M=8 for Full/Pro, M=16 for Ultra)
         if groups == 1 {
             let v = B::Vec4::from_array(u_mixed[0]);
             let mean2 = B::Vec4::splat(0.5 * v.horizontal_sum());
             u_mixed[0] = v.sub(mean2).to_array();
-        } else {
+        } else if groups == 2 {
             let v0 = B::Vec4::from_array(u_mixed[0]);
             let v1 = B::Vec4::from_array(u_mixed[1]);
             let sum8 = v0.horizontal_sum() + v1.horizontal_sum();
             let scale = B::Vec4::splat(0.25 * sum8); // (2 / 8) * sum8
             u_mixed[0] = v0.sub(scale).to_array();
             u_mixed[1] = v1.sub(scale).to_array();
+        } else {
+            // Tier::Ultra (M = 16): 8 pairwise Givens rotations coupling (m, m+8) followed by 16-line Householder H_16
+            for g_lo in 0..2 {
+                let g_hi = g_lo + 2;
+                let base_m = g_lo * 4;
+                for lane in 0..4 {
+                    let c_u = self.givens_ultra_cos[base_m + lane];
+                    let s_u = self.givens_ultra_sin[base_m + lane];
+                    let a = u_mixed[g_lo][lane];
+                    let b = u_mixed[g_hi][lane];
+                    u_mixed[g_lo][lane] = c_u * a - s_u * b;
+                    u_mixed[g_hi][lane] = s_u * a + c_u * b;
+                }
+            }
+            let v0 = B::Vec4::from_array(u_mixed[0]);
+            let v1 = B::Vec4::from_array(u_mixed[1]);
+            let v2 = B::Vec4::from_array(u_mixed[2]);
+            let v3 = B::Vec4::from_array(u_mixed[3]);
+            let sum16 = (v0.horizontal_sum() + v1.horizontal_sum())
+                + (v2.horizontal_sum() + v3.horizontal_sum());
+            let scale = B::Vec4::splat(0.125 * sum16); // (2 / 16) * sum16
+            u_mixed[0] = v0.sub(scale).to_array();
+            u_mixed[1] = v1.sub(scale).to_array();
+            u_mixed[2] = v2.sub(scale).to_array();
+            u_mixed[3] = v3.sub(scale).to_array();
         }
 
-        // Populate remaining 12-channel 3-tier taps (`[Lite 4ch, Full 4ch, Ultra 4ch]`) for Pre-Head Kronecker injection
+        // Populate remaining 16-channel 4-tier taps (`[Lite 4ch, Full 4ch, Pro 4ch, Ultra 4ch]`) for Pre-Head Kronecker injection
         if groups < 2 {
             self.latest_ap_out[1] = self.latest_ap_out[0];
         }
-        let g1_idx = if groups >= 2 { 1 } else { 0 };
-        self.latest_ap_out[2] = [
-            0.5 * (u_mixed[0][0] + d_early_all[0][0]),
-            0.5 * (u_mixed[0][1] + d_early_all[0][1]),
-            0.5 * (u_mixed[g1_idx][2] + d_early_all[g1_idx][2]),
-            0.5 * (u_mixed[g1_idx][3] + d_early_all[g1_idx][3]),
-        ];
+        if groups < 4 {
+            let g1_idx = if groups >= 2 { 1 } else { 0 };
+            self.latest_ap_out[2] = [
+                0.5 * (u_mixed[0][0] + d_early_all[0][0]),
+                0.5 * (u_mixed[0][1] + d_early_all[0][1]),
+                0.5 * (u_mixed[g1_idx][2] + d_early_all[g1_idx][2]),
+                0.5 * (u_mixed[g1_idx][3] + d_early_all[g1_idx][3]),
+            ];
+            self.latest_ap_out[3] = self.latest_ap_out[g1_idx];
+        }
 
         // 3. Exact Gain-Normalized 5 Hz In-Loop DC Blocker (CL-09) + Coercive Lyapunov Loop (CL-10, CL-11)
         let w_pos = self.write_pos;
         let in_gate = B::Vec4::splat(1.0 - alpha_freeze);
         let mut peak_g = self.cached_max_loop_gain[groups - 1];
+        let tap_max_idx = core1_tap.len().saturating_sub(1);
         for g in 0..groups {
             let gw = &self.groups[g];
             // Inject Core 1 tap into mixed FDN state (scaled by 1 - alpha_freeze)
-            let tap_vec = B::Vec4::from_array(core1_tap[g]).mul(in_gate);
+            let tap_group = if core1_tap.is_empty() {
+                [0.0; 4]
+            } else {
+                core1_tap[g.min(tap_max_idx)]
+            };
+            let tap_vec = B::Vec4::from_array(tap_group).mul(in_gate);
             let b_in_vec = B::Vec4::from_array(gw.b_fdn_in);
             let u_in = B::Vec4::from_array(u_mixed[g])
                 .fma(tap_vec, b_in_vec)
@@ -1024,7 +1213,12 @@ mod tests {
 
         let mut ufdn = ModulatedUfdn::<ScalarBackend>::with_max_capacity(8);
         assert_eq!(ufdn.max_capacity_log2, 8);
-        assert_eq!(ufdn.delay_scratch.byte_len(), (256 * 8) * 2);
+        assert_eq!(ufdn.delay_scratch.byte_len(), (256 * 16) * 2);
+
+        let ufdn_pro = ModulatedUfdn::<ScalarBackend>::with_max_capacity_for_groups(8, 2);
+        assert_eq!(ufdn_pro.delay_scratch.byte_len(), (256 * 8) * 2);
+        let ufdn_lite = ModulatedUfdn::<ScalarBackend>::with_max_capacity_for_groups(8, 1);
+        assert_eq!(ufdn_lite.delay_scratch.byte_len(), (256 * 4) * 2);
 
         let zoh = ZohRescaledParams::new(48_000, 48_000);
         let arena = alloc::vec![0u8; 22_000];

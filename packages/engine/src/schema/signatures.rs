@@ -123,14 +123,17 @@ pub struct DatasetProvenance {
     pub epochs_trained: u32,
 }
 
-/// Split-payload `Ed25519` signature envelope (`HAS_SIGNATURES` bit 9).
+/// Split-payload `Ed25519` signature envelope (`HAS_SIGNATURES` bit 10).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ModelSignatures {
     /// Hex SHA-256 digest of the RFC 8785 JCS canonical JSON header excluding mutable fields.
     pub immutable_header_sha256: String,
-    /// Hex SHA-256 digest of the creator's un-watermarked master `Arena 0..2` (`36,224 B`).
+    /// Hex SHA-256 digest of the creator's un-watermarked master `Arena 0..3` (`64,000 B`).
     pub master_arena_sha256: String,
-    /// Creator's offline `Ed25519` signature over `immutable_header_sha256 || master_arena_sha256`.
+    /// Optional cumulative hex SHA-256 digests `[lite, full, pro, ultra]` enabling zero-re-signing tier stripping.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tier_arena_sha256: Option<[String; 4]>,
+    /// Creator's offline `Ed25519` signature over `immutable_header_sha256 || master_arena_sha256` (and `tier_arena_sha256` when present).
     pub creator_signature: CreatorSignature,
     /// Optional marketplace counter-signature binding `master_arena_sha256 -> buyer_arena_sha256`.
     #[serde(default)]
@@ -161,8 +164,11 @@ pub struct MarketplaceReceipt {
     pub license_tier: String,
     /// ISO-8601 UTC timestamp of receipt issuance.
     pub issued_at: String,
-    /// Hex SHA-256 digest of the personalized buyer `Arena 0..2` (`36,224 B`, pre-encryption).
+    /// Hex SHA-256 digest of the personalized buyer `Arena 0..3` (`64,000 B`, pre-encryption).
     pub buyer_arena_sha256: String,
+    /// Optional cumulative hex SHA-256 digests `[lite, full, pro, ultra]` of the buyer's watermarked arena.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub buyer_tier_arena_sha256: Option<[String; 4]>,
     /// Arena encryption mode: `"none"` (`ENCRYPTED_ARENA = 0`) or `"x25519_chacha20_arena"` (`ENCRYPTED_ARENA = 1`).
     #[serde(default = "default_encryption_mode")]
     pub encryption_mode: String,

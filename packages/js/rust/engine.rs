@@ -101,7 +101,7 @@ impl EngineCore {
         sample_rate_hz: u32,
         backend: BackendKind,
     ) -> Result<Self, String> {
-        if !(0..=2).contains(&tier) {
+        if !(0..=3).contains(&tier) {
             return Err(format!("[DNAM-VALIDATION] Invalid tier: {tier}"));
         }
         let preamble =
@@ -146,7 +146,7 @@ impl EngineCore {
         sample_rate_hz: Option<u32>,
     ) -> Result<(), String> {
         if let Some(t) = tier
-            && !(0..=2).contains(&t)
+            && !(0..=3).contains(&t)
         {
             return Err(format!("[DNAM-VALIDATION] Invalid tier: {t}"));
         }
@@ -192,11 +192,78 @@ impl EngineCore {
 
     #[inline]
     pub fn set_tier(&mut self, tier: u8) -> Result<(), String> {
-        if !(0..=2).contains(&tier) {
+        if !(0..=3).contains(&tier) {
             return Err(format!("[DNAM-VALIDATION] Invalid tier: {tier}"));
         }
         self.inner.set_tier(Tier::from_u8(tier));
         Ok(())
+    }
+
+    #[inline]
+    pub const fn max_supported_tier(&self) -> u8 {
+        self.inner.max_supported_tier() as u8
+    }
+
+    #[inline]
+    pub fn set_max_supported_tier(&mut self, tier: u8) -> Result<(), String> {
+        if !(0..=3).contains(&tier) {
+            return Err(format!("[DNAM-VALIDATION] Invalid tier: {tier}"));
+        }
+        self.inner.set_max_supported_tier(Tier::from_u8(tier));
+        Ok(())
+    }
+
+    #[inline]
+    pub const fn max_available_tier(&self) -> u8 {
+        self.inner.max_available_tier() as u8
+    }
+
+    #[inline]
+    pub fn effective_tier(&self) -> u8 {
+        self.inner.effective_tier() as u8
+    }
+
+    #[inline]
+    pub const fn offline_bounce(&self) -> bool {
+        self.inner.offline_bounce()
+    }
+
+    #[inline]
+    pub fn set_offline_bounce(&mut self, enabled: bool) {
+        self.inner.set_offline_bounce(enabled);
+    }
+
+    #[inline]
+    pub const fn maximize_tier_on_bounce(&self) -> bool {
+        self.inner.maximize_tier_on_bounce()
+    }
+
+    #[inline]
+    pub fn set_maximize_tier_on_bounce(&mut self, enabled: bool) {
+        self.inner.set_maximize_tier_on_bounce(enabled);
+    }
+
+    #[inline]
+    pub const fn latency_samples(&self) -> usize {
+        self.inner.latency_samples()
+    }
+
+    pub fn render_offline_bounce(
+        &mut self,
+        left_in: &[f32],
+        right_in: &[f32],
+        _buffer_size: Option<usize>,
+    ) -> Result<(Vec<f32>, Vec<f32>), String> {
+        if right_in.len() != left_in.len() {
+            return Err(
+                "[DNAM-VALIDATION] leftIn and rightIn must have identical length".to_string(),
+            );
+        }
+        let mut left_out = vec![0.0_f32; left_in.len()];
+        let mut right_out = vec![0.0_f32; right_in.len()];
+        self.inner
+            .render_offline_bounce(left_in, right_in, &mut left_out, &mut right_out);
+        Ok((left_out, right_out))
     }
 
     #[inline]

@@ -48,6 +48,7 @@ pub mod provenance;
 pub mod schema;
 pub mod types;
 
+pub use container::strip_container_to_tier;
 pub use dynamic::DynamicDnamEngine;
-pub use engine::DnamEngine;
+pub use engine::{DnamEngine, OFFLINE_BOUNCE_PDC_SAMPLES};
 pub use types::{DnamTelemetrySnapshot, FtzDazGuard, Tier};

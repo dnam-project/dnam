@@ -38,11 +38,11 @@ dynamic-neural-audio-modeler/
     │   ├── AGENTS.md                # Scoped router (< 2,500 B)
     │   ├── Cargo.toml
     │   ├── src/
-    │   │   ├── lib.rs               # DnamEngine<B>, DynamicDnamEngine, Tier (Lite/Full/Ultra), FtzDazGuard
+    │   │   ├── lib.rs               # DnamEngine<B>, DynamicDnamEngine, Tier (Lite/Full/Pro/Ultra), FtzDazGuard
     │   │   ├── memory.rs            # CacheLine64, 64B AlignedBuffer (page pre-faulting), ArenaStorage & Scratch
     │   │   ├── schema.rs            # #![no_std] serde + serde_json .dnam/.dnam-ckpt header, validator & skew
     │   │   ├── provenance.rs        # CryptoProvider (Zeroizing CEK), RustCryptoProvider, ChaCha20 & watermarks
-    │   │   ├── container.rs         # DnamPreamble, Arena 0..3 (uplo='U'), 4 KB in-place editor & ZOH rescaler
+    │   │   ├── container.rs         # DnamPreamble, Arena 0..4 (uplo='U'), 4 KB in-place editor, stripper & ZOH rescaler
     │   │   ├── math.rs              # SimdVec4 & MathBackend traits, branchless PolyADAA, Rotor & Lagrange (CL-01..03, CL-06)
     │   │   ├── math/
     │   │   │   ├── scalar.rs        # Portable 16B-aligned ScalarBackend & reference oracle
@@ -71,7 +71,7 @@ dynamic-neural-audio-modeler/
     │   │   ├── engine.rs            # NativeDnamEngine zero-copy NumPy block processor, backend dispatch & GIL release
     │   │   ├── container.rs         # Container validation, builder, in-place editor, clamping, ZOH & uplo='U' FFI
     │   │   ├── dsp.rs               # Reference DSP FFI kernels (Core 1, Core 2 & Control Bus)
-    │   │   └── provenance.rs        # JCS SHA-256, Ed25519 messages, ChaCha20 arena, Tardos/Gauge watermark & 160-D hash FFI
+    │   │   └── provenance.rs        # JCS SHA-256, Ed25519 messages, ChaCha20 arena, Tardos/Gauge watermark & 224-D hash FFI
     │   ├── src/                     # Idiomatic Python 3.14 Interface (dnam_engine)
     │   │   └── dnam_engine/
     │   │       ├── __init__.py      # Curated top-level exports & __all__
@@ -81,7 +81,7 @@ dynamic-neural-audio-modeler/
     │   │       ├── container.py     # First-class DnamContainer (.dnam/.dnam-ckpt object model), GramMatrix & crc32c
     │   │       ├── control.py       # ControlRack, ControlSpace, callable LobattoBasis, Rank4Fm & LFO/softclip kernels
     │   │       ├── dsp.py           # Callable stateful PolyAdaa, SelectiveRgLru, ModulatedUfdn & algebraic kernels
-    │   │       ├── provenance.py    # JCS digest, Ed25519 signing helpers, ChaCha20 arena, watermarking & 160-D structural hash
+    │   │       ├── provenance.py    # JCS digest, Ed25519 signing helpers, ChaCha20 arena, watermarking & 224-D structural hash
     │   │       ├── engine.py        # Callable DnamEngine (pedalboard-compatible), hot-reload, @property accessors & context manager
     │   │       └── schema/          # Strongly typed Pydantic v2 schemas, settings, DSP params & telemetry models
     │   │           ├── __init__.py
@@ -97,7 +97,7 @@ dynamic-neural-audio-modeler/
     │       ├── test_container.py    # DnamContainer object model, 4 KB in-place edit, ZOH & GramMatrix property tests
     │       ├── test_control.py      # ControlSpace, ControlRack, LobattoBasis, Rank4Fm & 3-Phase clamping property tests
     │       ├── test_dsp.py          # PolyAdaa, SelectiveRgLru & ModulatedUfdn unit & Hypothesis property tests
-    │       ├── test_provenance.py   # JCS SHA-256, ChaCha20, Dual-Mechanism buyer watermarking & 160-D hash property tests
+    │       ├── test_provenance.py   # JCS SHA-256, ChaCha20, Dual-Mechanism buyer watermarking & 224-D hash property tests
     │       └── test_engine.py       # Callable DnamEngine, SIMD vs. Scalar parity, hot-reload, ControlRack & property tests
     ├── js/                          # Layer 2B: Packaged Node.js & WebAudio Library for Rust Engine (@dnam-project/engine)
     │   ├── AGENTS.md                # Scoped router (< 2,500 B)
@@ -115,7 +115,7 @@ dynamic-neural-audio-modeler/
     │   │   ├── engine.rs            # Shared EngineCore (DynamicDnamEngine, backend selection, planar/interleaved)
     │   │   ├── container.rs         # Shared container validation, builder, 4 KB editor, ZOH, clamping & uplo='U'
     │   │   ├── dsp.rs               # Shared Reference DSP stateful processors & algebraic kernels
-    │   │   ├── provenance.rs        # Shared JCS SHA-256, Ed25519 messages, ChaCha20, Tardos/Gauge & 160-D hash
+    │   │   ├── provenance.rs        # Shared JCS SHA-256, Ed25519 messages, ChaCha20, Tardos/Gauge & 224-D hash
     │   │   ├── napi_bindings.rs     # #[cfg(not(target_arch = "wasm32"))] safe napi-rs v3 bindings + AsyncTask
     │   │   └── wasm_ffi.rs          # #[cfg(target_arch = "wasm32")] linear-memory C-ABI exports + arena allocator
     │   ├── src/                     # Idiomatic TypeScript & WebAudio SDK
@@ -126,7 +126,7 @@ dynamic-neural-audio-modeler/
     │   │   ├── container.ts         # First-class DnamContainer, GramMatrix (uplo='U') & crc32c
     │   │   ├── control.ts           # ControlRack, ControlSpace, LobattoBasis, Rank4Fm & Chebyshev/softclip helpers
     │   │   ├── dsp.ts               # Stateful PolyAdaa, SelectiveRgLru, ModulatedUfdn & algebraic primitives
-    │   │   ├── provenance.ts        # JCS digest, Ed25519 messages, ChaCha20 arena, buyer watermarks & 160-D hash
+    │   │   ├── provenance.ts        # JCS digest, Ed25519 messages, ChaCha20 arena, buyer watermarks & 224-D hash
     │   │   ├── engine.ts            # DnamEngine (process, processPlanar, processMonoToStereo, processAsync, reload)
     │   │   ├── schema/              # Runtime validators, frozen models & power-skew UI mappers
     │   │   ├── drivers/             # Unified DnamDriver contract (wasm.ts & native.ts)
@@ -143,7 +143,7 @@ dynamic-neural-audio-modeler/
     │   ├── src/
     │   │   ├── index.ts             # Curated barrel export
     │   │   ├── styles.css           # Tailwind CSS v4 (`@import "tailwindcss"; @theme { ... }`) + Starlight & shadcn/ui CSS vars
-    │   │   ├── tokens.ts            # Obsidian surfaces, Core1/Core2/ControlBus accents, Lite/Full/Ultra, CL-01..20 & CSS var generator
+    │   │   ├── tokens.ts            # Obsidian surfaces, Core1/Core2/ControlBus accents, Lite/Full/Pro/Ultra, CL-01..20 & CSS var generator
     │   │   ├── lib/
     │   │   │   └── utils.ts         # Canonical shadcn/ui `cn(...inputs)` (`clsx` + `tailwind-merge`) & unit/numeric helpers
     │   │   ├── host/                # Pluggable Audio & Hardware SIMD Acceleration Host (`DnamAudioHost`, `<DnamAudioHostProvider>`, `WebAudioWorkletHost`)
@@ -293,14 +293,14 @@ dynamic-neural-audio-modeler/
   3. **`ModulatedUfdnVisualizer` ([`core2_modulated_ufdn.md`](core2_modulated_ufdn.md)):** Demonstrates `range` delay slewing vs. `switch` **128-sample raised-cosine dual-pointer crossfading** (zero Doppler pitch-zipper), $O(M)$ Givens + Householder unitary mixing $\mathbf{U}(\psi, \mathbf{v})$, and the **Unity-Slope Coercive-Saturating Lyapunov Loop Law** ($S'(0) \equiv 1.0000$).
   4. **`ControlBusVisualizer` ([`parametric_control_bus.md`](parametric_control_bus.md)):** Interactive node count ($U_p = 2..6$) showing **Cardinality-Bounded Node-Anchored Newton/Lobatto basis** ($K_p = \min(U_p-1, 3)$), Centered ANOVA + Rank-4 Factorization Machine surfaces, and **Order-Statistic Optimal-Transport** LFO trajectory matching.
   5. **`KroneckerResumeVisualizer` ([`training_and_iterative_resume.md`](training_and_iterative_resume.md)):** Visualizes the **Envelope-Guided Surrogate Delay Gradient** convex loss basin and interactive `.dnam-ckpt` rank-1 stem addition ($\lbrace \mathbf{G}_{\text{audio}}^{(s)}, \mathbf{C}_{\text{audio}}^{(s)} \rbrace$, $0.00\text{ dB}$ old-stem drift).
-  6. **`ClampAuditVisualizer` ([`clamp_and_audit_registry.md`](clamp_and_audit_registry.md)):** Interactive 2D/switch control-space coverage map demonstrating Phase 1 (`[CLAMP-RANGE]`, `[CLAMP-SWITCH]`, `[CLAMP-STABILITY]`), Phase 2 (`[CLAMP-RAIL]`), and Phase 3 (`[CLAMP-DYNAMIC]`, `[CLAMP-HEAD-GAIN]`), plus a filterable `CL-01`..`CL-18` registry inspector.
+  6. **`ClampAuditVisualizer` ([`clamp_and_audit_registry.md`](clamp_and_audit_registry.md)):** Interactive 2D/switch control-space coverage map demonstrating Phase 1 (`[CLAMP-RANGE]`, `[CLAMP-SWITCH]`, `[CLAMP-STABILITY]`), Phase 2 (`[CLAMP-RAIL]`), and Phase 3 (`[CLAMP-DYNAMIC]`, `[CLAMP-HEAD-GAIN]`), plus a filterable `CL-01`..`CL-20` registry inspector.
   7. **`ZohRescalerVisualizer` ([`dnam_container_schema.md`](dnam_container_schema.md)):** Interactive host sample-rate selector ($44.1\text{–}96\text{ kHz}$) verifying invariant Hz frequency response under Continuous-Time ZOH rescaling.
 - **Interactive React WASM Modeler Plugin (`packages/web/src/components/plugin/DnamPluginRack.tsx`):**
   - Mounted via `<DnamPluginRack client:only="react" />` and powered by the WASM SIMD128 build of `packages/engine` and `packages/js` (`@dnam-project/engine`).
   - Dynamically renders rotary knobs (`range`) and discrete selectors (`switch`) from any loaded `.dnam` model's `controls_schema`, enforcing `safe_clamped_range`, `active_options`, and `conditional_max` bounds with real-time `clamp_warning` badges, built-in DI guitar/synth test stems, live WebAudio microphone/instrument input, and $60\text{ fps}$ DSP telemetry.
 - **Digital Marketplace, UI Design System & `TiDB Cloud Starter` + Cloudflare R2 Backend ([`digital_marketplace_and_provenance.md` §8](digital_marketplace_and_provenance.md#8-cloud-edge-infrastructure-tidb-cloud-starter-schema--oem-sealing-service)):**
   - **UI & Persistent Auditioning:** Styled with **Tailwind CSS v4** (`@tailwindcss/vite` + `@astrojs/starlight-tailwind`), **`shadcn/ui`** (Base UI / `@base-ui/react` primitives), **`lucide-react`**, and **`nanostores`** (`@nanostores/react`) paired with Astro's `<ClientRouter />` (`transition:persist="dnam-audio-engine"`) so audio/WASM preview playback continues uninterrupted across `/explore`, `/models/[slug]`, and `/u/[handle]` navigations.
-  - **Edge Compute, Auth & Database:** Deployed on **Cloudflare Workers** (`@astrojs/cloudflare`) with per-route `COOP`/`COEP` header isolation (`src/middleware.ts`), **`Better Auth`** + Cloudflare KV session caching, **Cloudflare R2** Two-Bucket storage (Public CDN bucket for `.webp`/`.opus`/`Lite` previews at `$0` egress + Private bucket for `Ultra` masters), **Cloudflare Queues** write-behind counter batching, and **`TiDB Cloud Starter`** (`@tidbcloud/serverless` + `drizzle-orm/tidb-serverless` with auto-sharded Rust `TiKV` row storage and `TiFlash` `VECTOR(160)` `VEC_COSINE_DISTANCE` clone detection).
+  - **Edge Compute, Auth & Database:** Deployed on **Cloudflare Workers** (`@astrojs/cloudflare`) with per-route `COOP`/`COEP` header isolation (`src/middleware.ts`), **`Better Auth`** + Cloudflare KV session caching, **Cloudflare R2** Two-Bucket storage (Public CDN bucket for `.webp`/`.opus`/`Lite` previews at `$0` egress + Private bucket for `Ultra` masters), **Cloudflare Queues** write-behind counter batching, and **`TiDB Cloud Starter`** (`@tidbcloud/serverless` + `drizzle-orm/tidb-serverless` with auto-sharded Rust `TiKV` row storage and `TiFlash` `VECTOR(224)` `VEC_COSINE_DISTANCE` clone detection).
 
 ---
 
@@ -317,7 +317,8 @@ A single zero-allocation Rust crate (`packages/engine`, `dnam-engine`) compiles 
    - On the Darkglass Anagram (**Rockchip RK3582**), KosmOS isolates the **2× ARM Cortex-A76 performance cores** ($2.4\text{ GHz}$, dual 128-bit NEON pipes, $64\text{ KB}$ L1D + $512\text{ KB}$ L2 per core) for real-time `JACK2` / `mod-host` audio DSP, while the **4× Cortex-A55 cores** handle Linux system tasks and the **LVGL** touchscreen UI. Because a series signal chain executes sequentially on a single Cortex-A76 core, all active blocks share that core's $64\text{ KB}$ L1D cache across buffers and time-share its 32 architectural NEON registers (`v0`–`v31`) per block call:
    - **`Lite` tier (`C = 4, M = 4`, $\sim 1,245\text{ MACs/sample}$):** Uses 1 `float32x4_t` NEON register per vector ($\sim 14/32$ registers active, $3.7\text{ KB}$ Core 1 state).
    - **`Full` tier (`C = 8, M = 8`, $\sim 4,625\text{ MACs/sample}$):** Uses 2 `float32x4_t` NEON registers per vector ($\sim 26/32$ registers active, $7.5\text{ KB}$ Core 1 state), keeping an entire layer's state and coefficients 100% resident in `v0`–`v31` in a single pass with zero stack spills.
-   - **`Ultra` tier (`C = 12, M = 8`, $\sim 9,950\text{ MACs/sample}$):** Uses 3 `float32x4_t` NEON registers per vector ($11.2\text{ KB}$ Core 1 state), executed via a **2-pass `8 + 4` register-tiled loop** (`channels 0..7` followed by `channels 8..11`) on 32-register ARM64 NEON to guarantee zero stack spilling while delivering 50% more channels than NAM A2 Full at $1.22\times$ higher speed.
+   - **`Pro` tier (`C = 12, M = 8`, $\sim 9,950\text{ MACs/sample}$):** Uses 3 `float32x4_t` NEON registers per vector ($11.2\text{ KB}$ Core 1 state), executed via a **2-pass `8 + 4` register-tiled loop** (`channels 0..7` followed by `channels 8..11`) on 32-register ARM64 NEON to guarantee zero stack spilling while delivering 50% more channels than NAM A2 Full at $1.22\times$ higher speed.
+   - **`Ultra` tier (`C = 16, M = 16`, Rank-8 FM + $D_h=8$ SVD, $\sim 16,950\text{ MACs/sample}$):** Uses 4 `float32x4_t` NEON registers (or 2 AVX2 256-bit registers) per vector ($15.0\text{ KB}$ Core 1 state, 16-line `M-UFDN` with 8 pairwise Givens rotations and 16 coprime Schroeder all-pass delays, plus $4\times$ ZOH polyphase oversampling on offline bounce).
 2. **Hardware Denormal Immunity (`FtzDazGuard`):**
    Decaying IIR/RG-LRU poles ($r_c \le 0.9995$) and FDN delay tails ($g_{\text{lin},m} \le 0.9990$) enter the IEEE-754 subnormal range ($< 1.18 \times 10^{-38}$) during silence, which can trigger $100\times$ microcode traps if `FTZ`/`DAZ` is disabled. `FtzDazGuard::new()` sets:
    - **ARM64 (`aarch64`):** Bit 24 (`FZ = 1`) of `FPCR` (`mrs x0, fpcr; orr x0, x0, #(1 << 24); msr fpcr, x0`).
@@ -339,11 +340,11 @@ Both Layer 2 packages wrap a **thin, zero-copy Rust FFI binding core** inside an
   2. **Idiomatic Python 3.14 Interface (`src/dnam_engine/`):**
      - `exceptions.py`: Typed exception hierarchy (`DnamError`, `DnamValidationError`, `DnamContainerError`, `DnamControlError`, `DnamSampleRateError`).
      - `schema/` (`base.py`, `controls.py`, `header.py`, `signatures.py`, `runtime.py`): Strongly typed `IntEnum`/`StrEnum` (`Tier`, `BackendKind`, `ControlKind`, `VerificationStatus`) and **Pydantic v2 (`BaseModel`, `ConfigDict(frozen=True, extra="forbid")`)** schemas, settings, and DSP parameter models (`DnamEngineSettings`, `DnamJsonHeader`, `ControlSchemaDef`, `ControlUiHints`, `PresetDef`, `DnamTelemetrySnapshot`, `ZohRescaledParams`, `ClampedControlValue`, `ClampedControlsResult`, `DnamPreambleInfo`, `PolyAdaaParams`, `SelectiveRgLruParams`, `MufdnParams`, `LobattoParams`, `WatermarkParams`), serving as the canonical Python schema SSOT shared with `packages/trainer`.
-     - `container.py` (`DnamContainer`, `GramMatrix`, `crc32c`): First-class immutable/copy-on-write `.dnam`/`.dnam-ckpt` container model (`DnamContainer.from_file`, `from_bytes`, `reference`, `build`, `.header`, `.preamble`, `.controls`, `.presets`, `.arena`, `.with_header`, `.clamp_controls`, `.zoh_params`, `.immutable_header_sha256`, `.structural_hash`, `.with_watermark`, `.save`, `__bytes__`) and `Arena 3` `uplo='U'` Kronecker matrix packer (`GramMatrix.pack`, `GramMatrix.unpack`).
+     - `container.py` (`DnamContainer`, `GramMatrix`, `crc32c`, `strip_container_to_tier`): First-class immutable/copy-on-write `.dnam`/`.dnam-ckpt` container model (`DnamContainer.from_file`, `from_bytes`, `reference`, `build`, `.header`, `.preamble`, `.controls`, `.presets`, `.arena`, `.with_header`, `.strip_to_tier`, `.clamp_controls`, `.zoh_params`, `.immutable_header_sha256`, `.structural_hash`, `.with_watermark`, `.save`, `__bytes__`) and `Arena 4` `uplo='U'` Kronecker matrix packer (`GramMatrix.pack`, `GramMatrix.unpack`).
      - `control.py` (`ControlRack`, `ControlSpace`, `LobattoBasis`, `Rank4Fm`, and Control Bus helpers): Live `MutableMapping[str, float | str]` proxy (`engine.controls["gain"] = 7.5`, `engine.controls.snap(gain=7.5)`, `engine.controls.apply_preset("warm_slapback")`, `engine.controls.clamped`), standalone `ControlSpace` 3-Phase clamper, callable `LobattoBasis(LobattoParams)` (with `.from_schema(ctrl)`) and `Rank4Fm(v_factors)` classes, and `chebyshev_lfo(cos_phi)` / `trust_region_softclip(z, *, mh)`.
      - `dsp.py`: Callable stateful Reference DSP processor classes (`PolyAdaa(PolyAdaaParams)`, `SelectiveRgLru(SelectiveRgLruParams)`, `ModulatedUfdn(MufdnParams)` supporting `__call__(x, *, reset=False, out=None)`, `.step(x_n)`, `.reset()`, `.state`, `.params`) plus stateless algebraic helpers (`PolyAdaa.algebraic`, `unit_rotor`, `lagrange_weights`, `givens_householder_mix`) imported by `packages/trainer` as the certification oracle.
-     - `provenance.py`: RFC 8785 JCS `immutable_header_sha256`, `Ed25519` creator/marketplace signing messages, RFC 8439 `ChaCha20` 64-byte cache-line arena encryption, Dual-Mechanism Buyer Watermarking (`Test 8H`: 48-ch RG-LRU gauge + 4,608-weight Tardos code), and 160-D structural hash extraction and cosine similarity.
-     - `engine.py` (`DnamEngine`): Callable stereo/mono processor with `pedalboard`-compatible duck-typing (`y = engine(x, sample_rate=None, *, buffer_size=None, reset=False, mono_downmix=False, out=None)` and `engine.process(...)`, defaulting mono `(N,)` / `(1, N)` input to true-stereo `(2, N)` output via `process_mono_to_stereo`, plus `process_planar`), explicit `backend="auto" | BackendKind` selection, zero-allocation hot-reloading (`engine.reload(...)`), Pythonic `@property` accessors (`engine.tier`, `engine.sample_rate`, `engine.backend`, `engine.telemetry`, `engine.container`, `engine.controls`), and context-manager support.
+     - `provenance.py`: RFC 8785 JCS `immutable_header_sha256`, `Ed25519` creator/marketplace signing messages, RFC 8439 `ChaCha20` 64-byte cache-line arena encryption, Dual-Mechanism Buyer Watermarking (`Test 8H`: 64-ch RG-LRU gauge + 7,680-weight Tardos code), and 224-D (`4 × 56-D`) prefix-composable structural hash extraction and cosine similarity.
+     - `engine.py` (`DnamEngine`): Callable stereo/mono processor with `pedalboard`-compatible duck-typing (`y = engine(x, sample_rate=None, *, buffer_size=None, reset=False, mono_downmix=False, out=None)` and `engine.process(...)`, defaulting mono `(N,)` / `(1, N)` input to true-stereo `(2, N)` output via `process_mono_to_stereo`, plus `process_planar` and `render_offline_bounce`), explicit `backend="auto" | BackendKind` selection, `max_supported_tier` ceiling, `offline_bounce` & `maximize_tier_on_bounce`, zero-allocation hot-reloading (`engine.reload(...)`), Pythonic `@property` accessors (`engine.tier`, `engine.max_supported_tier`, `engine.effective_tier`, `engine.offline_bounce`, `engine.maximize_tier_on_bounce`, `engine.latency_samples`, `engine.sample_rate`, `engine.backend`, `engine.telemetry`, `engine.container`, `engine.controls`), and context-manager support.
 - **Modular Test & Code-Quality Suite (`tests/{conftest,strategies,test_schema,test_container,test_control,test_dsp,test_provenance,test_engine}.py`):** Enforces `uv run ruff format --check`, `uv run ruff check`, `uv run pyrefly check` (`preset = "strict"`, zero `# type: ignore`), `uv run pytest` with `hypothesis[numpy,crosshair]` & `hypothesis-jsonschema` property-based/symbolic tests, and `pytest-cov` (`--cov=dnam_engine --cov-fail-under=95`).
 
 ### 4.2 Packaged Node.js & WebAudio Engine Library (`packages/js/` — Phase 2B)
@@ -362,7 +363,7 @@ Both Layer 2 packages wrap a **thin, zero-copy Rust FFI binding core** inside an
 
 - **Environment & Dependencies:** Managed via `uv` (`pyproject.toml` / `packages/trainer/pyproject.toml`) targeting `requires-python = ">=3.14"`. Imports `packages/python` (`dnam-engine`) as a workspace dependency for Reference DSP evaluation and Phase 1/3 export certification. Core dependencies: `dnam-engine`, `numpy`, `torch`, `pydantic`, `polars`, `altair`. Dev dependencies: `pytest`, `hypothesis`, `ruff`, `pyrefly`.
 - **Strict Typing & Lint:** Must pass `uv run ruff check`, `uv run ruff format --check`, and `uv run pyrefly check` (`preset = "strict"`).
-- **Clamp Registry Alignment:** Every `CL-01`..`CL-18` row in [`clamp_and_audit_registry.md`](clamp_and_audit_registry.md) maps to its designated module under `packages/trainer/src/dnam_trainer/` (and `packages/engine/src/`) and is programmatically verified by `packages/trainer/tests/test_guardrails.py`.
+- **Clamp Registry Alignment:** Every `CL-01`..`CL-20` row in [`clamp_and_audit_registry.md`](clamp_and_audit_registry.md) maps to its designated module under `packages/trainer/src/dnam_trainer/` (and `packages/python/src/dnam_engine/`, `packages/engine/src/`) and is programmatically verified by `packages/trainer/tests/test_guardrails.py`.
 
 ---
 

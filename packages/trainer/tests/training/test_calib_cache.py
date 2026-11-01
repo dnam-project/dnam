@@ -26,6 +26,7 @@ from dnam_trainer.events import CacheEvent, TrainingEvent
 from dnam_trainer.training.arena import (
     ARENA_OFFSET_FULL_END,
     ARENA_OFFSET_LITE_END,
+    ARENA_OFFSET_PRO_END,
     ARENA_OFFSET_ULTRA_END,
     ArenaWeightLayout,
     build_signed_dnam_containers,
@@ -187,7 +188,7 @@ def test_ckpt_container_arena4_roundtrip_and_dnam_stripping() -> None:
                 validation_esr_db=-32.0,
                 arena_end_byte_offset=ARENA_OFFSET_FULL_END,
             ),
-            ultra=TierProfile(
+            pro=TierProfile(
                 channels=12,
                 fdn_lines=0,
                 early_taps=0,
@@ -195,6 +196,16 @@ def test_ckpt_container_arena4_roundtrip_and_dnam_stripping() -> None:
                 loudness_lufs=-18.0,
                 output_trim_db=0.0,
                 validation_esr_db=-35.0,
+                arena_end_byte_offset=ARENA_OFFSET_PRO_END,
+            ),
+            ultra=TierProfile(
+                channels=16,
+                fdn_lines=0,
+                early_taps=0,
+                head_svd_rank=1,
+                loudness_lufs=-18.0,
+                output_trim_db=0.0,
+                validation_esr_db=-36.0,
                 arena_end_byte_offset=ARENA_OFFSET_ULTRA_END,
             ),
         ),

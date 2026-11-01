@@ -12,7 +12,7 @@ from numpy.typing import ArrayLike, NDArray
 from dnam_engine import _native, provenance
 from dnam_engine.control import ControlSpace
 from dnam_engine.exceptions import DnamValidationError, call_native
-from dnam_engine.schema.base import DnamProtectionProfile, VerificationStatus
+from dnam_engine.schema.base import DnamProtectionProfile, Tier, VerificationStatus
 from dnam_engine.schema.controls import ClampedControlsResult, ControlSchemaDef, PresetDef
 from dnam_engine.schema.header import DnamJsonHeader
 from dnam_engine.schema.runtime import DnamPreambleInfo, ZohRescaledParams
@@ -71,9 +71,11 @@ class DnamContainer:
             tensor_arena_byte_len=int(info["tensor_arena_byte_len"]),
             arena_offset_lite_end=int(info["arena_offset_lite_end"]),
             arena_offset_full_end=int(info["arena_offset_full_end"]),
+            arena_offset_pro_end=int(info["arena_offset_pro_end"]),
             arena_offset_ultra_end=int(info["arena_offset_ultra_end"]),
             arena_crc32c_lite=int(info["arena_crc32c_lite"]),
             arena_crc32c_full=int(info["arena_crc32c_full"]),
+            arena_crc32c_pro=int(info["arena_crc32c_pro"]),
             arena_crc32c_ultra=int(info["arena_crc32c_ultra"]),
             num_ckpt_stems=int(info["num_ckpt_stems"]),
             control_decimation=int(info["control_decimation"]),
@@ -146,7 +148,7 @@ class DnamContainer:
         encrypted_arena: bool = False,
     ) -> DnamContainer:
         """Builds a 4 KB page-aligned `.dnam` or `.dnam-ckpt` container from `header` & `arena`."""
-        arena_bytes = bytes(arena) if arena is not None else b"\x00" * 36_224
+        arena_bytes = bytes(arena) if arena is not None else b"\x00" * 64_000
         raw = call_native(
             _native.native_build_container,
             header.model_dump_json(by_alias=True),
@@ -203,13 +205,44 @@ class DnamContainer:
 
     @property
     def arena4_bytes(self) -> bytes | None:
-        """Returns the `.dnam-ckpt` `Arena 4` (`DNCA`) calibration stats bytes if present."""
+        """Returns the `.dnam-ckpt` `Arena 5` (`DNCA`) calibration stats bytes if present."""
         if not self.is_checkpoint or not self._preamble.has_calib_stats:
             return None
-        arena3_end = 36_224 + self._preamble.num_ckpt_stems * 151_296
-        if len(self._arena_bytes) <= arena3_end:
+        stems = self._header.stems_registry or []
+        if stems:
+            stems_end = max(
+                s.c_audio_tier_f64.byte_offset + s.c_audio_tier_f64.byte_length for s in stems
+            )
+        else:
+            n_stems = self._preamble.num_ckpt_stems
+            stems_end_u = 64_000 + n_stems * 267_264
+            stems_end = (
+                stems_end_u if len(self._arena_bytes) >= stems_end_u else 64_000 + n_stems * 151_296
+            )
+        if len(self._arena_bytes) <= stems_end:
             return None
-        return self._arena_bytes[arena3_end:]
+        return self._arena_bytes[stems_end:]
+
+    def strip_to_tier(
+        self,
+        max_tier: Tier | int,
+        *,
+        device_id_hash: str | None = None,
+        device_secret_x25519: bytes | None = None,
+        trusted_marketplace_pubkey_hex: str | None = None,
+    ) -> DnamContainer:
+        """Strips higher tiers above `max_tier` (`Lite`..`Ultra`) without re-signing."""
+        try:
+            t = Tier(int(max_tier))
+        except (ValueError, TypeError) as exc:
+            raise DnamValidationError(f"Invalid max_tier: {max_tier!r}") from exc
+        stripped_raw = call_native(_native.native_strip_container_to_tier, self._raw_bytes, int(t))
+        return DnamContainer(
+            stripped_raw,
+            device_id_hash=device_id_hash,
+            device_secret_x25519=device_secret_x25519,
+            trusted_marketplace_pubkey_hex=trusted_marketplace_pubkey_hex,
+        )
 
     def to_bytes(self) -> bytes:
         """Returns the complete binary container bytes."""
@@ -287,18 +320,14 @@ class DnamContainer:
         return provenance.immutable_header_sha256(self._header)
 
     def structural_hash(self) -> NDArray[np.float64]:
-        """Extracts the 160-D Gauge-Invariant Structural Hash vector `f_struct in R^160`."""
+        """Extracts the 224-D Gauge-Invariant Structural Hash vector `f_struct in R^224`."""
         return provenance.extract_structural_hash(self._arena_bytes)
 
     def with_watermark(self, params: WatermarkParams) -> DnamContainer:
         """Returns a new `DnamContainer` with Dual-Mechanism Buyer Watermarking (`Test 8H`)."""
         watermarked_arena = provenance.apply_dual_watermark(self._arena_bytes, params)
         hdr = self._header
-        if (
-            watermarked_arena != self._arena_bytes
-            and hdr.metadata.signatures is not None
-            and hdr.metadata.signatures.marketplace_receipt is None
-        ):
+        if watermarked_arena != self._arena_bytes and hdr.metadata.signatures is not None:
             hdr = hdr.model_copy(
                 update={"metadata": hdr.metadata.model_copy(update={"signatures": None})}
             )

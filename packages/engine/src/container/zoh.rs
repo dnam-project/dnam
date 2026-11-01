@@ -52,10 +52,37 @@ impl ZohRescaledParams {
         tau_ref_train: f32,
         xfade_train: u32,
     ) -> Result<Self, DnamError> {
-        if !(44_100..=96_000).contains(&fs_host_hz) {
+        Self::compute_oversampled(
+            fs_train_hz,
+            fs_host_hz,
+            1,
+            k_ctrl_train,
+            r_ac_train,
+            r_dc_train,
+            tau_ref_train,
+            xfade_train,
+        )
+    }
+
+    /// Computes the closed-form ZOH rescaled parameters for an internal oversampling rate
+    /// $f_{s,\text{internal}} = \text{oversample\_factor} \times f_{s,\text{host}}$
+    /// (`oversample_factor` $\in \{1, 2, 4\}$).
+    #[allow(clippy::too_many_arguments)]
+    pub fn compute_oversampled(
+        fs_train_hz: u32,
+        fs_host_hz: u32,
+        oversample_factor: u32,
+        k_ctrl_train: u8,
+        r_ac_train: f32,
+        r_dc_train: f32,
+        tau_ref_train: f32,
+        xfade_train: u32,
+    ) -> Result<Self, DnamError> {
+        if !(44_100..=96_000).contains(&fs_host_hz) || !matches!(oversample_factor, 1 | 2 | 4) {
             return Err(DnamError::InvalidSampleRate(fs_host_hz));
         }
-        if fs_host_hz == fs_train_hz {
+        let fs_eff_hz = fs_host_hz * oversample_factor;
+        if fs_eff_hz == fs_train_hz {
             return Ok(Self {
                 sample_rate_host_hz: fs_host_hz,
                 rho_sr: 1.0,
@@ -69,12 +96,12 @@ impl ZohRescaledParams {
         }
 
         let fs_train = fs_train_hz as f64;
-        let fs_host = fs_host_hz as f64;
-        let rho_sr = fs_train / fs_host;
+        let fs_eff = fs_eff_hz as f64;
+        let rho_sr = fs_train / fs_eff;
 
-        let k_host_raw = ((fs_host / 3000.0) + 0.5) as usize;
+        let k_host_raw = ((fs_eff / 3000.0) + 0.5) as usize;
         let k_host = k_host_raw.max(8);
-        let rho_ctrl = (fs_train * (k_host as f64)) / (fs_host * (k_ctrl_train as f64));
+        let rho_ctrl = (fs_train * (k_host as f64)) / (fs_eff * (k_ctrl_train as f64));
 
         let r_ac_host = cold_pow_f64(r_ac_train as f64, rho_sr) as f32;
         let r_dc_host = cold_pow_f64(r_dc_train as f64, rho_sr) as f32;

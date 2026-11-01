@@ -20,6 +20,9 @@ import type { ClampResultSnapshot, PreambleSnapshot, TelemetrySnapshot } from ".
 
 export interface DnamEngineOptions {
   tier?: TierInput | undefined;
+  maxSupportedTier?: TierInput | undefined;
+  offlineBounce?: boolean | undefined;
+  maximizeTierOnBounce?: boolean | undefined;
   sampleRateHz?: number | undefined;
   backend?: BackendChoice | undefined;
 }
@@ -103,6 +106,15 @@ export class DnamEngine<TControls extends ControlMap = ControlMap> implements Di
       sampleRateHz,
       options.backend,
     );
+    if (options.maxSupportedTier !== undefined) {
+      this.handle.maxSupportedTier = parseTier(options.maxSupportedTier);
+    }
+    if (options.offlineBounce !== undefined) {
+      this.handle.offlineBounce = options.offlineBounce;
+    }
+    if (options.maximizeTierOnBounce !== undefined) {
+      this.handle.maximizeTierOnBounce = options.maximizeTierOnBounce;
+    }
     this.currentSpace = new ControlSpace(this.currentContainer.header, options.backend);
     const sink: ControlSink = {
       setNumericControl: (ctrlIdx, numericValue, immediate) => {
@@ -146,6 +158,54 @@ export class DnamEngine<TControls extends ControlMap = ControlMap> implements Di
 
   public setTier(tier: TierInput): void {
     this.handle.activeTier = parseTier(tier);
+  }
+
+  public get maxSupportedTier(): TierCode {
+    return parseTier(this.handle.maxSupportedTier);
+  }
+
+  public get maxSupportedTierName(): TierName {
+    return tierToName(this.handle.maxSupportedTier);
+  }
+
+  public setMaxSupportedTier(tier: TierInput): void {
+    this.handle.maxSupportedTier = parseTier(tier);
+  }
+
+  public get maxAvailableTier(): TierCode {
+    return parseTier(this.handle.maxAvailableTier);
+  }
+
+  public get maxAvailableTierName(): TierName {
+    return tierToName(this.handle.maxAvailableTier);
+  }
+
+  public get effectiveTier(): TierCode {
+    return parseTier(this.handle.effectiveTier);
+  }
+
+  public get effectiveTierName(): TierName {
+    return tierToName(this.handle.effectiveTier);
+  }
+
+  public get offlineBounce(): boolean {
+    return this.handle.offlineBounce;
+  }
+
+  public setOfflineBounce(enabled: boolean): void {
+    this.handle.offlineBounce = enabled;
+  }
+
+  public get maximizeTierOnBounce(): boolean {
+    return this.handle.maximizeTierOnBounce;
+  }
+
+  public setMaximizeTierOnBounce(enabled: boolean): void {
+    this.handle.maximizeTierOnBounce = enabled;
+  }
+
+  public get latencySamples(): number {
+    return this.handle.latencySamples;
   }
 
   public get sampleRateHz(): number {
@@ -354,6 +414,32 @@ export class DnamEngine<TControls extends ControlMap = ControlMap> implements Di
         : rightIn;
     this.handle.processStereo(safeLeftIn, safeRightIn, leftOut, rightOut, options?.bufferSize);
     return [leftOut, rightOut];
+  }
+
+  /**
+   * Renders an offline bounce with $4\times$ linear-phase polyphase half-band oversampling,
+   * automatically stripping the 12-sample FIR group-delay lead-in and flushing the tail so
+   * the returned stereo buffers are sample-accurately aligned (`0` latency) with the input.
+   */
+  public renderOfflineBounce(
+    leftOrMonoIn: Float32Array,
+    rightIn?: Float32Array,
+    options?: ProcessStereoOptions,
+  ): [Float32Array, Float32Array] {
+    this.applyOptionalControls(options);
+    const actualRightIn = rightIn ?? leftOrMonoIn;
+    const [outL, outR] = this.handle.renderOfflineBounce(
+      leftOrMonoIn,
+      actualRightIn,
+      options?.bufferSize,
+    );
+    if (options?.leftOut !== undefined) {
+      options.leftOut.set(outL);
+    }
+    if (options?.rightOut !== undefined) {
+      options.rightOut.set(outR);
+    }
+    return [options?.leftOut ?? outL, options?.rightOut ?? outR];
   }
 
   /**

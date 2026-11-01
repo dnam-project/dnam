@@ -45,18 +45,23 @@ describe("Schema Suite", () => {
   it("parses and formats slimmable tiers", () => {
     expect(parseTier("lite")).toBe(0);
     expect(parseTier("Full")).toBe(1);
-    expect(parseTier("Ultra")).toBe(2);
+    expect(parseTier("Pro")).toBe(2);
+    expect(parseTier("Ultra")).toBe(3);
     expect(parseTier(0)).toBe(0);
     expect(parseTier(1)).toBe(1);
     expect(parseTier(2)).toBe(2);
+    expect(parseTier(3)).toBe(3);
     expect(() => parseTier(9)).toThrow(DnamValidationError);
     expect(() => parseTier("invalid" as "lite")).toThrow(DnamValidationError);
 
     expect(tierToName(0)).toBe("lite");
     expect(tierToName(1)).toBe("full");
-    expect(tierToName(2)).toBe("ultra");
+    expect(tierToName(2)).toBe("pro");
+    expect(tierToName(3)).toBe("ultra");
     expect(() => tierToName(5)).toThrow(DnamValidationError);
     expect(TierSchema.parse("full")).toBe("full");
+    expect(TierSchema.parse("pro")).toBe("pro");
+    expect(TierSchema.parse("ultra")).toBe("ultra");
   });
 
   it("validates via StandardSchemaV1 (~standard) and handles sync/async error paths", () => {

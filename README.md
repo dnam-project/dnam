@@ -2,7 +2,7 @@
 
 **Dynamic Neural Audio Modeler (DNAM)** is a real-time true-stereo neural audio modeling, differentiable DSP, and parametric system-identification platform co-designed for embedded ARMv8.2-A NEON processors (**Rockchip RK3582 / Darkglass Anagram**), desktop **VST3/CLAP/AU** audio plugins, and browser/Node.js **WebAssembly (`AudioWorklet`)** runtimes.
 
-It unifies **nonlinear amplifier/preamp drive**, **linear, time-invariant (LTI) systems (speaker cabinet `IR`s, parametric EQs, and acoustic spaces)**, **selective state-space filters (Wah, Phaser, Uni-Vibe, power-amp sag)**, **modulated & time-warped delay-line effects (`M-UFDN` / `WT-UFDN`: Through-Zero Flanger, Stereo Chorus, Tape Echo, Spring Reverb Drip, Lush Hall Reverb, Leslie Rotary, Granular Clouds, Octave/Fifth Shimmer Pitch-Shifting, and Infinite Unitary Spectral Freeze)**, and **user-definable continuous (`range`) and discrete (`switch`) controls** trained from multi-stem captures—running **2.6× faster than NAM A2** in `Full` (`C=8`, ~4,625 MACs/sample vs. 12,146 MACs/sample) and **1.22× faster with 50% more channels** in `Ultra` (`C=12`, ~9,950 MACs/sample), with **0 extra MACs/sample at 48 kHz when user knobs are static**.
+It unifies **nonlinear amplifier/preamp drive**, **linear, time-invariant (LTI) systems (speaker cabinet `IR`s, parametric EQs, and acoustic spaces)**, **selective state-space filters (Wah, Phaser, Uni-Vibe, power-amp sag)**, **modulated & time-warped delay-line effects (`M-UFDN` / `WT-UFDN`: Through-Zero Flanger, Stereo Chorus, Tape Echo, Spring Reverb Drip, Lush Hall Reverb, Leslie Rotary, Granular Clouds, Octave/Fifth Shimmer Pitch-Shifting, and Infinite Unitary Spectral Freeze)**, and **user-definable continuous (`range`) and discrete (`switch`) controls** trained from multi-stem captures—running **2.6× faster than NAM A2** in `Full` (`C=8`, ~4,625 MACs/sample vs. 12,146 MACs/sample), **1.22× faster with 50% more channels** in `Pro` (`C=12`, ~9,950 MACs/sample), and scaling to **unconstrained workstation max** in `Ultra` (`C=16, M=16`, Rank-8 FM + $D_h=8$ SVD, ~16,950 MACs/sample + $4\times$ offline bounce oversampling), with **0 extra MACs/sample at 48 kHz when user knobs are static**.
 
 ---
 
@@ -10,48 +10,49 @@ It unifies **nonlinear amplifier/preamp drive**, **linear, time-invariant (LTI) 
 
 | Component | Target Path | Description |
 | :--- | :--- | :--- |
-| **Canonical Specifications** | [`docs/`](docs/index.md) | Pure Single-Source-of-Truth (SSOT) mathematical, DSP, training, clamp registry (`CL-01..CL-18`), and `.dnam` container specifications. |
-| **Rust SIMD Engine Core** | `packages/engine/` | Zero-allocation, 16-byte SIMD-aligned (`C=4` Lite / `C=8` Full / `C=12` Ultra), `FTZ`/`DAZ`-enabled pure Rust engine (`dnam-engine`) with zero `FSQRT` or `FDIV` instructions at 48 kHz and 3 kHz. |
+| **Canonical Specifications** | [`docs/`](docs/index.md) | Pure Single-Source-of-Truth (SSOT) mathematical, DSP, training, clamp registry (`CL-01..CL-20`), and `.dnam` container specifications. |
+| **Rust SIMD Engine Core** | `packages/engine/` | Zero-allocation, 16-byte SIMD-aligned (`C=4` Lite / `C=8` Full / `C=12` Pro / `C=16` Ultra), `FTZ`/`DAZ`-enabled pure Rust engine (`dnam-engine`) with zero `FSQRT` or `FDIV` instructions at 48 kHz and 3 kHz. |
 | **Packaged Python Engine Library** | `packages/python/` | Standalone `PyO3` / `maturin` Python wheel wrapping `packages/engine` for zero-copy NumPy audio inference, `.dnam` validation, 3-Phase control clamping, and canonical Reference DSP primitives. |
 | **Packaged Node.js / WebAudio Library** | `packages/js/` | Standalone TypeScript / npm package (`@dnam-project/engine`) wrapping `packages/engine` via WebAssembly SIMD128 & N-API bindings + WebAudio `DnamAudioWorkletProcessor`. |
 | **Unified Design System** | `packages/ui/` | Shared React 19, Tailwind CSS v4, `shadcn/ui` (Base UI), and `lucide-react` component & DSP visualizer library (`@dnam-project/ui`) with `DnamAudioHost` abstraction. |
 | **CLI & Tauri v2 Desktop Studio** | `packages/studio/` | Unified Rust/Node `dnam` CLI (`dnam-studio`) and Tauri v2 Desktop Studio (`@dnam-project/studio`) for workspace management, 2-step Reference Unity re-amp capture/alignment, and trainer orchestration. |
 | **PyTorch Differentiable Trainer** | `packages/trainer/` | PyTorch 4-stage deterministic trainer, LTI + 3-stage selective cascade solver, psychoacoustic `bESR` evaluation suite, `.dnam-ckpt` Kronecker stem expansion, and 3-Phase Control Audit (`dnam-train`). |
-| **Real-Time Audio Plugin** | `packages/plugin/` | VST3/CLAP/Standalone audio plugin wrapping `packages/engine` with lock-free atomic parameter binding for dynamic `.dnam` `controls_schema` (`range` & `switch`) and ZOH sample-rate rescaling (44.1–96 kHz). |
+| **Real-Time Audio Plugin** | `packages/plugin/` | VST3/CLAP/Standalone audio plugin wrapping `packages/engine` with lock-free atomic parameter binding for dynamic `.dnam` `controls_schema` (`range` & `switch`), `max_supported_tier` ceiling, and ZOH sample-rate rescaling (44.1–96 kHz). |
 | **Web Docs & React WASM Studio** | `packages/web/` | Astro + Starlight documentation website mounting `docs/*.md` as a comprehensive Specification section with interactive React/Canvas DSP visualizers + live React WASM (`AudioWorklet` SIMD128) Modeler Plugin. |
 
 ---
 
-## Psychoacoustic `bESR` Quality Tiers (`Lite` / `Full` / `Ultra`)
+## Psychoacoustic `bESR` Quality Tiers (`Lite` / `Full` / `Pro` / `Ultra`)
 
-DNAM evaluates models using **Floor-Regularized Band-Balanced ESR (`bESR`)** across **Low (20–250 Hz)**, **Mid (250 Hz–2.5 kHz)**, and **High (2.5–18 kHz)** bands (see [`docs/training_and_iterative_resume.md`](docs/training_and_iterative_resume.md)):
+DNAM evaluates models using **Floor-Regularized, Noise-Adjusted Band-Balanced ESR (`bESR`)** across **Low (20–250 Hz)**, **Mid (250 Hz–2.5 kHz)**, and **High (2.5–18 kHz)** bands (see [`docs/training_and_iterative_resume.md`](docs/training_and_iterative_resume.md)). Because [`measure_stem_band_noise_floor`](packages/trainer/src/dnam_trainer/training/metrics.py) measures each stem's per-band stationary noise floor $\epsilon_{\text{floor},b}$ from silent-input frames, subtracts stationary hiss ($\gamma_{\text{hiss}} T \epsilon_{\text{floor},b}^2$), and evaluates noise-limited bands via [`is_band_goal_satisfied`](packages/trainer/src/dnam_trainer/training/metrics.py) ($\text{Residual}_{\text{dBFS},b} \le \text{NoiseFloor}_{\text{dBFS},b} + 1.0\text{ dB}$ when $\text{SNR}_b < -\text{Goal}_{\text{dB},b}$), **one single objective threshold per tier** applies identically across all devices with zero subjective device-type carve-outs:
 
-| DNAM Tier | Target Grade | Composite `bESR` | Per-Band Requirement (`LF` / `MF` / `HF`) | Max Spectral Tilt (`ΔEQ_dB`) |
-| :--- | :--- | :---: | :---: | :---: |
-| **`Lite` (`C=4`)** | **Mix-Ready / Live Grade** | **-18 to -23 dB** (≤ -18 dB) | `LF` ≤ -23 dB, `MF` ≤ -20 dB, `HF` ≤ -15 dB | **≤ 0.75 dB** |
-| **`Full` (`C=8`)** | **True Studio Quality** | **-23 to -30 dB** (≤ -23 dB) | `LF` ≤ -27 dB, `MF` ≤ -25 dB, **`HF` ≤ -20 dB** | **≤ 0.35 dB** |
-| **`Ultra` (`C=12`)** | **Mastering / Reference Grade** | **≤ -30 dB** (clean/mid-gain/LTI) / **≤ -25 dB** (high-gain tube) | `LF` ≤ -34 dB, `MF` ≤ -31 dB, `HF` ≤ -26 dB | **≤ 0.15 dB** |
+| DNAM Tier | Target Grade | Noise-Adjusted Composite `bESR` | Per-Band Requirement (`LF` / `MF` / `HF` or `<= NoiseFloor + 1.0 dB`) | Max Spectral Tilt (`ΔEQ_dB`) | Multi-Control Unseen `bESR` |
+| :--- | :--- | :---: | :---: | :---: | :---: |
+| **`Lite` (`C=4, M=4, D_h=4`)** | **Mix-Ready / Live Grade** | **`<= -18 dB`** (-18 to -23 dB) | `LF <= -23 dB`, `MF <= -20 dB`, `HF <= -15 dB` | **`<= 0.75 dB`** | **`<= -16 dB`** (`<= 4` controls) |
+| **`Full` (`C=8, M=8, D_h=4`)** | **True Studio Quality** | **`<= -23 dB`** (-23 to -30 dB) | `LF <= -27 dB`, `MF <= -25 dB`, **`HF <= -20 dB`** | **`<= 0.35 dB`** | **`<= -21 dB`** (`<= 4` controls) |
+| **`Pro` (`C=12, M=8, D_h=4`)** | **Mastering / Reference Grade** | **`<= -30 dB`** (-30 to -34 dB) | `LF <= -34 dB`, `MF <= -31 dB`, `HF <= -26 dB` | **`<= 0.15 dB`** | **`<= -27 dB`** (`<= 4` controls) |
+| **`Ultra` (`C=16, M=16, D_h=8`)** | **Unconstrained Workstation Max** | **`<= -34 dB`** | `LF <= -38 dB`, `MF <= -35 dB`, `HF <= -30 dB` | **`<= 0.10 dB`** | **`<= -32 dB`** (`> 4` controls, `D_h=8`) |
 
 ---
 
 ## Hardware & DSP Benchmark (NAM A2 vs. DNAM)
 
-| Hardware / DSP Metric | NAM A2 Lite (Mono) | **DNAM Lite (Stereo)** | NAM A2 Full (Mono) | **DNAM Full (Stereo)** | **DNAM Ultra (Stereo)** |
-| :--- | :---: | :---: | :---: | :---: | :---: |
-| **Channels (`C`) / FDN Lines (`M`)** | `C = 3` (Unaligned) | **`C = 4` (1 NEON reg), `M = 4`** | `C = 8`, No FDN | **`C = 8` (2 NEON regs), `M = 8`** | **`C = 12` (3 NEON regs), `M = 8`** |
-| **Core 1 Architecture** | 23 Dilated Conv | **8 Conv + 4 Selective RG-LRU** | 23 Dilated Conv | **8 Conv + 4 Selective RG-LRU** | **8 Conv + 4 Selective RG-LRU** |
-| **Core 2 Architecture** | None | **Mode-Free `WT-UFDN` + 3-Tier Pre-Head Routing** | None | **Mode-Free `WT-UFDN` + 3-Tier Pre-Head Routing** | **Mode-Free `WT-UFDN` + 3-Tier Pre-Head Routing** |
-| **User Controls (`range` & `switch`)** | None (Static Snapshot) | **Unlimited (0 MACs @ 48 kHz static)** | None (Static Snapshot) | **Unlimited (0 MACs @ 48 kHz static)** | **Unlimited (0 MACs @ 48 kHz static)** |
-| **Granular, Pitch Shimmer & Freeze** | None | **Hermite-Hann `WT-UFDN` + Sound-on-Sound Freeze** | None | **Hermite-Hann `WT-UFDN` + Sound-on-Sound Freeze** | **Hermite-Hann `WT-UFDN` + Sound-on-Sound Freeze** |
-| **Auto-Unity, Blend & Tempo Sync** | None | **Gated `rms_dbfs` (`u=0`), `Trails` & 12-Sub Sync** | None | **Gated `rms_dbfs` (`u=0`), `Trails` & 12-Sub Sync** | **Gated `rms_dbfs` (`u=0`), `Trails` & 12-Sub Sync** |
-| **48 kHz `FSQRT` / `FDIV` Instructions** | 0 | **0 (100% `FMAX`/`FMIN`/`FMLA`)** | 0 | **0 (100% `FMAX`/`FMIN`/`FMLA`)** | **0 (100% `FMAX`/`FMIN`/`FMLA`)** |
-| **NEON SIMD Lane Utilization** | 75% (3/4 lanes) | **100% (4/4 lanes)** | 100% (8/8 lanes) | **100% (8/8 lanes)** | **100% (12/12 lanes, `8+4` tiled)** |
-| **Core 1 L1 Cache State RAM** | 76.2 KB | **3.7 KB (-95%)** | 203.1 KB | **7.5 KB (-96%)** | **11.2 KB (-94%)** |
-| **Core 2 Delay Ring Buffer RAM** | 0 KB | **`0 KB` (Amp) / `16 KB–2.0 MB` (`fp16`, ≤ 5.46 s)** | 0 KB | **`0 KB` (Amp) / `32 KB–4.0 MB` (`fp16`, ≤ 5.46 s)** | **`0 KB` (Amp) / `32 KB–4.0 MB` (`fp16`, ≤ 5.46 s)** |
-| **Effective Receptive Field** | 132.2 ms (Hard cutoff) | **∞ (Core 1 SSM + Core 2 `WT-UFDN` + Freeze)** | 132.2 ms (Hard cutoff) | **∞ (Core 1 SSM + Core 2 `WT-UFDN` + Freeze)** | **∞ (Core 1 SSM + Core 2 `WT-UFDN` + Freeze)** |
-| **Total Compute (MACs / Sample)** | 1,871 MACs | **~1,245 MACs (1.5× faster + 33% wider)** | 12,146 MACs | **~4,625 MACs (2.6× faster)** | **~9,950 MACs (1.22× faster + 50% wider)** |
-| **Sample-Rate Support** | Fixed 48 kHz | **Native 44.1–96 kHz (ZOH)** | Fixed 48 kHz | **Native 44.1–96 kHz (ZOH)** | **Native 44.1–96 kHz (ZOH)** |
-| **Audio I/O Topology** | Mono (1 → 1) | **True Stereo (1 → 2 or 2 → 2)** | Mono (1 → 1) | **True Stereo (1 → 2 or 2 → 2)** | **True Stereo (1 → 2 or 2 → 2)** |
+| Hardware / DSP Metric | NAM A2 Lite (Mono) | **DNAM Lite (Stereo)** | NAM A2 Full (Mono) | **DNAM Full (Stereo)** | **DNAM Pro (Stereo)** | **DNAM Ultra (Stereo)** |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: |
+| **Channels (`C`) / FDN Lines (`M`)** | `C = 3` (Unaligned) | **`C = 4` (1 NEON reg), `M = 4`** | `C = 8`, No FDN | **`C = 8` (2 NEON regs), `M = 8`** | **`C = 12` (3 NEON regs), `M = 8`** | **`C = 16` (4 NEON / 2 AVX regs), `M = 16`** |
+| **Core 1 Architecture** | 23 Dilated Conv | **8 Conv + 4 Selective RG-LRU** | 23 Dilated Conv | **8 Conv + 4 Selective RG-LRU** | **8 Conv + 4 Selective RG-LRU** | **8 Conv + 4 Selective RG-LRU** |
+| **Core 2 Architecture** | None | **Mode-Free `WT-UFDN` + 4-Tier Pre-Head Routing** | None | **Mode-Free `WT-UFDN` + 4-Tier Pre-Head Routing** | **Mode-Free `WT-UFDN` + 4-Tier Pre-Head Routing** | **16-Line `WT-UFDN` + 8-Givens + 16 Coprime Diffusers** |
+| **Control Bus & Head SVD Rank** | None (Static Snapshot) | **Rank-4 FM, `D_h=4` (`0` MACs static)** | None (Static Snapshot) | **Rank-4 FM, `D_h=4` (`0` MACs static)** | **Rank-4 FM, `D_h=4` (`0` MACs static)** | **Rank-8 FM, `D_h=8` (`0` MACs static)** |
+| **Granular, Pitch Shimmer & Freeze** | None | **Hermite-Hann `WT-UFDN` + Sound-on-Sound Freeze** | None | **Hermite-Hann `WT-UFDN` + Sound-on-Sound Freeze** | **Hermite-Hann `WT-UFDN` + Sound-on-Sound Freeze** | **Hermite-Hann `WT-UFDN` + Sound-on-Sound Freeze** |
+| **Auto-Unity, Blend & Tempo Sync** | None | **Gated `rms_dbfs` (`u=0`), `Trails` & 12-Sub Sync** | None | **Gated `rms_dbfs` (`u=0`), `Trails` & 12-Sub Sync** | **Gated `rms_dbfs` (`u=0`), `Trails` & 12-Sub Sync** | **Gated `rms_dbfs` (`u=0`), `Trails` & 12-Sub Sync** |
+| **48 kHz `FSQRT` / `FDIV` Instructions** | 0 | **0 (100% `FMAX`/`FMIN`/`FMLA`)** | 0 | **0 (100% `FMAX`/`FMIN`/`FMLA`)** | **0 (100% `FMAX`/`FMIN`/`FMLA`)** | **0 (100% `FMAX`/`FMIN`/`FMLA`)** |
+| **NEON / AVX SIMD Lane Utilization** | 75% (3/4 lanes) | **100% (4/4 lanes)** | 100% (8/8 lanes) | **100% (8/8 lanes)** | **100% (12/12 lanes, `8+4` tiled)** | **100% (16/16 lanes, `2×8` AVX2 / `4×4` NEON)** |
+| **Core 1 L1 Cache State RAM** | 76.2 KB | **3.7 KB (-95%)** | 203.1 KB | **7.5 KB (-96%)** | **11.2 KB (-94%)** | **15.0 KB (-93%)** |
+| **Core 2 Delay Ring Buffer RAM** | 0 KB | **`0 KB` (Amp) / `16 KB–2.0 MB` (`fp16`, ≤ 5.46 s)** | 0 KB | **`0 KB` (Amp) / `32 KB–4.0 MB` (`fp16`, ≤ 5.46 s)** | **`0 KB` (Amp) / `32 KB–4.0 MB` (`fp16`, ≤ 5.46 s)** | **`0 KB` (Amp) / `64 KB–8.0 MB` (`fp16`, ≤ 5.46 s)** |
+| **Effective Receptive Field** | 132.2 ms (Hard cutoff) | **∞ (Core 1 SSM + Core 2 `WT-UFDN` + Freeze)** | 132.2 ms (Hard cutoff) | **∞ (Core 1 SSM + Core 2 `WT-UFDN` + Freeze)** | **∞ (Core 1 SSM + Core 2 `WT-UFDN` + Freeze)** | **∞ (Core 1 SSM + Core 2 `WT-UFDN` + Freeze)** |
+| **Total Compute (MACs / Sample)** | 1,871 MACs | **~1,245 MACs (1.5× faster + 33% wider)** | 12,146 MACs | **~4,625 MACs (2.6× faster)** | **~9,950 MACs (1.22× faster + 50% wider)** | **~16,950 MACs (1×) / 4× Offline Bounce** |
+| **Sample-Rate Support** | Fixed 48 kHz | **Native 44.1–96 kHz (ZOH)** | Fixed 48 kHz | **Native 44.1–96 kHz (ZOH)** | **Native 44.1–96 kHz (ZOH)** | **Native 44.1–96 kHz (ZOH) + 4× Bounce** |
+| **Audio I/O Topology** | Mono (1 → 1) | **True Stereo (1 → 2 or 2 → 2)** | Mono (1 → 1) | **True Stereo (1 → 2 or 2 → 2)** | **True Stereo (1 → 2 or 2 → 2)** | **True Stereo (1 → 2 or 2 → 2)** |
 
 ---
 
@@ -61,7 +62,7 @@ See [`docs/architecture_overview.md` §3](docs/architecture_overview.md#3-compar
 
 | Capability | **GuitarML PROTEUS** | **NAM ParametricOD** | **DNAM ("Tri-Physics")** |
 | :--- | :---: | :---: | :---: |
-| **Backbone** | 1-layer LSTM (`hidden=40`) | Conditional WaveNet / LSTM | **Core 1 (`PolyADAA` + Selective RG-LRU) + Core 2 (`WT-UFDN` + 3-Tier Pre-Head Routing)** |
+| **Backbone** | 1-layer LSTM (`hidden=40`) | Conditional WaveNet / LSTM | **Core 1 (`PolyADAA` + Selective RG-LRU) + Core 2 (`WT-UFDN` + 4-Tier Pre-Head Routing)** |
 | **Control Schema** | 1–2 continuous knobs | Hardcoded pedal layout | **Unlimited user-defined `range` knobs & `switch` selectors** |
 | **Control Rate & Static Overhead** | 48 kHz (∝ `P` MACs/sample) | 48 kHz (∝ `P` MACs/sample) | **3 kHz Lobatto HDMR-FM (0 MACs/sample @ 48 kHz when static)** |
 | **Anti-Aliasing** | None (`tanh` at 1× rate) | None (`tanh`/`ReLU` at 1× rate) | **1× B-Spline Division-Free Algebraic `PolyADAA` (38.87 dB reduction)** |
@@ -85,7 +86,7 @@ Start with [`AGENTS.md`](AGENTS.md) and [`docs/index.md`](docs/index.md):
 6. **[Core 2: Unified Stereo In-Loop Diffusive Modulated Unitary FDN (`M-UFDN`)](docs/core2_modulated_ufdn.md)**
 7. **[Parametric Control Bus (`Range` & `Switch` Controls, Lobatto HDMR-FM & Order-Statistic Transport)](docs/parametric_control_bus.md)**
 8. **[4-Stage Training Pipeline & Single-Checkpoint (`.dnam-ckpt`) Iterative Stem Expansion](docs/training_and_iterative_resume.md)**
-9. **[Non-Stop 3-Phase Control-Space Audit & Clamp Registry (`CL-01`..`CL-18`)](docs/clamp_and_audit_registry.md)**
+9. **[Non-Stop 3-Phase Control-Space Audit & Clamp Registry (`CL-01`..`CL-20`)](docs/clamp_and_audit_registry.md)**
 10. **[`.dnam` Container Schema & Continuous-Time ZOH Sample-Rate Rescaling](docs/dnam_container_schema.md)**
 11. **[Digital Marketplace Architecture, Split-Payload `Ed25519` Signatures & Traitor-Tracing Watermarks](docs/digital_marketplace_and_provenance.md)**
 12. **[Monorepo Implementation Blueprint (Web Docs, Python, Native DSP, Plugin & Node.js WASM)](docs/monorepo_implementation_guide.md)**

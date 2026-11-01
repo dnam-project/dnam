@@ -145,9 +145,42 @@ describe("DnamEngine & DnamProcessor Real-Time Inference", () => {
       expect(engine.activeTier).toBe(0);
       expect(engine.activeTierName).toBe("lite");
 
-      engine.setTier("ultra");
+      engine.setTier("pro");
       expect(engine.activeTier).toBe(2);
+      expect(engine.activeTierName).toBe("pro");
+
+      engine.setTier("ultra");
+      expect(engine.activeTier).toBe(3);
       expect(engine.activeTierName).toBe("ultra");
+
+      // Test maxSupportedTier, offlineBounce, maximizeTierOnBounce, latencySamples, and renderOfflineBounce
+      expect(engine.maxAvailableTierName).toBe("ultra");
+      expect(engine.maxSupportedTierName).toBe("ultra");
+      engine.setMaxSupportedTier("pro");
+      expect(engine.maxSupportedTier).toBe(2);
+      expect(engine.maxSupportedTierName).toBe("pro");
+      expect(engine.activeTier).toBe(2);
+      expect(engine.effectiveTier).toBe(2);
+
+      engine.setTier("lite");
+      expect(engine.latencySamples).toBe(0);
+      engine.setOfflineBounce(true);
+      expect(engine.offlineBounce).toBe(true);
+      expect(engine.maximizeTierOnBounce).toBe(true);
+      expect(engine.latencySamples).toBe(12);
+      expect(engine.effectiveTierName).toBe("pro");
+      engine.setMaximizeTierOnBounce(false);
+      expect(engine.maximizeTierOnBounce).toBe(false);
+      expect(engine.effectiveTierName).toBe("lite");
+      engine.setMaximizeTierOnBounce(true);
+      engine.setOfflineBounce(false);
+      engine.setMaxSupportedTier("ultra");
+
+      const bounceInL = new Float32Array(128).fill(0.1);
+      const bounceInR = new Float32Array(128).fill(-0.1);
+      const [bounceOutL, bounceOutR] = engine.renderOfflineBounce(bounceInL, bounceInR);
+      expect(bounceOutL).toHaveLength(128);
+      expect(bounceOutR).toHaveLength(128);
 
       engine.setSampleRate(96_000);
       expect(engine.sampleRateHz).toBe(96_000);

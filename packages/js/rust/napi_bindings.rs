@@ -8,8 +8,8 @@ use napi_derive::napi;
 
 use crate::container::{
     ControlSpaceCore, build_container_core, build_reference_container_core, compute_zoh_core,
-    crc32c_core, pack_uplo_u_core, unpack_uplo_u_core, update_header_in_place_core,
-    validate_container_with_key_core,
+    crc32c_core, pack_uplo_u_core, strip_container_to_tier_core, unpack_uplo_u_core,
+    update_header_in_place_core, validate_container_with_key_core,
 };
 use crate::dsp::{
     cubic_lagrange_weights_core, eval_chebyshev_lfo_core, eval_chebyshev_lfo_slice_core,
@@ -192,6 +192,106 @@ impl NativeDnamEngine {
             .lock()
             .map_err(|_| to_napi_err("[DNAM-VALIDATION] Engine mutex poisoned".to_string()))?;
         guard.set_tier(tier).map_err(to_napi_err)
+    }
+
+    #[napi(getter)]
+    pub fn max_supported_tier(&self) -> Result<u8> {
+        let guard = self
+            .inner
+            .lock()
+            .map_err(|_| to_napi_err("[DNAM-VALIDATION] Engine mutex poisoned".to_string()))?;
+        Ok(guard.max_supported_tier())
+    }
+
+    #[napi(setter)]
+    pub fn set_max_supported_tier(&self, tier: u8) -> Result<()> {
+        let mut guard = self
+            .inner
+            .lock()
+            .map_err(|_| to_napi_err("[DNAM-VALIDATION] Engine mutex poisoned".to_string()))?;
+        guard.set_max_supported_tier(tier).map_err(to_napi_err)
+    }
+
+    #[napi(getter)]
+    pub fn max_available_tier(&self) -> Result<u8> {
+        let guard = self
+            .inner
+            .lock()
+            .map_err(|_| to_napi_err("[DNAM-VALIDATION] Engine mutex poisoned".to_string()))?;
+        Ok(guard.max_available_tier())
+    }
+
+    #[napi(getter)]
+    pub fn effective_tier(&self) -> Result<u8> {
+        let guard = self
+            .inner
+            .lock()
+            .map_err(|_| to_napi_err("[DNAM-VALIDATION] Engine mutex poisoned".to_string()))?;
+        Ok(guard.effective_tier())
+    }
+
+    #[napi(getter)]
+    pub fn offline_bounce(&self) -> Result<bool> {
+        let guard = self
+            .inner
+            .lock()
+            .map_err(|_| to_napi_err("[DNAM-VALIDATION] Engine mutex poisoned".to_string()))?;
+        Ok(guard.offline_bounce())
+    }
+
+    #[napi(setter)]
+    pub fn set_offline_bounce(&self, enabled: bool) -> Result<()> {
+        let mut guard = self
+            .inner
+            .lock()
+            .map_err(|_| to_napi_err("[DNAM-VALIDATION] Engine mutex poisoned".to_string()))?;
+        guard.set_offline_bounce(enabled);
+        Ok(())
+    }
+
+    #[napi(getter)]
+    pub fn maximize_tier_on_bounce(&self) -> Result<bool> {
+        let guard = self
+            .inner
+            .lock()
+            .map_err(|_| to_napi_err("[DNAM-VALIDATION] Engine mutex poisoned".to_string()))?;
+        Ok(guard.maximize_tier_on_bounce())
+    }
+
+    #[napi(setter)]
+    pub fn set_maximize_tier_on_bounce(&self, enabled: bool) -> Result<()> {
+        let mut guard = self
+            .inner
+            .lock()
+            .map_err(|_| to_napi_err("[DNAM-VALIDATION] Engine mutex poisoned".to_string()))?;
+        guard.set_maximize_tier_on_bounce(enabled);
+        Ok(())
+    }
+
+    #[napi(getter)]
+    pub fn latency_samples(&self) -> Result<u32> {
+        let guard = self
+            .inner
+            .lock()
+            .map_err(|_| to_napi_err("[DNAM-VALIDATION] Engine mutex poisoned".to_string()))?;
+        Ok(guard.latency_samples() as u32)
+    }
+
+    #[napi]
+    pub fn render_offline_bounce(
+        &self,
+        left_in: &[f32],
+        right_in: &[f32],
+        buffer_size: Option<u32>,
+    ) -> Result<Vec<Float32Array>> {
+        let mut guard = self
+            .inner
+            .lock()
+            .map_err(|_| to_napi_err("[DNAM-VALIDATION] Engine mutex poisoned".to_string()))?;
+        let (out_l, out_r) = guard
+            .render_offline_bounce(left_in, right_in, buffer_size.map(|b| b as usize))
+            .map_err(to_napi_err)?;
+        Ok(vec![Float32Array::new(out_l), Float32Array::new(out_r)])
     }
 
     #[napi(getter)]
@@ -438,9 +538,11 @@ pub struct NativeValidatedContainer {
     pub tensor_arena_byte_len: u32,
     pub arena_offset_lite_end: u32,
     pub arena_offset_full_end: u32,
+    pub arena_offset_pro_end: u32,
     pub arena_offset_ultra_end: u32,
     pub arena_crc32c_lite: u32,
     pub arena_crc32c_full: u32,
+    pub arena_crc32c_pro: u32,
     pub arena_crc32c_ultra: u32,
     pub num_ckpt_stems: u16,
     pub control_decimation: u8,
@@ -482,11 +584,13 @@ pub fn native_validate_container(
         json_header_byte_len: p.json_header_byte_len,
         tensor_arena_offset: p.tensor_arena_offset,
         tensor_arena_byte_len: p.tensor_arena_byte_len,
-        arena_offset_lite_end: p.arena_offset_lite_end,
-        arena_offset_full_end: p.arena_offset_full_end,
-        arena_offset_ultra_end: p.arena_offset_ultra_end,
+        arena_offset_lite_end: p.arena_offset_lite_end(),
+        arena_offset_full_end: p.arena_offset_full_end(),
+        arena_offset_pro_end: p.arena_offset_pro_end(),
+        arena_offset_ultra_end: p.arena_offset_ultra_end(),
         arena_crc32c_lite: p.arena_crc32c_lite,
         arena_crc32c_full: p.arena_crc32c_full,
+        arena_crc32c_pro: p.arena_crc32c_pro,
         arena_crc32c_ultra: p.arena_crc32c_ultra,
         num_ckpt_stems: p.num_ckpt_stems,
         control_decimation: p.control_decimation,
@@ -501,6 +605,12 @@ pub fn native_validate_container(
         header_json: info.header_json,
         arena_bytes: Uint8Array::new(info.arena_bytes),
     })
+}
+
+#[napi]
+pub fn native_strip_container_to_tier(container_bytes: &[u8], max_tier: u8) -> Result<Uint8Array> {
+    let bytes = strip_container_to_tier_core(container_bytes, max_tier).map_err(to_napi_err)?;
+    Ok(Uint8Array::new(bytes))
 }
 
 #[napi]

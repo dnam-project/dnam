@@ -208,14 +208,14 @@ def test_verification_test8g_and_test8h(
     )
     wm = dnam_resumed.with_watermark(
         WatermarkParams(
-            tardos_code_4608=tuple(float(x) for x in code),
+            tardos_code_7680=tuple(float(x) for x in code),
             tardos_epsilon=2e-4,
         )
     )
     z_score = provenance.score_tardos_watermark(
         bytes(dnam_resumed.arena),
         bytes(wm.arena),
-        code_4608=code,
+        code_7680=code,
     )
     assert z_score > 30.0
     assert (

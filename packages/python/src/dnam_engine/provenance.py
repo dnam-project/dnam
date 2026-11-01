@@ -84,11 +84,11 @@ def _coerce_f32_flat(arr: ArrayLike) -> NDArray[np.float32]:
 def apply_isometric_gauge_watermark(
     arena_bytes: bytes,
     *,
-    kappa_48: ArrayLike,
+    kappa_64: ArrayLike,
     q_buyer_4x4: ArrayLike,
 ) -> bytes:
-    """Applies Mechanism A (48-channel RG-LRU scaling + SO(4) head rotation) to `arena_bytes`."""
-    kappa_arr = _coerce_f32_flat(kappa_48)
+    """Applies Mechanism A (64-channel RG-LRU scaling + SO(4) head rotation) to `arena_bytes`."""
+    kappa_arr = _coerce_f32_flat(kappa_64)
     q_arr = _coerce_f32_flat(q_buyer_4x4)
     return call_native(
         _native.native_apply_isometric_gauge_watermark,
@@ -104,7 +104,7 @@ def generate_tardos_code(
     model_id: str,
     license_id: str,
 ) -> NDArray[np.float32]:
-    """Deterministically generates a 4,608-chip Tardos binary watermark code `{-1.0, +1.0}^4608`."""
+    """Deterministically generates a 7,680-chip Tardos binary watermark code `{-1.0, +1.0}^7680`."""
     return call_native(
         _native.native_generate_tardos_code,
         marketplace_secret_32,
@@ -116,11 +116,11 @@ def generate_tardos_code(
 def apply_tardos_watermark(
     arena_bytes: bytes,
     *,
-    code_4608: ArrayLike,
+    code_7680: ArrayLike,
     epsilon: float = 1e-4,
 ) -> bytes:
-    """Embeds Mechanism B (4,608-weight Tardos spread-spectrum watermark) into `arena_bytes`."""
-    code_arr = _coerce_f32_flat(code_4608)
+    """Embeds Mechanism B (7,680-weight Tardos spread-spectrum watermark) into `arena_bytes`."""
+    code_arr = _coerce_f32_flat(code_7680)
     return call_native(
         _native.native_apply_tardos_watermark,
         arena_bytes,
@@ -152,10 +152,10 @@ def score_tardos_watermark(
     master_arena: bytes,
     suspect_arena: bytes,
     *,
-    code_4608: ArrayLike,
+    code_7680: ArrayLike,
 ) -> float:
     """Computes the Tardos matched-filter Z-score (`sigma`) of `suspect_arena` vs `master_arena`."""
-    code_arr = _coerce_f32_flat(code_4608)
+    code_arr = _coerce_f32_flat(code_7680)
     return float(
         call_native(
             _native.native_score_tardos_watermark,
@@ -167,16 +167,18 @@ def score_tardos_watermark(
 
 
 def extract_structural_hash(arena_bytes: bytes) -> NDArray[np.float64]:
-    """Extracts the 160-D Gauge-Invariant Structural Hash `f_struct in R^160` from `arena_bytes`."""
+    """Extracts the prefix-composable `4 x 56-D = 224-D` structural hash from `arena_bytes`."""
     return call_native(_native.native_extract_structural_hash, arena_bytes)
 
 
 def structural_cosine_similarity(a: ArrayLike, b: ArrayLike) -> float:
-    """Computes cosine similarity `cos(a, b) in [-1, +1]` between two 160-D structural hashes."""
+    """Computes cosine similarity `cos(a, b) in [-1, +1]` over the shared tier prefix."""
     a_arr = np.ascontiguousarray(a, dtype=np.float64)
     b_arr = np.ascontiguousarray(b, dtype=np.float64)
     if a_arr.ndim != 1 or b_arr.ndim != 1:
-        raise DnamValidationError("Structural hash vectors must be 1D arrays of length 160")
+        raise DnamValidationError(
+            "Structural hash vectors must be 1D arrays of prefix length 56, 112, 168, or 224"
+        )
     return float(call_native(_native.native_structural_cosine_similarity, a_arr, b_arr))
 
 

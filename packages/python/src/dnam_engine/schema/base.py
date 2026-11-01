@@ -94,21 +94,36 @@ class OpenMetadataModel(BaseModel):
 
 
 class Tier(IntEnum):
-    """Slimmable execution tier (`Lite = 0`, `Full = 1`, `Ultra = 2`)."""
+    """Slimmable execution tier (`Lite = 0`, `Full = 1`, `Pro = 2`, `Ultra = 3`)."""
 
     LITE = 0
     FULL = 1
-    ULTRA = 2
+    PRO = 2
+    ULTRA = 3
 
     @property
     def channels(self) -> int:
-        """Returns the number of Core 1 channels (`4`, `8`, or `12`)."""
+        """Returns the number of Core 1 channels per block (`4`, `8`, `12`, or `16`)."""
         return (int(self) + 1) * 4
 
     @property
     def fdn_lines(self) -> int:
-        """Returns the number of Core 2 FDN lines (`4` for `Lite`, `8` for `Full`/`Ultra`)."""
-        return 4 if self == Tier.LITE else 8
+        """Returns Core 2 FDN lines (`4` for `Lite`, `8` for `Full`/`Pro`, `16` for `Ultra`)."""
+        if self == Tier.LITE:
+            return 4
+        if self in (Tier.FULL, Tier.PRO):
+            return 8
+        return 16
+
+    @property
+    def head_svd_rank(self) -> int:
+        """Returns the active SVD head mode rank (`4` for `Lite`/`Full`/`Pro`, `8` for `Ultra`)."""
+        return 8 if self == Tier.ULTRA else 4
+
+    @property
+    def expected_arena_bytes(self) -> int:
+        """Returns the cumulative arena byte offset (`10752`, `22336`, `36224`, or `64000`)."""
+        return (10_752, 22_336, 36_224, 64_000)[int(self)]
 
 
 class BackendKind(StrEnum):

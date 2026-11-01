@@ -398,28 +398,45 @@ impl Default for IoConfig {
     }
 }
 
-/// Slimmable tier profiles (`lite`, `full`, `ultra`).
+fn default_pro_tier_profile() -> TierProfile {
+    TierProfile {
+        channels: 12,
+        fdn_lines: 8,
+        early_taps: 8,
+        head_svd_rank: 4,
+        loudness_lufs: -20.5,
+        output_trim_db: 0.0,
+        validation_esr_db: -48.0,
+        arena_end_byte_offset: 36_224,
+        prefix_crc32c: 0,
+    }
+}
+
+/// Slimmable tier profiles (`lite`, `full`, `pro`, `ultra`).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SlimmableTiersConfig {
-    /// `Lite` ($C=4$, $M=4$) tier profile.
+    /// `Lite` ($C=4$, $M=4$, $D_h=4$, `10,752 B`) tier profile.
     pub lite: TierProfile,
-    /// `Full` ($C=8$, $M=8$) tier profile.
+    /// `Full` ($C=8$, $M=8$, $D_h=4$, `22,336 B`) tier profile.
     pub full: TierProfile,
-    /// `Ultra` ($C=12$, $M=8$) tier profile.
+    /// `Pro` ($C=12$, $M=8$, $D_h=4$, `36,224 B`) tier profile.
+    #[serde(default = "default_pro_tier_profile")]
+    pub pro: TierProfile,
+    /// `Ultra` ($C=16$, $M=16$, $D_h=8$, `64,000 B`) tier profile.
     pub ultra: TierProfile,
 }
 
 /// Metadata and prefix checksum for an individual slimmable tier.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct TierProfile {
-    /// Active Core 1 channels ($C \in \{4, 8, 12\}$).
+    /// Active Core 1 channels ($C \in \{4, 8, 12, 16\}$).
     pub channels: u8,
-    /// Active Core 2 FDN delay lines ($M \in \{0, 4, 8\}$).
+    /// Active Core 2 FDN delay lines ($M \in \{0, 4, 8, 16\}$).
     pub fdn_lines: u8,
-    /// Active early-reflection taps ($M_{\text{early}} \in \{0, 4, 8\}$).
+    /// Active early-reflection taps ($M_{\text{early}} \in \{0, 4, 8, 16\}$).
     #[serde(default)]
     pub early_taps: u8,
-    /// SVD output head rank ($D_h = 4$).
+    /// SVD output head rank ($D_h \in \{4, 8\}$).
     #[serde(default = "default_head_svd_rank")]
     pub head_svd_rank: u8,
     /// Integrated loudness in LUFS (`-20.5` target).
@@ -559,9 +576,30 @@ const fn default_tzf_tap() -> f32 {
 const fn default_switch_xfade() -> u16 {
     128
 }
-const fn default_allpass_delays() -> [u16; 8] {
-    [19, 31, 47, 73, 103, 139, 179, 223]
+const fn default_allpass_delays() -> [u16; 16] {
+    [
+        19, 31, 47, 73, 103, 139, 179, 223, 29, 53, 83, 113, 151, 191, 233, 251,
+    ]
 }
+
+fn deserialize_allpass_delays<'de, D>(deserializer: D) -> Result<[u16; 16], D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let v = Vec::<u16>::deserialize(deserializer)?;
+    let mut out = default_allpass_delays();
+    if v.len() == 8 || v.len() == 16 {
+        for (i, &val) in v.iter().enumerate() {
+            out[i] = val;
+        }
+        Ok(out)
+    } else {
+        Err(serde::de::Error::custom(
+            "allpass_delays_samples must contain 8 or 16 u16 elements",
+        ))
+    }
+}
+
 const fn default_dc_pole() -> f32 {
     0.995
 }
@@ -572,7 +610,7 @@ const fn default_loop_ceiling() -> f32 {
 /// Core 2 Diffusive Modulated Unitary FDN configuration (`core2_mufdn`).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Core2Config {
-    /// Whether Core 2 is active (`CORE2_ACTIVE` bit 6).
+    /// Whether Core 2 is active (`CORE2_ACTIVE` bit 7).
     #[serde(default)]
     pub active: bool,
     /// Delay buffer storage format (`"fp16"`).
@@ -590,9 +628,12 @@ pub struct Core2Config {
     /// Raised-cosine switch crossfade window in samples (`128` at $48\text{ kHz}$).
     #[serde(default = "default_switch_xfade")]
     pub switch_xfade_samples: u16,
-    /// Coprime Schroeder all-pass delay lengths in samples (`[19, 31, 47, 73, 103, 139, 179, 223]`).
-    #[serde(default = "default_allpass_delays")]
-    pub allpass_delays_samples: [u16; 8],
+    /// Coprime Schroeder all-pass delay lengths in samples (`16` lines across `Lite`/`Full`/`Pro`/`Ultra`).
+    #[serde(
+        default = "default_allpass_delays",
+        deserialize_with = "deserialize_allpass_delays"
+    )]
+    pub allpass_delays_samples: [u16; 16],
     /// In-loop $5\text{ Hz}$ DC blocker pole (`0.995` at $48\text{ kHz}$).
     #[serde(default = "default_dc_pole")]
     pub dc_blocker_pole: f32,
@@ -757,7 +798,7 @@ impl DnamJsonHeader {
                     arena_end_byte_offset: 22_336,
                     prefix_crc32c: 0,
                 },
-                ultra: TierProfile {
+                pro: TierProfile {
                     channels: 12,
                     fdn_lines: if core2_active { 8 } else { 0 },
                     early_taps: 8,
@@ -766,6 +807,17 @@ impl DnamJsonHeader {
                     output_trim_db: 0.0,
                     validation_esr_db: -48.0,
                     arena_end_byte_offset: 36_224,
+                    prefix_crc32c: 0,
+                },
+                ultra: TierProfile {
+                    channels: 16,
+                    fdn_lines: if core2_active { 16 } else { 0 },
+                    early_taps: 16,
+                    head_svd_rank: 8,
+                    loudness_lufs: -20.5,
+                    output_trim_db: 0.0,
+                    validation_esr_db: -52.0,
+                    arena_end_byte_offset: 64_000,
                     prefix_crc32c: 0,
                 },
             },

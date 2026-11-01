@@ -28,6 +28,16 @@ describe("TauriNativeAudioHost", () => {
     host.setParameter("drive", Number.NaN);
     host.setSwitchIndex("voice", 2);
     expect(host.getSwitchIndex("voice")).toBe(2);
+    expect(host.getTier()).toBe("full");
+    expect(host.getMaxSupportedTier()).toBe("ultra");
+    host.setMaxSupportedTier("pro");
+    host.setTier("ultra");
+    expect(host.getTier()).toBe("pro");
+    host.setOfflineBounce(true);
+    expect(host.getOfflineBounce()).toBe(true);
+    expect(host.getTelemetry().effectiveTier).toBe("pro");
+    host.setMaximizeTierOnBounce(false);
+    expect(host.getMaximizeTierOnBounce()).toBe(false);
     expect(seenR2.length).toBeGreaterThanOrEqual(2);
     expect(host.getTelemetry().sampleRateHz).toBe(48_000);
     unsub();

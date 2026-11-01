@@ -90,15 +90,15 @@ def test_dual_mechanism_buyer_watermarking_and_structural_hash(
     ref_container_core2: DnamContainer,
 ) -> None:
     f_master = ref_container_core2.structural_hash()
-    assert f_master.shape == (160,)
+    assert f_master.shape == (224,)
 
     secret = b"\x99" * 32
     code = provenance.generate_tardos_code(secret, model_id="darkglass_b7k", license_id="lic_001")
-    assert code.shape == (4608,)
+    assert code.shape == (7680,)
 
     wm_params = WatermarkParams(
-        kappa_48=tuple(1.0 + 0.01 * ((i % 3) - 1) for i in range(48)),
-        tardos_code_4608=tuple(float(v) for v in code),
+        kappa_64=tuple(1.0 + 0.01 * ((i % 3) - 1) for i in range(64)),
+        tardos_code_7680=tuple(float(v) for v in code),
         tardos_epsilon=1e-4,
     )
     watermarked = ref_container_core2.with_watermark(wm_params)
@@ -108,27 +108,34 @@ def test_dual_mechanism_buyer_watermarking_and_structural_hash(
     sim = provenance.structural_cosine_similarity(f_master, f_buyer)
     assert sim > 0.9999
 
+    # Prefix-composable structural hash & Tardos scoring on stripped containers
+    for tier_idx, expected_dim in [(0, 56), (1, 112), (2, 168)]:
+        stripped_wm = watermarked.strip_to_tier(tier_idx)
+        f_stripped = stripped_wm.structural_hash()
+        assert f_stripped.shape == (expected_dim,)
+        assert provenance.structural_cosine_similarity(f_master, f_stripped) > 0.9999
+
     # Tardos matched-filter Z-score must strongly identify the buyer
     z_score = provenance.score_tardos_watermark(
         bytes(ref_container_core2.arena),
         bytes(watermarked.arena),
-        code_4608=code,
+        code_7680=code,
     )
     assert z_score > 60.0
 
-    # Mechanism A only (tardos_code_4608=None)
+    # Mechanism A only (tardos_code_7680=None)
     wm_mech_a_only = WatermarkParams(
-        kappa_48=tuple(1.0 + 0.005 * ((i % 3) - 1) for i in range(48)),
+        kappa_64=tuple(1.0 + 0.005 * ((i % 3) - 1) for i in range(64)),
     )
-    assert ref_container_core2.with_watermark(wm_mech_a_only).structural_hash().shape == (160,)
+    assert ref_container_core2.with_watermark(wm_mech_a_only).structural_hash().shape == (224,)
 
     # Standalone Mechanism A and Mechanism B functions
     arena_a = provenance.apply_isometric_gauge_watermark(
         bytes(ref_container_core2.arena),
-        kappa_48=[1.0 + 0.005 * ((i % 3) - 1) for i in range(48)],
+        kappa_64=[1.0 + 0.005 * ((i % 3) - 1) for i in range(64)],
         q_buyer_4x4=np.eye(4, dtype=np.float32),
     )
-    arena_ab = provenance.apply_tardos_watermark(arena_a, code_4608=code, epsilon=1e-4)
+    arena_ab = provenance.apply_tardos_watermark(arena_a, code_7680=code, epsilon=1e-4)
     assert len(arena_ab) == len(ref_container_core2.arena)
 
     with pytest.raises(DnamValidationError):

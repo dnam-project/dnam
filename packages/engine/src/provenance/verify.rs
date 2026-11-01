@@ -81,7 +81,7 @@ pub fn project_immutable_header_for_schema_version(
             .get_mut("slimmable_tiers")
             .and_then(|t| t.as_object_mut())
         {
-            for tier_key in ["lite", "full", "ultra"] {
+            for tier_key in ["lite", "full", "pro", "ultra"] {
                 if let Some(t_obj) = tiers.get_mut(tier_key).and_then(|t| t.as_object_mut()) {
                     t_obj.remove("prefix_crc32c");
                 }
@@ -226,12 +226,38 @@ pub fn verify_container_provenance<C: CryptoProvider>(
     let creator_msg = build_creator_signing_message(&expected_header_sha, &master_arena_sha);
     crypto.ed25519_verify(&creator_pubkey, &creator_msg, &creator_sig)?;
 
-    // 3. Verify either master_arena_sha256 (direct creator release) or marketplace_receipt
+    // 3. Verify either master_arena_sha256 (direct creator release) or marketplace_receipt,
+    //    supporting zero-re-signing tier-stripped prefix containers via tier_arena_sha256 / buyer_tier_arena_sha256.
+    const TIER_END_OFFSETS: [usize; 4] = [10_752, 22_336, 36_224, 64_000];
     let computed_arena_sha = sha256_digest(plaintext_arena);
+    let prefix_tier_idx = TIER_END_OFFSETS
+        .iter()
+        .position(|&off| off == plaintext_arena.len());
 
     if let Some(ref receipt) = sigs.marketplace_receipt {
         let buyer_arena_sha = decode_hex_array::<32>(&receipt.buyer_arena_sha256)?;
-        if computed_arena_sha != buyer_arena_sha {
+        let mut sha_matched = computed_arena_sha == buyer_arena_sha;
+        if let (Some(t_idx), Some(tier_shas)) =
+            (prefix_tier_idx, receipt.buyer_tier_arena_sha256.as_ref())
+        {
+            for (k, end_off) in TIER_END_OFFSETS.iter().copied().enumerate().take(t_idx + 1) {
+                let expected_tier_sha = decode_hex_array::<32>(&tier_shas[k])?;
+                let actual_tier_sha = if end_off == plaintext_arena.len() {
+                    computed_arena_sha
+                } else {
+                    sha256_digest(&plaintext_arena[..end_off])
+                };
+                if actual_tier_sha != expected_tier_sha {
+                    return Err(DnamError::CryptoVerificationFailed(
+                        "buyer_tier_arena_sha256 mismatch against plaintext tensor arena prefix",
+                    ));
+                }
+            }
+            if t_idx < 3 {
+                sha_matched = true;
+            }
+        }
+        if !sha_matched {
             return Err(DnamError::CryptoVerificationFailed(
                 "buyer_arena_sha256 mismatch against plaintext tensor arena",
             ));
@@ -264,7 +290,26 @@ pub fn verify_container_provenance<C: CryptoProvider>(
             license_tier: receipt.license_tier.clone(),
         })
     } else {
-        if computed_arena_sha != master_arena_sha {
+        let mut sha_matched = computed_arena_sha == master_arena_sha;
+        if let (Some(t_idx), Some(tier_shas)) = (prefix_tier_idx, sigs.tier_arena_sha256.as_ref()) {
+            for (k, end_off) in TIER_END_OFFSETS.iter().copied().enumerate().take(t_idx + 1) {
+                let expected_tier_sha = decode_hex_array::<32>(&tier_shas[k])?;
+                let actual_tier_sha = if end_off == plaintext_arena.len() {
+                    computed_arena_sha
+                } else {
+                    sha256_digest(&plaintext_arena[..end_off])
+                };
+                if actual_tier_sha != expected_tier_sha {
+                    return Err(DnamError::CryptoVerificationFailed(
+                        "tier_arena_sha256 mismatch against plaintext tensor arena prefix",
+                    ));
+                }
+            }
+            if t_idx < 3 {
+                sha_matched = true;
+            }
+        }
+        if !sha_matched {
             return Err(DnamError::CryptoVerificationFailed(
                 "master_arena_sha256 mismatch against plaintext tensor arena",
             ));
@@ -633,11 +678,13 @@ pub fn seal_dnam_container(
     //    Pass A: Encrypt Arena 0..2 with domain-separated inner arena key (cek_inner, nonce_inner)
     //    Pass B: Encrypt entire inner .dnam container (preamble + JSON + Arena 0..2) with (cek_32, chacha20_nonce_96)
     let mut encrypted_payload = inner_dnam_bytes.to_vec();
-    let ultra_end = (inner_preamble.arena_offset_ultra_end as usize).min(arena_len);
+    let highest_end = inner_preamble
+        .arena_end_for_tier(inner_preamble.highest_tier())
+        .min(arena_len);
     let (cek_inner, nonce_inner) =
         derive_nested_inner_arena_key_and_nonce(cek_32, chacha20_nonce_96);
     chacha20_xor_arena_blocks(
-        &mut encrypted_payload[arena_off..arena_off + ultra_end],
+        &mut encrypted_payload[arena_off..arena_off + highest_end],
         &cek_inner,
         &nonce_inner,
         0,
@@ -775,12 +822,14 @@ pub fn unseal_dnam_container<C: CryptoProvider>(
         let inner_preamble = DnamPreamble::from_bytes(&plain_dnam)?;
         let arena_off = inner_preamble.tensor_arena_offset as usize;
         let arena_len = inner_preamble.tensor_arena_byte_len as usize;
-        let ultra_end = (inner_preamble.arena_offset_ultra_end as usize).min(arena_len);
-        if plain_dnam.len() >= arena_off + ultra_end {
+        let highest_end = inner_preamble
+            .arena_end_for_tier(inner_preamble.highest_tier())
+            .min(arena_len);
+        if plain_dnam.len() >= arena_off + highest_end {
             let (cek_inner, nonce_inner) =
                 derive_nested_inner_arena_key_and_nonce(&cek_outer, &preamble.chacha20_nonce_96);
             chacha20_xor_arena_blocks(
-                &mut plain_dnam[arena_off..arena_off + ultra_end],
+                &mut plain_dnam[arena_off..arena_off + highest_end],
                 &cek_inner,
                 &nonce_inner,
                 0,
@@ -864,6 +913,7 @@ mod tests {
             h1.metadata.signatures = Some(ModelSignatures {
                 immutable_header_sha256: encode_hex(&imm_sha),
                 master_arena_sha256: encode_hex(&arena_sha),
+                tier_arena_sha256: None,
                 creator_signature: CreatorSignature {
                     signer_id: String::from("creator-1"),
                     pubkey_ed25519: encode_hex(&pk),

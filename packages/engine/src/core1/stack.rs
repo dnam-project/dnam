@@ -15,12 +15,12 @@ use super::{
 #[repr(C, align(64))]
 #[derive(Clone, Debug)]
 pub struct Core1Stack<B: MathBackend> {
-    /// Stereo-to-12ch input projection (`3 tier groups × 4 in × 4 out`).
-    pub input_proj: [[[f32; 4]; 4]; 3],
-    /// Base + 4 SVD mode biases for the stereo output head (`[5 modes][2 stereo ch]`).
-    pub b_head_modes: [[f32; 2]; 5],
-    /// Pre-computed linear loudness trims `10^(output_trim_db / 20)` for `[Lite, Full, Ultra]`.
-    pub tier_gain_trim_lin: [f32; 3],
+    /// Stereo-to-16ch input projection (`4 tier groups × 4 in × 4 out`).
+    pub input_proj: [[[f32; 4]; 4]; 4],
+    /// Base + 8 SVD mode biases for the stereo output head (`[9 modes][2 stereo ch]`).
+    pub b_head_modes: [[f32; 2]; 9],
+    /// Pre-computed linear loudness trims `10^(output_trim_db / 20)` for `[Lite, Full, Pro, Ultra]`.
+    pub tier_gain_trim_lin: [f32; 4],
     /// Dry bypass mix gain.
     pub mix_dry_gain: f32,
     /// Wet Core 1/2 mix gain.
@@ -34,39 +34,39 @@ pub struct Core1Stack<B: MathBackend> {
     pub adaa_weights: [PolyAdaaLayerWeights; CORE1_NUM_CONV_LAYERS],
     /// Unpacked ZOH-rescaled `SelectiveRgLru` weights for all 4 blocks.
     pub rglru_weights: [RgLruLayerWeights; CORE1_NUM_BLOCKS],
-    /// Pre-computed static peak pole radius per tier (`[Lite, Full, Ultra]`).
-    pub static_max_pole_radius: [f32; 3],
+    /// Pre-computed static peak pole radius per tier (`[Lite, Full, Pro, Ultra]`).
+    pub static_max_pole_radius: [f32; 4],
 
-    /// Collapsed stereo output head weights $\mathbf{W}_{\text{head}}(\mathbf{z})$ (`[2 stereo ch][3 tier groups][16 taps × 4 ch = 64]`).
-    pub collapsed_head_w: [[[f32; 64]; 3]; 2],
+    /// Collapsed stereo output head weights $\mathbf{W}_{\text{head}}(\mathbf{z})$ (`[2 stereo ch][4 tier groups][16 taps × 4 ch = 64]`).
+    pub collapsed_head_w: [[[f32; 64]; 4]; 2],
     /// Collapsed stereo output head bias $\mathbf{b}_{\text{head}}(\mathbf{z})$ (`[L, R]`).
     pub collapsed_head_b: [f32; 2],
 
     // ---- Real-Time State Buffers (Zero Allocation at 48 kHz) ----
-    /// Causal dilated convolution ring buffers (`[8 layers][128 history][3 tier groups][4 ch]`).
-    pub conv_hist: [[[[f32; 4]; 3]; CORE1_CONV_HIST_LEN]; CORE1_NUM_CONV_LAYERS],
+    /// Causal dilated convolution ring buffers (`[8 layers][128 history][4 tier groups][4 ch]`).
+    pub conv_hist: [[[[f32; 4]; 4]; CORE1_CONV_HIST_LEN]; CORE1_NUM_CONV_LAYERS],
     /// Write cursor into `conv_hist` (`0..127`).
     pub conv_write_pos: usize,
 
     /// 3-State `PolyADAA` memory: previous scaled input $u_c[n-1]$.
-    pub adaa_u_prev: [[[f32; 4]; 3]; CORE1_NUM_CONV_LAYERS],
+    pub adaa_u_prev: [[[f32; 4]; 4]; CORE1_NUM_CONV_LAYERS],
     /// 3-State `PolyADAA` memory: previous algebraic segment average $\mathcal{A}_c[n-1]$.
-    pub adaa_a_prev: [[[f32; 4]; 3]; CORE1_NUM_CONV_LAYERS],
+    pub adaa_a_prev: [[[f32; 4]; 4]; CORE1_NUM_CONV_LAYERS],
     /// 3-State `PolyADAA` memory: $5\text{ Hz}$ AC-coupling running mean $m_{\text{dc},c}[n-1]$.
-    pub adaa_m_dc: [[[f32; 4]; 3]; CORE1_NUM_CONV_LAYERS],
+    pub adaa_m_dc: [[[f32; 4]; 4]; CORE1_NUM_CONV_LAYERS],
 
     /// Complex `SelectiveRgLru` state $\operatorname{Re}(z_{b,c}[n-1])$.
-    pub rglru_z_re: [[[f32; 4]; 3]; CORE1_NUM_BLOCKS],
+    pub rglru_z_re: [[[f32; 4]; 4]; CORE1_NUM_BLOCKS],
     /// Complex `SelectiveRgLru` state $\operatorname{Im}(z_{b,c}[n-1])$.
-    pub rglru_z_im: [[[f32; 4]; 3]; CORE1_NUM_BLOCKS],
+    pub rglru_z_im: [[[f32; 4]; 4]; CORE1_NUM_BLOCKS],
 
-    /// 16-tap output head feature ring buffer (`[3 tier groups][16 taps × 4 ch = 64]`).
-    pub head_tap_hist: [[f32; 64]; 3],
-    /// Write cursor into `head_tap_hist` (`0..15`).
+    /// 16-tap output head feature ring buffer (`[4 tier groups][16 taps × 4 ch = 64]`).
+    pub head_tap_hist: [[f32; 64]; 4],
+    /// Write cursor into `head_write_pos` (`0..15`).
     pub head_write_pos: usize,
 
-    /// Latest 4-channel Core 1 tap output (`ch 0..3` and `ch 4..7`) fed into Core 2 `M-UFDN`.
-    pub latest_core1_tap: [[f32; 4]; 2],
+    /// Latest 4-group Core 1 tap output (`ch 0..15`) fed into Core 2 `M-UFDN`.
+    pub latest_core1_tap: [[f32; 4]; 4],
     /// SIMD 4-lane accumulator for peak `PolyADAA` drive $|u_c|$ in the current block.
     pub max_adaa_drive_vec: [f32; 4],
     /// Peak absolute `PolyADAA` drive $|u_c|$ observed in the current block (for 60 fps telemetry).
@@ -81,28 +81,28 @@ impl<B: MathBackend> Core1Stack<B> {
     /// Creates a new zero-initialized [`Core1Stack`].
     pub fn new() -> Self {
         Self {
-            input_proj: [[[0.0; 4]; 4]; 3],
-            b_head_modes: [[0.0; 2]; 5],
-            tier_gain_trim_lin: [1.0, 1.0, 1.0],
+            input_proj: [[[0.0; 4]; 4]; 4],
+            b_head_modes: [[0.0; 2]; 9],
+            tier_gain_trim_lin: [1.0, 1.0, 1.0, 1.0],
             mix_dry_gain: 0.0,
             mix_wet_gain: 1.0,
             r_ac_train: 0.9993,
             r_ac_host: 0.9993,
             adaa_weights: [PolyAdaaLayerWeights::default(); CORE1_NUM_CONV_LAYERS],
             rglru_weights: [RgLruLayerWeights::default(); CORE1_NUM_BLOCKS],
-            static_max_pole_radius: [0.0; 3],
-            collapsed_head_w: [[[0.0; 64]; 3]; 2],
+            static_max_pole_radius: [0.0; 4],
+            collapsed_head_w: [[[0.0; 64]; 4]; 2],
             collapsed_head_b: [0.0; 2],
-            conv_hist: [[[[0.0; 4]; 3]; CORE1_CONV_HIST_LEN]; CORE1_NUM_CONV_LAYERS],
+            conv_hist: [[[[0.0; 4]; 4]; CORE1_CONV_HIST_LEN]; CORE1_NUM_CONV_LAYERS],
             conv_write_pos: 0,
-            adaa_u_prev: [[[0.0; 4]; 3]; CORE1_NUM_CONV_LAYERS],
-            adaa_a_prev: [[[0.0; 4]; 3]; CORE1_NUM_CONV_LAYERS],
-            adaa_m_dc: [[[0.0; 4]; 3]; CORE1_NUM_CONV_LAYERS],
-            rglru_z_re: [[[0.0; 4]; 3]; CORE1_NUM_BLOCKS],
-            rglru_z_im: [[[0.0; 4]; 3]; CORE1_NUM_BLOCKS],
-            head_tap_hist: [[0.0; 64]; 3],
+            adaa_u_prev: [[[0.0; 4]; 4]; CORE1_NUM_CONV_LAYERS],
+            adaa_a_prev: [[[0.0; 4]; 4]; CORE1_NUM_CONV_LAYERS],
+            adaa_m_dc: [[[0.0; 4]; 4]; CORE1_NUM_CONV_LAYERS],
+            rglru_z_re: [[[0.0; 4]; 4]; CORE1_NUM_BLOCKS],
+            rglru_z_im: [[[0.0; 4]; 4]; CORE1_NUM_BLOCKS],
+            head_tap_hist: [[0.0; 64]; 4],
             head_write_pos: 0,
-            latest_core1_tap: [[0.0; 4]; 2],
+            latest_core1_tap: [[0.0; 4]; 4],
             max_adaa_drive_vec: [0.0; 4],
             max_adaa_drive: 0.0,
             max_pole_radius: 0.0,
@@ -110,7 +110,7 @@ impl<B: MathBackend> Core1Stack<B> {
         }
     }
 
-    /// Loads `Core1Stack` parameters from `Arena 0..2`, applies ZOH sample-rate rescaling,
+    /// Loads `Core1Stack` parameters from `Arena 0..3`, applies ZOH sample-rate rescaling,
     /// collapses the default stereo output head ($\mathbf{z}_{\text{head}} = \mathbf{0}$),
     /// and initializes the 3-state `PolyADAA` DC resting equilibrium.
     pub fn load_from_arena(&mut self, arena: &[u8], zoh: &ZohRescaledParams) {
@@ -123,10 +123,12 @@ impl<B: MathBackend> Core1Stack<B> {
             self.input_proj[0][col] = read_f32x4_le(arena, col * 16);
         }
         // Arena 0 CL1 (64..128): b_head (10 floats), tier_gain_trim_lin (3 floats), [mix_dry, mix_wet, r_ac_train]
+        self.b_head_modes = [[0.0; 2]; 9];
         for mode in 0..5 {
             self.b_head_modes[mode][0] = read_f32_le(arena, 64 + (mode * 2) * 4);
             self.b_head_modes[mode][1] = read_f32_le(arena, 64 + (mode * 2 + 1) * 4);
         }
+        self.tier_gain_trim_lin = [1.0; 4];
         for t in 0..3 {
             let trim = read_f32_le(arena, 104 + t * 4);
             self.tier_gain_trim_lin[t] = if trim > 1e-4 { trim } else { 1.0 };
@@ -150,7 +152,7 @@ impl<B: MathBackend> Core1Stack<B> {
             self.r_ac_train
         };
 
-        // Arena 1 input_proj (10752..10816) and Arena 2 input_proj (22336..22400)
+        // Arena 1 input_proj (10752..10816), Arena 2 input_proj (22336..22400), Arena 3 input_proj (36224..36288)
         if arena.len() >= 22_336 {
             for col in 0..4 {
                 self.input_proj[1][col] = read_f32x4_le(arena, 10_752 + col * 16);
@@ -161,9 +163,23 @@ impl<B: MathBackend> Core1Stack<B> {
                 self.input_proj[2][col] = read_f32x4_le(arena, 22_336 + col * 16);
             }
         }
+        if arena.len() >= 64_000 {
+            for col in 0..4 {
+                self.input_proj[3][col] = read_f32x4_le(arena, 36_224 + col * 16);
+            }
+            for mode_u in 0..4 {
+                self.b_head_modes[5 + mode_u][0] = read_f32_le(arena, 63_424 + (mode_u * 2) * 4);
+                self.b_head_modes[5 + mode_u][1] =
+                    read_f32_le(arena, 63_424 + (mode_u * 2 + 1) * 4);
+            }
+            let trim_ultra = read_f32_le(arena, 63_456);
+            self.tier_gain_trim_lin[3] = if trim_ultra > 1e-4 { trim_ultra } else { 1.0 };
+        }
 
-        // 2. Unpack PolyADAA & SelectiveRgLru SoA blocks across tiers 0, 1, 2
-        let max_tiers = if arena.len() >= 36_224 {
+        // 2. Unpack PolyADAA & SelectiveRgLru SoA blocks across tiers 0, 1, 2, 3
+        let max_tiers = if arena.len() >= 64_000 {
+            4
+        } else if arena.len() >= 36_224 {
             3
         } else if arena.len() >= 22_336 {
             2
@@ -171,14 +187,15 @@ impl<B: MathBackend> Core1Stack<B> {
             1
         };
 
-        self.static_max_pole_radius = [0.0; 3];
+        self.static_max_pole_radius = [0.0; 4];
 
         for tier in 0..max_tiers {
             for blk in 0..CORE1_NUM_BLOCKS {
                 let (blk_base, adaa0_off, adaa1_off, rglru_off) = match tier {
                     0 => (128 + blk * 1024, 384, 832, 896),
                     1 => (10_816 + blk * 1792, 768, 1600, 1664),
-                    _ => (22_400 + blk * 2560, 1152, 2368, 2432),
+                    2 => (22_400 + blk * 2560, 1152, 2368, 2432),
+                    _ => (36_288 + blk * 3328, 1536, 3136, 3200),
                 };
 
                 for (sub_layer, adaa_rel) in [(0, adaa0_off), (1, adaa1_off)] {
@@ -232,7 +249,7 @@ impl<B: MathBackend> Core1Stack<B> {
                     rg.u_rot_sin[tier][lane] = s_rot;
 
                     let r_max = r_low_h + dr_h;
-                    for t_idx in tier..3 {
+                    for t_idx in tier..4 {
                         if r_max > self.static_max_pole_radius[t_idx] {
                             self.static_max_pole_radius[t_idx] = r_max;
                         }
@@ -251,20 +268,20 @@ impl<B: MathBackend> Core1Stack<B> {
     /// $$u_{\text{rest},c} = \operatorname{clamp}(\tfrac{2}{3} b_{\text{conv},c}, -1, 1), \quad u_c[-1] = u_{\text{rest},c}, \quad \mathcal{A}_c[-1] = m_{\text{dc},c}[-1] = g_{\text{nl},c}(u_{\text{rest},c})$$
     /// guaranteeing **exact `0.000000` Sample-0 and Sample-1 transient on silence**.
     pub fn reset_to_dc_equilibrium(&mut self) {
-        self.conv_hist = [[[[0.0; 4]; 3]; CORE1_CONV_HIST_LEN]; CORE1_NUM_CONV_LAYERS];
+        self.conv_hist = [[[[0.0; 4]; 4]; CORE1_CONV_HIST_LEN]; CORE1_NUM_CONV_LAYERS];
         self.conv_write_pos = 0;
-        self.rglru_z_re = [[[0.0; 4]; 3]; CORE1_NUM_BLOCKS];
-        self.rglru_z_im = [[[0.0; 4]; 3]; CORE1_NUM_BLOCKS];
-        self.head_tap_hist = [[0.0; 64]; 3];
+        self.rglru_z_re = [[[0.0; 4]; 4]; CORE1_NUM_BLOCKS];
+        self.rglru_z_im = [[[0.0; 4]; 4]; CORE1_NUM_BLOCKS];
+        self.head_tap_hist = [[0.0; 64]; 4];
         self.head_write_pos = 0;
-        self.latest_core1_tap = [[0.0; 4]; 2];
+        self.latest_core1_tap = [[0.0; 4]; 4];
         self.max_adaa_drive_vec = [0.0; 4];
         self.max_adaa_drive = 0.0;
         self.max_pole_radius = 0.0;
 
         for layer in 0..CORE1_NUM_CONV_LAYERS {
             let w = &self.adaa_weights[layer];
-            for tier in 0..3 {
+            for tier in 0..4 {
                 for lane in 0..4 {
                     let b_conv = w.b_conv[tier][lane];
                     let beta = w.beta[tier][lane];
@@ -289,15 +306,34 @@ impl<B: MathBackend> Core1Stack<B> {
         z_head: &[f32; 4],
         active_tier_groups: usize,
     ) {
+        self.collapse_stereo_head_3khz_with_ultra(arena, z_head, &[0.0; 4], active_tier_groups);
+    }
+
+    /// Collapses the 16-tap SVD stereo output head including `Tier::Ultra` Nested SVD Prefix modes `5..8`
+    /// ($\mathbf{z}_{\text{head,ultra}} \in \mathbb{R}^4$).
+    #[inline]
+    pub fn collapse_stereo_head_3khz_with_ultra(
+        &mut self,
+        arena: &[u8],
+        z_head: &[f32; 4],
+        z_head_ultra: &[f32; 4],
+        active_tier_groups: usize,
+    ) {
         let mut b_l = self.b_head_modes[0][0];
         let mut b_r = self.b_head_modes[0][1];
         for k in 0..4 {
             b_l += z_head[k] * self.b_head_modes[k + 1][0];
             b_r += z_head[k] * self.b_head_modes[k + 1][1];
         }
+        if active_tier_groups >= 4 {
+            for k in 0..4 {
+                b_l += z_head_ultra[k] * self.b_head_modes[5 + k][0];
+                b_r += z_head_ultra[k] * self.b_head_modes[5 + k][1];
+            }
+        }
         self.collapsed_head_b = [b_l, b_r];
 
-        let head_tile_bases = [66_usize, 281_usize, 510_usize];
+        let head_tile_bases = [66_usize, 281_usize, 510_usize, 775_usize];
         let tiles = arena_as_mat4x4_tiles(arena);
         let z_vecs = [
             B::Vec4::splat(z_head[0]),
@@ -305,13 +341,21 @@ impl<B: MathBackend> Core1Stack<B> {
             B::Vec4::splat(z_head[2]),
             B::Vec4::splat(z_head[3]),
         ];
+        let z_ultra_vecs = [
+            B::Vec4::splat(z_head_ultra[0]),
+            B::Vec4::splat(z_head_ultra[1]),
+            B::Vec4::splat(z_head_ultra[2]),
+            B::Vec4::splat(z_head_ultra[3]),
+        ];
+        let has_ultra_modes = active_tier_groups >= 4 && tiles.len() >= 975;
 
-        for tier in 0..active_tier_groups.min(3) {
+        for tier in 0..active_tier_groups.min(4) {
             let base_tile = head_tile_bases[tier];
             if tiles.len() < base_tile + 40 {
                 continue;
             }
             let head_tiles = &tiles[base_tile..base_tile + 40];
+            let ultra_mode_base = 815 + tier * 32;
             // Each mode is 8 tiles (lr=0 is 0..4, lr=1 is 4..8), each tile has 4 x [f32; 4]
             for lr in 0..2 {
                 let (out_chunks, _) = self.collapsed_head_w[lr][tier].as_chunks_mut::<4>();
@@ -327,6 +371,16 @@ impl<B: MathBackend> Core1Stack<B> {
                                 acc = acc.fma(z_vecs[k], wk);
                             }
                         }
+                        if has_ultra_modes {
+                            for k in 0..4 {
+                                if z_head_ultra[k].abs() > 1e-12 {
+                                    let wk_u = B::Vec4::load(
+                                        &tiles[ultra_mode_base + k * 8 + lr * 4 + tile_idx][row],
+                                    );
+                                    acc = acc.fma(z_ultra_vecs[k], wk_u);
+                                }
+                            }
+                        }
                         acc.store(&mut out_chunks[vec_idx]);
                     }
                 }
@@ -337,7 +391,7 @@ impl<B: MathBackend> Core1Stack<B> {
     /// Executes one $48\text{ kHz}$ sample through the 4 interleaved Core 1 blocks and collapsed
     /// 16-tap stereo/mono output head (`0 FDIV`, `0 FSQRT`, `0` heap allocations).
     ///
-    /// - `active_tier_groups`: `1` for `Lite` ($C=4$), `2` for `Full` ($C=8$), `3` for `Ultra` ($C=12$).
+    /// - `active_tier_groups`: `1` for `Lite` ($C=4$), `2` for `Full` ($C=8$), `3` for `Pro` ($C=12$), `4` for `Ultra` ($C=16$).
     /// - `mono_only`: when `true`, skips evaluating the Right output head channel (saving 50% of head MACs).
     #[inline(always)]
     pub fn process_sample(
@@ -352,7 +406,8 @@ impl<B: MathBackend> Core1Stack<B> {
         let out = match active_tier_groups {
             1 => self.process_sample_tiles::<1>(x_left, x_right, tiles, mono_only),
             2 => self.process_sample_tiles::<2>(x_left, x_right, tiles, mono_only),
-            _ => self.process_sample_tiles::<3>(x_left, x_right, tiles, mono_only),
+            3 => self.process_sample_tiles::<3>(x_left, x_right, tiles, mono_only),
+            _ => self.process_sample_tiles::<4>(x_left, x_right, tiles, mono_only),
         };
         self.finalize_block_telemetry(active_tier_groups);
         out
@@ -370,7 +425,7 @@ impl<B: MathBackend> Core1Stack<B> {
         if sample_max_drive > self.max_adaa_drive {
             self.max_adaa_drive = sample_max_drive;
         }
-        let idx = active_tier_groups.clamp(1, 3) - 1;
+        let idx = active_tier_groups.clamp(1, 4) - 1;
         let tier_r_max = self.static_max_pole_radius[idx];
         if tier_r_max > self.max_pole_radius {
             self.max_pole_radius = tier_r_max;
@@ -383,14 +438,15 @@ impl<B: MathBackend> Core1Stack<B> {
         x_left: f32,
         x_right: f32,
         tiles: &[[[f32; 4]; 4]],
-    ) -> [B::Vec4; 3] {
+    ) -> [B::Vec4; 4] {
         let min_tiles = match GROUPS {
             1 => 168,
             2 => 349,
-            _ => 566,
+            3 => 566,
+            _ => 1000,
         };
         if tiles.len() < min_tiles {
-            return [B::Vec4::zero(); 3];
+            return [B::Vec4::zero(); 4];
         }
 
         let x_mid = 0.5 * (x_left + x_right);
@@ -398,7 +454,7 @@ impl<B: MathBackend> Core1Stack<B> {
         let s_mid = B::Vec4::splat(x_mid);
         let s_side = B::Vec4::splat(x_side);
 
-        // 1. Stereo Mid/Side -> C-channel projection (kept in explicit SIMD registers h0, h1, h2)
+        // 1. Stereo Mid/Side -> C-channel projection (kept in explicit SIMD registers h0, h1, h2, h3)
         let mut h0 = B::Vec4::zero()
             .fma(s_mid, B::Vec4::load(&self.input_proj[0][0]))
             .fma(s_side, B::Vec4::load(&self.input_proj[0][1]));
@@ -413,6 +469,13 @@ impl<B: MathBackend> Core1Stack<B> {
             B::Vec4::zero()
                 .fma(s_mid, B::Vec4::load(&self.input_proj[2][0]))
                 .fma(s_side, B::Vec4::load(&self.input_proj[2][1]))
+        } else {
+            B::Vec4::zero()
+        };
+        let mut h3 = if GROUPS >= 4 {
+            B::Vec4::zero()
+                .fma(s_mid, B::Vec4::load(&self.input_proj[3][0]))
+                .fma(s_side, B::Vec4::load(&self.input_proj[3][1]))
         } else {
             B::Vec4::zero()
         };
@@ -440,9 +503,12 @@ impl<B: MathBackend> Core1Stack<B> {
                 if GROUPS >= 3 {
                     h2.store(&mut self.conv_hist[layer_idx][w_pos][2]);
                 }
+                if GROUPS >= 4 {
+                    h3.store(&mut self.conv_hist[layer_idx][w_pos][3]);
+                }
 
                 let h_layer = &self.conv_hist[layer_idx];
-                let h_taps: [&[[f32; 4]; 3]; CORE1_CONV_KERNEL] = [
+                let h_taps: [&[[f32; 4]; 4]; CORE1_CONV_KERNEL] = [
                     &h_layer[w_pos],
                     &h_layer[idx1],
                     &h_layer[idx2],
@@ -494,7 +560,7 @@ impl<B: MathBackend> Core1Stack<B> {
                     h1 = h1.add(y_dc1);
                 }
 
-                // Tier 2 (Ultra Delta, 4x12)
+                // Tier 2 (Pro Delta, 4x12)
                 if GROUPS >= 3 {
                     let tile_base2 = 350 + blk * 40 + sub * 19;
                     let w_tiles2: &[[[f32; 4]; 4]; 18] =
@@ -514,6 +580,28 @@ impl<B: MathBackend> Core1Stack<B> {
                     );
                     max_drive_v = max_drive_v.max(u_abs2);
                     h2 = h2.add(y_dc2);
+                }
+
+                // Tier 3 (Ultra Delta, 4x16)
+                if GROUPS >= 4 {
+                    let tile_base3 = 567 + blk * 52 + sub * 25;
+                    let w_tiles3: &[[[f32; 4]; 4]; 24] =
+                        (&tiles[tile_base3..tile_base3 + 24]).try_into().unwrap();
+                    let conv3 =
+                        B::conv6_taps_4groups(B::Vec4::load(&adaa_w.b_conv[3]), w_tiles3, &h_taps);
+                    let (y_dc3, u_abs3) = B::poly_adaa_step_vec4(
+                        conv3,
+                        &adaa_w.b_conv[3],
+                        &adaa_w.alpha[3],
+                        &adaa_w.beta[3],
+                        &adaa_w.delta[3],
+                        r_ac,
+                        &mut self.adaa_u_prev[layer_idx][3],
+                        &mut self.adaa_a_prev[layer_idx][3],
+                        &mut self.adaa_m_dc[layer_idx][3],
+                    );
+                    max_drive_v = max_drive_v.max(u_abs3);
+                    h3 = h3.add(y_dc3);
                 }
             }
 
@@ -567,30 +655,57 @@ impl<B: MathBackend> Core1Stack<B> {
                 );
                 h2 = h2.add(y_rg2);
             }
+
+            if GROUPS >= 4 {
+                let y_rg3 = B::selective_rglru_step_vec4(
+                    h3,
+                    &rg_w.r_low[3],
+                    &rg_w.dr_span[3],
+                    &rg_w.w_sel[3],
+                    &rg_w.b_gamma_norm[3],
+                    &rg_w.c_real[3],
+                    &rg_w.c_imag[3],
+                    &rg_w.u_rot_cos[3],
+                    &rg_w.u_rot_sin[3],
+                    &mut self.rglru_z_re[blk][3],
+                    &mut self.rglru_z_im[blk][3],
+                );
+                h3 = h3.add(y_rg3);
+            }
         }
 
         max_drive_v.store(&mut self.max_adaa_drive_vec);
         self.conv_write_pos = (w_pos + 1) & CORE1_CONV_HIST_MASK;
 
-        // Save latest 4-channel / 8-channel Core 1 tap for Core 2 M-UFDN
+        // Save latest 4/8/16-channel Core 1 tap for Core 2 M-UFDN
         h0.store(&mut self.latest_core1_tap[0]);
         if GROUPS >= 2 {
             h1.store(&mut self.latest_core1_tap[1]);
         } else {
             self.latest_core1_tap[1] = self.latest_core1_tap[0];
         }
+        if GROUPS >= 3 {
+            h2.store(&mut self.latest_core1_tap[2]);
+        } else {
+            self.latest_core1_tap[2] = self.latest_core1_tap[0];
+        }
+        if GROUPS >= 4 {
+            h3.store(&mut self.latest_core1_tap[3]);
+        } else {
+            self.latest_core1_tap[3] = self.latest_core1_tap[1];
+        }
 
-        [h0, h1, h2]
+        [h0, h1, h2, h3]
     }
 
-    /// Injects optional 12-channel Core 2 pre-head taps across `Lite` (`h0`), `Full` (`h1`),
-    /// and `Ultra` (`h2`), writes the 16-tap unfolded output head ring buffer, and evaluates
-    /// the collapsed stereo/mono Kronecker output head.
+    /// Injects optional 16-channel Core 2 pre-head taps across `Lite` (`h0`), `Full` (`h1`),
+    /// `Pro` (`h2`), and `Ultra` (`h3`), writes the 16-tap unfolded output head ring buffer,
+    /// and evaluates the collapsed stereo/mono Kronecker output head.
     #[inline(always)]
     pub(crate) fn process_head_from_taps<const GROUPS: usize>(
         &mut self,
-        mut h_vecs: [B::Vec4; 3],
-        core2_tap: Option<(&[[f32; 4]; 3], f32)>,
+        mut h_vecs: [B::Vec4; 4],
+        core2_tap: Option<(&[[f32; 4]; 4], f32)>,
         mono_only: bool,
     ) -> [f32; 2] {
         if let Some((ap_out, inject_gain)) = core2_tap
@@ -603,6 +718,9 @@ impl<B: MathBackend> Core1Stack<B> {
             }
             if GROUPS >= 3 {
                 h_vecs[2] = h_vecs[2].fma(g_vec, B::Vec4::load(&ap_out[2]));
+            }
+            if GROUPS >= 4 {
+                h_vecs[3] = h_vecs[3].fma(g_vec, B::Vec4::load(&ap_out[3]));
             }
         }
 
@@ -620,6 +738,10 @@ impl<B: MathBackend> Core1Stack<B> {
             let (chunks2, _) = self.head_tap_hist[2].as_chunks_mut::<4>();
             h_vecs[2].store(&mut chunks2[h_pos]);
         }
+        if GROUPS >= 4 {
+            let (chunks3, _) = self.head_tap_hist[3].as_chunks_mut::<4>();
+            h_vecs[3].store(&mut chunks3[h_pos]);
+        }
         self.head_write_pos = (h_pos + 1) & CORE1_HEAD_TAP_MASK;
 
         // 5. Evaluate collapsed 16-tap stereo/mono output head
@@ -634,6 +756,10 @@ impl<B: MathBackend> Core1Stack<B> {
             if GROUPS >= 3 {
                 out_l +=
                     B::dot_product_16taps_4ch(&self.head_tap_hist[2], &self.collapsed_head_w[0][2]);
+            }
+            if GROUPS >= 4 {
+                out_l +=
+                    B::dot_product_16taps_4ch(&self.head_tap_hist[3], &self.collapsed_head_w[0][3]);
             }
             [out_l, out_l]
         } else {
@@ -662,6 +788,15 @@ impl<B: MathBackend> Core1Stack<B> {
                 );
                 out_l += dl2;
                 out_r += dr2;
+            }
+            if GROUPS >= 4 {
+                let [dl3, dr3] = B::dot_product_16taps_4ch_stereo(
+                    &self.head_tap_hist[3],
+                    &self.collapsed_head_w[0][3],
+                    &self.collapsed_head_w[1][3],
+                );
+                out_l += dl3;
+                out_r += dr3;
             }
             [out_l, out_r]
         }

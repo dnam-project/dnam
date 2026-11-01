@@ -76,6 +76,7 @@ class TrainingStepEvent(StrictModel):
     total_epochs: int = Field(ge=1)
     esr_lite_db: float
     esr_full_db: float
+    esr_pro_db: float = 0.0
     esr_ultra_db: float
     esr_lf_db: float | None = None
     esr_mid_db: float | None = None
@@ -102,6 +103,7 @@ class TrainingCompleteEvent(StrictModel):
     model_id: str
     esr_lite_db: float
     esr_full_db: float
+    esr_pro_db: float = 0.0
     esr_ultra_db: float
     esr_lf_db: float | None = None
     esr_mid_db: float | None = None

@@ -42,10 +42,10 @@ $$\tilde{\boldsymbol{\psi}}_p(u_p) = \Big[\underbrace{u_p - u_{p,1}}_{k=1}, \und
 - **Special Case (Standard Noon + Endpoints $\lbrace 0, -1, +1 \rbrace$):** When $u_{p,1} = 0, u_{p,2} = -1, u_{p,3} = +1$, this reduces to the **Noon-Anchored Lobatto Basis** $[u_p, u_p(u_p + 1), u_p(u_p^2 - 1)]^\top$ (or centered $[u_p, u_p^2, u_p(u_p^2 - 1)]^\top$).
 - **Zero Old-Stem Perturbation on Iterative Stem Addition (`Test 8G`):** Because the $k$-th Newton basis term $\psi_{p,k}(u_p) = \prod_{j=1}^k (u_p - u_{p,j})$ vanishes identically (`== 0.0`) at **all $k$ previously recorded stem coordinates** $\lbrace u_{p,1}, \dots, u_{p,k} \rbrace$, unlocking $\psi_{p,k}$ when a new stem $u_{p,k+1}$ is added fits the new stem with **exact $0.00 \times 10^0$ perturbation ($< 10^{-15}$)** to previously converged stems!
 
-### 2.4 Centered ANOVA / HDMR + Rank-4 Factorization Machine (`FM`) Hyper-Bus
+### 2.4 Centered ANOVA / HDMR + Rank-4 / Rank-8 Factorization Machine (`FM`) Hyper-Bus
 To combine 1st-order `range` main effects, discrete `switch` embeddings $\mathbf{E}_q[s_q]$, and pairwise knob-knob / knob-switch interactions (e.g., `Gain` $\times$ `Boost`, `Feedback` $\times$ `Mode`, or Fender TMB tone-stack interdependence) in linear $O(P \cdot R)$ time with **zero unrecorded corner hallucination**:
 $$\Delta\boldsymbol{\theta}(\mathbf{u}, \mathbf{s}) = \sum_{p=1}^{P_{\text{range}}} \mathbf{G}_p \odot \big(\mathbf{A}_p \tilde{\boldsymbol{\psi}}_p(u_p)\big) + \sum_{q=1}^{P_{\text{switch}}} \mathbf{E}_q[s_q] + \mathbf{U}_{\text{int}} \cdot \frac{1}{2}\left[\left(\sum_{i=1}^{P} \mathbf{v}_i z_i\right)^{\odot 2} - \sum_{i=1}^{P} \mathbf{v}_i^{\odot 2} z_i^2\right]$$
-where $z_i$ is the primary coordinate of control $i$ ($u_p - u_{p,1}$ for ranges, or indicator for switches) and $\mathbf{v}_i \in \mathbb{R}^R$ ($R = 4$) are low-rank interaction factors penalized by $L_2$ regularization so pairwise cross-terms remain zero unless supported by multi-knob stems.
+where $z_i$ is the primary coordinate of control $i$ ($u_p - u_{p,1}$ for ranges, or indicator for switches) and $\mathbf{v}_i \in \mathbb{R}^R$ ($R = 4$ for `Lite`/`Full`/`Pro`, extended by $+4$ factors to $R = 8$ in `Ultra`) are low-rank interaction factors penalized by $L_2$ regularization so pairwise cross-terms remain zero unless supported by multi-knob stems.
 
 ### 2.5 Step-0 Order-Statistic Optimal Transport & Physical Variance Gating (`CL-14`)
 1. **Step-0 Order-Statistic Optimal Transport (Preventing Permutation & Double-Echo Artifacts):**
@@ -53,8 +53,8 @@ where $z_i$ is the primary coordinate of control $i$ ($u_p - u_{p,1}$ for ranges
 2. **Step-0 Physical Variance Gating ($\mathbf{G}_p \in \lbrace 0, 1 \rbrace^{\dim(\boldsymbol{\theta})}$, `CL-14`):**
    If varying knob $p$ across the training stems produces $< 0.2\text{ samples}$ of variance in delay time $\tau_{0,m}$ or LFO frequency $f_{\text{lfo},j}$ (sensitivity below $\tau_{\text{var}} = 0.5$, e.g., a `Drive` or `Treble` knob), the binary gate $\mathbf{G}_p$ hard-locks the $u_p \to \tau_{0,m}$ and $u_p \to f_{\text{lfo},j}$ projection weights to exact `0.0` (`Test 8B`), guaranteeing that turning `Drive` can never cause parasitic delay pitch shifts.
 
-### 2.6 Zero-MAC Runtime Caching at $48\text{ kHz}$
-When user controls are static ($\mathbf{u}[k] == \mathbf{u}[k-1]$ and $\mathbf{s}[k] == \mathbf{s}[k-1]$), a dirty-bit check at $3\text{ kHz}$ skips the entire parametric polynomial evaluation and keeps the collapsed $2 \times 16C$ stereo output head $\mathbf{W}_{\text{head}}(\mathbf{u}, \mathbf{s}) = \mathbf{W}_{\text{head},0} + \sum_{k=1}^{D_h} z_{\text{head},k}(\mathbf{u}, \mathbf{s}) \mathbf{W}_{\text{head},k}$ cached in L1 memory—costing **$0\text{ extra MACs/sample}$ at $48\text{ kHz}$**!
+### 2.6 Zero-MAC Runtime Caching at $48\text{ kHz}$ (`D_h = 4` `Lite`/`Full`/`Pro`, Nested `D_h = 8` `Ultra`)
+When user controls are static ($\mathbf{u}[k] == \mathbf{u}[k-1]$ and $\mathbf{s}[k] == \mathbf{s}[k-1]$), a dirty-bit check at $3\text{ kHz}$ skips the entire parametric polynomial evaluation and keeps the collapsed $2 \times 16C$ stereo output head $\mathbf{W}_{\text{head}}(\mathbf{u}, \mathbf{s}) = \mathbf{W}_{\text{head},0} + \sum_{k=1}^{D_h} z_{\text{head},k}(\mathbf{u}, \mathbf{s}) \mathbf{W}_{\text{head},k}$ ($D_h = 4$ for `Lite`/`Full`/`Pro`, nested $D_h = 8$ for `Ultra`) cached in L1 memory—costing **$0\text{ extra MACs/sample}$ at $48\text{ kHz}$**!
 
 ### 2.7 Multi-Range Conditional Tempo Sync & Stereo Mode Calibration (`controls_schema[*].calibration`)
 1. **12 Canonical Tempo Subdivisions (`1/2.` to `1/16T`):**

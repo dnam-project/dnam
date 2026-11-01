@@ -48,10 +48,16 @@ class RichTrainingObserver:
                     f" | Bands(LF/MF/HF)={event.esr_lf_db:+.2f}/"
                     f"{event.esr_mid_db:+.2f}/{event.esr_hf_db:+.2f} dB"
                 )
+            pro_val = (
+                event.esr_pro_db
+                if event.esr_pro_db != 0.0
+                else 0.5 * (event.esr_full_db + event.esr_ultra_db)
+            )
             self.console.print(
                 f"  [dim]Epoch {event.epoch:>3}/{event.total_epochs}[/dim] | "
                 f"bESR: Lite={event.esr_lite_db:+.2f} dB | "
                 f"Full={event.esr_full_db:+.2f} dB | "
+                f"Pro={pro_val:+.2f} dB | "
                 f"[bold]Ultra={event.esr_ultra_db:+.2f} dB[/bold]"
                 f"{bands_str} | "
                 f"barrier={event.barrier_loss:.4f} | t={event.elapsed_sec:.2f}s"
@@ -90,10 +96,16 @@ class RichTrainingObserver:
                 )
             if event.seg_esr_db is not None:
                 psycho_str += f" | SegESR={event.seg_esr_db:+.2f} dB"
+            pro_final = (
+                event.esr_pro_db
+                if event.esr_pro_db != 0.0
+                else 0.5 * (event.esr_full_db + event.esr_ultra_db)
+            )
             self.console.print(
                 f"[bold green]✓ {mode_label} Complete ({event.model_id})[/bold green] | "
                 f"Final bESR: Lite={event.esr_lite_db:+.2f} dB | "
                 f"Full={event.esr_full_db:+.2f} dB | "
+                f"Pro={pro_final:+.2f} dB | "
                 f"Ultra={event.esr_ultra_db:+.2f} dB{psycho_str} | "
                 f"Core2={c2_state} | {event.elapsed_sec:.2f}s"
             )

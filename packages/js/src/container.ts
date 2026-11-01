@@ -10,7 +10,7 @@ import {
   sealDnamContainer,
   type UnsealDnamContainerOptions,
 } from "./provenance.js";
-import { validateStandardSchema } from "./schema/base.js";
+import { parseTier, type TierInput, validateStandardSchema } from "./schema/base.js";
 import {
   type DnamJsonHeader,
   DnamJsonHeaderSchema,
@@ -50,8 +50,10 @@ export interface BuildReferenceOptions {
 }
 
 export interface WatermarkOptions {
+  kappa64?: Float32Array | readonly number[] | undefined;
   kappa48?: Float32Array | readonly number[] | undefined;
   qBuyer4x4?: Float32Array | readonly number[] | undefined;
+  tardosCode7680?: Float32Array | readonly number[] | undefined;
   tardosCode4608?: Float32Array | readonly number[] | undefined;
   tardosEpsilon?: number | undefined;
   backend?: BackendChoice | undefined;
@@ -220,12 +222,22 @@ export class DnamContainer {
   }
 
   /**
-   * Extracts the 160-Dimensional Gauge-Invariant Structural Hash vector $\mathbf{f}_{\text{struct}} \in \mathbb{R}^{160}$
-   * from this container's `arenaBytes`.
+   * Extracts the 224-Dimensional (or prefix) Gauge-Invariant Structural Hash vector
+   * $\mathbf{f}_{\text{struct}} \in \mathbb{R}^{224}$ from this container's `arenaBytes`.
    */
   public structuralHash(backend?: BackendChoice): Float64Array {
     const driver = resolveDriver(backend ?? this.defaultBackend);
     return driver.extractStructuralHash(this.arenaBytes);
+  }
+
+  /**
+   * Strips higher slimmable tiers from this container down to `maxTier` without modifying
+   * the JSON header or invalidating `Ed25519` `tier_arena_sha256` signatures.
+   */
+  public stripToTier(maxTier: TierInput, backend?: BackendChoice): DnamContainer {
+    const chosenBackend = backend ?? this.defaultBackend;
+    const strippedBytes = stripContainerToTier(this.bytes, maxTier, chosenBackend);
+    return DnamContainer.fromBytes(strippedBytes, chosenBackend);
   }
 
   /**
@@ -235,28 +247,45 @@ export class DnamContainer {
   public withWatermark(options: WatermarkOptions): DnamContainer {
     const backend = options.backend ?? this.defaultBackend;
     const driver = resolveDriver(backend);
-    const kappa =
-      options.kappa48 instanceof Float32Array
-        ? options.kappa48
-        : new Float32Array(options.kappa48 ?? new Array<number>(48).fill(1.0));
+    const rawKappa = options.kappa64 ?? options.kappa48 ?? new Array<number>(64).fill(1.0);
+    const kappa = rawKappa instanceof Float32Array ? rawKappa : new Float32Array(rawKappa);
     const qBuyer =
       options.qBuyer4x4 instanceof Float32Array
         ? options.qBuyer4x4
         : new Float32Array(options.qBuyer4x4 ?? [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
     let watermarkedArena = driver.applyIsometricGaugeWatermark(this.arenaBytes, kappa, qBuyer);
-    if (options.tardosCode4608 !== undefined) {
-      const code =
-        options.tardosCode4608 instanceof Float32Array
-          ? options.tardosCode4608
-          : new Float32Array(options.tardosCode4608);
+    const rawTardos = options.tardosCode7680 ?? options.tardosCode4608;
+    if (rawTardos !== undefined) {
+      const code = rawTardos instanceof Float32Array ? rawTardos : new Float32Array(rawTardos);
       watermarkedArena = driver.applyTardosWatermark(
         watermarkedArena,
         code,
         options.tardosEpsilon ?? 5e-4,
       );
     }
+    let header = this.header;
+    if (header.metadata.signatures !== undefined) {
+      let differs = watermarkedArena.length !== this.arenaBytes.length;
+      if (!differs) {
+        for (let i = 0; i < watermarkedArena.length; i++) {
+          if (watermarkedArena[i] !== this.arenaBytes[i]) {
+            differs = true;
+            break;
+          }
+        }
+      }
+      if (differs) {
+        header = {
+          ...header,
+          metadata: {
+            ...header.metadata,
+            signatures: undefined,
+          },
+        };
+      }
+    }
     return DnamContainer.build({
-      header: this.header,
+      header,
       arenaBytes: watermarkedArena,
       backend,
     });
@@ -326,6 +355,19 @@ export function buildReferenceContainer(
   backend?: BackendChoice,
 ): Uint8Array {
   return DnamContainer.buildReference({ core2Active, isCheckpoint, backend }).bytes;
+}
+
+/**
+ * Strips higher slimmable tiers from a `.dnam` or `.dnam-ckpt` container byte buffer down to
+ * `maxTier` without modifying the JSON header or invalidating `Ed25519` `tier_arena_sha256` signatures.
+ */
+export function stripContainerToTier(
+  containerBytes: Uint8Array | ArrayBuffer | ArrayBufferView,
+  maxTier: TierInput,
+  backend?: BackendChoice,
+): Uint8Array {
+  const driver = resolveDriver(backend);
+  return driver.stripContainerToTier(toUint8Array(containerBytes), parseTier(maxTier));
 }
 
 /**

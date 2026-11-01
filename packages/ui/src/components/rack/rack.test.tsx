@@ -75,6 +75,18 @@ describe("DnamPluginRack and TriPhysicsTelemetry", () => {
     await userEvent.click(page.getByRole("button", { name: "Warm" }));
     expect(host.getSwitchIndex("bright")).toBe(1);
 
+    await userEvent.click(page.getByRole("button", { name: "Pro" }));
+    expect(host.getTier()).toBe("pro");
+
+    await userEvent.click(page.getByRole("button", { name: "Ultra" }));
+    expect(host.getTier()).toBe("ultra");
+
+    await userEvent.click(page.getByRole("button", { name: "Offline Bounce (4x)" }));
+    expect(host.getOfflineBounce()).toBe(true);
+
+    await userEvent.click(page.getByRole("button", { name: "Maximize Tier on Bounce" }));
+    expect(host.getMaximizeTierOnBounce()).toBe(false);
+
     await expectZeroAxeViolations(screen.container);
   });
 

@@ -9,8 +9,8 @@ use std::hint::black_box;
 use std::time::Instant;
 
 use dnam_engine::container::{
-    ARENA_OFFSET_FULL_END, ARENA_OFFSET_LITE_END, ARENA_OFFSET_ULTRA_END, DnamContainerView,
-    build_dnam_container,
+    ARENA_OFFSET_FULL_END, ARENA_OFFSET_LITE_END, ARENA_OFFSET_PRO_END, ARENA_OFFSET_ULTRA_END,
+    DnamContainerView, build_dnam_container,
 };
 use dnam_engine::math::{DefaultMathBackend, MathBackend, ScalarBackend};
 use dnam_engine::memory::{AlignedBuffer, CacheLine64};
@@ -63,7 +63,7 @@ fn make_bench_container(core2_active: bool) -> AlignedBuffer<CacheLine64> {
                 arena_end_byte_offset: ARENA_OFFSET_FULL_END,
                 prefix_crc32c: 0,
             },
-            ultra: TierProfile {
+            pro: TierProfile {
                 channels: 12,
                 fdn_lines: if core2_active { 8 } else { 0 },
                 early_taps: 8,
@@ -71,6 +71,17 @@ fn make_bench_container(core2_active: bool) -> AlignedBuffer<CacheLine64> {
                 loudness_lufs: -20.5,
                 output_trim_db: 0.0,
                 validation_esr_db: -48.0,
+                arena_end_byte_offset: ARENA_OFFSET_PRO_END,
+                prefix_crc32c: 0,
+            },
+            ultra: TierProfile {
+                channels: 16,
+                fdn_lines: if core2_active { 16 } else { 0 },
+                early_taps: 16,
+                head_svd_rank: 8,
+                loudness_lufs: -20.5,
+                output_trim_db: 0.0,
+                validation_esr_db: -51.0,
                 arena_end_byte_offset: ARENA_OFFSET_ULTRA_END,
                 prefix_crc32c: 0,
             },
@@ -128,8 +139,8 @@ fn make_bench_container(core2_active: bool) -> AlignedBuffer<CacheLine64> {
         audit_report: None,
     };
 
-    let mut arena = vec![0u8; 36_224];
-    for (i, byte) in arena[128..35_200].iter_mut().enumerate() {
+    let mut arena = vec![0u8; 64_000];
+    for (i, byte) in arena[128..62_000].iter_mut().enumerate() {
         *byte = ((i * 7 + 3) & 0x3F) as u8;
     }
     let raw = build_dnam_container(&mut header, &arena, &arena, false).unwrap();
@@ -148,6 +159,51 @@ fn bench_tier<B: MathBackend>(container: &[u8], tier: Tier, label: &str) {
     let mut out_r = [0.0_f32; 128];
 
     for _ in 0..32 {
+        engine.process_block(
+            black_box(&in_l),
+            black_box(&in_r),
+            black_box(&mut out_l),
+            black_box(&mut out_r),
+        );
+    }
+
+    let t0 = Instant::now();
+    for _ in 0..num_blocks {
+        engine.process_block(
+            black_box(&in_l),
+            black_box(&in_r),
+            black_box(&mut out_l),
+            black_box(&mut out_r),
+        );
+    }
+    let elapsed = t0.elapsed();
+    let total_samples = (block_size * num_blocks) as f64;
+    let ns_per_sample = (elapsed.as_nanos() as f64) / total_samples;
+    let realtime_budget_ns = 1_000_000_000.0 / 48_000.0; // 20,833.33 ns/sample
+    let x_realtime = realtime_budget_ns / ns_per_sample;
+    let cpu_pct = (ns_per_sample / realtime_budget_ns) * 100.0;
+
+    println!(
+        "| {:<32} | {:<11} | {:>10.2} ns | {:>10.1}x | {:>7.2}% |",
+        label,
+        B::KIND.name(),
+        ns_per_sample,
+        x_realtime,
+        cpu_pct
+    );
+}
+
+fn bench_tier_bounce<B: MathBackend>(container: &[u8], tier: Tier, label: &str) {
+    let mut engine = DnamEngine::<B>::from_bytes(container, tier, 48_000).unwrap();
+    engine.set_offline_bounce(true);
+    let block_size = 128_usize;
+    let num_blocks = 375_usize; // 48,000 samples = 1.0 second of 48 kHz stereo audio
+    let in_l = [0.15_f32; 128];
+    let in_r = [-0.15_f32; 128];
+    let mut out_l = [0.0_f32; 128];
+    let mut out_r = [0.0_f32; 128];
+
+    for _ in 0..16 {
         engine.process_block(
             black_box(&in_l),
             black_box(&in_r),
@@ -278,13 +334,28 @@ fn main() {
     );
     bench_tier::<DefaultMathBackend>(
         container_core1.as_bytes(),
+        Tier::Pro,
+        "Pro (C=12, Core 1 Only)",
+    );
+    bench_tier::<DefaultMathBackend>(
+        container_full.as_bytes(),
+        Tier::Pro,
+        "Pro (C=12, Core 1 + Core 2)",
+    );
+    bench_tier::<DefaultMathBackend>(
+        container_core1.as_bytes(),
         Tier::Ultra,
-        "Ultra (C=12, Core 1 Only)",
+        "Ultra (C=16, Core 1 Only)",
     );
     bench_tier::<DefaultMathBackend>(
         container_full.as_bytes(),
         Tier::Ultra,
-        "Ultra (C=12, Core 1 + Core 2)",
+        "Ultra (C=16, Core 1 + Core 2)",
+    );
+    bench_tier_bounce::<DefaultMathBackend>(
+        container_full.as_bytes(),
+        Tier::Ultra,
+        "Ultra (C=16, 4x Offline Bounce)",
     );
 
     #[cfg(target_arch = "aarch64")]
@@ -335,8 +406,13 @@ fn main() {
     );
     bench_wcet_tail_latency::<DefaultMathBackend>(
         container_full.as_bytes(),
+        Tier::Pro,
+        "Pro (C=12, Modulated)",
+    );
+    bench_wcet_tail_latency::<DefaultMathBackend>(
+        container_full.as_bytes(),
         Tier::Ultra,
-        "Ultra (C=12, Modulated)",
+        "Ultra (C=16, Modulated)",
     );
     println!(
         "=========================================================================================="

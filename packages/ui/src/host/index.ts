@@ -4,10 +4,15 @@ export {
   type UseDnamAudioHostResult,
   useDnamAudioHost,
 } from "./context.js";
-export type {
-  DnamAudioHost,
-  DnamBackendAcceleration,
-  DnamTelemetrySnapshot,
+export {
+  clampTierToMaxSupported,
+  DNAM_MODEL_TIER_LABELS,
+  DNAM_MODEL_TIERS,
+  type DnamAudioHost,
+  type DnamBackendAcceleration,
+  type DnamModelTier,
+  type DnamTelemetrySnapshot,
+  tierOrderIndex,
 } from "./types.js";
 export {
   WebAudioWorkletHost,

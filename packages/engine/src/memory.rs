@@ -187,13 +187,22 @@ impl<'a> ArenaStorage<'a> {
     }
 
     /// Pre-allocates an `Owned` 64-byte aligned arena with capacity for `max_blocks` (e.g., `566`
-    /// for `Ultra` = `36,224 B`) so models can be hot-swapped in-place with zero allocations.
+    /// for `Pro` = `36,224 B` or `1000` for `Ultra` = `64,000 B`) so models can be hot-swapped
+    /// in-place with zero allocations.
     pub fn with_max_blocks(max_blocks: usize) -> Self {
         let buffer = AlignedBuffer::<CacheLine64>::new_zeroed_prefaulted(max_blocks);
         Self::Owned {
             buffer,
             active_blocks: 0,
         }
+    }
+
+    /// Pre-allocates an `Owned` 64-byte aligned arena capped at `max_tier` (`168` Lite, `349` Full,
+    /// `566` Pro, `1,000` Ultra cache lines) so plugins on constrained hardware only allocate up to
+    /// their maximum supported tier.
+    #[inline]
+    pub fn with_max_tier(max_tier: crate::types::Tier) -> Self {
+        Self::with_max_blocks(max_tier.expected_cache_lines())
     }
 
     /// Overwrites the arena in-place from `bytes` without allocating if `self` is `Owned` with

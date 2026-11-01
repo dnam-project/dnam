@@ -24,8 +24,8 @@ flowchart TB
         direction TB
         P1["Pillar 1 (§2): Cryptographic Provenance & Creator DistributionPolicy (Split-Payload Ed25519)"]
         P2["Pillar 2 (§3): Hardware Enclave & OEM DRM (OemDeviceCertificate + X25519 HPKE + ChaCha20)"]
-        P3["Pillar 3 (§4): Forensic Traitor Tracing (Isometric Gauge 0.00 dB + 4,608-Chip Tardos)"]
-        P4["Pillar 4 (§5): Anti-Cloning Ingestion Gate (Stage A Signature + Stage B 160-D Hash + Stage C 5 ms Probe)"]
+        P3["Pillar 3 (§4): Forensic Traitor Tracing (64-Ch Isometric Gauge 0.00 dB + 7,680-Chip Tardos)"]
+        P4["Pillar 4 (§5): Anti-Cloning Ingestion Gate (Stage A Signature + Stage B 224-D Hash + Stage C 5 ms Probe)"]
         P1 --> P2 --> P3 --> P4
     end
 
@@ -38,7 +38,7 @@ flowchart TB
     subgraph Profiles ["Three Container Protection Profiles (§6 DnamProtectionProfile)"]
         direction TB
         ProfOpen["Open (.dnam, ENCRYPTED_ARENA = 0): Unencrypted, runs on all DAWs, browsers & pedals"]
-        ProfAllow["DeviceAllowlisted (.dnam, ENCRYPTED_ARENA = 1): Plaintext 4 KB Header + ChaCha20 Arena 0..2 (cek_arena)"]
+        ProfAllow["DeviceAllowlisted (.dnam, ENCRYPTED_ARENA = 1): Plaintext 4 KB Header + ChaCha20 Arena 0..3 (cek_arena)"]
         ProfSeal["EnclaveSealed (.dnam-seal, DNSL + inner ENCRYPTED_ARENA = 1): Outer Binary Wrapper (cek_outer) + Inner Encrypted Arena (cek_arena)"]
     end
 
@@ -99,15 +99,16 @@ Creators can restrict their `.dnam` models to specific protection profiles (e.g.
      - **Model-Specific (`"<oem_vendor>:<model_code>"`, e.g., `"darkglass:anagram_rk3582"`):** Permits only that exact manufacturer and hardware model (`oem_vendor == "darkglass" && model_code == "anagram_rk3582"`).
    - Because `metadata.distribution_policy` is covered by `immutable_header_sha256` and signed by `creator_signature`, neither a buyer nor the marketplace can strip or widen a creator's hardware exclusivity policy without invalidating the creator's `Ed25519` signature.
 
-### 2.3 Two-Certificate Delegation Chain (`creator_signature` $\to$ `marketplace_receipt`)
+### 2.3 Two-Certificate Delegation Chain (`creator_signature` $\to$ `marketplace_receipt`) & 4-Tier `tier_arena_sha256`
 
 1. **Creator Master Signature (`creator_signature`):**
-   - Let `master_arena_sha256 = SHA256(master_arena_bytes[0..arena_offset_ultra_end])`.
-   - The creator signs the 64-byte concatenation `immutable_header_sha256 || master_arena_sha256` offline using `Ed25519`:
-     $$\sigma_{\text{creator}} = \mathrm{Ed25519-Sign}\Big(\text{sk}_{\text{creator}}, \text{immutable-header-sha256} \Vert \text{master-arena-sha256}\Big)$$
+   - Let `master_arena_sha256 = SHA256(master_arena_bytes[0..arena_offset_ultra_end])` and `tier_arena_sha256 = [SHA256(arena[0..10752]), SHA256(arena[0..22336]), SHA256(arena[0..36224]), SHA256(arena[0..64000])]`.
+   - The creator signs the concatenation of `immutable_header_sha256`, `master_arena_sha256`, and the 4 tier prefix SHA-256 digests offline using `Ed25519`:
+     $$\sigma_{\text{creator}} = \mathrm{Ed25519-Sign}\Big(\text{sk}_{\text{creator}}, \text{immutable-header-sha256} \Vert \text{master-arena-sha256} \Vert \text{tier-arena-sha256}_{0..3}\Big)$$
 2. **Marketplace Counter-Signature (`marketplace_receipt`):**
-   - Upon licensing, the marketplace generates the buyer-watermarked arena (`buyer_arena_sha256 = SHA256(Plaintext_Buyer_Arena[0..arena_offset_ultra_end])`), optionally encrypts `Arena 0..2` (`ENCRYPTED_ARENA = 1`), updates the binary preamble's `arena_crc32c_{lite,full,ultra}` and `header_crc32c`, and signs the receipt payload:
+   - Upon licensing, the marketplace generates the buyer-watermarked arena (`buyer_arena_sha256 = SHA256(Plaintext_Buyer_Arena[0..arena_offset_ultra_end])`, `buyer_tier_arena_sha256`), optionally encrypts `Arena 0..3` (`ENCRYPTED_ARENA = 1`), updates the binary preamble's `arena_crc32c_{lite,full,pro,ultra}` and `header_crc32c`, and signs the receipt payload:
      $$\sigma_{\text{market}} = \mathrm{Ed25519-Sign}\Big(\text{sk}_{\text{market}}, \text{immutable-header-sha256} \Vert \text{master-arena-sha256} \Vert \text{buyer-arena-sha256} \Vert \text{receipt-meta}\Big)$$
+   - Because all 4 cumulative tier SHA-256 digests are cryptographically committed in the JSON header, `strip_container_to_tier(bytes, max_tier)` can strip higher tier arenas (`Arena 1..3`) down to `Lite`, `Full`, or `Pro` **with zero re-signing required**.
 
 ---
 
@@ -297,31 +298,31 @@ flowchart TD
 
 ## 4. Pillar 3: Forensic Traitor Tracing (`< 0.2 ms` Dual-Mechanism Buyer Watermarking)
 
-Even if an adversary physically decapitates a chip or dumps process memory on a desktop machine, every licensed container carries two orthogonal, un-removable watermarks embedded directly in `Arena 0` (`Lite`), `Arena 1` (`Full Delta`), and `Arena 2` (`Ultra Delta`):
+Even if an adversary physically decapitates a chip or dumps process memory on a desktop machine, every licensed container carries two orthogonal, un-removable watermarks embedded directly in `Arena 0` (`Lite`), `Arena 1` (`Full Delta`), `Arena 2` (`Pro Delta`), and `Arena 3` (`Ultra Delta`):
 
 ### 4.1 Mechanism A — Exact Isometric Gauge-Space Watermarking ($0.0000\text{ dB}$ Audio Difference)
 
-1. **48-Channel RG-LRU Reciprocal Scaling Gauge ($\boldsymbol{\kappa} \in [0.985, 1.015]^{48}$):**
-   In Core 1B ([`core1_hybrid_ssm_and_polyadaa.md` §2.3](core1_hybrid_ssm_and_polyadaa.md#23-log-octave-pole-initialization--mathcalh_2-norm-input-scaling-cl-04-cl-05)), scaling each resonator channel's input normalizer $b_{\gamma,b,c}$ by $\kappa_{b,c}$ and its output projection $(c_{\text{real},b,c}, c_{\text{imag},b,c})$ by $\kappa_{b,c}^{-1}$:
+1. **64-Channel RG-LRU Reciprocal Scaling Gauge ($\boldsymbol{\kappa} \in [0.985, 1.015]^{64}$):**
+   In Core 1B ([`core1_hybrid_ssm_and_polyadaa.md` §2.3](core1_hybrid_ssm_and_polyadaa.md#23-log-octave-pole-initialization--mathcalh_2-norm-input-scaling-cl-04-cl-05)), scaling each resonator channel's input normalizer $b_{\gamma,b,c}$ (`16` channels per tier across `Lite`/`Full`/`Pro`/`Ultra`) by $\kappa_{b,c}$ and its output projection $(c_{\text{real},b,c}, c_{\text{imag},b,c})$ by $\kappa_{b,c}^{-1}$:
    $$b_{\gamma,b,c}^{(\text{buyer})} = \kappa_{b,c} b_{\gamma,b,c}^{(\text{master})}, \qquad \big(c_{\text{real},b,c}^{(\text{buyer})}, c_{\text{imag},b,c}^{(\text{buyer})}\big) = \frac{1}{\kappa_{b,c}} \big(c_{\text{real},b,c}^{(\text{master})}, c_{\text{imag},b,c}^{(\text{master})}\big)$$
-   cancels out identically ($\kappa_{b,c} \cdot \kappa_{b,c}^{-1} \equiv 1.0$, **$4.00 \times 10^{-15}$ exactness in `Test 8H`**) while preserving all pole radii, angles, selectivity gates, and `CL-01`..`CL-18` stability invariants.
-2. **SVD Control Subspace Orthogonal Rotation Gauge ($\mathbf{Q}_{\text{buyer}} \in SO(D_h)$):**
-   In the Parametric Control Bus ([`training_and_iterative_resume.md` §1](training_and_iterative_resume.md#stage-2--step-0-svd-orthonormal-kronecker-float64-wiener-hopf-warm-start-cl-18)), rotating the SVD control projector $\mathbf{P}_{\text{svd}} \in \mathbb{R}^{D_{\text{basis}} \times D_h}$ and the 16-tap SVD stereo head basis $\mathbf{W}_{\text{head},1..D_h}$ by $\mathbf{Q}_{\text{buyer}} \in SO(D_h)$:
+   cancels out identically ($\kappa_{b,c} \cdot \kappa_{b,c}^{-1} \equiv 1.0$, **$4.00 \times 10^{-15}$ exactness in `Test 8H`**) while preserving all pole radii, angles, selectivity gates, and `CL-01`..`CL-20` stability invariants.
+2. **Block-Diagonal SVD Control Subspace Orthogonal Rotation Gauge ($\mathbf{Q}_{\text{buyer}} \in SO(4) \oplus SO(4)$):**
+   In the Parametric Control Bus ([`training_and_iterative_resume.md` §1](training_and_iterative_resume.md#stage-2--step-0-svd-orthonormal-kronecker-float64-wiener-hopf-warm-start-cl-18)), rotating the SVD control projector $\mathbf{P}_{\text{svd}} \in \mathbb{R}^{D_{\text{basis}} \times D_h}$ (`D_h = 4` in `Arena 0..2`, extended by 4 nested modes `z_{4..7}` in `Arena 3 Ultra`) and the 16-tap SVD stereo head basis $\mathbf{W}_{\text{head},1..D_h}$ by $\mathbf{Q}_{\text{buyer}} = \mathrm{diag}(\mathbf{Q}_{0..3}, \mathbf{Q}_{4..7})$:
    $$\mathbf{P}_{\text{svd}}^{(\text{buyer})} = \mathbf{P}_{\text{svd}}^{(\text{master})} \mathbf{Q}_{\text{buyer}}, \qquad \mathbf{W}_{\text{head},1..D_h}^{(\text{buyer})} = \mathbf{Q}_{\text{buyer}}^\top \mathbf{W}_{\text{head},1..D_h}^{(\text{master})}$$
-   modifies every floating-point weight in the SVD head and control projector while canceling out identically ($\mathbf{Q}_{\text{buyer}} \mathbf{Q}_{\text{buyer}}^\top \equiv \mathbf{I}_{D_h}$) at $3\text{ kHz}$.
+   modifies every floating-point weight in the SVD head and control projector while canceling out identically ($\mathbf{Q}_{\text{buyer}} \mathbf{Q}_{\text{buyer}}^\top \equiv \mathbf{I}_{D_h}$) at $3\text{ kHz}$ across both `D_h = 4` (`Lite/Full/Pro`) and `D_h = 8` (`Ultra`).
 
-### 4.2 Mechanism B — Non-Invertible Coupled Spread-Spectrum Tardos Watermarking ($+36.6\text{ dB}$ Matched-Filter Gain)
+### 4.2 Mechanism B — Non-Invertible Coupled Spread-Spectrum Tardos Watermarking ($+38.8\text{ dB}$ Matched-Filter Gain)
 
-To defeat gauge canonicalization or multi-buyer collusion averaging, the marketplace embeds a **Tardos Collusion-Resistant Spread-Spectrum Code** $\mathbf{c}^{(\text{buyer})} \in \lbrace -1, +1 \rbrace^{4608}$ (seeded via `HMAC-SHA256(marketplace_secret, model_id || license_id)`) across all $N_{\text{conv}} = 4,608$ nonlinear dilated convolution weights (`768` in `Arena 0 Lite`, `1,536` in `Arena 1 Full`, `2,304` in `Arena 2 Ultra`):
+To defeat gauge canonicalization or multi-buyer collusion averaging, the marketplace embeds a **Tardos Collusion-Resistant Spread-Spectrum Code** $\mathbf{c}^{(\text{buyer})} \in \lbrace -1, +1 \rbrace^{7680}$ (seeded via `HMAC-SHA256(marketplace_secret, model_id || license_id)`) across all $N_{\text{conv}} = 7,680$ nonlinear dilated convolution weights (`768` in `Arena 0 Lite`, `+1,536 -> 2,304` in `Arena 1 Full`, `+2,304 -> 4,608` in `Arena 2 Pro`, `+3,072 -> 7,680` in `Arena 3 Ultra`):
 
 $$W_{\text{conv},i}^{(\text{buyer})} = W_{\text{conv},i}^{(\text{master})} + \epsilon \sigma_{W,i} c_i^{(\text{buyer})}$$
 
 | Attack Vector Attempted by Pirate | Why the Dual-Mechanism Watermark Survives | Verified Margin (`Test 8H`) |
 | :--- | :--- | :---: |
-| **Strip JSON header / forge new `.dnam` wrapper** | Watermark lives entirely inside the binary `f32` weights of `Arena 0..2` | **100% intact** |
-| **Truncate `Ultra` / `Full` down to `Lite`-only (`10.5 KB`)** | `Arena 0 (Lite)` alone carries `16` gauge ratios `κ_{0..3,0..3}` + `768` Tardos conv weights (`+28.85 dB` gain) | **`Z > 10σ`** |
-| **Canonicalize RG-LRU `(b_γ, c)` gauge** | Cannot invert the `4,608` nonlinear `PolyADAA`-coupled convolution weights without `W_conv^(master)` | **`Z ≥ 24.98σ`** |
-| **Quantize weights `f32 -> fp16 -> f32` + 4-buyer collusion average** | Spread-spectrum matched filter over `N = 4,608` weights provides `+36.63 dB` processing gain | **`24.98σ` vs. `2.53σ` innocent max** |
+| **Strip JSON header / forge new `.dnam` wrapper** | Watermark lives entirely inside the binary `f32` weights of `Arena 0..3` | **100% intact** |
+| **Truncate `Ultra` / `Pro` / `Full` down to `Lite`-only (`10.5 KB`)** | `Arena 0 (Lite)` alone carries `16` gauge ratios `κ_{0..3,0..3}` + `768` Tardos conv weights (`+28.85 dB` gain) | **`Z > 10σ`** |
+| **Canonicalize RG-LRU `(b_γ, c)` gauge** | Cannot invert the `7,680` nonlinear `PolyADAA`-coupled convolution weights without `W_conv^(master)` | **`Z ≥ 24.98σ`** |
+| **Quantize weights `f32 -> fp16 -> f32` + 4-buyer collusion average** | Spread-spectrum matched filter over `N = 7,680` (`4,608` in `Pro`) weights provides `+38.85 dB` processing gain | **`≥ 24.98σ` vs. `2.53σ` innocent max** |
 
 ---
 
@@ -333,20 +334,20 @@ Whenever a user uploads a `.dnam` model to the marketplace, a **$< 50\text{ ms}$
 flowchart TD
     Upload["Suspect .dnam Model Uploaded or Found Online"] --> StageA["Stage A (< 0.1 ms): Cryptographic & Provenance Gate - Check Ed25519 Signatures & Dataset SHA-256"]
 
-    StageA --> StageB["Stage B (< 0.5 ms): Extract 160-D Gauge-Invariant Structural Vector f_struct from Arena 0..2"]
+    StageA --> StageB["Stage B (< 0.5 ms): Extract 224-D (4 x 56-D) Prefix-Composable Structural Vector f_struct from Arena 0..3"]
     StageB --> CosCheck{"cos(f_struct_upload, f_struct_catalog) > 0.9999?"}
 
-    CosCheck -- "Yes (Direct Weight Dump / Header Stripped / Colluded)" --> Trace["Pillar 3 Forensic Extractor: Recover RG-LRU Gauge Ratios kappa_b,c & 4,608-Weight Tardos Z-Score (Z >= 24.98 sigma)"]
+    CosCheck -- "Yes (Direct Weight Dump / Header Stripped / Colluded)" --> Trace["Pillar 3 Forensic Extractor: Recover RG-LRU Gauge Ratios kappa_b,c & 7,680-Weight Tardos Z-Score (Z >= 24.98 sigma)"]
     Trace --> Revoke["Identify Exact Leaking license_id & device_id_hash -> Set hardware_devices.status = 3 (Revoked)"]
 
     CosCheck -- "No (Different Weights)" --> StageC["Stage C (< 5 ms): Render 2s Synthetic Chirp Probe in Rust SIMD - Compare Complex Transfer Function & >18.5 kHz Ultrasonic Phase"]
     StageC --> PhaseCheck{"Transfer Function & Ultrasonic Phase Match Catalog?"}
     PhaseCheck -- "Yes (Lossy Audio Re-Capture Clone)" --> BlockClone["Block Re-Captured Clone Upload & Flag Account"]
-    PhaseCheck -- "No (Genuine Original Model)" --> Approve["Approve & Index in TiDB VECTOR(160) Catalog"]
+    PhaseCheck -- "No (Genuine Original Model)" --> Approve["Approve & Index in TiDB VECTOR(224) Catalog"]
 ```
 
 1. **Stage A — Cryptographic & Provenance Gate (`< 0.1 ms`):** Verifies `creator_signature`, `marketplace_receipt`, and `metadata.provenance.dataset_manifest_sha256`.
-2. **Stage B — 160-D Gauge-Invariant Structural Hash & Traitor Extraction (`< 0.5 ms`):** Extracts $\mathbf{f}_{\text{struct}} \in \mathbb{R}^{160}$ (`48` sorted RG-LRU pole bounds/angles, `96` gauge-invariant products $I_{\text{real},b,c} = b_{\gamma,b,c} c_{\text{real},b,c}$ and $I_{\text{imag},b,c} = b_{\gamma,b,c} c_{\text{imag},b,c}$, `8` sorted `M-UFDN` base delays, and `8` head singular values). If $\cos(\mathbf{f}_{\text{struct}}^{(\text{upload})}, \mathbf{f}_{\text{struct}}^{(\text{catalog})}) > 0.9999$, Stage B extracts the leaking `license_id` via Pillar 3 and sets `hardware_devices.status = 3 (Revoked)`.
+2. **Stage B — 224-D (`4 × 56-D`) Prefix-Composable Gauge-Invariant Structural Hash & Traitor Extraction (`< 0.5 ms`):** Extracts $\mathbf{f}_{\text{struct}} \in \mathbb{R}^{224}$ ordered into 4 tier blocks of `56` dimensions (`[56t .. 56(t+1)]` for $t \in \lbrace 0, 1, 2, 3 \rbrace$: `16` sorted RG-LRU pole bounds/angles, `32` gauge-invariant products $I_{\text{real},b,c} = b_{\gamma,b,c} c_{\text{real},b,c}$ and $I_{\text{imag},b,c} = b_{\gamma,b,c} c_{\text{imag},b,c}$, `4` sorted `M-UFDN` base delays, and `4` head singular values per tier). Even if a container was stripped down to `Lite` (`56-D`), `Full` (`112-D`), or `Pro` (`168-D`), its prefix matches the corresponding prefix of the `224-D` `Ultra` catalog vector with $\cos = 1.000000$. If $\cos(\mathbf{f}_{\text{struct}}^{(\text{upload})}, \mathbf{f}_{\text{struct}}^{(\text{catalog})}) > 0.9999$, Stage B extracts the leaking `license_id` via Pillar 3 and sets `hardware_devices.status = 3 (Revoked)`.
 3. **Stage C — $5\text{ ms}$ Synthetic Probe Transfer-Function & Ultrasonic Phase Check:** Renders a $2\text{-second}$ synthetic chirp/burst probe in Rust SIMD (`< 5 ms`) and compares the complex transfer function and $> 18.5\text{ kHz}$ ultrasonic phase constellation against the catalog—blocking even lossy analog/digital re-captures re-trained from audio output.
 
 ---

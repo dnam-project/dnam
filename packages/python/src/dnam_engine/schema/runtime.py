@@ -16,6 +16,9 @@ class DnamEngineSettings(StrictModel):
     """Strongly typed configuration settings for `DnamEngine`."""
 
     tier: Tier = Tier.FULL
+    max_supported_tier: Tier = Tier.ULTRA
+    offline_bounce: bool = False
+    maximize_tier_on_bounce: bool = True
     sample_rate_hz: float = 48_000.0
     backend: BackendKind = BackendKind.AUTO
     buffer_size: int | None = Field(default=None, ge=1)
@@ -56,9 +59,11 @@ class DnamPreambleInfo(StrictModel):
     tensor_arena_byte_len: int
     arena_offset_lite_end: int
     arena_offset_full_end: int
+    arena_offset_pro_end: int = 36_224
     arena_offset_ultra_end: int
     arena_crc32c_lite: int
     arena_crc32c_full: int
+    arena_crc32c_pro: int = 0
     arena_crc32c_ultra: int
     num_ckpt_stems: int
     control_decimation: int
@@ -73,8 +78,8 @@ class DnamPreambleInfo(StrictModel):
 
     @property
     def has_calib_stats(self) -> bool:
-        """Returns `True` if `.dnam-ckpt` `Arena 4` calibration stats are present."""
-        return (self.flags & (1 << 11)) != 0
+        """Returns `True` if `.dnam-ckpt` `Arena 5` calibration stats (`DNCA`) are present."""
+        return (self.flags & (1 << 12)) != 0
 
 
 class DnamTelemetrySnapshot(StrictModel):

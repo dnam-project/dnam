@@ -19,9 +19,11 @@ export interface PreambleSnapshot {
   tensorArenaByteLen: number;
   arenaOffsetLiteEnd: number;
   arenaOffsetFullEnd: number;
+  arenaOffsetProEnd: number;
   arenaOffsetUltraEnd: number;
   arenaCrc32cLite: number;
   arenaCrc32cFull: number;
+  arenaCrc32cPro: number;
   arenaCrc32cUltra: number;
   numCkptStems: number;
   controlDecimation: number;
@@ -33,7 +35,7 @@ export interface PreambleSnapshot {
   stereoOut: boolean;
 }
 
-export const PreambleSnapshotSchema: z.ZodType<PreambleSnapshot> = z
+export const PreambleSnapshotSchema: z.ZodType<PreambleSnapshot, unknown> = z
   .object({
     magic: z.string(),
     versionMajor: z.number().int().nonnegative(),
@@ -47,9 +49,11 @@ export const PreambleSnapshotSchema: z.ZodType<PreambleSnapshot> = z
     tensorArenaByteLen: z.number().int().nonnegative(),
     arenaOffsetLiteEnd: z.number().int().nonnegative(),
     arenaOffsetFullEnd: z.number().int().nonnegative(),
+    arenaOffsetProEnd: z.number().int().nonnegative().default(36_224),
     arenaOffsetUltraEnd: z.number().int().nonnegative(),
     arenaCrc32cLite: z.number().int().nonnegative(),
     arenaCrc32cFull: z.number().int().nonnegative(),
+    arenaCrc32cPro: z.number().int().nonnegative().default(0),
     arenaCrc32cUltra: z.number().int().nonnegative(),
     numCkptStems: z.number().int().nonnegative(),
     controlDecimation: z.number().int().positive(),
@@ -113,7 +117,7 @@ export interface TelemetrySnapshot {
 
 export const TelemetrySnapshotSchema: z.ZodType<TelemetrySnapshot> = z
   .object({
-    activeTier: z.number().int().min(0).max(2),
+    activeTier: z.number().int().min(0).max(3),
     backend: z.string(),
     sampleRateHz: z.number().int().min(44_100).max(96_000),
     core2Active: z.boolean(),

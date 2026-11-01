@@ -43,6 +43,41 @@ pub fn givens_householder_mix_8ch_f64(x: &[f64; 8], cos_psi: f64, sin_psi: f64) 
     out
 }
 
+/// Reference `f64` 16-channel (`Tier::Ultra`) Orthogonal Givens + Householder mixing matrix $\mathbf{U}_{16}(\psi, \boldsymbol{\phi})$ (`CL-08`):
+/// Applies intra-group $2 \times 2$ Givens rotations $(\cos\psi, \sin\psi)$, cross-group pairwise Givens
+/// rotations coupling `(m, m+8)` for $m \in 0..8$, and the $16 \times 16$ Householder reflection
+/// $\mathbf{H}_{16} = \mathbf{I}_{16} - \frac{1}{8}\mathbf{1}\mathbf{1}^\top$.
+pub fn givens_householder_mix_16ch_f64(
+    x: &[f64; 16],
+    cos_psi: f64,
+    sin_psi: f64,
+    cross_cos: &[f64; 8],
+    cross_sin: &[f64; 8],
+) -> [f64; 16] {
+    let mut g_rot = [0.0_f64; 16];
+    for p in 0..8 {
+        let i0 = p * 2;
+        let i1 = i0 + 1;
+        g_rot[i0] = cos_psi * x[i0] - sin_psi * x[i1];
+        g_rot[i1] = sin_psi * x[i0] + cos_psi * x[i1];
+    }
+    for m in 0..8 {
+        let a = g_rot[m];
+        let b = g_rot[m + 8];
+        let c = cross_cos[m];
+        let s = cross_sin[m];
+        g_rot[m] = c * a - s * b;
+        g_rot[m + 8] = s * a + c * b;
+    }
+    let sum: f64 = g_rot.iter().sum();
+    let sub = 0.125 * sum;
+    let mut out = [0.0_f64; 16];
+    for i in 0..16 {
+        out[i] = g_rot[i] - sub;
+    }
+    out
+}
+
 /// Reference `f64` single-sample Coercive-Saturating Lyapunov loop step with exact gain-normalized
 /// $5\text{ Hz}$ DC blocker (`CL-09`, `CL-10`, `CL-11`, `Test 4`).
 #[inline]

@@ -1,7 +1,9 @@
 import {
   clampNumber,
+  clampTierToMaxSupported,
   type DnamAudioHost,
   type DnamBackendAcceleration,
+  type DnamModelTier,
   type DnamTelemetrySnapshot,
 } from "@dnam-project/ui";
 import { StudioIpcClient } from "./ipc.js";
@@ -9,6 +11,10 @@ import { StudioIpcClient } from "./ipc.js";
 export interface TauriNativeAudioHostOptions {
   readonly backend?: DnamBackendAcceleration | undefined;
   readonly sampleRateHz?: number | undefined;
+  readonly initialTier?: DnamModelTier | undefined;
+  readonly maxSupportedTier?: DnamModelTier | undefined;
+  readonly offlineBounce?: boolean | undefined;
+  readonly maximizeTierOnBounce?: boolean | undefined;
   readonly ipcClient?: StudioIpcClient | undefined;
 }
 
@@ -23,11 +29,19 @@ export class TauriNativeAudioHost implements DnamAudioHost {
   private readonly parameters = new Map<string, number>();
   private readonly switches = new Map<string, number>();
   private readonly listeners = new Set<(snapshot: DnamTelemetrySnapshot) => void>();
+  private activeTier: DnamModelTier;
+  private maxSupportedTier: DnamModelTier;
+  private offlineBounce: boolean;
+  private maximizeTierOnBounce: boolean;
   private telemetryState: DnamTelemetrySnapshot;
 
   public constructor(options: TauriNativeAudioHostOptions = {}) {
     this.backend = options.backend ?? "arm-sme";
     this.ipcClient = options.ipcClient ?? new StudioIpcClient();
+    this.maxSupportedTier = options.maxSupportedTier ?? "ultra";
+    this.activeTier = clampTierToMaxSupported(options.initialTier ?? "full", this.maxSupportedTier);
+    this.offlineBounce = options.offlineBounce ?? false;
+    this.maximizeTierOnBounce = options.maximizeTierOnBounce ?? true;
     const sr = options.sampleRateHz ?? 48_000;
     this.telemetryState = {
       sampleRateHz: sr,
@@ -43,7 +57,63 @@ export class TauriNativeAudioHost implements DnamAudioHost {
       mahalanobisR2: 0.35,
       activeTrustRegionAlpha: 0.96,
       bypassActive: false,
+      activeTier: this.activeTier,
+      effectiveTier:
+        this.offlineBounce && this.maximizeTierOnBounce ? this.maxSupportedTier : this.activeTier,
+      maxSupportedTier: this.maxSupportedTier,
+      offlineBounce: this.offlineBounce,
+      maximizeTierOnBounce: this.maximizeTierOnBounce,
     };
+  }
+
+  private syncTierTelemetry(): void {
+    this.telemetryState = {
+      ...this.telemetryState,
+      activeTier: this.activeTier,
+      effectiveTier:
+        this.offlineBounce && this.maximizeTierOnBounce ? this.maxSupportedTier : this.activeTier,
+      maxSupportedTier: this.maxSupportedTier,
+      offlineBounce: this.offlineBounce,
+      maximizeTierOnBounce: this.maximizeTierOnBounce,
+    };
+    this.notify();
+  }
+
+  public getTier(): DnamModelTier {
+    return this.activeTier;
+  }
+
+  public setTier(tier: DnamModelTier): void {
+    this.activeTier = clampTierToMaxSupported(tier, this.maxSupportedTier);
+    this.syncTierTelemetry();
+  }
+
+  public getMaxSupportedTier(): DnamModelTier {
+    return this.maxSupportedTier;
+  }
+
+  public setMaxSupportedTier(tier: DnamModelTier): void {
+    this.maxSupportedTier = tier;
+    this.activeTier = clampTierToMaxSupported(this.activeTier, this.maxSupportedTier);
+    this.syncTierTelemetry();
+  }
+
+  public getOfflineBounce(): boolean {
+    return this.offlineBounce;
+  }
+
+  public setOfflineBounce(enabled: boolean): void {
+    this.offlineBounce = enabled;
+    this.syncTierTelemetry();
+  }
+
+  public getMaximizeTierOnBounce(): boolean {
+    return this.maximizeTierOnBounce;
+  }
+
+  public setMaximizeTierOnBounce(enabled: boolean): void {
+    this.maximizeTierOnBounce = enabled;
+    this.syncTierTelemetry();
   }
 
   public getParameter(id: string): number {

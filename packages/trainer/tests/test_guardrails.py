@@ -59,10 +59,10 @@ def test_progressive_disclosure_agents_md_byte_limits() -> None:
 
 
 def test_clamp_registry_cl01_to_cl18_documented() -> None:
-    """Verifies that `docs/clamp_and_audit_registry.md` documents `CL-01` through `CL-18`."""
+    """Verifies that `docs/clamp_and_audit_registry.md` documents `CL-01` through `CL-20`."""
     reg_doc = MONOREPO_ROOT / "docs" / "clamp_and_audit_registry.md"
     text = reg_doc.read_text(encoding="utf-8")
-    for idx in range(1, 19):
+    for idx in range(1, 21):
         tag = f"CL-{idx:02d}"
         assert tag in text, f"Missing clamp ID {tag} in {reg_doc}"
 

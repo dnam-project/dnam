@@ -2,14 +2,17 @@
 //! `ChaCha20` 64B cache-line arena encryption, Dual-Mechanism Buyer Watermarking (`Test 8H`),
 //! and 160-D structural hash functions.
 
-use dnam_engine::container::{seal_dnam_container, unseal_dnam_container};
+use dnam_engine::container::{
+    ARENA_OFFSET_FULL_END, ARENA_OFFSET_LITE_END, ARENA_OFFSET_PRO_END, ARENA_OFFSET_ULTRA_END,
+    seal_dnam_container, unseal_dnam_container,
+};
 use dnam_engine::provenance::{
-    RGLRU_TOTAL_CHANNELS, RustCryptoProvider, STRUCTURAL_HASH_DIM, TARDOS_CONV_WEIGHTS,
-    apply_isometric_gauge_watermark, apply_tardos_watermark_4608, build_creator_signing_message,
-    build_marketplace_receipt_signing_message, chacha20_xor_arena_blocks,
-    compute_immutable_header_sha256, decode_hex_array, encode_hex, extract_structural_hash_160d,
-    generate_tardos_code_4608, score_tardos_watermark_4608, sha256_digest,
-    structural_cosine_similarity, verify_oem_device_certificate,
+    RGLRU_TOTAL_CHANNELS, RustCryptoProvider, STRUCTURAL_HASH_DIM, STRUCTURAL_HASH_TIER_DIM,
+    TARDOS_CONV_WEIGHTS, apply_isometric_gauge_watermark, apply_tardos_watermark_7680,
+    build_creator_signing_message, build_marketplace_receipt_signing_message,
+    chacha20_xor_arena_blocks, compute_immutable_header_sha256, decode_hex_array, encode_hex,
+    extract_structural_hash_224d, generate_tardos_code_7680, score_tardos_watermark_7680,
+    sha256_digest, structural_cosine_similarity, verify_oem_device_certificate,
 };
 use dnam_engine::schema::{DnamJsonHeader, MarketplaceReceipt, OemDeviceCertificate};
 
@@ -83,16 +86,16 @@ pub fn chacha20_xor_arena_core(
     Ok(buf)
 }
 
-/// Applies Mechanism A (48-channel RG-LRU reciprocal scaling + SO(4) SVD head rotation) to `arena_bytes`.
+/// Applies Mechanism A (64-channel RG-LRU reciprocal scaling + SO(4) SVD head rotation) to `arena_bytes`.
 pub fn apply_isometric_gauge_watermark_core(
     arena_bytes: &[u8],
-    kappa_48: &[f32],
+    kappa: &[f32],
     q_buyer_flat_16: &[f32],
 ) -> Result<Vec<u8>, String> {
-    if kappa_48.len() != RGLRU_TOTAL_CHANNELS {
+    if kappa.len() != 48 && kappa.len() != RGLRU_TOTAL_CHANNELS {
         return Err(format!(
-            "[DNAM-VALIDATION] kappa48 must have {RGLRU_TOTAL_CHANNELS} elements, got {}",
-            kappa_48.len()
+            "[DNAM-VALIDATION] kappa must have 48 or {RGLRU_TOTAL_CHANNELS} elements, got {}",
+            kappa.len()
         ));
     }
     if q_buyer_flat_16.len() != 16 {
@@ -102,7 +105,7 @@ pub fn apply_isometric_gauge_watermark_core(
         ));
     }
     let mut kappa_arr = [1.0_f32; RGLRU_TOTAL_CHANNELS];
-    kappa_arr.copy_from_slice(kappa_48);
+    kappa_arr[..kappa.len()].copy_from_slice(kappa);
     let mut q_arr = [[0.0_f32; 4]; 4];
     for r in 0..4 {
         q_arr[r].copy_from_slice(&q_buyer_flat_16[r * 4..(r + 1) * 4]);
@@ -114,7 +117,7 @@ pub fn apply_isometric_gauge_watermark_core(
     Ok(buf)
 }
 
-/// Generates a 4,608-chip Tardos binary spread-spectrum watermark code `{-1.0, +1.0}^4608`.
+/// Generates a 7,680-chip Tardos binary spread-spectrum watermark code `{-1.0, +1.0}^7680`.
 pub fn generate_tardos_code_core(
     marketplace_secret_32: &[u8],
     model_id: &str,
@@ -126,68 +129,86 @@ pub fn generate_tardos_code_core(
             marketplace_secret_32.len()
         )
     })?;
-    let code = generate_tardos_code_4608(secret, model_id, license_id);
+    let code = generate_tardos_code_7680(secret, model_id, license_id);
     Ok(code.to_vec())
 }
 
-/// Embeds Mechanism B (4,608-weight Tardos spread-spectrum watermark) into `arena_bytes`.
+/// Embeds Mechanism B (7,680-weight Tardos spread-spectrum watermark) into `arena_bytes`.
 pub fn apply_tardos_watermark_core(
     arena_bytes: &[u8],
-    code_4608: &[f32],
+    code: &[f32],
     epsilon: f32,
 ) -> Result<Vec<u8>, String> {
-    if code_4608.len() != TARDOS_CONV_WEIGHTS {
+    if code.len() != 4608 && code.len() != TARDOS_CONV_WEIGHTS {
         return Err(format!(
-            "[DNAM-VALIDATION] Tardos code must have {TARDOS_CONV_WEIGHTS} elements, got {}",
-            code_4608.len()
+            "[DNAM-VALIDATION] Tardos code must have 4608 or {TARDOS_CONV_WEIGHTS} elements, got {}",
+            code.len()
         ));
     }
     let mut code_arr = [1.0_f32; TARDOS_CONV_WEIGHTS];
-    code_arr.copy_from_slice(code_4608);
+    code_arr[..code.len()].copy_from_slice(code);
 
     let mut buf = arena_bytes.to_vec();
-    apply_tardos_watermark_4608(&mut buf, &code_arr, epsilon)
+    apply_tardos_watermark_7680(&mut buf, &code_arr, epsilon)
         .map_err(|e| format_tagged_dnam_error(&e))?;
     Ok(buf)
 }
 
-/// Computes the Tardos matched-filter Z-score (`sigma`) of `suspect_arena` against `master_arena` and `code_4608`.
+/// Computes the Tardos matched-filter Z-score (`sigma`) of `suspect_arena` against `master_arena` and `code`.
 pub fn score_tardos_watermark_core(
     master_arena: &[u8],
     suspect_arena: &[u8],
-    code_4608: &[f32],
+    code: &[f32],
 ) -> Result<f64, String> {
-    if code_4608.len() != TARDOS_CONV_WEIGHTS {
+    if code.len() != 4608 && code.len() != TARDOS_CONV_WEIGHTS {
         return Err(format!(
-            "[DNAM-VALIDATION] Tardos code must have {TARDOS_CONV_WEIGHTS} elements, got {}",
-            code_4608.len()
+            "[DNAM-VALIDATION] Tardos code must have 4608 or {TARDOS_CONV_WEIGHTS} elements, got {}",
+            code.len()
         ));
     }
     let mut code_arr = [1.0_f32; TARDOS_CONV_WEIGHTS];
-    code_arr.copy_from_slice(code_4608);
+    code_arr[..code.len()].copy_from_slice(code);
 
-    score_tardos_watermark_4608(master_arena, suspect_arena, &code_arr)
+    score_tardos_watermark_7680(master_arena, suspect_arena, &code_arr)
         .map_err(|e| format_tagged_dnam_error(&e))
 }
 
-/// Extracts the 160-Dimensional Gauge-Invariant Structural Hash vector `f_struct in R^160` from `arena_bytes`.
+/// Extracts the prefix-composable `4 × 56-D = 224-D` Gauge-Invariant Structural Hash vector from `arena_bytes`.
 pub fn extract_structural_hash_core(arena_bytes: &[u8]) -> Result<Vec<f64>, String> {
-    let vec160 =
-        extract_structural_hash_160d(arena_bytes).map_err(|e| format_tagged_dnam_error(&e))?;
-    Ok(vec160.to_vec())
-}
-
-/// Computes the cosine similarity `cos(a, b) in [-1, +1]` between two 160-D structural hash vectors.
-pub fn structural_cosine_similarity_core(a: &[f64], b: &[f64]) -> Result<f64, String> {
-    if a.len() != STRUCTURAL_HASH_DIM || b.len() != STRUCTURAL_HASH_DIM {
+    if arena_bytes.len() < ARENA_OFFSET_LITE_END as usize {
         return Err(format!(
-            "[DNAM-VALIDATION] Structural hash vectors must have length {STRUCTURAL_HASH_DIM}"
+            "[DNAM-VALIDATION] arena_bytes length ({}) < ARENA_OFFSET_LITE_END ({ARENA_OFFSET_LITE_END})",
+            arena_bytes.len()
         ));
     }
+    let vec224 =
+        extract_structural_hash_224d(arena_bytes).map_err(|e| format_tagged_dnam_error(&e))?;
+    let tiers = if arena_bytes.len() >= ARENA_OFFSET_ULTRA_END as usize {
+        4
+    } else if arena_bytes.len() >= ARENA_OFFSET_PRO_END as usize {
+        3
+    } else if arena_bytes.len() >= ARENA_OFFSET_FULL_END as usize {
+        2
+    } else {
+        1
+    };
+    Ok(vec224[..tiers * STRUCTURAL_HASH_TIER_DIM].to_vec())
+}
+
+/// Computes the cosine similarity `cos(a, b) in [-1, +1]` between two prefix-composable structural hash vectors.
+pub fn structural_cosine_similarity_core(a: &[f64], b: &[f64]) -> Result<f64, String> {
+    let valid_len =
+        |n: usize| n > 0 && n <= STRUCTURAL_HASH_DIM && n.is_multiple_of(STRUCTURAL_HASH_TIER_DIM);
+    if !valid_len(a.len()) || !valid_len(b.len()) {
+        return Err(format!(
+            "[DNAM-VALIDATION] Structural hash vectors must have length 56, 112, 168, or {STRUCTURAL_HASH_DIM}"
+        ));
+    }
+    let common = a.len().min(b.len());
     let mut a_arr = [0.0_f64; STRUCTURAL_HASH_DIM];
     let mut b_arr = [0.0_f64; STRUCTURAL_HASH_DIM];
-    a_arr.copy_from_slice(a);
-    b_arr.copy_from_slice(b);
+    a_arr[..common].copy_from_slice(&a[..common]);
+    b_arr[..common].copy_from_slice(&b[..common]);
     Ok(structural_cosine_similarity(&a_arr, &b_arr))
 }
 

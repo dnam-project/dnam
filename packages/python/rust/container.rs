@@ -3,9 +3,11 @@
 
 use std::collections::BTreeMap;
 
+use dnam_engine::Tier;
 use dnam_engine::container::{
     ARENA_OFFSET_ULTRA_END, DnamContainerView, ZohRescaledParams, build_dnam_container,
-    crc32c_compute, pack_uplo_u_f64, unpack_uplo_u_f64, update_header_in_place, uplo_u_packed_len,
+    crc32c_compute, pack_uplo_u_f64, strip_container_to_tier, unpack_uplo_u_f64,
+    update_header_in_place, uplo_u_packed_len,
 };
 use dnam_engine::control::{ControlClampDescriptor, MAX_CONTROLS};
 use dnam_engine::provenance::{RustCryptoProvider, decode_hex_array};
@@ -128,11 +130,13 @@ pub fn native_validate_container<'py>(
     dict.set_item("json_header_byte_len", p.json_header_byte_len)?;
     dict.set_item("tensor_arena_offset", p.tensor_arena_offset)?;
     dict.set_item("tensor_arena_byte_len", p.tensor_arena_byte_len)?;
-    dict.set_item("arena_offset_lite_end", p.arena_offset_lite_end)?;
-    dict.set_item("arena_offset_full_end", p.arena_offset_full_end)?;
-    dict.set_item("arena_offset_ultra_end", p.arena_offset_ultra_end)?;
+    dict.set_item("arena_offset_lite_end", p.arena_offset_lite_end())?;
+    dict.set_item("arena_offset_full_end", p.arena_offset_full_end())?;
+    dict.set_item("arena_offset_pro_end", p.arena_offset_pro_end())?;
+    dict.set_item("arena_offset_ultra_end", p.arena_offset_ultra_end())?;
     dict.set_item("arena_crc32c_lite", p.arena_crc32c_lite)?;
     dict.set_item("arena_crc32c_full", p.arena_crc32c_full)?;
+    dict.set_item("arena_crc32c_pro", p.arena_crc32c_pro)?;
     dict.set_item("arena_crc32c_ultra", p.arena_crc32c_ultra)?;
     dict.set_item("num_ckpt_stems", p.num_ckpt_stems)?;
     dict.set_item("control_decimation", p.control_decimation)?;
@@ -316,6 +320,19 @@ pub fn native_update_header_in_place<'py>(
     Ok(PyBytes::new(py, &buf))
 }
 
+/// Strips a `.dnam` container down to `max_tier` (`0 = Lite`, `1 = Full`, `2 = Pro`, `3 = Ultra`)
+/// without modifying the JSON header, preserving valid `Ed25519` creator and marketplace signatures.
+#[pyfunction]
+pub fn native_strip_container_to_tier<'py>(
+    py: Python<'py>,
+    container_bytes: &[u8],
+    max_tier: u8,
+) -> PyResult<Bound<'py, PyBytes>> {
+    let tier = Tier::from_u8(max_tier);
+    let stripped = strip_container_to_tier(container_bytes, tier).map_err(dnam_err_to_py)?;
+    Ok(PyBytes::new(py, &stripped))
+}
+
 /// Evaluates 3-Phase control clamping (`[CLAMP-RANGE]`, `[CLAMP-SWITCH]`, `[CLAMP-STABILITY]`)
 /// for a `controls_schema` JSON array and a list of `(control_id, raw_float_or_switch_idx)` pairs.
 #[pyfunction]
@@ -463,6 +480,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(native_build_container, m)?)?;
     m.add_function(wrap_pyfunction!(native_build_reference_container, m)?)?;
     m.add_function(wrap_pyfunction!(native_update_header_in_place, m)?)?;
+    m.add_function(wrap_pyfunction!(native_strip_container_to_tier, m)?)?;
     m.add_function(wrap_pyfunction!(native_clamp_controls, m)?)?;
     m.add_function(wrap_pyfunction!(native_compute_zoh, m)?)?;
     m.add_function(wrap_pyfunction!(native_pack_uplo_u_f64, m)?)?;
