@@ -36,8 +36,6 @@ DNAM is organized as a multi-language workspace under `packages/*`. Before modif
 | **PyTorch 4-Stage Trainer (`dnam_trainer`)** | `packages/trainer/` | [`packages/trainer/AGENTS.md`](packages/trainer/AGENTS.md) | [`packages/trainer/CONTRIBUTING.md`](packages/trainer/CONTRIBUTING.md) |
 | **Design System & Visualizers (`@dnam-project/ui`)** | `packages/ui/` | [`packages/ui/AGENTS.md`](packages/ui/AGENTS.md) | [`packages/ui/CONTRIBUTING.md`](packages/ui/CONTRIBUTING.md) |
 | **CLI & Desktop Studio (`@dnam-project/studio`)** | `packages/studio/` | [`packages/studio/AGENTS.md`](packages/studio/AGENTS.md) | [`packages/studio/CONTRIBUTING.md`](packages/studio/CONTRIBUTING.md) |
-| **VST3 / CLAP / Standalone Plugin** | `packages/plugin/` | *(Phase 4)* | [`docs/monorepo_implementation_guide.md`](docs/monorepo_implementation_guide.md) |
-| **Web Docs & Interactive Studio** | `packages/web/` | *(Phase 5)* | [`docs/monorepo_implementation_guide.md`](docs/monorepo_implementation_guide.md) |
 
 ---
 
@@ -144,7 +142,6 @@ Never copy mathematical equations, clamp tables (`CL-XX`), or JSON schemas into 
 | **`.dnam` / `.dnam-ckpt` 64B preamble, JSON header schema, SoA arena offsets, or ZOH** | [`docs/dnam_container_schema.md`](docs/dnam_container_schema.md) |
 | **JCS SHA-256, `Ed25519` signatures, `ChaCha20` encryption, or Buyer Watermarking** | [`docs/digital_marketplace_and_provenance.md`](docs/digital_marketplace_and_provenance.md) |
 | **4-Stage PyTorch curriculum, `uplo='U'` Gram matrices, or iterative stem expansion** | [`docs/training_and_iterative_resume.md`](docs/training_and_iterative_resume.md) |
-| **Package deliverables, FFI contracts, or implementation phases** | [`docs/monorepo_implementation_guide.md`](docs/monorepo_implementation_guide.md) |
 | **Verification tests (`Test 1`–`Test 10`) or repository guardrails** | [`docs/verification_and_guardrails.md`](docs/verification_and_guardrails.md) |
 
 ---

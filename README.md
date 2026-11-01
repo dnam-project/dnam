@@ -78,7 +78,7 @@ See [`docs/architecture_overview.md` §3](docs/architecture_overview.md#3-compar
 
 Start with [`AGENTS.md`](AGENTS.md) and [`docs/index.md`](docs/index.md):
 
-1. **[Master Index & Agent Implementation Roadmap](docs/index.md)**
+1. **[Canonical Specification Index (`docs/index.md`)](docs/index.md)**
 2. **[Complete DNAM Architecture Design Specification (`architecture_design.md`)](docs/architecture_design.md)**
 3. **[Empirical Verification Integration Suite (`test_dnam_verification.py`)](packages/trainer/tests/integration/test_dnam_verification.py)**
 4. **[DNAM Architecture Overview & 18 Verified Breakthroughs](docs/architecture_overview.md)**
@@ -89,8 +89,7 @@ Start with [`AGENTS.md`](AGENTS.md) and [`docs/index.md`](docs/index.md):
 9. **[Non-Stop 3-Phase Control-Space Audit & Clamp Registry (`CL-01`..`CL-20`)](docs/clamp_and_audit_registry.md)**
 10. **[`.dnam` Container Schema & Continuous-Time ZOH Sample-Rate Rescaling](docs/dnam_container_schema.md)**
 11. **[Digital Marketplace Architecture, Split-Payload `Ed25519` Signatures & Traitor-Tracing Watermarks](docs/digital_marketplace_and_provenance.md)**
-12. **[Monorepo Implementation Blueprint (Web Docs, Python, Native DSP, Plugin & Node.js WASM)](docs/monorepo_implementation_guide.md)**
-13. **[Empirical Verification Suite (8 Test Suites) & Automated Guardrails](docs/verification_and_guardrails.md)**
+12. **[Empirical Verification Suite (8 Test Suites) & Automated Guardrails](docs/verification_and_guardrails.md)**
 
 ---
 

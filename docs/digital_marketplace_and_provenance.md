@@ -471,7 +471,7 @@ flowchart LR
 
 1. **Unified Frontend & Edge Backend (`packages/web`):**
    - **Framework:** **`Astro 5` + `@astrojs/cloudflare` + `@astrojs/starlight` + `@astrojs/react` (React 19)** with **`Tailwind CSS v4`**, **`shadcn/ui`** (`@base-ui/react`), **`lucide-react`**, and `<ClientRouter />` (`transition:persist="dnam-audio-engine"` + `nanostores`).
-   - **Per-Route `COOP` / `COEP` Isolation:** Middleware (`src/middleware.ts`) applies `Cross-Origin-Opener-Policy: same-origin` and `Cross-Origin-Embedder-Policy: credentialless` on `/playground` and `/explore` so [`DnamWorkletNode`](monorepo_implementation_guide.md#42-packaged-nodejs--webaudio-engine-library-packagesjs--phase-2b) unlocks `SharedArrayBuffer` atomics and $60\text{ fps}$ `Seqlock` telemetry.
+   - **Per-Route `COOP` / `COEP` Isolation:** Middleware (`src/middleware.ts`) applies `Cross-Origin-Opener-Policy: same-origin` and `Cross-Origin-Embedder-Policy: credentialless` on `/playground` and `/explore` so [`DnamWorkletNode`](../packages/js/README.md) unlocks `SharedArrayBuffer` atomics and $60\text{ fps}$ `Seqlock` telemetry.
 2. **Stateless Edge `.dnam-seal` (`b"DNSL"`) Generation (`POST /api/oem/v1/seal`, `0` R2 Storage Multiplication):**
    - Rather than pre-storing encrypted copies per device, `dnam-masters-private` stores only **1 canonical creator-signed Master `.dnam` (`40,320 B`) per model**.
    - When Darkglass Suite or a user requests an `EnclaveSealed` download (`POST /api/oem/v1/seal`), the Cloudflare Worker:

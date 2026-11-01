@@ -6,7 +6,7 @@
 
 | Subsystem / Module | Scoped `AGENTS.md` | Canonical Spec (SSOT) |
 | :--- | :--- | :--- |
-| **Root & Engine** (`lib.rs`, `types.rs`, `engine.rs`, `dynamic.rs`, `memory.rs`, `ffi.rs`) | [`AGENTS.md`](AGENTS.md) | [`monorepo_implementation_guide.md`](../../docs/monorepo_implementation_guide.md) |
+| **Root & Engine** (`lib.rs`, `types.rs`, `engine.rs`, `dynamic.rs`, `memory.rs`, `ffi.rs`) | [`AGENTS.md`](AGENTS.md) | [`architecture_overview.md`](../../docs/architecture_overview.md) |
 | **Hardware SIMD & Math** (`src/math.rs`, `src/math/*`) | [`src/math/AGENTS.md`](src/math/AGENTS.md) | [`core1_hybrid_ssm_and_polyadaa.md`](../../docs/core1_hybrid_ssm_and_polyadaa.md) |
 | **Core 1: `PolyADAA` & RG-LRU** (`src/core1.rs`, `src/core1/*`) | [`src/core1/AGENTS.md`](src/core1/AGENTS.md) | [`core1_hybrid_ssm_and_polyadaa.md`](../../docs/core1_hybrid_ssm_and_polyadaa.md) |
 | **Core 2: Diffusive `M-UFDN`** (`src/core2.rs`, `src/core2/*`) | [`src/core2/AGENTS.md`](src/core2/AGENTS.md) | [`core2_modulated_ufdn.md`](../../docs/core2_modulated_ufdn.md) |

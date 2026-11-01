@@ -14,4 +14,4 @@
 ## 2. Guides & Verification
 
 1. [`CONTRIBUTING.md`](CONTRIBUTING.md) — Dual-target Rust build (`moon run js:build`), Biome runtime boundary rules, Vitest workflow (`moon check js`), and coverage/benchmarks.
-2. [`README.md`](README.md) & [`monorepo_implementation_guide.md`](../../docs/monorepo_implementation_guide.md) — TypeScript/WebAudio API reference.
+2. [`README.md`](README.md) & [`index.md`](../../docs/index.md) — TypeScript/WebAudio API reference and canonical specifications.

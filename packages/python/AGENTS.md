@@ -15,4 +15,4 @@
 ## 2. Guides & Verification
 
 1. [`CONTRIBUTING.md`](CONTRIBUTING.md) — Dual-layer FFI architecture, strict `pyrefly` typing, Pydantic `_construct_trusted` hot-path rules, and `moon check python` verification workflow.
-2. [`README.md`](README.md) & [`monorepo_implementation_guide.md`](../../docs/monorepo_implementation_guide.md) — Python API reference and specification.
+2. [`README.md`](README.md) & [`index.md`](../../docs/index.md) — Python API reference and canonical specifications.
