@@ -109,7 +109,7 @@ When writing inline math (`$...$`) in prose paragraphs or display equations (`$$
 ## 5. Maintaining the Requirement (`REQ-1.1`–`REQ-8.8`) & Clamp (`CL-01`–`CL-20`) Registries (`G-03`)
 
 1. **System Requirements Registry ([`overview/system_goals_and_requirements.md`](overview/system_goals_and_requirements.md)):**
-   - Every requirement must appear as a canonical Markdown table row beginning with `| **\`REQ-X.Y\`** |` under its respective Goal (`REQ-1.1`–`REQ-1.8`, `REQ-2.1`–`REQ-2.4`, `REQ-3.1`–`REQ-3.3`, `REQ-4.1`–`REQ-4.3`, `REQ-5.1`–`REQ-5.6`, `REQ-6.1`–`REQ-6.3`, `REQ-7.1`–`REQ-7.3`, `REQ-8.1`–`REQ-8.8`; 38 total requirements).
+   - Every requirement must appear as a canonical Markdown table row beginning with `| **\`REQ-X.Y\`** |` under its respective Goal (`REQ-1.1`–`REQ-1.8`, `REQ-2.1`–`REQ-2.5`, `REQ-3.1`–`REQ-3.3`, `REQ-4.1`–`REQ-4.3`, `REQ-5.1`–`REQ-5.6`, `REQ-6.1`–`REQ-6.3`, `REQ-7.1`–`REQ-7.4`, `REQ-8.1`–`REQ-8.8`; 40 total requirements).
    - If a new requirement is added or renumbered, update `expected_counts` in [`tests/test_guardrails.py`](../tests/test_guardrails.py) and update cross-references in [`docs/index.md`](index.md) and [`verification/verification_and_guardrails.md`](verification/verification_and_guardrails.md).
 2. **Clamp & Audit Registry ([`training/clamp_and_audit_registry.md`](training/clamp_and_audit_registry.md)):**
    - Every clamp (`CL-01` through `CL-20`) must appear as a canonical Markdown table row beginning with `| **\`CL-XX\`** |` and must specify at least one backtick-quoted target Python module path `` `packages/.../*.py` `` that exists on disk, alongside its corresponding Rust engine module path.

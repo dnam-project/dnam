@@ -54,10 +54,11 @@ def test_clamp_and_requirement_registries_documented() -> None:
     1. `docs/CONTRIBUTING.md` exists and documents specification authoring standards.
     2. `docs/training/clamp_and_audit_registry.md` documents `CL-01`..`CL-20` with existing target
        module paths on disk.
-    3. `docs/overview/system_goals_and_requirements.md` documents all 38 requirements
-       (`REQ-1.1`..`REQ-8.8`, including complex full-rig modeling `REQ-1.5`, single-run slimmable
-       tier training `REQ-5.1`..`REQ-5.6`, and model/marketplace security `REQ-8.1`..`REQ-8.8`)
-       with zero implementation-specific tokens.
+    3. `docs/overview/system_goals_and_requirements.md` documents all 40 requirements
+       (`REQ-1.1`..`REQ-8.8`, including complex full-rig modeling `REQ-1.5`, MIDI/host tempo sync
+       & rhythmic subdivision `REQ-2.5`, single-run slimmable tier training `REQ-5.1`..`REQ-5.6`,
+       mono/true-stereo channel topologies `REQ-7.4`, and model/marketplace security
+       `REQ-8.1`..`REQ-8.8`) with zero implementation-specific tokens.
     """
     docs_contributing = MONOREPO_ROOT / "docs" / "CONTRIBUTING.md"
     assert docs_contributing.is_file(), f"Missing documentation guide: {docs_contributing}"
@@ -76,7 +77,7 @@ def test_clamp_and_requirement_registries_documented() -> None:
 
     goals_doc = MONOREPO_ROOT / "docs" / "overview" / "system_goals_and_requirements.md"
     goals_text = goals_doc.read_text(encoding="utf-8")
-    expected_counts = {1: 8, 2: 4, 3: 3, 4: 3, 5: 6, 6: 3, 7: 3, 8: 8}
+    expected_counts = {1: 8, 2: 5, 3: 3, 4: 3, 5: 6, 6: 3, 7: 4, 8: 8}
     for goal_idx, max_sub in expected_counts.items():
         for sub_idx in range(1, max_sub + 1):
             req_tag = f"REQ-{goal_idx}.{sub_idx}"
@@ -97,6 +98,15 @@ def test_clamp_and_requirement_registries_documented() -> None:
         "royalty_splits",
         "allowed_protection_profiles",
         "allowed_oem_vendors",
+        "output head",
+        "output-head",
+        "SIMD lane",
+        "Hann-windowed",
+        "JSON header",
+        "mono_only",
+        "CL-0",
+        "CL-1",
+        "CL-2",
     )
     for impl_tok in forbidden_impl_tokens:
         assert impl_tok not in prose_without_link_targets, (
