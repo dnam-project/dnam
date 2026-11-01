@@ -129,8 +129,9 @@ DNAM enforces a **Progressive-Disclosure Documentation Architecture** and a **Si
      - **Package architecture invariants, compiler/runtime flags (`#[forbid(unsafe_code)]`, `zerocopy`, `torch.autocast`, `pyrefly`), workbench setup, and verification commands (`moon check <pkg>`)** $\to$ Offload to `packages/<pkg>/CONTRIBUTING.md`.
      - **Public API examples and CLI command/flag references** $\to$ Offload to `packages/<pkg>/README.md`.
      - **Directory-level module growth** $\to$ Delegate file-level routing rows to a subsystem `AGENTS.md` (e.g., `src/<subsystem>/AGENTS.md`) and link the subsystem from the parent `packages/<pkg>/AGENTS.md`.
-4. **Zero Inline LaTeX Math Inside Markdown Tables (`G-04`):**
+4. **Zero Inline LaTeX Math Inside Markdown Tables (`G-04`) & ASCII Layouts for Dense Maps:**
    - GitHub's MathJax renderer wraps inline math (`$...$`) inside Markdown table cells (`<th>` / `<td>`) in scrollable containers that display horizontal scrollbars. Never use `$...$` inside Markdown table rows; use plain text, Unicode symbols (`≤`, `≥`, `×`, `→`, `↔`, `Δ`, `σ`, `∈`), or inline code spans (`` `...` ``).
+   - Prefer monospaced ASCII box-drawing diagrams (` ```text `) over Markdown tables or prose whenever fixed-width spatial alignment displays information more clearly (such as multi-arena parameter budgets, `64B` cache-line field layouts, hierarchical MAC ledgers, and SIMD lane grids); see [`docs/CONTRIBUTING.md` §4.5](docs/CONTRIBUTING.md#45-preferring-monospaced-ascii-diagrams-over-markdown-tables--prose).
 
 ### 5.2 Single-Source-of-Truth (SSOT) Documentation Map
 

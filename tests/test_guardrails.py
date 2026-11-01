@@ -184,6 +184,13 @@ def test_valid_github_latex_math_across_docs() -> None:
                     f"Unquoted special characters in Mermaid flowchart label {unquoted_labels} "
                     f"at {md_path}:{line_no}"
                 )
+                invalid_bidir_labels = re.findall(
+                    r"<(?:--|==)\s+[^->=\n]+\s+(?:-->|==>)", mermaid_block
+                )
+                assert not invalid_bidir_labels, (
+                    f"Invalid inline label in bidirectional Mermaid arrow {invalid_bidir_labels} "
+                    f"(use '<-->|\"...\"|' or '<==>|\"...\"|') at {md_path}:{line_no}"
+                )
 
 
 def _github_heading_slugs(md_path: Path) -> set[str]:

@@ -15,11 +15,11 @@ Every document in [`docs/`](index.md) is part of an authoritative engineering sp
 | **1. Single Source of Truth (SSOT)** | Every mathematical derivation, psychoacoustic metric (`bESR`), stability clamp (`CL-01`–`CL-20`), binary wire layout (`.dnam`, `.dnam-ckpt`, `.dnam-seal`), and functional requirement (`REQ-1.1`–`REQ-8.8`) is defined **exactly once** in its canonical `docs/` file and referenced via relative Markdown links elsewhere. |
 | **2. Zero Duplication Across `AGENTS.md` & `README.md`** | Never copy equations, clamp tables, or JSON schemas into `AGENTS.md` routing maps or package `README.md` files. Place normative specifications in `docs/` and link to the exact section anchor. |
 | **3. Progressive Disclosure** | Readers enter through [`docs/index.md`](index.md) and navigate from implementation-agnostic goals (`overview/`) to concrete subsystem specifications (`dsp/`, `training/`, `containers/`, `security/`, `verification/`). |
-| **4. Crisp Engineering-Manual Prose Style** | Write in a direct, normative engineering-specification voice—**never** narrative essays or dense walls of text. Decompose multi-faceted concepts into structured Markdown comparison/property tables, numbered execution lifecycles, concise invariant lists, numbered display equations, and GitHub callout alerts (`> [!NOTE]`, `> [!IMPORTANT]`, `> [!WARNING]`). |
-| **5. Diagram-First Visual Communication** | **Strongly prefer Mermaid diagrams (`flowchart`, `sequenceDiagram`, `stateDiagram-v2`) over text-heavy descriptions** whenever specifying signal-flow topologies, dual-rate (`48 kHz` / `3 kHz`) execution lifecycles, training stages, state machines, binary container layouts, or security/marketplace protocols. Pair every diagram with a concise reference table rather than repeating the flow in long prose paragraphs. |
+| **4. Crisp Engineering-Manual Prose Style** | Write in a direct, normative engineering-specification voice—**never** narrative essays or dense walls of text. Decompose multi-faceted concepts into structured ASCII layout diagrams, Markdown comparison/property tables, numbered execution lifecycles, concise invariant lists, numbered display equations, and GitHub callout alerts (`> [!NOTE]`, `> [!IMPORTANT]`, `> [!WARNING]`). |
+| **5. Visual Communication (Mermaid Graphs + ASCII Layouts)** | Use **Mermaid diagrams (`flowchart`, `sequenceDiagram`, `stateDiagram-v2`)** for signal-flow topologies, dual-rate (`48 kHz` / `3 kHz`) execution lifecycles, training stages, and state machines. **Prefer monospaced ASCII diagrams (` ```text `) over Markdown tables or prose** whenever fixed-width spatial alignment displays information more clearly—such as parameter budget and binary container maps, `64B` cache-line field layouts, hierarchical MAC/compute ledgers, SIMD register/lane grids, and 2D block-matrix partitions. |
 
 > [!TIP]
-> **Rule of Thumb for Prose Density:** If a paragraph exceeds 4–5 lines or enumerates more than three parallel items (such as tiers, regimes, stages, binary fields, or failure modes), refactor it into a **Mermaid diagram + structured Markdown table**.
+> **Rule of Thumb for Prose Density & Table Readability:** If a paragraph exceeds 4–5 lines or enumerates more than three parallel items, refactor it into a **Mermaid diagram**, **monospaced ASCII diagram**, or **concise Markdown table**. Whenever a Markdown table would wrap numeric shapes/offsets across multiple lines, require `<br/>` lists inside cells, or need horizontal section dividers (e.g., multi-arena parameter budgets or cache-line struct maps), **prefer an ASCII box-drawing diagram (` ```text `) instead of a Markdown table**.
 
 ---
 
@@ -61,7 +61,7 @@ DNAM strictly separates **what the system must achieve** from **how the Tri-Phys
 
 ---
 
-## 4. Formatting, Mermaid Diagrams & GitHub MathJax LaTeX Rules (`G-04`, `G-05`, `G-08`)
+## 4. Formatting, Mermaid Diagrams, ASCII Layouts & GitHub MathJax LaTeX Rules (`G-04`, `G-05`, `G-08`)
 
 All Markdown files across the repository are validated on every test run by [`tests/test_guardrails.py`](../tests/test_guardrails.py). Follow these formatting rules to ensure clean rendering on GitHub and zero guardrail failures:
 
@@ -71,7 +71,7 @@ Every major specification section that describes a system architecture, signal c
 
 | Subject Matter | Preferred Mermaid Diagram Type | Canonical Example |
 | :--- | :--- | :--- |
-| **DSP signal flow, multi-block cascades, training pipelines, container arena layouts, or directory graphs** | `flowchart TD` or `flowchart LR` with labeled `subgraph` blocks | [`tri_physics_architecture.md` §1.1](overview/tri_physics_architecture.md#11-system-signal-flow-diagram), [`dnam_binary_format.md` §1](containers/dnam_binary_format.md#1-hybrid-binary-container-wire-framing---50-ns-zero-json-hardware-fast-path) |
+| **DSP signal flow, multi-block cascades, training pipelines, high-level container arena flows, or directory graphs** | `flowchart TD` or `flowchart LR` with labeled `subgraph` blocks | [`tri_physics_architecture.md` §1.1](overview/tri_physics_architecture.md#11-system-signal-flow-diagram), [`dnam_binary_format.md` §1](containers/dnam_binary_format.md#1-hybrid-binary-container-wire-framing---50-ns-zero-json-hardware-fast-path) |
 | **Dual-rate (`48 kHz` / `3 kHz`) execution loops, calibration handshakes, TrustZone unsealing, or storefront APIs** | `sequenceDiagram` with `autonumber`, `alt`/`else`, and `loop` blocks | [`tri_physics_architecture.md` §1.2](overview/tri_physics_architecture.md#12-dual-rate-48-khz-audio-vs-3-khz-control-execution-lifecycle), [`provenance_and_enclave_drm.md` §3.2](security/provenance_and_enclave_drm.md#32-end-to-end-dnam-seal-bdnsl-sealing--hardware-trustzone-unsealing-flow) |
 | **Bypass spillover (`Trails`), dual-mode delay transitions, or lifecycle state machines** | `stateDiagram-v2` with explicit transition guards | [`tri_physics_architecture.md` §3.3](overview/tri_physics_architecture.md#33-polarity-corrected-host-parallel-blend--spillover-trails-state-machine) |
 
@@ -103,6 +103,19 @@ When writing inline math (`$...$`) in prose paragraphs or display equations (`$$
 
 - Every relative file link and `#section-anchor` fragment across `README.md`, `AGENTS.md`, `CONTRIBUTING.md`, `CLA.md`, `docs/**/*.md`, `tests/**/*.md`, and `packages/**/*.md` is checked against the filesystem and GitHub's heading slug algorithm by `test_relative_markdown_links_resolve()`.
 - When renaming a section heading in `docs/`, always search for `#old-heading-slug` across the repository and update all incoming links.
+
+### 4.5 Preferring Monospaced ASCII Diagrams Over Markdown Tables & Prose
+
+While Mermaid diagrams handle topological graphs and state flows, **monospaced ASCII diagrams (` ```text ... ``` `) should be preferred over Markdown tables or prose whenever fixed-width spatial alignment displays information more clearly**:
+
+| Use Case | Why ASCII (` ```text `) Beats Markdown Tables / Prose | Canonical Example |
+| :--- | :--- | :--- |
+| **Multi-arena parameter budget maps & binary container directories** | Provides full-width title banners, horizontal `+---+---+` dividers between arenas and subtotals, and zero mid-token line wrapping of tensor shapes (`[3, 16, 4, 4]`) or byte offsets (`10,752..22,336`) | [`u_pra_architecture.md` §7.3](overview/u_pra_architecture.md#73-parameter-budget--64b-aligned-packing-within-64000-b-container), [`dnam_binary_format.md` §1](containers/dnam_binary_format.md#1-hybrid-binary-container-wire-framing---50-ns-zero-json-hardware-fast-path) |
+| **Cache-line (`64B`) & binary struct field breakdowns** | Preserves multi-line indented struct field lists and byte ranges inside visually separated cache-line blocks without `<br/>` clutter | [`u_pra_architecture.md` §7.3.1–§7.3.2](overview/u_pra_architecture.md#731-detailed-cache-line-breakdown-of-arena0_literouter_and_pre_bus-4-cl--256-b), [`provenance_and_enclave_drm.md` §3.2](security/provenance_and_enclave_drm.md#32-end-to-end-dnam-seal-bdnsl-sealing--hardware-trustzone-unsealing-flow) |
+| **Hierarchical MAC / compute accounting ledgers** | Aligns nested stage sub-items, dashed summation bars (`---`), and right-justified operation totals into a scannable engineering ledger | [`u_pra_architecture.md` §7.2](overview/u_pra_architecture.md#72-computational-efficiency--backbone-mac-reduction-ge-21times) |
+| **SIMD vector lane grids, ring-buffer memory bars & 2D block matrices** | Directly visualizes 2D register lanes (`NEON 128-bit`), contiguous memory partitions (`[Main Delay ∣ All-Pass Ring]`), and block-matrix quadrants (`W_(L->L)`, `W_(L->R)`) | [`u_pra_architecture.md` §2.4.1](overview/u_pra_architecture.md#241-simd-lane-packing-avx2--arm-neon) |
+
+Use standard **Markdown tables** when presenting flat registries (`REQ-1.1`–`REQ-8.8`, `CL-01`–`CL-20`) or compact 3–6 column property comparisons where cells are short and do not require horizontal section dividers or multi-line nested field lists.
 
 ---
 
