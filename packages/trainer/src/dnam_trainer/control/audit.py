@@ -417,7 +417,7 @@ def format_consolidated_prescription_report(
     controls_schema: Sequence[ControlSchemaDef] = (),
 ) -> str:
     """Formats the Consolidated Post-Training Audit & Stem Prescription Report
-    (`docs/clamp_and_audit_registry.md` §2)."""
+    (`docs/training/clamp_and_audit_registry.md` §1)."""
     lines: list[str] = [
         "=" * 78,
         "DNAM NON-STOP 3-PHASE CONTROL-SPACE AUDIT & STEM PRESCRIPTION REPORT",

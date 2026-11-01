@@ -1,7 +1,8 @@
 """64-Byte Cache-Line Aligned `Arena 0..3` Tensor Packer, Unpacker & Signed Container Builder.
 
 Matches the exact byte offsets required by:
-- [`docs/dnam_container_schema.md`](../../../../../docs/dnam_container_schema.md)
+- [`dnam_binary_format.md`](../../../../../docs/containers/dnam_binary_format.md)
+- [`checkpoint_and_cache_format.md`](../../../../../docs/containers/checkpoint_and_cache_format.md)
 - `packages/engine/src/container/view.rs` (`10,752 B` Lite, `22,336 B` Full, `36,224 B` Ultra)
 - `packages/engine/src/provenance/watermark.rs` (`rglru_soa_byte_offset`, `W_head`, `b_head`,
 `P_svd`, `M-UFDN` delays, and 4,608 dilated conv weights)

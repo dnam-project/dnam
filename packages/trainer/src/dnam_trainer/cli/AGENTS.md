@@ -6,6 +6,6 @@
 
 | File | Responsibility | Canonical Spec |
 | :--- | :--- | :--- |
-| [`__init__.py`](__init__.py) | `cyclopts` `dnam-train` entrypoint (`main`) | [`training_and_iterative_resume.md`](../../../../docs/training_and_iterative_resume.md) |
-| [`worker.py`](worker.py) | File-backed JSON job runner (`--request-json`, `--checkpoint-in`, `--output-dnam`, `--output-ckpt`, `--reports-dir`) & `--status-json` probe | [`training_and_iterative_resume.md`](../../../../docs/training_and_iterative_resume.md) |
-| [`observers.py`](observers.py) | `JsonlTrainingObserver`, `SseTrainingObserver` & `RichTrainingObserver` | [`clamp_and_audit_registry.md`](../../../../docs/clamp_and_audit_registry.md) |
+| [`__init__.py`](__init__.py) | `cyclopts` `dnam-train` entrypoint (`main`) | [`four_stage_pipeline.md`](../../../../../docs/training/four_stage_pipeline.md) |
+| [`worker.py`](worker.py) | File-backed JSON job runner (`--request-json`, `--checkpoint-in`, `--output-dnam`, `--output-ckpt`, `--reports-dir`) & `--status-json` probe | [`iterative_resume_and_caching.md`](../../../../../docs/training/iterative_resume_and_caching.md) |
+| [`observers.py`](observers.py) | `JsonlTrainingObserver`, `SseTrainingObserver` & `RichTrainingObserver` | [`clamp_and_audit_registry.md`](../../../../../docs/training/clamp_and_audit_registry.md) |

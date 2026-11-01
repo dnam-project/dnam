@@ -5,7 +5,8 @@
 //! `.dnam-ckpt` `Arena 4` column-major upper-triangular (`uplo='U'`) sufficient statistics packing,
 //! and Continuous-Time Zero-Order Hold (ZOH) sample-rate rescaling ($44.1\text{--}96\text{ kHz}$ live,
 //! plus $4\times$ internal ZOH oversampling for offline bounce)
-//! from [`docs/dnam_container_schema.md`](../../../docs/dnam_container_schema.md).
+//! from [`docs/containers/dnam_binary_format.md`](../../../docs/containers/dnam_binary_format.md)
+//! and [`docs/containers/checkpoint_and_cache_format.md`](../../../docs/containers/checkpoint_and_cache_format.md).
 
 pub mod ckpt;
 pub mod preamble;

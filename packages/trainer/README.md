@@ -24,6 +24,7 @@ dnam-train \
 
 ## Architecture Documentation
 
-- [`docs/training_and_iterative_resume.md`](../../docs/training_and_iterative_resume.md)
-- [`docs/clamp_and_audit_registry.md`](../../docs/clamp_and_audit_registry.md)
-- [`docs/verification_and_guardrails.md`](../../docs/verification_and_guardrails.md)
+- [`docs/training/four_stage_pipeline.md`](../../docs/training/four_stage_pipeline.md)
+- [`docs/training/iterative_resume_and_caching.md`](../../docs/training/iterative_resume_and_caching.md)
+- [`docs/training/clamp_and_audit_registry.md`](../../docs/training/clamp_and_audit_registry.md)
+- [`docs/verification/verification_and_guardrails.md`](../../docs/verification/verification_and_guardrails.md)

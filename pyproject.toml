@@ -84,6 +84,7 @@ src = [
     "packages/python/tests",
     "packages/trainer/src",
     "packages/trainer/tests",
+    "tests",
 ]
 
 [tool.ruff.lint]
@@ -108,17 +109,19 @@ project-includes = [
     "packages/python/tests",
     "packages/trainer/src",
     "packages/trainer/tests",
+    "tests",
 ]
 search-path = [
     "packages/python/src",
     "packages/python/tests",
     "packages/trainer/src",
     "packages/trainer/tests",
+    "tests",
 ]
 
 [tool.pytest.ini_options]
-testpaths = ["packages/python/tests", "packages/trainer/tests"]
-pythonpath = ["packages/python/tests", "packages/trainer/tests"]
+testpaths = ["packages/python/tests", "packages/trainer/tests", "tests"]
+pythonpath = ["packages/python/tests", "packages/trainer/tests", "tests"]
 addopts = "-ra --strict-markers --benchmark-disable --import-mode=importlib"
 
 [tool.coverage.run]

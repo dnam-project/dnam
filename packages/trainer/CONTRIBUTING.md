@@ -5,7 +5,7 @@ This guide covers development, numerical precision, hardware acceleration, and v
 ## 1. Core Architectural & Numerical Invariants
 
 1. **Enforce Registered Clamps (`CL-01`–`CL-20`):**
-   - Every differentiable DSP layer (`dsp/`), control basis (`control/`), and Kronecker solver (`training/kronecker_head.py`) must enforce its assigned clamps from [`docs/clamp_and_audit_registry.md`](../../docs/clamp_and_audit_registry.md) and reference the `CL-XX` identifier in module docstrings/comments so `test_guardrails.py` verifies 100% registry integrity.
+   - Every differentiable DSP layer (`dsp/`), control basis (`control/`), and Kronecker solver (`training/kronecker_head.py`) must enforce its assigned clamps from [`docs/training/clamp_and_audit_registry.md`](../../docs/training/clamp_and_audit_registry.md) and reference the `CL-XX` identifier in module docstrings/comments so [`tests/test_guardrails.py`](../../tests/test_guardrails.py) (`G-03`) verifies 100% registry integrity.
 2. **32-Bit Device Tensors + Batched Host-CPU `float64` Normal Equations (`accelerator.py` & `numerics.py`):**
    - Device tensors across `dsp/` and `training/` use only 32-bit types natively shared by Apple Silicon MPS and Google Cloud TPU: `float32`, `int32`, `bool`, `complex64`, plus `int8`/`int16` storage-only and capability-probed `bfloat16` contractions. **Never allocate `float64`, `complex128`, or `int64` (`torch.long`) tensors on any accelerator device.**
    - Stateful IIR recurrences and fractional delay interpolators (`PolyADAA` $R_{\text{ac}} = 0.9993$, `SelectiveRgLru` $r \le 0.9995$, `ModulatedUfdn` Lagrange delay & Lyapunov loop) must execute in IEEE-754 `float32` (`torch.autocast(enabled=False)`) so 7-bit `bf16` mantissas never round $0.9995 \to 1.0000$.

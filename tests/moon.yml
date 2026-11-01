@@ -1,0 +1,132 @@
+$schema: "https://moonrepo.dev/schemas/project.json"
+
+id: "tests"
+language: "python"
+layer: "automation"
+stack: "systems"
+tags:
+  - "python"
+  - "tests"
+  - "guardrails"
+
+project:
+  name: "dnam-tests"
+  description: "Monorepo-wide documentation, specification, clamp registry, and progressive-disclosure guardrail tests for DNAM"
+
+dependsOn:
+  - "python"
+
+tasks:
+  format:
+    type: "run"
+    command: "uv"
+    args:
+      - "run"
+      - "--no-sync"
+      - "ruff"
+      - "format"
+      - "tests"
+    deps:
+      - "python:build"
+    options:
+      runFromWorkspaceRoot: true
+      cache: false
+      runInCI: false
+    tags:
+      - "format"
+
+  format-check:
+    command: "uv"
+    args:
+      - "run"
+      - "--no-sync"
+      - "ruff"
+      - "format"
+      - "--check"
+      - "tests"
+    deps:
+      - "python:build"
+    inputs:
+      - "**/*"
+      - "/pyproject.toml"
+      - "/uv.lock"
+    options:
+      runFromWorkspaceRoot: true
+    tags:
+      - "quality"
+      - "format"
+
+  lint:
+    command: "uv"
+    args:
+      - "run"
+      - "--no-sync"
+      - "ruff"
+      - "check"
+      - "tests"
+    deps:
+      - "python:build"
+    inputs:
+      - "**/*"
+      - "/pyproject.toml"
+      - "/uv.lock"
+    options:
+      runFromWorkspaceRoot: true
+    tags:
+      - "quality"
+      - "lint"
+
+  typecheck:
+    command: "uv"
+    args:
+      - "run"
+      - "--no-sync"
+      - "pyrefly"
+      - "check"
+      - "--min-severity=warn"
+      - "tests"
+    deps:
+      - "python:build"
+    inputs:
+      - "**/*"
+      - "/pyproject.toml"
+      - "/uv.lock"
+    options:
+      runFromWorkspaceRoot: true
+    tags:
+      - "quality"
+      - "typecheck"
+
+  build:
+    type: "build"
+    command: "noop"
+    deps:
+      - "python:build"
+    tags:
+      - "build"
+
+  test:
+    command: "uv"
+    args:
+      - "run"
+      - "--no-sync"
+      - "pytest"
+      - "tests"
+    deps:
+      - "python:build"
+    inputs:
+      - "**/*"
+      - "/AGENTS.md"
+      - "/README.md"
+      - "/CONTRIBUTING.md"
+      - "/CLA.md"
+      - "/docs/**/*.md"
+      - "/packages/**/*.md"
+      - "/packages/python/src/**/*.py"
+      - "/packages/trainer/src/**/*.py"
+      - "/pyproject.toml"
+      - "/uv.lock"
+    options:
+      runFromWorkspaceRoot: true
+    tags:
+      - "test"

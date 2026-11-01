@@ -1,7 +1,7 @@
 //! Core 1: 12-Layer Hybrid Dilated-Conv (`1x B-Spline PolyADAA`) + `SelectiveRgLru` Stack (`core1.rs`).
 //!
-//! Implements Subsystem 1 from [`docs/core1_hybrid_ssm_and_polyadaa.md`](../../../docs/core1_hybrid_ssm_and_polyadaa.md)
-//! and [`docs/dnam_container_schema.md` §2](../../../docs/dnam_container_schema.md#2-five-hardware-loading-optimizations--50-ns-zero-allocation-load):
+//! Implements Subsystem 1 from [`docs/dsp/core1_polyadaa_and_rglru.md`](../../../docs/dsp/core1_polyadaa_and_rglru.md)
+//! and [`docs/containers/dnam_binary_format.md` §2](../../../docs/containers/dnam_binary_format.md#2-five-hardware-loading-optimizations--50-ns-zero-allocation-load):
 //! - **4 Execution-Order Interleaved Blocks (`b = 0..3`):** Each block executes two causal dilated
 //!   convolutions ($K=6$, dilations $d \in [1, 3, 7, 19]$) with division-free algebraic `PolyADAA`
 //!   (`CL-01`, `CL-02`) followed by a Radial-Polar `SelectiveRgLru` complex resonator layer (`CL-03`..`CL-05`).

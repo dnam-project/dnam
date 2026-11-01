@@ -2,10 +2,10 @@
 and `.dnam-ckpt` `Arena 3` `uplo='U'` Sufficient-Statistics Accumulator (`Test 7B`, `Test 8G`).
 
 Implements the mathematical specifications from:
-- [`docs/clamp_and_audit_registry.md`](../../../../../docs/clamp_and_audit_registry.md) (`CL-18`)
-- [`docs/training_and_iterative_resume.md`](../../../../../docs/training_and_iterative_resume.md)
-§1.2, §1.4, §2
-- [`docs/dnam_container_schema.md`](../../../../../docs/dnam_container_schema.md) §6.2
+- [`clamp_and_audit_registry.md`](../../../../../docs/training/clamp_and_audit_registry.md)
+- [`four_stage_pipeline.md`](../../../../../docs/training/four_stage_pipeline.md)
+- [`iterative_resume_and_caching.md`](../../../../../docs/training/iterative_resume_and_caching.md)
+- [`checkpoint_and_cache_format.md`](../../../../../docs/containers/checkpoint_and_cache_format.md)
 """
 
 from __future__ import annotations

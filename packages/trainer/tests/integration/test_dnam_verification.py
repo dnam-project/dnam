@@ -1,5 +1,5 @@
-"""End-to-end architectural verification suite (`Tests 6-8H`) from
-`docs/verification_and_guardrails.md`."""
+"""End-to-end architectural verification suite (`Tests 6-8I`) from
+`docs/verification/verification_and_guardrails.md`."""
 
 from __future__ import annotations
 

@@ -1,16 +1,40 @@
-# `.dnam` & `.dnam-ckpt` Hybrid Binary Container Schema, Zero-Copy Hardware Loader & Continuous-Time ZOH Rescaling
+# `.dnam` Hybrid Binary Container, `< 50 ns` Zero-Copy Loader & Continuous-Time ZOH Rescaling
 
-Free from legacy NAM A2 text-JSON weight array constraints and Python `pickle` (`torch.save`) checkpoints, DNAM defines two companion **zero-copy, 64-byte cache-line and SIMD-aligned Hybrid Binary Container formats** engineered for **$< 50\text{ ns}$ `#[no_std]` hardware loading**:
+Free from legacy NAM A2 text-JSON weight array constraints and Python `pickle` (`torch.save`) checkpoints, DNAM defines three companion **zero-copy, 64-byte cache-line and SIMD-aligned Hybrid Binary Container formats** engineered for **$< 50\text{ ns}$ `#[no_std]` hardware loading**:
 
 1. **`.dnam` (Magic `b"DNAM"`, Version `1.0`):** The single-file real-time deployment container ($10.5\text{ KB}$ `Lite` / $21.8\text{ KB}$ `Full` / $35.4\text{ KB}$ `Pro` / $62.5\text{ KB}$ `Ultra` binary arena) loaded via zero-copy `mmap` or `Float32Array` view by the Rust SIMD engine (`packages/engine`), audio plugin (`packages/plugin`), Python wheel (`packages/python`), and Node.js/WASM runtime (`packages/js`), with support for `max_supported_tier` plugin ceiling (`CL-19`) and zero-re-signing container tier stripping (`strip_container_to_tier`).
-2. **`.dnam-ckpt` (Magic `b"DNCK"`, Version `1.1`):** The deduplicated, `pickle`-free single-file iterative training checkpoint (`1.1` when `Arena 5` calibration stats are present, `1.0` otherwise). Its leading tensor arenas (`Arena 0..3`, `64,000 B`) are **bit-for-bit identical** to the exported `.dnam` model, followed by `Arena 4` containing the tier-ordered **Column-Major Upper-Triangular (`uplo='U'`) `float64` audio sufficient statistics** $\lbrace \mathrm{pack}_{\text{U}}\big(\mathbf{G}_{\text{audio}}^{(s)}\big), \mathbf{C}_{\text{audio}}^{(s)} \rbrace$ (**$17.25\text{ KB/stem}$ `Lite` / $66.50\text{ KB/stem}$ `Full` / $147.75\text{ KB/stem}$ `Pro` / $261.00\text{ KB/stem}$ `Ultra`**—nearly $2\times$ smaller than full matrix storage and 100% 64-byte aligned), and optional `Arena 5` (`HAS_CALIB_STATS` bit `12`, magic `b"DNCA"`) containing portable per-input (`INPC`) and per-stem (`STMC`) calibration statistics (`~3.6 MB` at 30 stems $\times$ 30 s, stripped on `.dnam` export).
-3. **`.dnam-seal` (Magic `b"DNSL"`, Version `1.0`):** The 100% opaque, immutable 64-byte cache-line aligned OEM hardware wrapper (`DnamSealEnvelope`, `DnamProtectionProfile::EnclaveSealed`) that wraps an inner `ENCRYPTED_ARENA = 1` `.dnam` container (`cek_arena`) inside an outer `ChaCha20` + `X25519` `HPKE` binary envelope (`cek_outer`) for factory-attested hardware TrustZone enclaves (`OemDeviceCertificate`, see [`digital_marketplace_and_provenance.md` §3](digital_marketplace_and_provenance.md#3-pillar-2-hardware-enclave--oem-drm-oemdevicecertificate-attestation--dnam-seal-bdnsl-wrapper)).
+2. **`.dnam-ckpt` (Magic `b"DNCK"`, Version `1.1`):** The deduplicated, `pickle`-free single-file iterative training checkpoint (`1.1` when `Arena 5` calibration stats are present, `1.0` otherwise), specified in [`checkpoint_and_cache_format.md`](checkpoint_and_cache_format.md).
+3. **`.dnam-seal` (Magic `b"DNSL"`, Version `1.0`):** The 100% opaque, immutable 64-byte cache-line aligned OEM hardware wrapper (`DnamSealEnvelope`, `DnamProtectionProfile::EnclaveSealed`) that wraps an inner `ENCRYPTED_ARENA = 1` `.dnam` container (`cek_arena`) inside an outer `ChaCha20` + `X25519` `HPKE` binary envelope (`cek_outer`) for factory-attested hardware TrustZone enclaves (`OemDeviceCertificate`, see [`../security/provenance_and_enclave_drm.md` §3](../security/provenance_and_enclave_drm.md#3-pillar-2-hardware-enclave--oem-drm-oemdevicecertificate-attestation--dnam-seal-bdnsl-wrapper)).
 
 ---
 
 ## 1. Hybrid Binary Container Wire Framing & `< 50 ns` Zero-JSON Hardware Fast-Path
 
 Both `.dnam` and `.dnam-ckpt` share an identical three-region binary layout designed so **UI/host threads** can inspect human-readable JSON metadata in $< 0.05\text{ ms}$, while **real-time embedded DSP threads (`#[no_std]` Rust on Cortex-A76)** skip the JSON header entirely and cast the 64-byte aligned binary arena directly to `#[repr(C, align(64))]` structs in **$< 50\text{ ns}$ with zero heap allocations and zero string parsing**:
+
+```mermaid
+flowchart LR
+    subgraph Container ["Hybrid Binary Container (.dnam / .dnam-ckpt, 64-Byte Aligned)"]
+        direction TB
+        Preamble["Region 1 (0x0000..0x0040, 64 B):<br/>Fixed Binary Preamble (#[repr(C, align(64))])<br/>Magic DNAM/DNCK, Flags, SR, Offsets, 4 Tier Prefix End CLs & CRC32Cs"]
+        JsonHdr["Region 2 (0x0040..0x1000, 4 KB Page):<br/>UTF-8 JSON Header (metadata, controls_schema, presets, ui_hints)<br/>Space-padded (0x20) to 4,096 B OS Page Boundary for in-place edits"]
+        subgraph Arenas ["Region 3 (0x1000..EOF): Contiguous 64B-Aligned Binary Tensor Arenas"]
+            direction TB
+            A0["Arena 0: Lite Base Tier (C=4, M=4)<br/>0..10,752 B (168 CL)"]
+            A1["Arena 1: Full Delta Tier (+4 ch, +4 FDN)<br/>10,752..22,336 B (349 CL cumulative)"]
+            A2["Arena 2: Pro Delta Tier (+4 ch, +0 FDN)<br/>22,336..36,224 B (566 CL cumulative)"]
+            A3["Arena 3: Ultra Delta Tier (+4 ch, +8 FDN, Rank-8 FM, D_h=8)<br/>36,224..64,000 B (1,000 CL cumulative — .dnam EOF)"]
+            A4["Arena 4 (.dnam-ckpt only): Per-Stem Packed uplo='U' f64 Stats<br/>{pack_U(G_audio^(s)), C_audio^(s)} (267,264 B/stem Ultra)"]
+            A5["Arena 5 (.dnam-ckpt v1.1 w/ HAS_CALIB_STATS): Portable Calib<br/>Magic DNCA (64B INPC + 128B STMC records, stripped on .dnam export)"]
+            A0 --> A1 --> A2 --> A3 --> A4 --> A5
+        end
+        Preamble --> JsonHdr --> Arenas
+    end
+
+    UI["Host / UI / Storefront Thread"] -- "Reads (< 0.05 ms) & edits presets in-place" --> JsonHdr
+    DSP["#[no_std] Real-Time Audio Thread<br/>(< 50 ns zero-copy mmap / slice cast)"] -- "Reads 64B Preamble & jumps directly to 0x1000<br/>(Caps at max_supported_tier CL-19)" --> Preamble
+    DSP --> Arenas
+```
 
 ```text
 +-----------------------------------------------------------------------+ 0x0000 (Byte 0)
@@ -110,7 +134,7 @@ During the $48\text{ kHz}$ audio loop, Core 1 walks a **single monotonic pointer
 ### 2.3 Pre-Packed SIMD Structure-of-Arrays (`SoA`), Division-Free `ControlClampDescriptor` & Pop-Free 3-State DC Equilibrium
 
 1. **Zero-JSON Binary Header (`tier_gain_trim_lin`) & 64-Byte `ControlClampDescriptor` (`0 FDIV`, `0` String Parsing at $3\text{ kHz}$):**
-   - `Arena 0` begins with `core1_input_and_head_bias` (`128 B = 2 × 64 B` cache lines): Cache Line 0 holds the `4×4` stereo-to-4-channel input projection (`[x_mid, x_side, 0, 0] -> ch 0..3`); Cache Line 1 holds the stereo SVD head bias $\mathbf{b}_{\text{head}} \in \mathbb{R}^{(1+D_h) \times 2}$ (`10 × f32`), the **pre-computed linear loudness trims** `tier_gain_trim_lin: [f32; 3]` ($10^{\text{output-trim-db}/20}$ for `[Lite, Full, Ultra]`, enabling $0.00\text{ dB}$ LUFS tier switching in `#[no_std]` with `0 pow10f` calls), and `[mix_dry_gain, mix_wet_gain, r_ac_train]` (`3 × f32`).
+   - `Arena 0` begins with `core1_input_and_head_bias` (`128 B = 2 × 64 B` cache lines): Cache Line 0 holds the `4×4` stereo-to-4-channel input projection (`[x_mid, x_side, 0, 0] -> ch 0..3`); Cache Line 1 holds the stereo SVD head bias $\mathbf{b}_{\text{head}} \in \mathbb{R}^{(1+D_h) \times 2}$ (`10 × f32`), the **pre-computed linear loudness trims** `tier_gain_trim_lin: [f32; 4]` ($10^{\text{output-trim-db}/20}$ for `[Lite, Full, Pro, Ultra]`, enabling $0.00\text{ dB}$ LUFS tier switching in `#[no_std]` with `0 pow10f` calls), and `[mix_dry_gain, mix_wet_gain, r_ac_train]` (`3 × f32`).
    - `control_bus_and_clamp_table` begins with the binary `ControlClampDescriptor` array ($64\text{ B} = 1\text{ cache line}$ per control $p \in \lbrace 0 \dots P-1 \rbrace$), packing normalization and up to **3 binary switch-coupled conditional clamp rules** (`[CLAMP-STABILITY]`, `[CLAMP-DYNAMIC]`) into a single 64-byte L1D cache line:
      - `0x00..0x04`: `ctrl_kind: u8` (`0=range, 1=switch`), `lobatto_degree: u8` ($K_p \in \lbrace 0..3 \rbrace$), `active_options_mask: u16` (`[CLAMP-SWITCH]`).
      - `0x04..0x18`: `default_val: f32`, `safe_min_base: f32`, `safe_max_base: f32`, `scale_norm: f32` ($\frac{2}{u_{\text{decl-max}} - u_{\text{decl-min}}}$), `offset_norm: f32` ($-1 - u_{\text{decl-min}}\text{scale-norm}$).
@@ -125,12 +149,15 @@ During the $48\text{ kHz}$ audio loop, Core 1 walks a **single monotonic pointer
      eliminating both the 2-sample B-spline step transient and the $30\text{ ms}$ AC-coupling settling transient (**exact `0.000000` DC output from Sample 0, Sample 1, and all subsequent samples**).
 3. **Pre-Baked $f_{s,\text{train}}$ ($48\text{ kHz}$) Discrete Anchors in `SelectiveRgLru` (`128 B`) & Pre-Inverted Reciprocals in `core2_mufdn_soa` (`256 B`):**
    - `SelectiveRgLru` `SoA` (`32 floats = 128 B`) stores `[r_low_train, dr_span_train, theta0_rad_train, b_gamma_norm_train, w_sel, c_real, c_imag, u_rot_init_cos_sin]` where $\Delta r_c = r_{\text{high},c} - r_{\text{low},c}$ and $b_{\gamma,c} = b_c \sqrt{1 - \bar{r}_c^2}$.
-   - `core2_mufdn_soa` (`64 floats = 256 B` per 4 FDN lines at `6784..7040` in `Arena 0` and `20544..20800` in `Arena 1`) pre-stores `inv_sigma_knee = 1.0 / sigma_m` (`CL-10`), `two_over_3v_ceil = 2.0 / (3.0 * V_ceil_m)` (`CL-11`), `d_ap_samples_train`, `[psi_givens_train, r_dc_train, tau_ref_samples_train, switch_xfade_samples_train]`, and at relative byte offsets `208..256` (`48 B`) the learned **`WT-UFDN` grain & freeze weights** (`grain_len_tr[4]`, `grain_warp_rate[4]`, and `[grain_window_mix, grain_spray_samples, grain_feedback_mix, head_tap_inject_gain]` in `Arena 0` / `[freeze_alpha_default, onset_sync_thresh, 0.0, 0.0]` in `Arena 1`)—while `control_bus_and_clamp_table` (`7040..10752` in `Arena 0`) stores the `8 × 32` (`1,024 B`) $3\text{ kHz}$ state-space projection matrix `W_ctrl_core2` at `9216..10240`—so the $48\text{ kHz}$ Core 2 loop executes **zero `FDIV` instructions** and **loading at $f_{s,\text{host}} == f_{s,\text{train}}$ requires $0$ flops**.
+   - `core2_mufdn_soa` (`64 floats = 256 B` per 4 FDN lines at `6784..7040` in `Arena 0` and `20544..20800` in `Arena 1`) pre-stores:
+     - `inv_sigma_knee = 1.0 / sigma_m` (`CL-10`), `two_over_3v_ceil = 2.0 / (3.0 * V_ceil_m)` (`CL-11`), `d_ap_samples_train`, and `[psi_givens_train, r_dc_train, tau_ref_samples_train, switch_xfade_samples_train]`.
+     - At relative byte offsets `208..256` (`48 B`), the learned **`WT-UFDN` grain & freeze weights** (`grain_len_tr[4]`, `grain_warp_rate[4]`, and `[grain_window_mix, grain_spray_samples, grain_feedback_mix, head_tap_inject_gain]` in `Arena 0` / `[freeze_alpha_default, onset_sync_thresh, 0.0, 0.0]` in `Arena 1`).
+     - In `control_bus_and_clamp_table` (`7040..10752` in `Arena 0`), the `8 × 32` (`1,024 B`) $3\text{ kHz}$ state-space projection matrix `W_ctrl_core2` at `9216..10240`—so the $48\text{ kHz}$ Core 2 loop executes **zero `FDIV` instructions** and **loading at $f_{s,\text{host}} == f_{s,\text{train}}$ requires $0$ flops**.
 4. **Default-Anchored Base Weights ($\mathbf{W}_{\text{head},0}, \boldsymbol{\theta}_0$) for Instant Sample-0 Audio:**
    - Because each control's first Newton/Lobatto node $u_{p,1}$ is anchored at its `default` setting ($u_{p,1} = u_{p,\text{default}} \implies \tilde{\boldsymbol{\psi}}_p(u_{p,\text{default}}) \equiv \mathbf{0}$), the stored base head $\mathbf{W}_{\text{head},0}$ and base physical parameters $\boldsymbol{\theta}_0$ are **already the exact collapsed weights for the default preset at Sample 0**.
 5. **100% Automatic Subsystem Pruning, Dynamic Ring-Buffer Sizing & DAW Tail Reporting (`Zero User Config`):**
-   - **Only 1 User-Configurable Mode Flag (`output_mode`: `"stereo"` | `"mono"`):** The user only ever selects `stereo` or `mono` output (`STEREO_OUT` bit `8`; when `0`, the engine evaluates only channel 0 of the output head, saving 50% of head MACs on mono pedalboard blocks).
-   - **Automatic `CORE2_ACTIVE` & `LFO_ENV_ACTIVE` Bypass:** At export, if Stage-3 Group-Lasso ($L_{2,1}$) pruning zeroes out Core 2 (`M-UFDN`) on a pure amp/preamp/drive/pickup model, the trainer automatically clears `CORE2_ACTIVE` (`bit 6 = 0`) and sets `ring_buffer_pow2_log2 = 0`—dropping `Full` compute from $\sim 4,625$ to **$\sim 3,150\text{ MACs/sample}$ ($3.8\times$ faster than NAM A2)** and Core 2 RAM from **$208\text{ KB} \to 0\text{ KB}$** with zero user configuration.
+   - **Only 1 User-Configurable Mode Flag (`output_mode`: `"stereo"` | `"mono"`):** The user only ever selects `stereo` or `mono` output (`STEREO_OUT` bit `9`; when `0`, the engine evaluates only channel 0 of the output head, saving 50% of head MACs on mono pedalboard blocks).
+   - **Automatic `CORE2_ACTIVE` & `LFO_ENV_ACTIVE` Bypass:** At export, if Stage-3 Group-Lasso ($L_{2,1}$) pruning zeroes out Core 2 (`M-UFDN`) on a pure amp/preamp/drive/pickup model, the trainer automatically clears `CORE2_ACTIVE` (`bit 7 = 0`) and sets `ring_buffer_pow2_log2 = 0`—dropping `Full` compute from $\sim 4,625$ to **$\sim 3,150\text{ MACs/sample}$ ($3.8\times$ faster than NAM A2)** and Core 2 RAM from **$208\text{ KB} \to 0\text{ KB}$** with zero user configuration.
    - **Automatic `ring_buffer_pow2_log2` & `tail_time_ms`:** When Core 2 is active, the trainer automatically sets `ring_buffer_pow2_log2` from the Phase-3 `[CLAMP-DYNAMIC]` worst-case delay excursion (e.g., `10` $\to 1,024$ samples = `16 KB` for Chorus/Flanger vs. `15` $\to 32,768$ samples = `208 KB` for long delay) and computes `tail_time_ms` ($T_{60}$) and `latency_samples: 0` for VST3/CLAP host sleep/PDC management.
 
 ---
@@ -141,17 +168,17 @@ DNAM keeps the core `metadata` schema strictly to the **minimal essentials**, in
 
 1. **Minimal Standardized `metadata`:**
    - **Identity:** `name` (`str`), `author` (`str | null`), `description` (`str | null`), `license` (`str | null`), and `created_at` (`str`, ISO-8601 UTC timestamp).
-   - **Audio Calibration:** `input_reference_dbfs` (`float`, e.g., `-20.5`), paired with per-tier `loudness_lufs` (`float`), `output_trim_db` (`float`), `validation_esr_db` (`float`), and `prefix_crc32c` (`u32`) inside `slimmable_tiers` (`lite`, `full`, `ultra`) so switching tiers at runtime maintains exact $0.00\text{ dB}$ loudness parity.
+   - **Audio Calibration:** `input_reference_dbfs` (`float`, e.g., `-20.5`), paired with per-tier `loudness_lufs` (`float`), `output_trim_db` (`float`), `validation_esr_db` (`float`), and `prefix_crc32c` (`u32`) inside `slimmable_tiers` (`lite`, `full`, `pro`, `ultra`) so switching tiers at runtime maintains exact $0.00\text{ dB}$ loudness parity.
    - **Platform-Agnostic Content-Addressable `provenance`:**
      - `dataset_manifest_sha256` (`str`): SHA-256 over the sorted `(stem_id, input_pcm_sha256, target_pcm_sha256, controls_meta)` tuples, where `input_pcm_sha256` and `target_pcm_sha256` are computed over raw little-endian IEEE-754 `float32` PCM frames (independent of WAV/FLAC headers or OS paths).
      - `config_recipe_sha256` (`str | null`): Optional SHA-256 of the training configuration.
      - Enables self-contained $< 0.05\text{ ms}$ cache-freshness checks (with no sidecar `manifest.json`) and **zero-cost stem deduplication / in-place stem replacement** during `dnam-train --resume model.dnam-ckpt --add-stems ...`.
    - **Optional Split-Payload `Ed25519` `signatures` (`creator_signature` & `marketplace_receipt`):**
-     - Supports offline-verifiable, hardware-agnostic creator attribution and commercial marketplace licensing (see [§7](#7-hardware-agnostic-marketplace-security-split-payload-ed25519-signatures--isometric-gauge-space-traitor-tracing)), while excluding `presets` and `user_metadata` from the signed `immutable_header_sha256` digest so buyers can save custom DAW presets in-place without invalidating either signature.
+     - Supports offline-verifiable, hardware-agnostic creator attribution and commercial marketplace licensing (see [§6](#6-marketplace-security-signatures--hardware-drm-cross-reference)), while excluding `presets` and `user_metadata` from the signed `immutable_header_sha256` digest so buyers can save custom DAW presets in-place without invalidating either signature.
 2. **Intrinsic Per-Control `ui_hints` (Auto-Layout, Widget Archetypes & Midpoint-Anchored Skew):**
    Each control in `controls_schema` includes an optional `ui_hints` object describing **only the intrinsic visual and interaction properties of the modeled control** (keeping host/rig bindings like MIDI CCs, OSC paths, or hardware encoder slots out of the container):
    - **Section & Layout Ordering:**
-     - `section` (`str | null`, e.g., `"Preamp"`, `"Echo"`): Logical module grouping so plugins, `DnamPluginRack.tsx`, and multi-page hardware screens auto-group related controls cleanly.
+     - `section` (`str | null`, e.g., `"Preamp"`, `"Echo"`): Logical module grouping so DAW plugins, desktop/web rack hosts, and multi-page hardware screens auto-group related controls cleanly.
      - `order` (`int`, default `0`): Sort index within the section.
      - `size` (`"sm"` | `"md"` | `"lg"`, default `"md"`): Relative visual prominence (e.g., `"lg"` for a primary `Drive` or `Time` knob, `"sm"` for a secondary trimpot).
      - `color_hex` (`str | null`, e.g., `"#F59E0B"`): Optional accent color for the control arc, cap, or switch indicator.
@@ -465,164 +492,20 @@ The UTF-8 JSON header at byte offset `0x40` contains the model configuration, es
 
 ---
 
-## 6. Deduplicated `.dnam-ckpt` Schema & Column-Major Upper-Triangular Gram Packing (`uplo='U'`)
-
-### 6.1 Zero Weight Duplication & Zero `pickle` Vulnerability
-
-Unlike legacy checkpoints that store both an exported model dictionary and a redundant PyTorch `state_dict` via `torch.save` (`pickle`), `.dnam-ckpt` (`magic = b"DNCK"`):
-1. **Stores Model Weights Exactly Once (`Arena 0..3`):** The first `arena_offset_ultra_end` (`64,000`) bytes of the `.dnam-ckpt` tensor arena ARE the exact `Arena 0..3` runtime tensors of the `.dnam` model. Exporting a `.dnam` after a Tier-1 Kronecker stem addition updates the SVD head tensors in `Arena 0..3` and writes the prefix directly.
-2. **Eliminates Python `pickle`:** `.dnam-ckpt` is a pure Hybrid Binary Container (`DNCK` preamble + JSON metadata + `f32`/`f64` IEEE-754 arrays) that is 100% safe against arbitrary code execution and directly readable from Rust, Python, and TypeScript/WASM.
-
-### 6.2 Tier-Ordered Column-Major Upper-Triangular Packing (`uplo='U'`) for $\mathbf{G}_{\text{audio}}^{(s)}$
-
-For each recorded training stem $s \in \lbrace 1, \dots, S \rbrace$, let $\mathbf{\Phi}_s \in \mathbb{R}^{L_s \times N}$ ($N = 16C \in \lbrace 64, 128, 192, 256 \rbrace$) be the 16-tap unfolded Core 1 feature matrix, ordered by **Slimmable Tier**:
-- Indices `0..63`: `Lite` channels (`ch 0..3` $\times$ 16 taps)
-- Indices `64..127`: `Full` delta channels (`ch 4..7` $\times$ 16 taps)
-- Indices `128..191`: `Pro` delta channels (`ch 8..11` $\times$ 16 taps)
-- Indices `192..255`: `Ultra` delta channels (`ch 12..15` $\times$ 16 taps)
-
-Because the per-stem audio Gram matrix $\mathbf{G}_{\text{audio}}^{(s)} = \mathbf{\Phi}_s^\top \mathbf{\Phi}_s \in \mathbb{R}^{N \times N}$ is **symmetric positive semi-definite** ($\mathbf{G}_{i,j}^{(s)} = \mathbf{G}_{j,i}^{(s)}$), storing the full $N \times N$ matrix wastes $\frac{N(N-1)}{2}$ redundant `float64` entries (49.8% of the matrix). Instead, `Arena 4` packs the upper triangle ($0 \le i \le j < N$) in **Column-Major Order (`LAPACK uplo='U'`)**:
-
-$$\mathrm{pack}_{\text{U}}\big(\mathbf{G}_{\text{audio}}^{(s)}\big)\left[i + \frac{j(j + 1)}{2}\right] = \mathbf{G}_{\text{audio}}^{(s)}[i, j], \qquad 0 \le i \le j < N$$
+## 6. Marketplace Security, Signatures & Hardware DRM Cross-Reference
 
 > [!IMPORTANT]
-> **The Nested Principal Submatrix Prefix Theorem & Exact 64-Byte Cache Alignment:**
-> Because column-major upper-triangular index mapping $\text{idx}(i, j) = i + \frac{j(j+1)}{2}$ depends only on $i \le j$, the packed upper triangle of any leading principal submatrix of dimension $N_{\text{tier}} \in \lbrace 64, 128, 192, 256 \rbrace$ occupies the **exact contiguous prefix** $\big[0 \dots \frac{N_{\text{tier}}(N_{\text{tier}} + 1)}{2} - 1\big]$ of the `Ultra` packed array! Furthermore, every tier's packed $\mathrm{pack}_{\text{U}}(\mathbf{G}_{\text{audio}}^{(s)})$ and tier-ordered $\mathbf{C}_{\text{audio}}^{(s)} \in \mathbb{R}^{N \times 2}$ are **exact integer multiples of 64 bytes** with zero padding overhead:
+> **Canonical Marketplace & Provenance Specification:** See **[`../security/provenance_and_enclave_drm.md`](../security/provenance_and_enclave_drm.md)** and **[`../security/watermarking_and_marketplace.md`](../security/watermarking_and_marketplace.md)** for the complete 4-Pillar Security Architecture, 3 Container Protection Profiles (`Open`, `DeviceAllowlisted`, `EnclaveSealed`), creator-signed `DistributionPolicy`, `.dnam-seal` (`b"DNSL"`) 64-byte binary envelope, `OemDeviceCertificate` factory key attestation, Isometric Gauge-Space & Spread-Spectrum Tardos Traitor-Tracing proofs, and edge data model.
 
-| Slimmable Tier | Feature Dim `N = 16C` | Unpacked `G_audio^(s)` (`f64`) | Packed `pack_U(G_audio^(s))` (`f64`) | Cross-Corr `C_audio^(s)` (`f64`) | Total Per-Stem `Arena 4` Record | 64-Byte Cache Lines |
-| :--- | :---: | :---: | :---: | :---: | :---: | :---: |
-| **`Lite` (`C=4`)** | `N = 64` | `32,768 B` | `2,080 f64` = **`16,640 B`** | `128 f64` = **`1,024 B`** | **`17,664 B` (`17.25 KB/stem`)** | Exact `276 × 64 B` |
-| **`Full` (`C=8`)** | `N = 128` | `131,072 B` | `8,256 f64` = **`66,048 B`** | `256 f64` = **`2,048 B`** | **`68,096 B` (`66.50 KB/stem`)** | Exact `1,064 × 64 B` |
-| **`Pro` (`C=12`)** | `N = 192` | `294,912 B` | `18,528 f64` = **`148,224 B`** | `384 f64` = **`3,072 B`** | **`151,296 B` (`147.75 KB/stem`)** | Exact `2,364 × 64 B` |
-| **`Ultra` (`C=16`)** | `N = 256` | `524,288 B` | `32,896 f64` = **`263,168 B`** | `512 f64` = **`4,096 B`** | **`267,264 B` (`261.00 KB/stem`)** | Exact `4,176 × 64 B` |
-
-### 6.3 `.dnam-ckpt` JSON Header Extensions (`stems_registry` with Per-Stem PCM Provenance & `Arena 4` `CRC32C`)
-
-In addition to all standard `.dnam` JSON fields (`metadata`, `user_metadata`, `controls_schema`, `presets`, `tensor_directory`), a `.dnam-ckpt` JSON header sets `"container_kind": "dnam-ckpt"` and appends `stems_registry` and `audit_report`, recording each stem's **platform-agnostic IEEE-754 PCM SHA-256 digests** (`input_pcm_sha256`, `target_pcm_sha256`), per-stem `stem_arena3_crc32c` (`u32`, Castagnoli `CRC32C` over that stem's $267,264\text{ B}$ `Arena 4` record so individual stem replacements only recompute 1 stem's checksum), optional `user_metadata`, and 64-byte aligned slice inside `Arena 4`:
-
-```json
-{
-  "container_kind": "dnam-ckpt",
-  "stems_registry": [
-    {
-      "stem_id": "stem_00_noon",
-      "controls_meta": { "gain": 5.0, "feedback": 5.0, "boost": "off" },
-      "provenance": {
-        "input_pcm_sha256": "4b227777d4dd1fc61c6f884f48641d02b4d121d3fd328cb08b5531fcacdabf8a",
-        "target_pcm_sha256": "ef2d127de37b942baad06145e54b0c619a1f22327b2ebbcfbec78f5564afe39d",
-        "num_frames": 1440000
-      },
-      "stem_arena3_crc32c": 3194827105,
-      "user_metadata": {},
-      "extracted_physics": {
-        "delays_ms": [12.4, 19.8, 31.2, 47.5, 73.1, 112.0, 168.4, 245.0],
-        "lfo_freqs_hz": [0.85, 3.40],
-        "decay_gains_lin": [0.82, 0.81, 0.79, 0.78, 0.76, 0.75, 0.73, 0.70],
-        "detected_grain_size_ms": 0.0,
-        "detected_pitch_shift_semitones": 0.0
-      },
-      "g_audio_uplo_u_f64": {
-        "arena": 4,
-        "dtype": "f64",
-        "packing": "uplo_upper_col_major_tier_ordered",
-        "feature_dim": 256,
-        "packed_len": 32896,
-        "byte_offset": 64000,
-        "byte_length": 263168
-      },
-      "c_audio_tier_f64": {
-        "arena": 4,
-        "dtype": "f64",
-        "shape": [4, 64, 2],
-        "byte_offset": 327168,
-        "byte_length": 4096
-      }
-    }
-  ],
-  "audit_report": {
-    "phase1_clamps": ["CLAMP-RANGE", "CLAMP-SWITCH", "CLAMP-STABILITY"],
-    "phase2_rail_warnings": [],
-    "phase3_clamps": ["CLAMP-DYNAMIC"],
-    "prescriptions": [
-      "Add stems at gain=0.0 and gain=10.0 to lift [CLAMP-RANGE] on 'gain'",
-      "Add >= 1 stem with boost='ultra' to lift [CLAMP-SWITCH] on 'boost'",
-      "Add corner stem (feedback=10.0, boost='on') to lift [CLAMP-STABILITY] on 'feedback'"
-    ]
-  }
-}
-```
-
-### 6.4 `Arena 5` (`DNCA`, `HAS_CALIB_STATS` Bit 12) & Workspace `.dnam-cache` Sidecar
-
-When `HAS_CALIB_STATS` (Bit `12` = `0x1000`) is set in a `.dnam-ckpt` preamble (`version_major = 1, version_minor = 1`), `Arena 5` immediately follows `Arena 4` at 64-byte alignment and stores compact, portable calibration statistics (`magic = b"DNCA"`):
-
-1. **`DNCA` Arena Header (`64 B`, `align(64)`):**
-   - `magic = b"DNCA"`, `schema_version = 1`, `num_inputs` (`u16`), `num_stems` (`u16`), `total_byte_len` (`u64`, `% 64 == 0`), and `arena4_crc32c` (`u32`, Castagnoli `CRC32C` over the entire `DNCA` calibration payload with the checksum field zeroed).
-2. **Per-Input Calibration Record (`INPC`, `64 B` Header + 64B-Padded Payload):**
-   - Keyed by `input_pcm_sha256` (`32 B`), `sample_rate_hz` (`u32`), `num_samples` (`u32`), `num_seg_windows` (`u16`), `seg_feat_dim` (`u16`), `s1_in_dim` (`u16`), and `s1_out_dim` (`u16`).
-   - Stores per-window segmentation Gram matrices (`uplo='U'` `float32`) and Stage-1 orthonormal projector weights (`float32`), enabling instant DP regime segmentation (`segment_regimes_dp`) and Stage-1 basis projection on resume without re-evaluating full-length nonlinear sweeps.
-3. **Per-Stem Calibration Record (`STMC`, `128 B` Header + 64B-Padded Payload):**
-   - Keyed by `input_pcm_sha256` (`32 B`) and `target_pcm_sha256` (`32 B`), storing `measured_lag_samples` (`f32`), `silent_stem_flag` (`u8`), per-band silent-frame noise floors (`noise_floor_dbfs_broadband`, `noise_floor_dbfs_lf`, `noise_floor_dbfs_mf`, `noise_floor_dbfs_hf` in `f32`), per-band active body energies (`band_energy_broadband/lf/mf/hf` in `f32`), per-window segmentation cross-correlations (`float32`), and the `8,192`-tap causal Wiener LTI impulse response (`float32`).
-   - Automatically stripped when exporting a runtime `.dnam` container (`version_major = 1, version_minor = 0`, `HAS_CALIB_STATS = 0`).
-4. **Workspace Sidecar (`models/<id>/.dnam-cache/*.dnce`):**
-   - Paired with a local, gitignored, 64-byte aligned memory-mappable sidecar cache (`SidecarCacheStore` in `calib_cache.py`, managed via `dnam cache status` and `dnam cache clear`) that uses a measured read-vs-regenerate bandwidth cost model, supports stage-level crash resume, enforces a `16 GB` default workspace quota (`~3 GB` floor), and cleans up intermediate stage entries automatically upon training completion.
-
----
-
-## 7. 4-Pillar Marketplace Security, Creator `DistributionPolicy`, `.dnam-seal` (`DNSL`) Hardware DRM & Isometric Gauge Traitor Tracing
-
-> [!IMPORTANT]
-> **Canonical Marketplace Specification:** See **[`digital_marketplace_and_provenance.md`](digital_marketplace_and_provenance.md)** for the complete 4-Pillar Security Architecture, 3 Container Protection Profiles (`Open`, `DeviceAllowlisted`, `EnclaveSealed`), creator-signed `DistributionPolicy`, `.dnam-seal` (`b"DNSL"`) 64-byte binary envelope, `OemDeviceCertificate` factory key attestation, Isometric Gauge-Space & Spread-Spectrum Tardos Traitor-Tracing proofs, and `TiDB Cloud Starter` schema.
+### 6.1 Preset-Safe Split-Payload `Ed25519` Certificate Chain (`< 80 µs` Offline Verification)
 
 To support commercial model distribution across open desktop DAWs (`Open`), device-bound desktop/mobile plugins (`DeviceAllowlisted`, `ENCRYPTED_ARENA = 1`), and factory-attested OEM hardware pedalboards (`EnclaveSealed`, `.dnam-seal` `b"DNSL"`), `.dnam` defines an optional creator-signed `metadata.distribution_policy` and `metadata.signatures` envelope (`HAS_SIGNATURES` bit `10` in preamble `flags`):
 
-1. **Preset-Safe `immutable_header_sha256`, 4-Tier `tier_arena_sha256`, Creator `DistributionPolicy` & 2-Certificate `Ed25519` Delegation Chain (`< 80 µs` Offline UI Verification, See [`digital_marketplace_and_provenance.md` §2](digital_marketplace_and_provenance.md#2-pillar-1-cryptographic-provenance-ed25519-split-payload-chain--creator-signed-distributionpolicy)):**
-   - `immutable_header_sha256` hashes the RFC 8785 canonical JSON header **including** `metadata.distribution_policy` (`allowed_protection_profiles`, `allowed_oem_vendors` supporting `"darkglass"` and `"darkglass:anagram_rk3582"`) while **excluding** `presets`, `user_metadata`, `metadata.signatures`, and `slimmable_tiers.*.prefix_crc32c`, allowing buyers to save custom DAW presets in-place (`0x40..0x1000`) on `.dnam` files without invalidating either signature.
-   - **`creator_signature`:** Signed once offline by the creator's `Ed25519` private key over `immutable_header_sha256 || master_arena_sha256` (plus optional `tier_arena_sha256: [lite, full, pro, ultra]` enabling zero-re-signing container tier stripping).
-   - **`marketplace_receipt`:** Counter-signed on download (`< 0.1 ms`) by the marketplace's `Ed25519` key binding `master_arena_sha256` $\to$ `buyer_arena_sha256` (plus optional `buyer_tier_arena_sha256: [lite, full, pro, ultra]`), `license_id`, `buyer_hash`, `license_tier`, `authorized_devices`, and optional `royalty_splits`:
-
-```json
-{
-  "immutable_header_sha256": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
-  "master_arena_sha256": "60303ae22b998861bce3b28f33eec1be758a213c86c93c076dbe9f558c11c752",
-  "creator_signature": {
-    "signer_id": "did:web:studio-user.com",
-    "pubkey_ed25519": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
-    "sig_ed25519": "e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e065224901555fb8821590a33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b"
-  },
-  "marketplace_receipt": {
-    "marketplace_id": "dnam.store",
-    "license_id": "0192b6c0-7e4a-7000-8000-1a2b3c4d5e6f",
-    "buyer_hash": "3a7bd3e2360a3d29eea436fcfb7e44c735d117c42d1c1835420b6b9942dd4f1b",
-    "license_tier": "personal",
-    "issued_at": "2026-10-22T22:45:00Z",
-    "buyer_arena_sha256": "4e07408562bedb8b60ce05c1decfe3ad16b72230967de01f640b7e4729b49fce",
-    "encryption_mode": "none",
-    "arena_nonce_96": null,
-    "ephemeral_pubkey_x25519": null,
-    "authorized_devices": [
-      {
-        "oem_vendor": "darkglass",
-        "model_code": "anagram_rk3582",
-        "device_id_hash": "9c1185a5c5e9fc54612808977ee8f548",
-        "wrapped_cek": null
-      }
-    ],
-    "royalty_splits": [
-      { "recipient_id": "did:web:studio-user.com", "role": "amp_capture", "share_bps": 8000 },
-      { "recipient_id": "did:web:cab-labs.io", "role": "ir_cabinet", "share_bps": 2000 }
-    ],
-    "receipt_sig_ed25519": "8a1b2c3d4e5f60718293a4b5c6d7e8f90112233445566778899aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff00"
-  }
-}
-```
-
-2. **Dual-Mechanism Buyer Watermarking in `Arena 0..3` (`< 0.2 ms` Edge Personalization, See [`digital_marketplace_and_provenance.md` §4](digital_marketplace_and_provenance.md#4-pillar-3-forensic-traitor-tracing--02-ms-dual-mechanism-buyer-watermarking)):**
-   - **Mechanism A (Exact Isometric Gauge Watermark, `0.0000 dB` Audio Distortion):** Applies 64-channel RG-LRU reciprocal scaling (`16` per tier across `Lite`/`Full`/`Pro`/`Ultra`: $\kappa_{b,c}$ on $b_{\gamma,b,c}$ and $\kappa_{b,c}^{-1}$ on $(c_{\text{real},b,c}, c_{\text{imag},b,c})$) plus SVD control subspace orthogonal rotation ($\mathbf{Q}_{\text{buyer}} \in SO(4) \oplus SO(4)$).
-   - **Mechanism B (Coupled Spread-Spectrum Tardos Watermark across `7,680` Conv Weights):** Prefix-composable across tiers (`768` chips in `Lite`, `2,304` in `Full`, `4,608` in `Pro`, `7,680` in `Ultra`); survives JSON header stripping, container tier stripping, RG-LRU gauge canonicalization, `f32 -> fp16` truncation, and multi-buyer weight-averaging collusion (`min(Z_colluder) >= 24.98 sigma` in `Test 8H`).
-3. **3-Tier Protection Profiles & `.dnam-seal` (`b"DNSL"`) Hardware Enclave Wrapper (See [`digital_marketplace_and_provenance.md` §3](digital_marketplace_and_provenance.md#3-pillar-2-hardware-enclave--oem-drm-oemdevicecertificate-attestation--dnam-seal-bdnsl-wrapper) & [`§6`](digital_marketplace_and_provenance.md#6-three-container-protection-profiles-dnamprotectionprofile--loader-auto-detection)):**
-   - **`Open` (`"open"`):** Standard `.dnam` (`ENCRYPTED_ARENA = 0`).
-   - **`DeviceAllowlisted` (`"device_allowlisted"`):** `.dnam` (`ENCRYPTED_ARENA = 1`) with plaintext `4 KB` header for DAW/OS indexing and `ChaCha20`-encrypted `Arena 0..3` (`cek_arena`).
-   - **`EnclaveSealed` (`"enclave_sealed"`):** Canonical `.dnam-seal` (`b"DNSL"`) 64-byte aligned binary wrapper (`DnamSealEnvelope`) encrypting 100% of an inner `ENCRYPTED_ARENA = 1` `.dnam` container (`cek_outer` + inner `cek_arena`) for factory-attested OEM hardware TrustZone enclaves (`OemDeviceCertificate`).
-
-
+| Container Security Mechanism | Wire / JSON Header Field | Canonical Specification |
+| :--- | :--- | :--- |
+| **Preset-Safe Canonical Digest** | `metadata.signatures.immutable_header_sha256` (RFC 8785 JCS excluding `presets`, `user_metadata`, `signatures`, and `prefix_crc32c`) | [`../security/provenance_and_enclave_drm.md` §2.1](../security/provenance_and_enclave_drm.md#21-preset-safe-canonical-header-digest-rfc-8785-jcs) |
+| **Creator Exclusivity Policy** | `metadata.distribution_policy` (`allowed_protection_profiles`, `allowed_oem_vendors`) | [`../security/provenance_and_enclave_drm.md` §2.2](../security/provenance_and_enclave_drm.md#22-creator-signed-distributionpolicy--protection-profile-exclusivity) |
+| **2-Certificate `Ed25519` Delegation & 4-Tier Stripping** | `creator_signature` (`tier_arena_sha256[0..4]`) → `marketplace_receipt` (`buyer_tier_arena_sha256[0..4]`, `authorized_devices`, `royalty_splits`) | [`../security/provenance_and_enclave_drm.md` §2.3](../security/provenance_and_enclave_drm.md#23-two-certificate-ed25519-delegation-chain--4-tier-cumulative-arena-digests) |
+| **OEM Hardware Enclave & `.dnam-seal` (`b"DNSL"`)** | `DnamSealEnvelope` (`64 B` preamble + `N × 64 B` recipient slots + `64 B` signature + `ChaCha20` payload) | [`../security/provenance_and_enclave_drm.md` §3](../security/provenance_and_enclave_drm.md#3-pillar-2-hardware-enclave--oem-drm-oemdevicecertificate-attestation--dnam-seal-bdnsl-wrapper) |
+| **Dual-Mechanism Buyer Watermarking (`Arena 0..3`)** | 64-channel RG-LRU reciprocal gauge (`0.0000 dB`) + `SO(4) ⊕ SO(4)` SVD rotation + `7,680`-chip Tardos code (`Z ≥ 24.98σ`) | [`../security/watermarking_and_marketplace.md` §1](../security/watermarking_and_marketplace.md#1-pillar-3-forensic-traitor-tracing--02-ms-dual-mechanism-buyer-watermarking) |
+| **3 Container Protection Profiles** | `DnamProtectionProfile::{Open, DeviceAllowlisted, EnclaveSealed}` | [`../security/provenance_and_enclave_drm.md` §4](../security/provenance_and_enclave_drm.md#4-three-container-protection-profiles-dnamprotectionprofile--loader-auto-detection) |

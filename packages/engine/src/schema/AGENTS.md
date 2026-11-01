@@ -6,9 +6,9 @@ Implements `#![no_std]` + `alloc` `serde` / `serde_json` parsing and validation 
 
 | File | Responsibility | Canonical Spec (SSOT) |
 | :--- | :--- | :--- |
-| [`header.rs`](header.rs) | `DnamJsonHeader`, `TierProfile`, `Core1Config`, `Core2Config`, `compile_clamp_descriptors` | [`dnam_container_schema.md`](../../../../docs/dnam_container_schema.md) |
-| [`controls.rs`](controls.rs) | `ControlSchemaDef`, `ControlUiHints`, midpoint power-skew (`norm_to_physical` / `physical_to_norm`) + `proptest` | [`dnam_container_schema.md`](../../../../docs/dnam_container_schema.md) |
-| [`signatures.rs`](signatures.rs) | `ModelSignatures`, `CreatorSignature`, `MarketplaceReceipt`, `AuthorizedDevice`, `RoyaltySplit` | [`digital_marketplace_and_provenance.md`](../../../../docs/digital_marketplace_and_provenance.md) |
-| [`error.rs`](error.rs) | `DnamError` (`core::error::Error`) and cold-path `f64` math wrappers | [`dnam_container_schema.md`](../../../../docs/dnam_container_schema.md) |
+| [`header.rs`](header.rs) | `DnamJsonHeader`, `TierProfile`, `Core1Config`, `Core2Config`, `compile_clamp_descriptors` | [`dnam_binary_format.md`](../../../../docs/containers/dnam_binary_format.md) |
+| [`controls.rs`](controls.rs) | `ControlSchemaDef`, `ControlUiHints`, midpoint power-skew (`norm_to_physical` / `physical_to_norm`) + `proptest` | [`dnam_binary_format.md`](../../../../docs/containers/dnam_binary_format.md) |
+| [`signatures.rs`](signatures.rs) | `ModelSignatures`, `CreatorSignature`, `MarketplaceReceipt`, `AuthorizedDevice`, `RoyaltySplit` | [`provenance_and_enclave_drm.md`](../../../../docs/security/provenance_and_enclave_drm.md) |
+| [`error.rs`](error.rs) | `DnamError` (`core::error::Error`) and cold-path `f64` math wrappers | [`dnam_binary_format.md`](../../../../docs/containers/dnam_binary_format.md) |
 
 See [`packages/engine/CONTRIBUTING.md`](../../CONTRIBUTING.md) for `#![no_std]` + `alloc` `serde` rules.

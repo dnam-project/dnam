@@ -2,35 +2,67 @@
 
 Because neural audio training can run unattended for extended periods, **DNAM never blocks or pauses training on user confirmation prompts**. Instead, it executes a **Non-Stop 3-Phase Control-Space Audit & Automatic Clamping Pipeline** that guarantees every exported `.dnam` model is 100% stable across all user knob and switch combinations.
 
+```mermaid
+flowchart TD
+    subgraph P1 ["Phase 1: Step-0 Pre-Flight Audit (< 200 ms Before Epoch 1, CL-15)"]
+        direction TB
+        S0["Load controls_schema + Stem Metadata + Calibration Roles"] --> CRange["1. [CLAMP-RANGE]: Clamp range to observed [u_obs_min, u_obs_max]<br/>Lock K_p = 0 if control never moved (U_p = 1)"]
+        CRange --> CSwitch["2. [CLAMP-SWITCH]: Restrict active_options to observed stem options<br/>(Except unlocked roles: stereo_mode w/ stereo stem, freeze_latch w/ 0 stems)"]
+        CSwitch --> CStab["3. [CLAMP-STABILITY]: Audit 3^(P_range) x prod|O_q| corners<br/>Bound r_c <= 0.9995, g_lin <= 0.9990, |a_diff| <= 0.75, tau_m >= 4.0 samp"]
+        CStab --> Warn["Emit Non-Blocking Warning Banner & Proceed Immediately to Epoch 1"]
+    end
+
+    subgraph P2 ["Phase 2: During-Training Barrier & Rail Audit (Epochs 1..E, CL-16)"]
+        direction TB
+        Step["Every Optimizer Step (< 0.05 ms, Zero Audio Rendering):<br/>Stop-Gradient Corner Barrier L_barrier steers Rank-4 FM weights<br/>(0.00 gradient interference on recorded 1st-order stems)"] --> Rail["Every 10 Epochs ([CLAMP-RAIL]):<br/>Run 2,048-sample burst across corners —<br/>if PolyADAA hits > 95% hard rail (|u_n| = 1.0), record conditional ceiling"]
+    end
+
+    subgraph P3 ["Phase 3: Post-Polish Export Certification (At .dnam Export, CL-17)"]
+        direction TB
+        CDyn["1. [CLAMP-DYNAMIC]: Audit worst-case knob + learned LFO/Envelope excursion<br/>r_worst <= 0.9995 & tau_min >= 4.0 samples (tighten safe_clamped_range if needed)"] --> CHead["2. [CLAMP-HEAD-GAIN]: Evaluate 32-pt FFT of 16-tap head across corners<br/>If any corner > +6.0 dB above loudest stem, bake trust-region norm clamp rho_head"]
+        CHead --> Out["Compile 64B ControlClampDescriptor Table into .dnam Arena 0<br/>& Print Consolidated Audit & Stem Prescription Report"]
+    end
+
+    P1 --> P2 --> P3
+```
+
 ---
 
 ## 1. The Non-Stop 3-Phase Control-Space Audit Lifecycle
 
-### Phase 1 — Pre-Training Step-0 Audit ($< 200\text{ ms}$ Before Epoch 1, Non-Blocking Banner)
-Immediately upon loading the user's `controls_schema` and stem metadata at Step 0:
-1. **`[CLAMP-RANGE]` (Unobserved Range Extrapolation Clamp):**
-   For each continuous `range` control $p$ with `declared_range` $[u_{p,\text{decl-min}}, u_{p,\text{decl-max}}]$, computes the observed stem span $[u_{p,\text{obs-min}}, u_{p,\text{obs-max}}]$ and clamps the active safe interval to:
-   $$u_{p,\text{safe-min}} = \max\big(u_{p,\text{decl-min}}, u_{p,\text{obs-min}}\big), \qquad u_{p,\text{safe-max}} = \min\big(u_{p,\text{decl-max}}, u_{p,\text{obs-max}}\big)$$
-   If $U_p = 1$ (control never moved across stems), locks polynomial degree $K_p = 0$.
-2. **`[CLAMP-SWITCH]` (Unobserved Switch Option Masking):**
-   For each discrete `switch` control $q$ with `declared_options` $\mathcal{O}_{q,\text{decl}}$, restricts `active_options` to $\mathcal{O}_{q,\text{obs}} = \lbrace o \in \mathcal{O}_{q,\text{decl}} \mid \exists\text{ valid stem with } s_q = o \rbrace$.
-3. **`[CLAMP-STABILITY]` (Step-0 Multi-Knob Corner Stability Audit):**
-   Evaluates the Step-0 physical parameter fit across all $3^{P_{\text{range}}} \times \prod_q |\mathcal{O}_{q,\text{obs}}|$ corners of `safe_clamped_range` $\times$ `active_options`. If any unrecorded corner (e.g., `feedback = 10.0` + `boost = "on"`) predicts $\hat{r}_c > 0.9995$, $\hat{g}_{\text{lin},m} > 0.9990$, $|\hat{a}_{\text{diff},m}| > 0.75$, or $\hat{\tau}_m < 4.0$, computes the exact conditional ceiling (e.g., `conditional_max: {"boost=on": 9.37}` in `Test 8E`), logs a live warning banner, and **proceeds immediately into Epoch 1**.
+### 1.1 Phase 1 — Pre-Training Step-0 Audit ($< 200\text{ ms}$ Before Epoch 1, `CL-15`)
 
-### Phase 2 — During-Training Stop-Gradient Corner Barrier & Periodic Rail-Lockup Check
-1. **Stop-Gradient Corner Barrier Loss ($\mathcal{L}_{\text{barrier}}$ at Every `Adam` Step, `CL-16`):**
-   Evaluating the $3\text{ kHz}$ Control Hyper-Bus at all virtual corner coordinates $\mathcal{V}_{\text{corners}}$ requires zero audio rendering ($< 0.05\text{ ms}$/step). Applying the stop-gradient operator $\mathrm{sg}(\cdot)$ (`detach()`) to the 1st-order main effects $\boldsymbol{\theta}_{\text{main}}(\mathbf{u}_c, \mathbf{s}_c)$:
+Immediately upon loading the user's `controls_schema` and stem metadata at Step 0:
+
+1. **`[CLAMP-RANGE]` (Unobserved Range Extrapolation Clamp):**
+   For each continuous `range` control $p$ with `declared_range` $[u_{p,\text{decl-min}}, u_{p,\text{decl-max}}]$, the audit computes the observed stem span $[u_{p,\text{obs-min}}, u_{p,\text{obs-max}}]$ and clamps the active safe interval to:
+   $$u_{p,\text{safe-min}} = \max\big(u_{p,\text{decl-min}}, u_{p,\text{obs-min}}\big), \qquad u_{p,\text{safe-max}} = \min\big(u_{p,\text{decl-max}}, u_{p,\text{obs-max}}\big)$$
+   If $U_p = 1$ (control never moved across stems), polynomial degree is locked to $K_p = 0$.
+2. **`[CLAMP-SWITCH]` (Unobserved Switch Option Masking & Calibration Role Unlocks):**
+   For each discrete `switch` control $q$ with `declared_options` $\mathcal{O}_{q,\text{decl}}$, `active_options` is restricted to observed options:
+   $$\mathcal{O}_{q,\text{obs}} = \lbrace o \in \mathcal{O}_{q,\text{decl}} \mid \exists\text{ valid stem with } s_q = o \rbrace$$
+   **Analytical Calibration Role Unlocks:** Two physical roles bypass `[CLAMP-SWITCH]` / `[CLAMP-RANGE]` when their underlying physics is analytically determined:
+   - **`role == "stereo_mode"`:** Automatically unlocks all declared routing options (`["normal", "ping_pong", "wide"]`) whenever at least one true-stereo stem (`C == 2`) is present, synthesized via exact Mid/Side Givens rotation $\psi \in [0, \pi/2]$.
+   - **`role == "freeze_latch"`:** Automatically unlocks the full declared range/options even with **zero frozen stems** recorded, because infinite hold is governed by Core 2's analytical unitary loop lock ($g_{\text{eff},m} \equiv 1.0, b_{\text{in},m} \equiv 0.0$).
+3. **`[CLAMP-STABILITY]` (Step-0 Multi-Knob Corner Stability Audit):**
+   Evaluates the Step-0 physical parameter fit across all $3^{P_{\text{range}}} \times \prod_q |\mathcal{O}_{q,\text{obs}}|$ corners of `safe_clamped_range` $\times$ `active_options`. If any unrecorded corner (e.g., `feedback = 10.0` + `boost = "on"`) predicts $\hat{r}_c > 0.9995$, $\hat{g}_{\text{lin},m} > 0.9990$, $|\hat{a}_{\text{diff},m}| > 0.75$, or $\hat{\tau}_m < 4.0$, the audit computes the exact conditional ceiling (e.g., `conditional_max: {"boost=on": 9.37}` in `Test 8E`), logs a live warning banner, and **proceeds immediately into Epoch 1**.
+
+### 1.2 Phase 2 — During-Training Stop-Gradient Corner Barrier & Periodic Rail-Lockup Check (`CL-16`)
+
+1. **Stop-Gradient Corner Barrier Loss ($\mathcal{L}_{\text{barrier}}$ at Every Optimizer Step, `CL-16`):**
+   Evaluating the $3\text{ kHz}$ Control Hyper-Bus at all virtual corner coordinates $\mathcal{V}_{\text{corners}}$ requires zero audio rendering ($< 0.05\text{ ms}$/step). Applying the stop-gradient operator $\mathrm{sg}(\cdot)$ to the 1st-order main effects $\boldsymbol{\theta}_{\text{main}}(\mathbf{u}_c, \mathbf{s}_c)$:
    $$\mathcal{L}_{\text{barrier}} = \lambda_{\text{bar}} \sum_{(\mathbf{u}_c, \mathbf{s}_c) \in \mathcal{V}_{\text{corners}}} \mathrm{relu}\Big(\mathrm{sg}\big(\boldsymbol{\theta}_{\text{main}}(\mathbf{u}_c, \mathbf{s}_c)\big) + \Delta\boldsymbol{\theta}_{\text{FM}}(\mathbf{u}_c, \mathbf{s}_c) - \boldsymbol{\theta}_{\text{safe}}\Big)^2$$
    steers the 2nd-order Factorization Machine interaction weights $\Delta\boldsymbol{\theta}_{\text{FM}}$ away from unstable corners with **exact $0.00 \times 10^0$ gradient interference on the recorded 1st-order stems** (`Test 8F`).
 2. **Periodic Dynamic Rail-Lockup Audit (`[CLAMP-RAIL]`, Every 10 Epochs):**
-   Runs a $2,048$-sample synthetic burst through the corners under `torch.no_grad()`; if cascaded `PolyADAA` stages hit > 95% hard-rail saturation ($|u_n| = 1.0$), records a conditional gain ceiling.
+   Runs a $2,048$-sample synthetic burst through the corners without gradient tracking; if cascaded `PolyADAA` stages hit `> 95%` hard-rail saturation ($|u_n| = 1.0$), records a conditional gain ceiling.
 
-### Phase 3 — Post-Training & Post-Polish Export Certification Audit (At `.dnam` Export)
+### 1.3 Phase 3 — Post-Training & Post-Polish Export Certification Audit (`CL-17`)
+
 1. **`[CLAMP-DYNAMIC]` (Combined Knob + Learned LFO/Envelope Excursion Clamp, `CL-17`):**
    Audits the worst-case dynamic peak and trough across all controls using the finalized LFO and envelope depths $\mathbf{w}_{r,c}, \mathbf{w}_{\tau,m}$:
    $$r_{c,\text{worst}}(\mathbf{u}, \mathbf{s}) = r_{\text{high},c}(\mathbf{u}, \mathbf{s}) + |\mathbf{w}_{r,c}|^\top \mathbf{m}_{\text{max}} \le 0.9995$$
    $$\tau_{m,\text{min}}(\mathbf{u}, \mathbf{s}) = \tau_{0,m}(\mathbf{u}, \mathbf{s}) - |\mathbf{w}_{\tau,m}|^\top \mathbf{m}_{\text{max}} \ge 4.0\text{ samples}$$
-   If a wide learned chorus/flanger LFO sweep at `delay = 0.0` would dip below the 4-sample Cubic Lagrange causal margin, tightens `safe_clamped_range` (e.g., `[0.00, 1.00] -> [0.08, 1.00]` in `Test 8F`).
+   If a wide learned chorus/flanger LFO sweep at `delay = 0.0` would dip below the 4-sample Cubic Lagrange causal margin, `safe_clamped_range` is automatically tightened (e.g., `[0.00, 1.00] -> [0.08, 1.00]` in `Test 8F`).
 2. **`[CLAMP-HEAD-GAIN]` (Post-Polish SVD Head Spectral Gain Clamp, `CL-17`):**
    Evaluates the 32-point FFT of the polished 16-tap stereo head $\mathbf{W}_{\text{head}}(\mathbf{u}, \mathbf{s})$ across all corners; if any unrecorded corner exhibits a $> +6.0\text{ dB}$ spectral peak above the loudest training stem, bakes an ellipsoidal trust-region norm clamp $\Vert \mathbf{z}_{\text{head}}\Vert _2 \le \rho_{\text{head}}$ into the `.dnam` file.
 
@@ -38,7 +70,7 @@ Immediately upon loading the user's `controls_schema` and stem metadata at Step 
 
 ## 2. Consolidated Post-Training Audit & Stem Prescription Report
 
-Upon completion, the trainer writes the playable `.dnam` file, the `.dnam-ckpt` checkpoint, and prints a **Consolidated Audit & Stem Prescription Report**:
+Upon completion, the trainer writes the playable `.dnam` file, the `.dnam-ckpt` checkpoint, and prints a **Consolidated Audit & Stem Prescription Report** detailing which specific additional stems will lift any active clamps via `< 5 s` Tier-1 resume:
 
 ```text
 ================================================================================

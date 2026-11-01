@@ -1,7 +1,8 @@
 //! Marketplace Provenance, `Ed25519` Signatures, Hardware Enclaves & Traitor Tracing (`provenance.rs`).
 //!
 //! Implements the 5-Layer Defense-in-Depth architecture from
-//! [`docs/digital_marketplace_and_provenance.md`](../../../docs/digital_marketplace_and_provenance.md):
+//! [`docs/security/provenance_and_enclave_drm.md`](../../../docs/security/provenance_and_enclave_drm.md)
+//! and [`docs/security/watermarking_and_marketplace.md`](../../../docs/security/watermarking_and_marketplace.md):
 //! 1. **Preset-Safe RFC 8785 JCS `immutable_header_sha256` & 2-Certificate `Ed25519` Chain**
 //!    ([`VerificationStatus`], [`verify_container_provenance`]).
 //! 2. **Hardware-Agnostic [`CryptoProvider`] Trait** supporting the built-in `#![no_std]`

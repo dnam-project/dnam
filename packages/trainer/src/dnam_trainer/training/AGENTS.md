@@ -17,6 +17,6 @@
 
 ## 2. Canonical Specifications & Guides
 
-1. [`training_and_iterative_resume.md`](../../../../../docs/training_and_iterative_resume.md)
-2. [`clamp_and_audit_registry.md`](../../../../../docs/clamp_and_audit_registry.md) & [`dnam_container_schema.md`](../../../../../docs/dnam_container_schema.md)
+1. [`four_stage_pipeline.md`](../../../../../docs/training/four_stage_pipeline.md) & [`iterative_resume_and_caching.md`](../../../../../docs/training/iterative_resume_and_caching.md)
+2. [`clamp_and_audit_registry.md`](../../../../../docs/training/clamp_and_audit_registry.md) & [`checkpoint_and_cache_format.md`](../../../../../docs/containers/checkpoint_and_cache_format.md)
 3. [`packages/trainer/CONTRIBUTING.md`](../../../CONTRIBUTING.md)

@@ -14,24 +14,24 @@
 
 ## 2. Core Cross-Cutting Architectural Invariants
 
-1. **Zero `FSQRT` / `FDIV` in Real-Time Loops:** Never use division, square-root, or `libm` transcendentals in $48\text{ kHz}$ or $3\text{ kHz}$ loops; use the algebraic factorizations in [`core1_hybrid_ssm_and_polyadaa.md`](docs/core1_hybrid_ssm_and_polyadaa.md).
-2. **Unconditional BIBO, Lyapunov, $\mathcal{H}_2$ & Zero-DC Stability:** Enforce all registered stability bounds (`CL-01`–`CL-20`) in [`clamp_and_audit_registry.md`](docs/clamp_and_audit_registry.md).
-3. **Non-Stop 3-Phase Control Clamping:** Automatically clamp unobserved ranges, switches, and corners per [`parametric_control_bus.md`](docs/parametric_control_bus.md) without pausing training.
-4. **Fail-Fast & 64B-Aligned Containers:** Validate all `.dnam` and `.dnam-ckpt` containers, `Ed25519` signatures, and `uplo='U'` stem statistics per [`dnam_container_schema.md`](docs/dnam_container_schema.md).
+1. **Zero `FSQRT` / `FDIV` in Real-Time Loops:** Never use division, square-root, or `libm` transcendentals in $48\text{ kHz}$ or $3\text{ kHz}$ loops; use the algebraic factorizations in [`core1_polyadaa_and_rglru.md`](docs/dsp/core1_polyadaa_and_rglru.md).
+2. **Unconditional BIBO, Lyapunov, $\mathcal{H}_2$ & Zero-DC Stability:** Enforce all registered stability bounds (`CL-01`–`CL-20`) in [`clamp_and_audit_registry.md`](docs/training/clamp_and_audit_registry.md).
+3. **Non-Stop 3-Phase Control Clamping:** Automatically clamp unobserved ranges, switches, and corners per [`parametric_control_bus.md`](docs/dsp/parametric_control_bus.md) without pausing training.
+4. **Fail-Fast & 64B-Aligned Containers:** Validate all `.dnam` and `.dnam-ckpt` containers, `Ed25519` signatures, and `uplo='U'` stem statistics per [`dnam_binary_format.md`](docs/containers/dnam_binary_format.md).
 
 ## 3. Progressive Disclosure & Codebase Discovery Map
 
 | Package / Domain | Package `AGENTS.md` & Contributing | Canonical Documentation (SSOT) |
 | :--- | :--- | :--- |
-| **Monorepo & Guardrails** | [`AGENTS.md`](AGENTS.md), [`CONTRIBUTING.md`](CONTRIBUTING.md) | [`index.md`](docs/index.md), [`architecture_overview.md`](docs/architecture_overview.md), [`verification_and_guardrails.md`](docs/verification_and_guardrails.md) |
-| **Rust Engine (`packages/engine/`)** | [`engine/AGENTS.md`](packages/engine/AGENTS.md), [`engine/CONTRIBUTING.md`](packages/engine/CONTRIBUTING.md) | [`architecture_design.md`](docs/architecture_design.md), [`core1_hybrid_ssm_and_polyadaa.md`](docs/core1_hybrid_ssm_and_polyadaa.md), [`core2_modulated_ufdn.md`](docs/core2_modulated_ufdn.md) |
-| **Python Engine (`packages/python/`)** | [`python/AGENTS.md`](packages/python/AGENTS.md), [`python/CONTRIBUTING.md`](packages/python/CONTRIBUTING.md) | [`parametric_control_bus.md`](docs/parametric_control_bus.md), [`dnam_container_schema.md`](docs/dnam_container_schema.md), [`digital_marketplace_and_provenance.md`](docs/digital_marketplace_and_provenance.md) |
-| **JS / WebAudio (`packages/js/`)** | [`js/AGENTS.md`](packages/js/AGENTS.md), [`js/CONTRIBUTING.md`](packages/js/CONTRIBUTING.md) | [`parametric_control_bus.md`](docs/parametric_control_bus.md), [`dnam_container_schema.md`](docs/dnam_container_schema.md), [`digital_marketplace_and_provenance.md`](docs/digital_marketplace_and_provenance.md) |
-| **Design System (`packages/ui/`)** | [`ui/AGENTS.md`](packages/ui/AGENTS.md), [`ui/CONTRIBUTING.md`](packages/ui/CONTRIBUTING.md) | [`clamp_and_audit_registry.md`](docs/clamp_and_audit_registry.md), [`digital_marketplace_and_provenance.md`](docs/digital_marketplace_and_provenance.md) |
-| **CLI & Studio (`packages/studio/`)** | [`studio/AGENTS.md`](packages/studio/AGENTS.md), [`studio/CONTRIBUTING.md`](packages/studio/CONTRIBUTING.md) | [`training_and_iterative_resume.md`](docs/training_and_iterative_resume.md), [`dnam_container_schema.md`](docs/dnam_container_schema.md) |
-| **Trainer (`packages/trainer/`)** | [`trainer/AGENTS.md`](packages/trainer/AGENTS.md), [`trainer/CONTRIBUTING.md`](packages/trainer/CONTRIBUTING.md) | [`training_and_iterative_resume.md`](docs/training_and_iterative_resume.md), [`clamp_and_audit_registry.md`](docs/clamp_and_audit_registry.md) |
+| **Monorepo & Guardrails (`tests/`)** | [`AGENTS.md`](AGENTS.md), [`tests/AGENTS.md`](tests/AGENTS.md), [`CONTRIBUTING.md`](CONTRIBUTING.md), [`docs/CONTRIBUTING.md`](docs/CONTRIBUTING.md) | [`index.md`](docs/index.md), [`tri_physics_architecture.md`](docs/overview/tri_physics_architecture.md), [`verification_and_guardrails.md`](docs/verification/verification_and_guardrails.md) |
+| **Rust Engine (`packages/engine/`)** | [`engine/AGENTS.md`](packages/engine/AGENTS.md), [`engine/CONTRIBUTING.md`](packages/engine/CONTRIBUTING.md) | [`core1_polyadaa_and_rglru.md`](docs/dsp/core1_polyadaa_and_rglru.md), [`core2_modulated_ufdn.md`](docs/dsp/core2_modulated_ufdn.md) |
+| **Python Engine (`packages/python/`)** | [`python/AGENTS.md`](packages/python/AGENTS.md), [`python/CONTRIBUTING.md`](packages/python/CONTRIBUTING.md) | [`parametric_control_bus.md`](docs/dsp/parametric_control_bus.md), [`dnam_binary_format.md`](docs/containers/dnam_binary_format.md) |
+| **JS / WebAudio (`packages/js/`)** | [`js/AGENTS.md`](packages/js/AGENTS.md), [`js/CONTRIBUTING.md`](packages/js/CONTRIBUTING.md) | [`parametric_control_bus.md`](docs/dsp/parametric_control_bus.md), [`dnam_binary_format.md`](docs/containers/dnam_binary_format.md) |
+| **Design System (`packages/ui/`)** | [`ui/AGENTS.md`](packages/ui/AGENTS.md), [`ui/CONTRIBUTING.md`](packages/ui/CONTRIBUTING.md) | [`clamp_and_audit_registry.md`](docs/training/clamp_and_audit_registry.md), [`watermarking_and_marketplace.md`](docs/security/watermarking_and_marketplace.md) |
+| **CLI & Studio (`packages/studio/`)** | [`studio/AGENTS.md`](packages/studio/AGENTS.md), [`studio/CONTRIBUTING.md`](packages/studio/CONTRIBUTING.md) | [`capture_and_alignment.md`](docs/training/capture_and_alignment.md), [`dnam_binary_format.md`](docs/containers/dnam_binary_format.md) |
+| **Trainer (`packages/trainer/`)** | [`trainer/AGENTS.md`](packages/trainer/AGENTS.md), [`trainer/CONTRIBUTING.md`](packages/trainer/CONTRIBUTING.md) | [`four_stage_pipeline.md`](docs/training/four_stage_pipeline.md), [`clamp_and_audit_registry.md`](docs/training/clamp_and_audit_registry.md) |
 
 ## 4. Maintaining `AGENTS.md` & Documentation
 
 - **Zero Duplication:** Keep `AGENTS.md` files strictly as routing maps (`< 5,000` B root, `< 2,500` B scoped).
-- **Single Source of Truth:** Document every equation, clamp (`CL-XX`), or workflow rule in its canonical `docs/` file or [`CONTRIBUTING.md`](CONTRIBUTING.md).
+- **Single Source of Truth:** Document every equation, clamp (`CL-XX`), or workflow rule in its canonical `docs/` file per [`docs/CONTRIBUTING.md`](docs/CONTRIBUTING.md) and [`CONTRIBUTING.md`](CONTRIBUTING.md).

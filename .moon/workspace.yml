@@ -3,6 +3,7 @@ $schema: "https://moonrepo.dev/schemas/workspace.json"
 # Configures all projects within the workspace to create a project graph.
 projects:
   - "packages/*"
+  - "tests"
 
 # Configures the version control system (VCS).
 vcs:

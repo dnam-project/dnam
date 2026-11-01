@@ -3,7 +3,7 @@
 use crate::schema::{DnamError, cold_pow_f64, cold_sqrt_f64};
 
 /// Rescaled discrete-time parameters for a host sample rate $f_{s,\text{host}} \in [44100, 96000]\text{ Hz}$
-/// per [`docs/dnam_container_schema.md` §4](../../../../docs/dnam_container_schema.md#4-continuous-time-zero-order-hold-zoh-sample-rate-adaptability-441--96-khz).
+/// per [`docs/containers/dnam_binary_format.md` §4](../../../../docs/containers/dnam_binary_format.md#4-continuous-time-zero-order-hold-zoh-sample-rate-adaptability-44196-khz).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ZohRescaledParams {
     /// Host sample rate $f_{s,\text{host}}$ in Hz.

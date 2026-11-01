@@ -1,8 +1,8 @@
 """Multi-Scale Gaussian Derivative Envelope Surrogate for Fractional Delay Optimization (`Test 6`).
 
 Implements the custom `torch.autograd.Function` from
-[`docs/training_and_iterative_resume.md`](../../../../../docs/training_and_iterative_resume.md)
-§2.1:
+[`docs/training/four_stage_pipeline.md`](../../../../../docs/training/four_stage_pipeline.md)
+§4.1:
 - **Forward pass:** Exact 4-tap Cubic Lagrange fractional delay interpolation at $\tau(n)$.
 - **Backward pass:** Replaces the high-frequency point-wise finite-difference derivative with a
   Gaussian-derivative smoothed envelope gradient ($-\\dot{g}_{\\sigma_{\text{grad}}} * u$) so delay

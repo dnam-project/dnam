@@ -1,7 +1,7 @@
 //! $3\text{ kHz}$ Parametric Control Bus, `ControlClampDescriptor` & Anti-Zipper Smoother (`control`).
 //!
-//! Implements Subsystem 3 from [`docs/parametric_control_bus.md`](../../../docs/parametric_control_bus.md)
-//! and [`docs/clamp_and_audit_registry.md`](../../../docs/clamp_and_audit_registry.md).
+//! Implements Subsystem 3 from [`docs/dsp/parametric_control_bus.md`](../../../docs/dsp/parametric_control_bus.md)
+//! and [`docs/training/clamp_and_audit_registry.md`](../../../docs/training/clamp_and_audit_registry.md).
 
 pub mod bus;
 pub mod descriptor;

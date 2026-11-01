@@ -6,7 +6,7 @@ Implements Core 2 (`#[forbid(unsafe_code)]`): early stereo reflections + $M$-lin
 
 | File | Responsibility | Canonical Spec (SSOT) |
 | :--- | :--- | :--- |
-| [`ufdn.rs`](ufdn.rs) | `MufdnGroupWeights`, `ModulatedUfdn<'a, B>`, dual-tap `switch` crossfader | [`core2_modulated_ufdn.md`](../../../../docs/core2_modulated_ufdn.md) |
-| [`reference.rs`](reference.rs) | Reference `f64` Cubic Lagrange, Givens+Householder, and Lyapunov loop + `Tests 3..5` & `proptest` | [`verification_and_guardrails.md`](../../../../docs/verification_and_guardrails.md) |
+| [`ufdn.rs`](ufdn.rs) | `MufdnGroupWeights`, `ModulatedUfdn<'a, B>`, dual-tap `switch` crossfader | [`core2_modulated_ufdn.md`](../../../../docs/dsp/core2_modulated_ufdn.md) |
+| [`reference.rs`](reference.rs) | Reference `f64` Cubic Lagrange, Givens+Householder, and Lyapunov loop + `Tests 3..5` & `proptest` | [`verification_and_guardrails.md`](../../../../docs/verification/verification_and_guardrails.md) |
 
 See [`packages/engine/CONTRIBUTING.md`](../../CONTRIBUTING.md) for `AlignedFp16Block` and `CL-06..11` invariants.

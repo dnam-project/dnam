@@ -1,6 +1,6 @@
 //! Core 2: Unified Stereo In-Loop Diffusive Modulated Unitary Feedback Delay Network (`M-UFDN`) (`core2.rs`).
 //!
-//! Implements Subsystem 2 from [`docs/core2_modulated_ufdn.md`](../../../docs/core2_modulated_ufdn.md):
+//! Implements Subsystem 2 from [`docs/dsp/core2_modulated_ufdn.md`](../../../docs/dsp/core2_modulated_ufdn.md):
 //! - **Dynamic 64-Byte Aligned `fp16` Delay Buffers ([`crate::memory::DelayScratchStorage`]):** Allocates `0 KB` when
 //!   `CORE2_ACTIVE == 0` (`ring_buffer_pow2_log2 == 0`), or $2^{\text{ring\_log2}}$ `fp16` samples per line
 //!   when active, with cold-init volatile page pre-faulting (`0` page faults on the real-time thread).
