@@ -1,6 +1,6 @@
 # `@dnam-project/studio` (`dnam-studio`) — DNAM CLI & Tauri v2 Desktop Studio
 
-Unified Rust + Node.js/TypeScript CLI (`dnam`) and Tauri v2 Desktop Studio for the **Dynamic Neural Audio Modeler (DNAM / "Tri-Physics")**.
+Unified Rust + Node.js/TypeScript CLI (`dnam`) and Tauri v2 Desktop Studio for the **Dynamic Neural Audio Modeler (DNAM)**.
 
 ## Highlights
 

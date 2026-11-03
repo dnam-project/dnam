@@ -1,6 +1,6 @@
 # `@dnam-project/engine` — Node.js N-API v8, WebAssembly SIMD128 & WebAudio SDK
 
-**`@dnam-project/engine`** is the official TypeScript, Node.js, and Browser WebAudio SDK for the **Dynamic Neural Audio Modeler (DNAM / "Tri-Physics")** architecture, wrapping the native Rust SIMD engine ([`packages/engine/`](../engine/README.md)) in a unified dual-target package:
+**`@dnam-project/engine`** is the official TypeScript, Node.js, and Browser WebAudio SDK for the **Dynamic Neural Audio Modeler (DNAM)** architecture, wrapping the native Rust SIMD engine ([`packages/engine/`](../engine/README.md)) in a unified dual-target package:
 
 1. **Node.js / Bun / Deno Native N-API v8 (`napi-rs` v3):** Zero-copy `Float32Array`, `Float64Array`, and `Uint8Array` slices backed by hardware `ARM64 NEON` / `x86_64 AVX2+FMA` SIMD and libuv worker-pool `processAsync(...)`.
 2. **Browser / Edge WebAssembly SIMD128 (`dnam_engine.wasm`):** Zero-dependency `wasm32-unknown-unknown` `+simd128` execution with persistent pre-allocated linear-memory audio arenas and `FinalizationRegistry` + `Symbol.dispose` deterministic cleanup.

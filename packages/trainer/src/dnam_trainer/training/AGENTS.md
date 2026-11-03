@@ -3,7 +3,7 @@
 ## 1. Module Routing Map
 
 - [`accelerator.py`](accelerator.py) & [`hardware.py`](hardware.py): Accelerator runtime (`tpu -> cuda/rocm -> mps -> cpu`), capability probes, memory budgets, and 2-D streaming planner (`STREAMED`/`RESIDENT`/`RESIDENT_BATCHED`).
-- [`numerics.py`](numerics.py): 32-bit device exact Gram accumulator (`ExactGramAccumulator`) and batched host-`fp64` solver (`HostDenseSolver`).
+- [`numerics.py`](numerics.py): 32-bit device Gram accumulator (`ExactGramAccumulator`) and batched host-`fp64` solver (`HostDenseSolver`); accuracy redesign is pending.
 - [`windowing.py`](windowing.py): On-demand causal B-spline windows (`CausalBsplineWindowSchedule`) and DP regime segmentation (`segment_regimes_dp`).
 - [`calib_cache.py`](calib_cache.py): `.dnam-ckpt` `Arena 4` (`DNCA`) calibration stats & `.dnam-cache` sidecar store (`SidecarCacheStore`).
 - [`metrics.py`](metrics.py): Psychoacoustic metrics (`bESR`, Bezout 3-band `ESR`, `MR-STFT`, `LTAS` tilt, `SegESR`, per-stem noise floors).

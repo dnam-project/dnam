@@ -1,9 +1,9 @@
 # Dynamic Neural Audio Modeler (DNAM) — Agent Development & Discovery Guide
 
-**Dynamic Neural Audio Modeler (DNAM / "Tri-Physics")** unifies:
-1. **Core 1:** 12-layer Hybrid Dilated-Conv (`1x B-Spline PolyADAA`) + Radial-Polar Selective Complex RG-LRU stack.
-2. **Core 2:** Unified Stereo In-Loop Diffusive Modulated Unitary Feedback Delay Network (`M-UFDN`).
-3. **Control Bus:** $3\text{ kHz}$ Envelopes/LFOs + Lobatto HDMR & Rank-4 FM (`range` / `switch`), **Non-Stop 3-Phase Clamping**, and `.dnam-ckpt` Kronecker Stem Expansion.
+**Dynamic Neural Audio Modeler (DNAM / TORA)** unifies:
+1. **Operators:** Op-T (Transport/Elastic Buffer), Op-M (Modal Bank/Kautz), Op-N (Commuted Cascade/PolyADAA).
+2. **Topology:** 8-Port Matrix Router + Stages I–IV + 256-D Mid/Side Kronecker Head.
+3. **Control Bus:** $3\text{ kHz}$ Envelopes/LFOs + Lobatto HDMR & Rank-4 FM, Non-Stop 3-Phase Clamping, and `.dnam-ckpt` Stem Expansion.
 
 ## 1. Global Tech Stack & Tooling Rules
 
@@ -14,7 +14,7 @@
 
 ## 2. Core Cross-Cutting Architectural Invariants
 
-1. **Zero `FSQRT` / `FDIV` in Real-Time Loops:** Never use division, square-root, or `libm` transcendentals in $48\text{ kHz}$ or $3\text{ kHz}$ loops; use the algebraic factorizations in [`core1_polyadaa_and_rglru.md`](docs/dsp/core1_polyadaa_and_rglru.md).
+1. **Zero `FSQRT` / `FDIV` in Real-Time Loops:** Never use division, square-root, or `libm` transcendentals in $48\text{ kHz}$ or $3\text{ kHz}$ loops; use the algebraic factorizations in [`op_n_commuted_cascade.md`](docs/dsp/op_n_commuted_cascade.md) and [`op_m_modal_kautz.md`](docs/dsp/op_m_modal_kautz.md).
 2. **Unconditional BIBO, Lyapunov, $\mathcal{H}_2$ & Zero-DC Stability:** Enforce all registered stability bounds (`CL-01`–`CL-20`) in [`clamp_and_audit_registry.md`](docs/training/clamp_and_audit_registry.md).
 3. **Non-Stop 3-Phase Control Clamping:** Automatically clamp unobserved ranges, switches, and corners per [`parametric_control_bus.md`](docs/dsp/parametric_control_bus.md) without pausing training.
 4. **Fail-Fast & 64B-Aligned Containers:** Validate all `.dnam` and `.dnam-ckpt` containers, `Ed25519` signatures, and `uplo='U'` stem statistics per [`dnam_binary_format.md`](docs/containers/dnam_binary_format.md).
@@ -23,8 +23,8 @@
 
 | Package / Domain | Package `AGENTS.md` & Contributing | Canonical Documentation (SSOT) |
 | :--- | :--- | :--- |
-| **Monorepo & Guardrails (`tests/`)** | [`AGENTS.md`](AGENTS.md), [`tests/AGENTS.md`](tests/AGENTS.md), [`CONTRIBUTING.md`](CONTRIBUTING.md), [`docs/CONTRIBUTING.md`](docs/CONTRIBUTING.md) | [`index.md`](docs/index.md), [`tri_physics_architecture.md`](docs/overview/tri_physics_architecture.md), [`verification_and_guardrails.md`](docs/verification/verification_and_guardrails.md) |
-| **Rust Engine (`packages/engine/`)** | [`engine/AGENTS.md`](packages/engine/AGENTS.md), [`engine/CONTRIBUTING.md`](packages/engine/CONTRIBUTING.md) | [`core1_polyadaa_and_rglru.md`](docs/dsp/core1_polyadaa_and_rglru.md), [`core2_modulated_ufdn.md`](docs/dsp/core2_modulated_ufdn.md) |
+| **Monorepo & Guardrails (`tests/`)** | [`AGENTS.md`](AGENTS.md), [`tests/AGENTS.md`](tests/AGENTS.md), [`CONTRIBUTING.md`](CONTRIBUTING.md), [`docs/CONTRIBUTING.md`](docs/CONTRIBUTING.md) | [`index.md`](docs/index.md), [`tora_architecture.md`](docs/overview/tora_architecture.md), [`verification_and_guardrails.md`](docs/verification/verification_and_guardrails.md) |
+| **Rust Engine (`packages/engine/`)** | [`engine/AGENTS.md`](packages/engine/AGENTS.md), [`engine/CONTRIBUTING.md`](packages/engine/CONTRIBUTING.md) | [`tora_architecture.md`](docs/overview/tora_architecture.md), [`router_and_stages_topology.md`](docs/dsp/router_and_stages_topology.md) |
 | **Python Engine (`packages/python/`)** | [`python/AGENTS.md`](packages/python/AGENTS.md), [`python/CONTRIBUTING.md`](packages/python/CONTRIBUTING.md) | [`parametric_control_bus.md`](docs/dsp/parametric_control_bus.md), [`dnam_binary_format.md`](docs/containers/dnam_binary_format.md) |
 | **JS / WebAudio (`packages/js/`)** | [`js/AGENTS.md`](packages/js/AGENTS.md), [`js/CONTRIBUTING.md`](packages/js/CONTRIBUTING.md) | [`parametric_control_bus.md`](docs/dsp/parametric_control_bus.md), [`dnam_binary_format.md`](docs/containers/dnam_binary_format.md) |
 | **Design System (`packages/ui/`)** | [`ui/AGENTS.md`](packages/ui/AGENTS.md), [`ui/CONTRIBUTING.md`](packages/ui/CONTRIBUTING.md) | [`clamp_and_audit_registry.md`](docs/training/clamp_and_audit_registry.md), [`watermarking_and_marketplace.md`](docs/security/watermarking_and_marketplace.md) |

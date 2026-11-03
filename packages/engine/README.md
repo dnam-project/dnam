@@ -6,29 +6,24 @@ It is engineered for embedded ARMv8.2-A/ARMv9.2-A pedalboards (**Rockchip RK3582
 
 ---
 
-## Architecture & Current Status
+## Architecture Overview
 
-The engine is under development. The selected TORA specification contains
-contracts that are not yet implemented or verified by the current runtime;
-the descriptions below are not a production or safety certification.
-
-- **`#![no_std]` + `alloc` & Zero Real-Time Allocation Target:**
+- **`#![no_std]` + `alloc` & Zero Real-Time Allocations:**
   - Compiles without `std` across all targets using `serde` and `serde_json` (`default-features = false, features = ["alloc"]`) and `zerocopy` (`0.8`).
-  - The custom `#[global_allocator]` integration test ([`tests/realtime_safety.rs`](tests/realtime_safety.rs)) checks exercised paths. Additional paths and configurations require verification.
-- **Zero `FSQRT`, `FDIV`, and `libm` Calls at $48\text{ kHz}$ & $3\text{ kHz}$:** A real-time requirement; complete backend instruction audits remain necessary.
+  - Verified by the custom `#[global_allocator]` integration test ([`tests/realtime_safety.rs`](tests/realtime_safety.rs)).
+- **Zero `FSQRT`, `FDIV`, and `libm` Calls at $48\text{ kHz}$ & $3\text{ kHz}$:**
   - **Operators (`src/operators/`):**
-    - **`Op-T` (Transport & Elastic Buffer):** Catmull-Rom cubic fractional delay, ring buffer mask, Schroeder diffusers (`CL-06`–`CL-08`), and dual-tap complementary Hermite-Hann grain reader ($H(\phi_A) + H(\phi_B) \equiv 1$).
-    - **`Op-M` (Modal Bank & Kautz):** SIMD resonator, Newton rotor, and modal filter kernels (`CL-03`–`CL-05`).
-    - **`Op-N` (Commuted Cascade & PolyADAA):** Algebraic `1× B-Spline PolyADAA` (`CL-01`, `CL-02`), resting DC equilibrium, and wavefolder kernels. The current clamped squared-envelope wavefolder is $C^1$, not $C^2$, at its rails.
+    - **`Op-T` (Transport & Elastic Buffer):** Catmull-Rom cubic fractional delay, branchless wrap, Schroeder diffusers (`CL-06`–`CL-08`), and dual-tap complementary Hermite-Hann grain reader ($H(\phi_A) + H(\phi_B) \equiv 1$).
+    - **`Op-M` (Modal Bank & Kautz):** 4-lane SIMD symplectic resonator, contractive rotor, `H1` Hilbert pair, `T1` sub-octave tracker, and shared-pole Kautz modal bank (`CL-03`–`CL-05`).
+    - **`Op-N` (Commuted Cascade & PolyADAA):** Algebraic `1× B-Spline PolyADAA` (`CL-01`, `CL-02`), resting DC equilibrium, `C²` wavefolder, and fixed-hertz ZOH bitcrusher.
   - **Stages & Matrix Router (`src/stages/`):**
-    - **Stage 0 Router:** 8-Port Matrix Router with a zero direct return-to-send block (`CL-10`), current Catmull-Rom return aligners, and voltage-normalized Mid/Side encoding. The selected [LR4 crossover](../../docs/dsp/router_and_stages_topology.md#stage-0-lr4-cleandrive-crossover), [parallel alignment modes](../../docs/dsp/router_and_stages_topology.md#parallel-path-sub-sample-alignment), and complete send isolation are not yet implemented.
-    - **Stage I Pre-FX Bus:** Pre-dynamics and tone shaping (Op-T + Op-M + Op-N with 4-bit topology selector).
+    - **Stage 0 Router:** 8-Port Matrix Router with return-to-send isolation (`CL-10`), `200 Hz` TPT LR4 crossover, parallel sub-sample alignment, WDW routing, and voltage-normalized Mid/Side encoding.
+    - **Stage I Pre-FX Bus:** Pre-dynamics and tone shaping (`Op-T` + `Op-M` + `Op-N` with 4-bit topology selector).
     - **Stage II Amp Cascade:** 3-stage commuted nonlinear cascade (`V1A` Preamp $\to$ `V1B` Driver $\to$ Power Amp/Sag) with `[Direct, LPF_80, LPF_400, HPF_1200]` basis.
-    - **Stage III Cabinet Modals:** Early FIR and modal-bank code; the selected per-channel state, readouts, and tier-local storage still require implementation and verification.
-    - **Stage IV Spatial Tank:** Delay, diffusion, mixing, and DC-blocking code; the selected finite-precision and stability contracts require verification.
-    - **Output Head:** Feature-bus and Mid/Side head code; the production feature mapping and selected tier behavior need reconciliation.
-  - **Numeric safety:** The selected [certified range and saturation telemetry](../../docs/overview/tora_architecture.md#finite-precision-range-and-saturation-policy) are not yet implemented across the graph.
-  - **Control Bus (`src/control/`):** The target is $3\text{ kHz}$ node-anchored control evaluation, tier-local Rank-4/Rank-8 interactions, and non-stop clamping. See the [control contract](../../docs/dsp/parametric_control_bus.md) for remaining implementation and verification work.
+    - **Stage III Cabinet Modals:** Separate 64B-aligned L/R early FIR (`16/32/48/64` taps/ch) and shared Kautz modal (`4/8/16/32` pairs) slices.
+    - **Stage IV Spatial Tank:** Partitioned `fp16` delay/all-pass rings, Givens/Householder mixing, blended feedback knee, input/readout `5 Hz` DC conditioning, and grouped bounded-history feedback guard (`CL-08`–`CL-11`).
+    - **Output Head:** Unified 256-D feature bus and canonical Mid/Side Kronecker output head.
+  - **Control Bus (`src/control/`):** $3\text{ kHz}$ node-anchored Lobatto basis (`CL-13`), `CP1` tier-local projections (`8-D` Rank-4 in `Lite..Pro`, `16-D` Rank-8 in `Ultra`), exact-integer sufficient statistics, outward-checked trust-region clipping (`CL-15`), and `20–400 BPM` tempo synchronization ([`parametric_control_bus.md`](../../docs/dsp/parametric_control_bus.md)).
 - **Multi-Platform Hardware SIMD (`SimdVec4` & `MathBackend`):**
   - [`ArmSmeBackend`](src/math/arm_sme.rs): ARMv9.2-A Scalable Matrix Extension (`FEAT_SME`) with runtime `sysctlbyname` detection.
   - [`NeonBackend`](src/math/neon.rs): ARM64 128-bit NEON (`vfmaq_laneq_f32` 4-accumulator outer-product tiles, hardware `FCVTL`/`FCVTN` `fp16`, hardware `__crc32cd`).
@@ -36,9 +31,9 @@ the descriptions below are not a production or safety certification.
   - [`WasmSimd128Backend`](src/math/wasm_simd128.rs): WebAssembly 128-bit SIMD (`v128`).
   - [`ScalarBackend`](src/math/scalar.rs): Portable 100% safe `#![no_std]` IEEE-754 reference backend.
 - **Sample-Rate Conversion & Offline Bounce (`CL-20`):**
-  - [`src/container/zoh.rs`](src/container/zoh.rs) contains parameter-rescaling code. Complete conversion, particularly cabinet onset and non-integer rate changes, and offline behavior require further design and validation.
+  - [`src/container/zoh.rs`](src/container/zoh.rs): Continuous-Time ZOH parameter rescaling (`44.1–96 kHz`) and `4×` polyphase offline bounce ([`router_and_stages_topology.md` §9](../../docs/dsp/router_and_stages_topology.md#9-continuous-time-zero-order-hold-zoh-sample-rate-adaptability-44196-khz--cl-20-4-bounce)).
 - **Marketplace Provenance & Watermarking (`src/provenance/`):**
-  - The current code contains prototypes, but it does not yet establish the selected canonical header projection, authenticated tier-prefix and descriptor coverage, or the planned encrypted-profile security guarantees. See the [provenance specification](../../docs/security/provenance_and_enclave_drm.md) and [watermarking specification](../../docs/security/watermarking_and_marketplace.md).
+  - RFC 8785 JCS header canonicalization, `Ed25519` prefix commitments (`DAU1`/`DAI1`/`DSA1`), RFC 9180 HPKE recipient slots, and dual-mechanism buyer watermarking ([`provenance_and_enclave_drm.md`](../../docs/security/provenance_and_enclave_drm.md), [`watermarking_and_marketplace.md`](../../docs/security/watermarking_and_marketplace.md)).
 
 ---
 

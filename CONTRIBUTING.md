@@ -1,6 +1,6 @@
 # Contributing to Dynamic Neural Audio Modeler (DNAM)
 
-Thank you for contributing to the **Dynamic Neural Audio Modeler (DNAM / "Tri-Physics")** monorepo! All contributors—both human engineers and AI coding agents—must follow the licensing, architectural, numerical, testing, and documentation standards defined in this guide.
+Thank you for contributing to the **Dynamic Neural Audio Modeler (DNAM)** monorepo! All contributors—both human engineers and AI coding agents—must follow the licensing, architectural, numerical, testing, and documentation standards defined in this guide.
 
 ---
 
@@ -13,7 +13,7 @@ Dynamic Neural Audio Modeler (DNAM) is distributed under the [`DNAM Source-Avail
 Include a standard Git `Signed-off-by` trailer on every commit using `-s`:
 
 ```bash
-git commit -s -m "feat(engine): optimize Core 1 SoA block execution"
+git commit -s -m "feat(engine): optimize Stage II SoA block execution"
 ```
 
 Or include the trailer explicitly in your commit message:
@@ -34,7 +34,7 @@ DNAM is organized as a multi-language workspace across `docs/`, `packages/*`, an
 | **Rust SIMD Engine (`dnam-engine`)** | `packages/engine/` | [`packages/engine/AGENTS.md`](packages/engine/AGENTS.md) | [`packages/engine/CONTRIBUTING.md`](packages/engine/CONTRIBUTING.md) |
 | **Python Engine (`dnam_engine`)** | `packages/python/` | [`packages/python/AGENTS.md`](packages/python/AGENTS.md) | [`packages/python/CONTRIBUTING.md`](packages/python/CONTRIBUTING.md) |
 | **JS / WebAudio SDK (`@dnam-project/engine`)** | `packages/js/` | [`packages/js/AGENTS.md`](packages/js/AGENTS.md) | [`packages/js/CONTRIBUTING.md`](packages/js/CONTRIBUTING.md) |
-| **PyTorch 4-Stage Trainer (`dnam_trainer`)** | `packages/trainer/` | [`packages/trainer/AGENTS.md`](packages/trainer/AGENTS.md) | [`packages/trainer/CONTRIBUTING.md`](packages/trainer/CONTRIBUTING.md) |
+| **PyTorch Two-Sweep Trainer (`dnam_trainer`)** | `packages/trainer/` | [`packages/trainer/AGENTS.md`](packages/trainer/AGENTS.md) | [`packages/trainer/CONTRIBUTING.md`](packages/trainer/CONTRIBUTING.md) |
 | **Design System & Visualizers (`@dnam-project/ui`)** | `packages/ui/` | [`packages/ui/AGENTS.md`](packages/ui/AGENTS.md) | [`packages/ui/CONTRIBUTING.md`](packages/ui/CONTRIBUTING.md) |
 | **CLI & Desktop Studio (`@dnam-project/studio`)** | `packages/studio/` | [`packages/studio/AGENTS.md`](packages/studio/AGENTS.md) | [`packages/studio/CONTRIBUTING.md`](packages/studio/CONTRIBUTING.md) |
 | **Project Guardrail Suite (`dnam-tests`)** | `tests/` | [`tests/AGENTS.md`](tests/AGENTS.md) | [`docs/CONTRIBUTING.md`](docs/CONTRIBUTING.md) |
@@ -54,7 +54,7 @@ mise install
 # Run the unified `dnam` CLI (`init`, `model`, `capture`, `train`, `inspect`, `studio`)
 moon run studio:cli -- --help
 
-# Run the Python 4-stage trainer worker CLI (`dnam-train`)
+# Run the Python Two-Sweep Cholesky trainer worker CLI (`dnam-train`)
 moon run trainer:cli -- --help
 
 # Launch the Desktop Studio UI in browser dev mode (Vite HMR at http://localhost:1420)
@@ -98,9 +98,9 @@ moon check tests
 
 1. **Zero `FSQRT` / `FDIV` / `libm` in Real-Time Loops:**
    - Never introduce floating-point division (`/`), hardware square-root (`FSQRT`), or `libm` transcendental calls (`sin`, `cos`, `exp`, `tanh`) into the $48\text{ kHz}$ per-sample audio loop or the $3\text{ kHz}$ control-bus update.
-   - Always use the division-free algebraic `PolyADAA` ($m_n, d_n$ factorization) with $1\times$ passive B-spline weights $(0.875, 0.125)$ and the $3\text{ kHz}$ 4-FMA + Newton rotor ($y_1 = 1.5 - 0.5(\hat{c}^2 + \hat{s}^2)$) specified in [`docs/dsp/core1_polyadaa_and_rglru.md`](docs/dsp/core1_polyadaa_and_rglru.md).
+   - Always use the division-free algebraic `PolyADAA` ($m_n, d_n$ factorization) with $1\times$ passive B-spline weights $(0.875, 0.125)$ and the $3\text{ kHz}$ 4-FMA + Newton rotor ($y_1 = 1.5 - 0.5(\hat{c}^2 + \hat{s}^2)$) specified in [`docs/dsp/op_n_commuted_cascade.md`](docs/dsp/op_n_commuted_cascade.md) and [`docs/dsp/op_m_modal_kautz.md`](docs/dsp/op_m_modal_kautz.md).
 2. **128-Bit / 64-Byte SIMD Alignment:**
-   - Channel counts ($C$) and FDN delay line counts ($M$) must remain exact multiples of 4 (`C=4, M=4` for `Lite`; `C=8, M=8` for `Full`; `C=12, M=8` for `Pro`; `C=16, M=16` for `Ultra`), and `.dnam` / `.dnam-ckpt` tensor arenas must remain 64-byte cache-line aligned (`4,096 B` page offset).
+   - Feature bus widths ($D$), channel counts ($C$), Kautz modal pole counts ($K$), and FDN delay line counts ($M$) must remain exact multiples of 4 (`D=64, C=4, K=4, M=4` for `Lite`; `D=128, C=8, K=8, M=8` for `Full`; `D=192, C=12, K=16, M=8` for `Pro`; `D=256, C=16, K=32, M=16` for `Ultra`), and `.dnam` / `.dnam-ckpt` tensor arenas must remain 64-byte cache-line aligned (`4,096 B` page offset).
 3. **Unconditional Stability & Registered Clamps (`CL-01`–`CL-20`):**
    - Every pole radius ($r_c \le 0.9995$), FDN loop gain ($g_{\text{lin},m} \le 0.9990$), all-pass diffusion coefficient ($|a_{\text{diff},m}| \le 0.75$), fractional delay ($\tau_m \ge 4.0$), and control range must obey the bounds in [`docs/training/clamp_and_audit_registry.md`](docs/training/clamp_and_audit_registry.md).
 4. **Fail-Fast Validation:**
@@ -121,7 +121,7 @@ DNAM enforces a **Progressive-Disclosure Documentation Architecture** and a **Si
    - Loaded into the agent context window on every turn.
    - Contains **only** the project summary, global `moon` + `mise` tooling rules, core cross-cutting invariants, and the top-level Progressive Disclosure & Codebase Discovery Map.
 2. **Tier 2 — Scoped Package & Subsystem `AGENTS.md` Files (`< 2,500` bytes each):**
-   - Located in package/test roots (e.g., [`packages/engine/AGENTS.md`](packages/engine/AGENTS.md), [`packages/trainer/AGENTS.md`](packages/trainer/AGENTS.md), [`packages/studio/AGENTS.md`](packages/studio/AGENTS.md), [`tests/AGENTS.md`](tests/AGENTS.md)) and multi-module subsystem directories (e.g., [`packages/engine/src/core1/AGENTS.md`](packages/engine/src/core1/AGENTS.md), [`packages/trainer/src/dnam_trainer/training/AGENTS.md`](packages/trainer/src/dnam_trainer/training/AGENTS.md)).
+   - Located in package/test roots (e.g., [`packages/engine/AGENTS.md`](packages/engine/AGENTS.md), [`packages/trainer/AGENTS.md`](packages/trainer/AGENTS.md), [`packages/studio/AGENTS.md`](packages/studio/AGENTS.md), [`tests/AGENTS.md`](tests/AGENTS.md)) and multi-module subsystem directories (e.g., [`packages/engine/src/operators/AGENTS.md`](packages/engine/src/operators/AGENTS.md), [`packages/trainer/src/dnam_trainer/training/AGENTS.md`](packages/trainer/src/dnam_trainer/training/AGENTS.md)).
    - Act **strictly as routing tables** (`Module / File` $\to$ `Responsibility` $\to$ `Canonical Spec / Contributing Guide`).
 3. **Offloading Rule (Never Wordsmith `AGENTS.md` to Fit Byte Budgets):**
    - When an `AGENTS.md` file approaches its byte budget as new modules are added, **do not** try to compress or reword implementation details inside `AGENTS.md`. Instead, offload non-routing information to its canonical destination:
@@ -131,7 +131,7 @@ DNAM enforces a **Progressive-Disclosure Documentation Architecture** and a **Si
      - **Directory-level module growth** $\to$ Delegate file-level routing rows to a subsystem `AGENTS.md` (e.g., `src/<subsystem>/AGENTS.md`) and link the subsystem from the parent `packages/<pkg>/AGENTS.md`.
 4. **Zero Inline LaTeX Math Inside Markdown Tables (`G-04`) & ASCII Layouts for Dense Maps:**
    - GitHub's MathJax renderer wraps inline math (`$...$`) inside Markdown table cells (`<th>` / `<td>`) in scrollable containers that display horizontal scrollbars. Never use `$...$` inside Markdown table rows; use plain text, Unicode symbols (`≤`, `≥`, `×`, `→`, `↔`, `Δ`, `σ`, `∈`), or inline code spans (`` `...` ``).
-   - Prefer monospaced ASCII box-drawing diagrams (` ```text `) over Markdown tables or prose whenever fixed-width spatial alignment displays information more clearly (such as multi-arena parameter budgets, `64B` cache-line field layouts, hierarchical MAC ledgers, and SIMD lane grids); see [`docs/CONTRIBUTING.md` §4.5](docs/CONTRIBUTING.md#45-preferring-monospaced-ascii-diagrams-over-markdown-tables--prose).
+   - Prefer monospaced ASCII box-drawing diagrams (`text` code blocks) over Markdown tables or prose whenever fixed-width spatial alignment displays information more clearly (such as multi-arena parameter budgets, `64B` cache-line field layouts, hierarchical MAC ledgers, and SIMD lane grids); see [`docs/CONTRIBUTING.md` §4.5](docs/CONTRIBUTING.md#45-preferring-monospaced-ascii-diagrams-over-markdown-tables--prose).
 
 ### 5.2 Single-Source-of-Truth (SSOT) Documentation Map
 
@@ -139,14 +139,16 @@ Never copy mathematical equations, clamp tables (`CL-XX`), or JSON schemas into 
 
 | When You Modify... | Update This Canonical Document (SSOT) |
 | :--- | :--- |
-| **System goals, complex full-rig requirements (`REQ-1.5`), hardware budgets, `bESR` tiers, or Tri-Physics topology** | [`docs/overview/system_goals_and_requirements.md`](docs/overview/system_goals_and_requirements.md), [`docs/overview/psychoacoustic_quality_and_tiers.md`](docs/overview/psychoacoustic_quality_and_tiers.md), [`docs/overview/tri_physics_architecture.md`](docs/overview/tri_physics_architecture.md) |
+| **System goals, complex full-rig requirements (`REQ-1.5`), hardware budgets, `bESR` tiers, or TORA topology** | [`docs/overview/system_goals_and_requirements.md`](docs/overview/system_goals_and_requirements.md), [`docs/overview/psychoacoustic_quality_and_tiers.md`](docs/overview/psychoacoustic_quality_and_tiers.md), [`docs/overview/tora_architecture.md`](docs/overview/tora_architecture.md) |
 | **Any clamp, stability bound, trust region, or 3-phase audit rule (`CL-01`–`CL-20`)** | [`docs/training/clamp_and_audit_registry.md`](docs/training/clamp_and_audit_registry.md) |
-| **Core 1 `1x B-Spline PolyADAA`, DC resting equilibrium, or Selective Complex RG-LRU** | [`docs/dsp/core1_polyadaa_and_rglru.md`](docs/dsp/core1_polyadaa_and_rglru.md) |
-| **Core 2 Modulated Unitary FDN (`M-UFDN`), Givens/Householder, or Lyapunov saturation** | [`docs/dsp/core2_modulated_ufdn.md`](docs/dsp/core2_modulated_ufdn.md) |
+| **Op-N Commuted Cascade, `1x B-Spline PolyADAA`, or DC resting equilibrium** | [`docs/dsp/op_n_commuted_cascade.md`](docs/dsp/op_n_commuted_cascade.md) |
+| **Op-M Modal Bank, symplectic recurrence, Kautz filter, or Newton rotor** | [`docs/dsp/op_m_modal_kautz.md`](docs/dsp/op_m_modal_kautz.md) |
+| **Op-T Transport, Catmull-Rom fractional delay, diffusers, or dynamic ducking** | [`docs/dsp/op_t_transport.md`](docs/dsp/op_t_transport.md) |
+| **8-Port Matrix Router, dual return aligners, or multi-stage rig topology** | [`docs/dsp/router_and_stages_topology.md`](docs/dsp/router_and_stages_topology.md) |
 | **Parametric Control Bus, Lobatto HDMR, Rank-4 FM, Chebyshev LFO, or 3 kHz envelopes** | [`docs/dsp/parametric_control_bus.md`](docs/dsp/parametric_control_bus.md) |
 | **`.dnam` / `.dnam-ckpt` 64B preamble, JSON header schema, SoA arena offsets, or ZOH** | [`docs/containers/dnam_binary_format.md`](docs/containers/dnam_binary_format.md), [`docs/containers/checkpoint_and_cache_format.md`](docs/containers/checkpoint_and_cache_format.md) |
 | **JCS SHA-256, `Ed25519` signatures, `.dnam-seal` (`DNSL`), or Buyer Watermarking** | [`docs/security/provenance_and_enclave_drm.md`](docs/security/provenance_and_enclave_drm.md), [`docs/security/watermarking_and_marketplace.md`](docs/security/watermarking_and_marketplace.md) |
-| **Capture alignment, 4-Stage curriculum, `uplo='U'` Gram matrices, or stem expansion** | [`docs/training/capture_and_alignment.md`](docs/training/capture_and_alignment.md), [`docs/training/four_stage_pipeline.md`](docs/training/four_stage_pipeline.md), [`docs/training/iterative_resume_and_caching.md`](docs/training/iterative_resume_and_caching.md) |
+| **Capture alignment, Two-Sweep Cholesky pipeline, `uplo='U'` Gram matrices, or stem expansion** | [`docs/training/capture_and_alignment.md`](docs/training/capture_and_alignment.md), [`docs/training/four_stage_pipeline.md`](docs/training/four_stage_pipeline.md), [`docs/training/iterative_resume_and_caching.md`](docs/training/iterative_resume_and_caching.md) |
 | **Verification tests (`Test 1`–`Test 8I`) or repository guardrails (`G-01`–`G-08`)** | [`docs/verification/verification_and_guardrails.md`](docs/verification/verification_and_guardrails.md) |
 
 ---

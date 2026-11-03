@@ -10,7 +10,7 @@
 - [`src/components/ui/`](src/components/ui/index.ts): `shadcn/ui` Base UI primitives (`Button`, `Badge`, `Card`, `Tabs`, `Progress`).
 - [`src/components/controls/`](src/components/controls/index.ts): `RotaryKnob`, `DiscreteSwitch`, `AccelerationBadge`, `StabilityAuditBadge`, and [`geometry.ts`](src/components/controls/geometry.ts).
 - [`src/components/rack/`](src/components/rack/index.ts) & [`src/components/workflows/`](src/components/workflows/index.ts): `DnamPluginRack`, `TriPhysicsTelemetry`, `CapturePlanPanel`, and `TrainingTimelinePanel`.
-- [`src/components/visualizers/`](src/components/visualizers/index.ts): All 7 interactive Tri-Physics visualizers (`PolyAdaaVisualizer`, `RgLruPoleVisualizer`, `ModulatedUfdnVisualizer`, `ControlBusVisualizer`, `KroneckerResumeVisualizer`, `ClampAuditVisualizer`, `ZohRescalerVisualizer`).
+- [`src/components/visualizers/`](src/components/visualizers/index.ts): All 7 interactive TORA visualizers (`PolyAdaaVisualizer`, `RgLruPoleVisualizer`, `ModulatedUfdnVisualizer`, `ControlBusVisualizer`, `KroneckerResumeVisualizer`, `ClampAuditVisualizer`, `ZohRescalerVisualizer`).
 
 ## 2. Guides & Verification
 

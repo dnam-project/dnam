@@ -2,62 +2,71 @@
 
 This specification defines the **Single-Checkpoint (`.dnam-ckpt`) Two-Tier Iterative Stem Expansion protocol, Two-Tier Calibration Persistence (`Arena 5` `DNCA` + `.dnam-cache` workspace sidecar), and Serverless Cloud Trainer Architecture** of **Dynamic Neural Audio Modeler (DNAM)**.
 
-For the binary wire layout of `.dnam-ckpt`, `Arena 4` (`uplo='U'`), and `Arena 5` (`DNCA`), see [`../containers/checkpoint_and_cache_format.md`](../containers/checkpoint_and_cache_format.md). For the 4-stage training pipeline, see [`four_stage_pipeline.md`](four_stage_pipeline.md).
+For the binary wire layout of `.dnam-ckpt`, `Arena 4` (`uplo='U'`), and `Arena 5` (`DNCA`), see [`../containers/checkpoint_and_cache_format.md`](../containers/checkpoint_and_cache_format.md). For the Two-Sweep Block-Coordinate Cholesky training pipeline, see [`four_stage_pipeline.md`](four_stage_pipeline.md).
 
 ---
 
 ## 1. Single-Checkpoint (`.dnam-ckpt`) Two-Tier Iterative Stem Expansion
 
+A single incremental resume invocation updates all active tiers (`Lite` through `t_max`) from one `.dnam-ckpt` checkpoint in a single offline statistics sweep over new or statistics-invalidated stems (`REQ-3.1`, `REQ-5.3`):
+
 ```mermaid
 flowchart TD
-    In["Resume Request: model.dnam-ckpt + New/Updated Stems"] --> Dedup["PCM SHA-256 Provenance Deduplication:<br/>• Identical (input_sha256, target_sha256, controls_meta) -> Skip in 0 ms<br/>• Re-recorded coordinate -> Replace single Arena 4/5 slot"]
-    Dedup --> EvalNew["Forward-Pass ONLY New/Modified Stems<br/>to Compute pack_U(G_audio^(s_new)), C_audio^(s_new)"]
-    EvalNew --> Reassemble["Recompute Partitioned SVD P_svd,new & Newton/Lobatto Basis (0.00 Old-Stem Drift)<br/>Assemble Global Kronecker System in < 1 ms from Arena 4"]
-    Reassemble --> TierCheck{"New Stem Tier-1 Residual bESR<br/>Within Target Threshold?"}
-
-    TierCheck -- "Yes (Tier-1 Instant Update: < 5 s)" --> T1["Solve float64 Cholesky Polish (lambda = 1e-6 * trace_avg)<br/>& Evaluate Reused Stems in < 15 ms/stem via Quadratic Form Identity"]
-    TierCheck -- "No (New Nonlinear Physics: Tier-2 Fine-Tune)" --> T2["Reset Head with lambda_init = 1e-3 * trace_avg<br/>Run 15-20% Warm Epochs (70% New + 30% Old Replay) -> Stage-4 Polish"]
-
-    T1 & T2 --> Out["Write Updated .dnam + .dnam-ckpt & Consolidated Audit Report"]
+    In["Resume Request: model.dnam-ckpt + New/Updated Stems"] --> Dedup["Identify Stems by PCM & Control Metadata<br/>Validate Per-Tier Statistics Dependencies"]
+    Dedup --> Plan["Update Descriptors, CP1 Projections & Anchor Nodes<br/>Identify Affected Stem/Tier Trajectories"]
+    Plan --> Freeze["Finalize & Freeze Upstream Stage and Control Behavior"]
+    Freeze --> EvalNew["Single Offline Sweep of New or Invalidated Stems<br/>Windowed Replay (< 32 MiB Staging) of Distinct Tier Trajectories"]
+    EvalNew --> Reassemble["Assemble Joint Tier-Aware System<br/>from Valid Arena 4 uplo='U' Slices"]
+    Reassemble --> T1["Joint Host-float64 Head Solve<br/>& Old-Stem Non-Regression Verification (REQ-3.2)"]
+    T1 --> Out["Write Updated .dnam + Tier-Bundled .dnam-ckpt & Audit Report"]
 ```
 
 ### 1.1 Mathematical Proof: Why Pre-Summed Kronecker Matrices Fail on Stem Additions
 
-If `.dnam-ckpt` stored only the pre-collapsed sum $\mathbf{G}_{\text{old}} = \sum_{s=1}^S \mathbf{G}_{\text{audio}}^{(s)} \otimes (\tilde{\boldsymbol{\psi}}_s \tilde{\boldsymbol{\psi}}_s^\top)$, then adding a new stem $s_{\text{new}}$ that:
-- increases a knob's polynomial degree $K_p$ (e.g., $1 \to 2$ or $2 \to 3$),
-- unlocks a previously unobserved `switch` option, or
-- rotates the SVD principal control subspace projector $\mathbf{P}_{\text{svd}} \to \mathbf{P}_{\text{svd,new}}$
-would **invalidate $\mathbf{G}_{\text{old}}$** because the old control vectors $\tilde{\boldsymbol{\psi}}_s$ were already multiplied and summed inside $\mathbf{G}_{\text{old}}$.
+Storing only a pre-collapsed sum $\mathbf{G}_{\text{old}} = \sum_{s=1}^S \mathbf{G}_{\text{audio}}^{(s)} \otimes (\tilde{\boldsymbol{\psi}}_s \tilde{\boldsymbol{\psi}}_s^\top)$ fails when a new stem increases a control's polynomial degree $K_p$, unlocks a switch option, or updates the low-rank control projection, because the old control factors $\tilde{\boldsymbol{\psi}}_s$ are entangled inside $\mathbf{G}_{\text{old}}$.
 
-By storing the **un-entangled, tier-ordered Column-Major Upper-Triangular (`uplo='U'`) audio-only matrices** $\lbrace \mathrm{pack}_{\text{U}}(\mathbf{G}_{\text{audio}}^{(s)}), \mathbf{C}_{\text{audio}}^{(s)} \rbrace$ per stem $s$ in `Arena 4` ([`../containers/checkpoint_and_cache_format.md` §2](../containers/checkpoint_and_cache_format.md#2-tier-ordered-column-major-upper-triangular-packing-uplou-for-mathbfg_textaudios)), the trainer recomputes $\mathbf{P}_{\text{svd,new}}$ and updated control vectors $\tilde{\boldsymbol{\psi}}_s^{\text{new}}$ for all old and new stems in microseconds and assembles the exact updated global Kronecker system in **$< 1\text{ ms}$ with zero audio re-evaluation of old stems**:
-$$\mathbf{G}_{\text{updated}} = \sum_{s=1}^{S + S_{\text{new}}} \mathbf{G}_{\text{audio}}^{(s)} \otimes \Big(\tilde{\boldsymbol{\psi}}_s^{\text{new}} \big(\tilde{\boldsymbol{\psi}}_s^{\text{new}}\big)^\top\Big), \qquad \mathbf{C}_{\text{updated}} = \sum_{s=1}^{S + S_{\text{new}}} \mathbf{C}_{\text{audio}}^{(s)} \otimes \tilde{\boldsymbol{\psi}}_s^{\text{new}}$$
+By storing per-stem, per-tier statistics $\mathbf{G}_{s,T}$ and $\mathbf{C}_{s,T}$ in `Arena 4` ([`../containers/checkpoint_and_cache_format.md` §2](../containers/checkpoint_and_cache_format.md#2-tier-ordered-column-major-upper-triangular-packing-uplou-for-mathbfg_textaudios)), unchanged stems with constant-per-stem head factors reassemble in closed form without re-evaluating their audio trajectories:
+$$\mathbf{G}_{T,\text{updated}} = \sum_{s=1}^{S + S_{\text{new}}} \mathbf{G}_{s,T} \otimes \Big(\tilde{\boldsymbol{\psi}}_{s,T}^{\text{new}} \big(\tilde{\boldsymbol{\psi}}_{s,T}^{\text{new}}\big)^\top\Big), \qquad \mathbf{C}_{T,\text{updated}} = \sum_{s=1}^{S + S_{\text{new}}} \mathbf{C}_{s,T} \otimes \tilde{\boldsymbol{\psi}}_{s,T}^{\text{new}}$$
 
-### 1.2 Two-Tier Resume Execution & Exact Quadratic-Form `bESR` Evaluation
+1. **Constant-Factor Objective Records:** For processed design rows $\mathbf{x}_n$, scalar target $y_n$, and nonnegative weights $w_n$, store:
+   $$\mathbf{G} = \sum_n w_n \mathbf{x}_n \mathbf{x}_n^\top, \qquad \mathbf{c} = \sum_n w_n \mathbf{x}_n y_n, \qquad e = \sum_n w_n y_n^2$$
+   so any candidate head vector $\boldsymbol{\beta}$ has exact quadratic residual $\boldsymbol{\beta}^\top \mathbf{G} \boldsymbol{\beta} - 2\boldsymbol{\beta}^\top \mathbf{c} + e$, folding constant stem control and width factors at solve time.
+2. **Time-Varying Objective Records:** When head controls or stereo width vary within a stem, freeze their trajectories before the statistics sweep and accumulate the processed product design rows $\phi_i[n] z_j[n]$ directly (with linear band filters applied to the complete product time series prior to sample selection).
 
-1. **Tier 1 — Instant Factorized-Kronecker Control & Head Update ($< 5\text{ seconds}$, $100\times$ Faster):**
-   - Evaluates only the newly added or modified stem(s), updates the Node-Anchored Newton/Lobatto basis (`0.00` perturbation on old anchors) and SVD projectors, and solves the Stage-4 Cholesky polish.
-   - Evaluates 4-tier `Lite`/`Full`/`Pro`/`Ultra` `bESR` on all reused `Arena 4` stems in **$< 15\text{ ms}$/stem** without re-generating audio features by expanding the exact quadratic residual identity:
-     $$\big\Vert \mathbf{\Phi}_s \mathbf{W} - \mathbf{Y}_s\big\Vert _F^2 = \mathrm{tr}\big(\mathbf{W}^\top \mathbf{G}_s \mathbf{W}\big) - 2\mathrm{tr}\big(\mathbf{W}^\top \mathbf{C}_s\big) + \big\Vert \mathbf{Y}_s\big\Vert _F^2$$
-2. **Tier 2 — Warm-Started Backbone Fine-Tuning (~`15–20%` Epochs, $4\times\text{–}6\times$ Faster):**
-   - Triggered only if the Tier-1 residual `bESR` on newly added stem(s) exceeds the tier target (e.g., adding a high-gain fuzz stem to a clean-only checkpoint).
-   - Resets the head using conservative ridge $\lambda_{\text{init}} = 10^{-3}\bar{\tau}$, runs warm backbone refinement, and re-runs the Stage-4 Cholesky polish.
+### 1.2 Two-Tier Resume Execution & Objective Evaluation
+
+1. **Tier 1 — Factorized-Kronecker Control & Head Update:** Freezes upstream stage/control behavior, refreshes only new or invalidated `(stem, tier)` slices in one windowed sweep (§1.4), solves the joint host-`float64` system using the quadratic identity $\Vert \mathbf{\Phi}_{s,T}\mathbf{W} - \mathbf{Y}_s \Vert_F^2 = \mathrm{tr}(\mathbf{W}^\top \mathbf{G}_{s,T}\mathbf{W}) - 2\mathrm{tr}(\mathbf{W}^\top \mathbf{C}_{s,T}) + \Vert \mathbf{Y}_s \Vert_F^2$, and verifies old-stem non-regression (`REQ-3.2`).
+2. **Tier 2 — Warm-Started Backbone Fine-Tuning:** When upstream stage weights are warm-started and refined before the statistics sweep, refreshes the affected `(stem, tier)` statistics during that single sweep and polishes the joint head.
+
+### 1.3 Conditions for Old-Stem Trajectory & Arena 4 Gram Reuse on Stem Resume (`REQ-3`)
+
+Each `(stem, tier)` entry in `stems_registry` tracks three separate dependency digests (excluding any tier `$> T$` data so higher-tier updates never invalidate lower tiers):
+1. **Trajectory Dependencies:** Input PCM, aligned control/switch event timelines, initial state, sample rate, effective tier, routing (`FullBand64Tap` alignment, `LR4` crossover, send-safe/downstream partition), `Stage I` `H1`/`T1` histories ([`test_op_m_spec_references.py`](../../tests/test_op_m_spec_references.py)), upstream stage weights, and dispatched stage parameters `θ_0..θ_14`.
+2. **Gram Dependencies:** Trajectory digest + feature preprocessing, sample selection/weights, Gram accumulation semantics, and the streaming SHA-256 **Gram-input fingerprint** ([`../containers/checkpoint_and_cache_format.md` §3.1](../containers/checkpoint_and_cache_format.md#31-gram-input-fingerprint)).
+3. **Cross-Correlation & Certificate Dependencies:** Gram dependencies + target PCM identity, target alignment/preprocessing, and matched noise-floor evidence (`bESR`, `MR-STFT`, `LTAS`, `SegESR`).
+
+**Old-Stem Non-Regression Verification (`REQ-3.2`):** If a candidate update is not proven bit-identical on an old stem, run a bounded validation-only render (without accumulating a second statistics sweep) and verify zero regression across raw composite/per-band `bESR`, `MR-STFT`, maximum absolute noise-adjusted `LTAS`, excluded-band `LTAS` residuals, and linear `SegESR`.
+
+### 1.4 Windowed Statistics Refresh
+
+Invalidated `(stem, tier)` statistics are refreshed by streaming the stem's input PCM through the frozen effective-tier backbone in bounded windows (`< 32 MiB` staging; full-length feature trajectories are never persisted in `.dnam-ckpt` or `.dnam-cache`):
+
+| Change for `(stem, tier)` | Cached Gram `G` | Cross-Correlation `C` | Refresh Action |
+| :--- | :---: | :---: | :--- |
+| **Target only** (trajectory, alignment, preprocessing, selection & weights unchanged) | Valid (`Reuse`) | Invalid | Replay trajectory in windows, verify matching SHA-256 Gram-input fingerprint, and accumulate only `C` (`O(L · D)`) + target energies. |
+| **Trajectory, alignment, preprocessing, selection, or weights changed** | Invalid | Invalid | Replay trajectory in windows and accumulate both `G` (`O(L · D²)`) and `C`, recording the new Gram-input fingerprint. |
+| **All trajectory, target, and weight dependencies unchanged** | Valid (`Reuse`) | Valid (`Reuse`) | Zero replay. |
 
 ---
 
 ## 2. Two-Tier Calibration Persistence (`Arena 5` `DNCA` & Workspace `.dnam-cache`)
 
-To avoid recalculating expensive input segmentation Grams, Stage-1 projections, and 8,192-tap causal Wiener LTI impulse responses across iterative runs or after process interruptions:
-
-1. **Portable Checkpoint `Arena 5` (`DNCA`, `HAS_CALIB_STATS` Bit 12):**
-   - Embedded inside `.dnam-ckpt` v1.1 (`~3.6 MB` for 30 stems $\times$ 30 s; see [`../containers/checkpoint_and_cache_format.md` §4](../containers/checkpoint_and_cache_format.md#4-arena-5-dnca-has_calib_stats-bit-12--workspace-dnam-cache-sidecar)) and stripped automatically when exporting runtime `.dnam` files.
-2. **Local Workspace Cache (`models/<id>/.dnam-cache/*.dnce`):**
-   - A gitignored, 64-byte aligned memory-mappable sidecar cache governed by an empirical disk-read vs. compute-regeneration bandwidth cost model, enforcing a configurable workspace quota (`16 GB` default, `~3 GB` floor) and automatically pruning intermediate stage files upon training completion.
+1. **Portable Checkpoint `Arena 5` (`DNCA`, `HAS_CALIB_STATS`):** Stores tier-independent calibration records in the shared checkpoint region and tier-dependent records (`INPC` input segmentation/basis Grams and `STMC` alignment, noise-floor, and Stage III FIR/modal extractions) inside their owning tier bundles; stripped automatically on `.dnam` runtime export.
+2. **Local Workspace Cache (`models/<id>/.dnam-cache/*.dnce`):** Gitignored, 64-byte-aligned memory-mappable sidecar cache governed by a disk-read vs. compute-regeneration cost model (`16 GB` default quota, `~3 GB` floor).
 
 ---
 
 ## 3. Serverless Cloud Trainer Architecture
-
-In addition to local execution, the training pipeline supports scale-to-zero cloud execution via content-addressed PCM stem deduplication (`stems/{pcm_sha256}.pcm`) and `.dnam-ckpt` incremental resume:
 
 ```mermaid
 sequenceDiagram
@@ -75,20 +84,17 @@ sequenceDiagram
     Client->>Worker: Start Job -> Atomic Credit Hold in DB (status = queued)
     Worker->>GPU: Dispatch signed job payload to Serverless Accelerator
     GPU->>ObjectStore: Pull .pcm stems & .dnam-ckpt (if resume) from Object Storage
-    loop Stages 1-4 (Fit Job / Resume From Checkpoint)
+    loop Sweep 1 & Sweep 2 (Fit Job / Resume From Checkpoint)
         GPU-->>Client: Stream TrainingEvent SSE (bESR Lite/Full/Pro/Ultra, AuditPhaseEvent)
     end
-    GPU->>ObjectStore: Write .dnam (64.0 KB) + .dnam-ckpt (Arena 4 uplo='U' + Arena 5 DNCA)
+    GPU->>ObjectStore: Write .dnam + .dnam-ckpt (tier-bundled Arena 4 + DNCA)
     GPU->>Worker: Completion Webhook -> Capture Held Credits & Unlock Audition / Publish
 ```
 
-1. **Content-Addressed PCM Stem Deduplication (`0 MB` Old-Stem Upload on Resume):** Stems are stored in private object storage under `stems/{pcm_sha256}.pcm`. Because a $30\text{ s}$ dry test sweep is identical across stems and sessions, it is uploaded once; during a `.dnam-ckpt` resume (`Job Kind 3` or `4`), only newly recorded target `.pcm` files are uploaded (`0` old stems re-uploaded or re-rendered).
-2. **`< 1.5 s` Cold Starts via Zero Base-Model Weights:** Unlike generative audio foundation models that must load gigabytes of pre-trained weights at container startup, DNAM calibrates each circuit from its physical system-ID equations (`0 MB` pre-trained base weights), enabling scale-to-zero accelerator workers to cold-boot from memory snapshots in $< 1.5\text{ seconds}$.
-
-| Job Kind (`job_kind`) | Execution Target & Typical Duration | Key Architectural Mechanism |
+| Job Kind (`job_kind`) | Execution Target | Key Architectural Mechanism |
 | :--- | :---: | :--- |
 | **0. Pre-Flight Phase-1 Control Audit** (`audit_only=True`) | Control-Plane CPU (`< 200 ms`) | Verifies stem coverage & previews `[CLAMP-*]` rules before training |
-| **1. Static Snapshot Rig** (`1` Stem, `0` Controls, `Lite`+`Full`+`Pro`+`Ultra`) | Hardware Accelerator (`~10–18 s`) | Stage-2 `float64` Wiener-Hopf warm-start + Stage-3 cascade + Stage-4 polish |
-| **2. Full Parametric Multi-Stem Rig** (`Range` & `Switch` Controls) | Hardware Accelerator (`~25–55 s`) | Calibrates all 4 slimmable tiers (`Lite`, `Full`, `Pro`, `Ultra`) in one pass + writes `.dnam-ckpt` |
-| **3. Tier-1 `.dnam-ckpt` Stem Expansion** ([§1.2](#12-two-tier-resume-execution--exact-quadratic-form-besr-evaluation)) | Hardware Accelerator (`< 5 s`) | Reuses `Arena 4` `uplo='U'` Gram matrices (`0` old-stem audio passes) |
-| **4. Tier-2 `.dnam-ckpt` Backbone Fine-Tune** (`15–20%` Warm Epochs) | Hardware Accelerator (`~12–20 s`) | Warm-started from `.dnam-ckpt` + Stage-4 Cholesky Polish |
+| **1. Static Snapshot Rig** (`1` Stem, `0` Controls, `Lite..Ultra`) | Hardware Accelerator | Sweep-1 Stage III/II/IV closed-form + residual solve + Sweep-2 `float64` Cholesky polish |
+| **2. Full Parametric Multi-Stem Rig** (`Range` & `Switch` Controls) | Hardware Accelerator | Jointly trains all 4 slimmable tiers (`Lite..Ultra`) and populates tier-bundled `Arena 4` statistics |
+| **3. Tier-1 `.dnam-ckpt` Stem Expansion** ([§1.2](#12-two-tier-resume-execution--objective-evaluation)) | Hardware Accelerator | Reuses valid per-tier `Arena 4` slices; replays only new/invalidated stems and verifies old-stem non-regression |
+| **4. Tier-2 `.dnam-ckpt` Backbone Fine-Tune** | Hardware Accelerator | Warm-starts backbone from `.dnam-ckpt`, refreshes affected statistics in one sweep, and polishes the joint head |

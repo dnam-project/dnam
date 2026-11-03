@@ -1,29 +1,30 @@
 # Empirical Verification Suites (`Tests 1–8I`) & Automated Guardrails
 
-All implementations of **Dynamic Neural Audio Modeler (DNAM)**—across the Rust real-time engine ([`packages/engine`](../../packages/engine/AGENTS.md)), Python bindings ([`packages/python`](../../packages/python/AGENTS.md)), WebAssembly runtime ([`packages/js`](../../packages/js/AGENTS.md)), and training pipeline ([`packages/trainer`](../../packages/trainer/AGENTS.md))—must pass the **8 Empirical Mathematical & Numerical Verification Suites (`Tests 1–8I`)** and the **8 Automated Repository & Container Guardrails (`G-01`–`G-08`)** specified below.
+All implementations of **Dynamic Neural Audio Modeler (DNAM)**—across the Rust real-time engine ([`packages/engine`](../../packages/engine/AGENTS.md)), Python bindings ([`packages/python`](../../packages/python/AGENTS.md)), WebAssembly runtime ([`packages/js`](../../packages/js/AGENTS.md)), and training pipeline ([`packages/trainer`](../../packages/trainer/AGENTS.md))—must pass the **8 Empirical Mathematical & Numerical Verification Suites (`Tests 1–8I`)** and the **8 Automated Repository & Container Guardrails (`G-01`–`G-08`)** specified below. For the Phase 1 design decisions and counterexample archive, see [`../rnd/tora_phase1_decisions.md`](../rnd/tora_phase1_decisions.md).
 
 ```mermaid
 flowchart LR
-    subgraph Subsystems ["DNAM Subsystems & Specifications"]
+    subgraph Subsystems ["TORA Subsystems & Specifications"]
         direction TB
-        S_Core1A["Core 1A: 1x B-Spline PolyADAA<br/>(../dsp/core1_polyadaa_and_rglru.md §1)"]
-        S_Core1B["Core 1B: Radial-Polar Selective RG-LRU<br/>(../dsp/core1_polyadaa_and_rglru.md §2)"]
-        S_Core2["Core 2: Modulated Unitary FDN (WT-UFDN)<br/>(../dsp/core2_modulated_ufdn.md)"]
+        S_OpN["Op-N: Commuted Cascade & PolyADAA<br/>(../dsp/op_n_commuted_cascade.md)"]
+        S_OpM["Op-M: Modal Bank & Kautz<br/>(../dsp/op_m_modal_kautz.md)"]
+        S_OpT["Op-T: Transport & Elastic Buffer<br/>(../dsp/op_t_transport.md)"]
+        S_Router["8-Port Router & Stages Topology<br/>(../dsp/router_and_stages_topology.md)"]
         S_Ctrl["3 kHz Parametric Control Bus<br/>(../dsp/parametric_control_bus.md)"]
-        S_Train["4-Stage Training & .dnam-ckpt Resume<br/>(../training/four_stage_pipeline.md & iterative_resume_and_caching.md)"]
+        S_Train["Two-Sweep Training Pipeline<br/>(../training/four_stage_pipeline.md & iterative_resume_and_caching.md)"]
         S_Cont[".dnam / .dnam-ckpt / .dnam-seal & Provenance<br/>(../containers/ & ../security/)"]
     end
 
     subgraph Empirical ["8 Empirical Verification Suites (Tests 1–8I)"]
         direction TB
-        T1["Test 1 (1A–1C): Division-Free PolyADAA Exactness & 38.87 dB Aliasing Suppression (CL-01, CL-02)"]
-        T2["Test 2 (2A–2C): Radial-Polar Q Preservation (99.8%), Algebraic Rotor & Parallel Scan (CL-03..CL-05)"]
-        T3["Test 3: 4-Tap Cubic Lagrange vs. Recursive Thiran Boundary Jerk (54x Smoother, CL-06)"]
-        T4["Test 4: M-UFDN Lyapunov Saturation Ceiling (<= 0.985) & Zero-DC Decay (CL-08..CL-11)"]
-        T5["Test 5: Givens + Householder Stereo Matrix Unitary Orthogonality (< 1e-14 Error)"]
-        T6["Test 6: Surrogate Envelope Delay Gradient Lock (0.0035-Sample Accuracy)"]
-        T7["Test 7 (7A–7B): Step-0 Wiener-Hopf Warm-Start (-25.39 dB) & Dual-Ridge Polish (-47.63 dB, CL-18)"]
-        T8["Test 8 (8A–8I): Lobatto HDMR, Dual-Mode Delay, 3-Phase Audit, uplo='U' Resume & Tardos Watermark (CL-07, CL-12..CL-20)"]
+        T1["Test 1 (1A–1C): PolyADAA Identity, Linear Path & Aliasing (CL-01, CL-02)"]
+        T2["Test 2 (2A–2C): Resonator Radius, Rotor & Parallel Scan (CL-03..CL-05)"]
+        T3["Test 3: Fractional Delay Boundary Error (CL-06)"]
+        T4["Test 4: Stage IV Saturation, Blended Knee & DC (CL-08..CL-11)"]
+        T5["Test 5: Givens + Householder Mixing Orthogonality"]
+        T6["Test 6: Surrogate Delay Optimization Convergence"]
+        T7["Test 7 (7A–7B): Pole Initialization & Kronecker Head Solve (CL-18)"]
+        T8["Test 8 (8A–8I): Lobatto HDMR, Dual-Mode Delay, 3-Phase Audit, uplo='U' Resume & Watermark (CL-07, CL-12..CL-20)"]
     end
 
     subgraph Guardrails ["8 Automated Repository & Container Guardrails (G-01..G-08)"]
@@ -31,9 +32,10 @@ flowchart LR
         G["G-01: Zero Forbidden Imports & Zero # type: ignore<br/>G-02: AGENTS.md Byte Budgets (< 5 KB root, < 2.5 KB scoped)<br/>G-03: Clamp (CL-01..CL-20) & Requirement (REQ-1..REQ-8) Completeness<br/>G-04: Zero Unescaped $ in Markdown Tables<br/>G-05: GitHub LaTeX Math & Mermaid Syntax Validity<br/>G-06: 32-Bit Device Purity & Monotonic B-Spline Windows<br/>G-07: Fail-Fast 64B Container Schema Validation<br/>G-08: Relative Markdown Link Integrity"]
     end
 
-    S_Core1A --> T1
-    S_Core1B --> T2
-    S_Core2 --> T3 & T4 & T5
+    S_OpN --> T1
+    S_OpM --> T2
+    S_OpT --> T3
+    S_Router --> T4 & T5
     S_Ctrl --> T8
     S_Train --> T6 & T7 & T8
     S_Cont --> T8 & G
@@ -43,94 +45,97 @@ flowchart LR
 
 ## 1. Master Summary of the 8 Empirical Verification Suites
 
-| Suite ID | Subsystem Under Test | Naive / Baseline Failure Mode | Verified DNAM Result | Mandatory Pass Criterion |
+| Suite ID | Subsystem Under Test | Baseline Failure Mode | Mandatory Acceptance Criterion | Reference Suites |
 | :--- | :--- | :--- | :--- | :--- |
-| **`Test 1` (`1A–1C`)** | Core 1A Division-Free `PolyADAA` & `1×` B-Spline Blend (`CL-01`, `CL-02`) | `FDIV` `0/0` singularity at `Δu → 0`; `-45.88 dB` passband droop if midpoint filter is applied to linear signal; `-23.20 dBc` aliasing in `NAM A2` `LeakyReLU` | **`5.25 × 10⁻¹⁴`** algebraic factorization error (`0 FDIV`); **`0.00 dB`** linear passband droop; **`-62.08 dBc`** aliasing (**`38.87 dB` reduction**) | `max_alg_err < 1e-12` and `(alias_a2_db - alias_dnam_db) > 35.0` |
-| **`Test 2` (`2A–2C`)** | Core 1B Radial-Polar Selective RG-LRU, Algebraic Rotor & Parallel Scan (`CL-03`–`CL-05`) | Cartesian interpolation collapses mid-sweep resonance `Q` from `125.0 -> 6.5` (`94.8%` loss); `cosf`/`sinf` transcendentals in `3 kHz` loop | **`Q = 124.7` (`99.80%` preserved)**; rotor error **`9.99 × 10⁻⁹`** with `|u_rot| ≤ 1.000000000000`; parallel scan parity **`9.42 × 10⁻¹⁶`** | `q_polar > 0.99 * q_orig`, `max_unit_val <= 1.0 + 1e-15`, `scan_err < 1e-13` |
-| **`Test 3`** | Core 2 Modulated Fractional Delay (`CL-06`) | 1st-order Thiran all-pass state reset produces `0.04694` boundary click jerk during `3 Hz` LFO sweep | **`0.00087` boundary jerk (`54×` smoother)** via 4-Tap Cubic Lagrange FIR interpolation | `err_thiran_jerk > 15.0 * err_lagrange_jerk` |
-| **`Test 4`** | Core 2 `M-UFDN` Lyapunov Saturation & Zero-DC Loop (`CL-08`–`CL-11`) | `+20 dBFS` burst + `1.18×` regen gain + `+2.0` DC offset causes unbounded explosion or DC rail lockup | Peak bounded at **`0.9850 ≤ V_ceil`**; residual DC **`1.03 × 10⁻⁶`**; quiet tail decays monotonically to silence | `out_peak <= v_ceil + 1e-9` and `abs(final_dc) < 1e-5` |
-| **`Test 5`** | Core 2 Givens + Householder Stereo Matrix `U(ψ, v)` | Fixed ping-pong permutation or non-unitary feedback matrix corrupts decay times | **`< 1.0 × 10⁻¹⁴` orthogonality and unit-eigenvalue error** across all `ψ ∈ [0, π/2]` | `ortho_err < 1e-14` and `max_eig_err < 1e-14` |
-| **`Test 6`** | Stage-2 Multi-Scale Surrogate Envelope Delay Gradient | Direct Cubic Lagrange time-domain gradient gets trapped in carrier cycle (`54.52`-sample error from `65.35`-sample offset) | **`0.0035`-sample delay lock (`0.07 µs`)** from a `65.35`-sample initial offset | `abs(tau_surr - tau_true) < 0.01` |
-| **`Test 7` (`7A–7B`)** | Stage-2 Step-0 Wiener-Hopf Warm-Start & Stage-4 Dual-Ridge Polish (`CL-18`) | Cold random initialization starts at `+0.01 dB ESR`; un-polished Adam plateau stalls at `-35.67 dB` | Step-0 warm-start reaches **`-25.39 dB`** in `< 5 ms`; Stage-4 `float64` polish reaches **`-47.63 dB ESR`** (`+11.96 dB` gain in `< 2 ms`) | `esr_warm < -20.0` and `esr_polished < -45.0` |
-| **`Test 8` (`8A–8I`)** | Parametric Control Bus, 3-Phase Audit, `.dnam-ckpt` Resume, `64 B` Framing & Tardos Watermark (`CL-07`, `CL-12`–`CL-20`) | Audio crossfading creates double-echoes; unrecorded corners explode; `pickle` checkpoints require full retraining | **`3.41 × 10⁻¹³ ms`** delay interpolation; **`50.7×`** smoother switch; **`-38.46 dB`** unseen combo `ESR`; **`1.05 × 10⁻⁹`** `.dnam-ckpt` parity; **`0.00 dB`** gauge watermark; **`Z ≥ 24.98σ`** Tardos trace | `val_esr < -35.0`, `uplo_u_err == 0.0`, `min_z_colluder > 10.0` |
+| **`Test 1` (`1A–1C`)** | Op-N Division-Free `PolyADAA`, `C²` Wavefolder & ZOH Bitcrusher (`CL-01`, `CL-02`) | Midpoint filtering droops passband; clamped-endpoint ADAA loses rail overshoot; truncating quantizer mis-rounds negatives. | `max_alg_err < 1e-12`; 6-step rail reciprocal error `< 2^-24 + 2^-44`; exact dyadic quantizer & fixed-hertz ZOH carry parity. | [`tora_operators_verification.rs`](../../packages/engine/tests/tora_operators_verification.rs), [`stage2_rail_spec_references.rs`](../../packages/engine/tests/stage2_rail_spec_references.rs), [`test_bitcrusher_spec_references.py`](../../tests/test_bitcrusher_spec_references.py) |
+| **`Test 2` (`2A–2C`)** | Op-M Symplectic Resonator, Contractive Rotor, `H1` Hilbert & `T1` Tracker (`CL-03`–`CL-05`) | Cartesian pole interpolation drops `Q`; unreduced rotor exceeds unit norm in `f32`; FTZ flushes normalized `I` crossings. | `q_polar > 0.99 * q_orig`; contractive rotor `‖u_rot‖₂ ≤ 1.0` (`< 2.3e-7 rad` error); `H1` phase `-90° ± 0.34°`; `scan_err < 1e-13`. | [`tora_operators_verification.rs`](../../packages/engine/tests/tora_operators_verification.rs), [`test_op_m_spec_references.py`](../../tests/test_op_m_spec_references.py), [`test_stage1_tracker_coefficients.py`](../../tests/test_stage1_tracker_coefficients.py) |
+| **`Test 3`** | Op-T Modulated Fractional Delay & Model-Declared Histories (`CL-06`) | Recursive Thiran delay filter exhibits boundary jerk under modulation; single `f32` delay loses fractional precision at `9 s`. | `err_thiran_jerk > 15.0 * err_catmull_rom_jerk`; exact 64B-aligned sizing, branchless wrap, and inward `f32` reader bounds. | [`tora_operators_verification.rs`](../../packages/engine/tests/tora_operators_verification.rs), [`test_op_t_buffer_spec_references.py`](../../tests/test_op_t_buffer_spec_references.py), [`test_passive_delay_spec_references.py`](../../tests/test_passive_delay_spec_references.py) |
+| **`Test 4`** | Stage IV Spatial Tank Saturation, Blended Knee, Guard & DC (`CL-08`–`CL-11`) | Overload or DC bias destabilizes feedback loop; in-loop DC filter damps held freeze state. | `max_peak <= 0.985` (`0x3F7C28F5`); input/readout `5 Hz` DC conditioning; blended knee `< 2^-23` error; grouped max-tree decay. | [`tora_stages_and_tank_verification.rs`](../../packages/engine/tests/tora_stages_and_tank_verification.rs), [`test_feedback_guard_spec_references.py`](../../tests/test_feedback_guard_spec_references.py), [`test_captured_freeze_spec_references.py`](../../tests/test_captured_freeze_spec_references.py) |
+| **`Test 5`** | Stage IV Givens + Householder Mixing `U(ψ, v)` | Non-unitary feedback mixing alters decay time across stereo modes. | `ortho_err < 1e-14` (`f64` oracle) and `< 1e-6` (`f32` runtime) across `M ∈ {4, 8, 16}` lines. | [`tora_stages_and_tank_verification.rs`](../../packages/engine/tests/tora_stages_and_tank_verification.rs) |
+| **`Test 6`** | Stage IV / Op-T Surrogate Delay Gradient | Carrier-cycle local minima trap standard MSE delay optimization. | Multi-scale Gaussian envelope surrogate locks `78.42`-sample delay from `23.0` within `< 0.05` samples. | [`test_dnam_verification.py`](../../packages/trainer/tests/integration/test_dnam_verification.py) |
+| **`Test 7` (`7A–7B`)** | Step-0 Initialization, Weighted Gram Contraction & Head Polish (`CL-18`) | 32-bit normal equations overflow or lose small cross-terms (`[1, 2^-25]`). | Log-octave `25 Hz..16 kHz` poles; weighted Gram error `|ĝ - g| ≤ γ_N S`; synthetic polish `esr_pol < -45 dB`. | [`test_dnam_verification.py`](../../packages/trainer/tests/integration/test_dnam_verification.py), [`test_gram_precision_spec_references.py`](../../tests/test_gram_precision_spec_references.py) |
+| **`Test 8` (`8A–8I`)** | `3 kHz` Control Bus, Exact-Integer Accumulator, Outward Trust Clip, Containers & Security (`CL-07`, `CL-12`–`CL-20`) | `f32` FM sums drift over closed cycles; naive `f32` trust clip exceeds ball; non-HPKE low-order keys leak CEK. | Zero integer-accumulator drift; outward trust clip `< 1.185e-6 * ρ`; RFC 8785 JCS, `CP1`, `DAU1`/`DAI1`/`DSA1`, and HPKE verification. | [`control_accumulator_spec_references.rs`](../../packages/engine/tests/control_accumulator_spec_references.rs), [`trust_clip_spec_references.rs`](../../packages/engine/tests/trust_clip_spec_references.rs), [`signed_prefix_spec_references.rs`](../../packages/engine/tests/signed_prefix_spec_references.rs) |
 
 ---
 
 ## 2. Detailed Specification of the 8 Empirical Verification Suites
 
-### 2.1 `Test 1` (`1A–1C`) — Division-Free Algebraic `PolyADAA` Exactness & Cascaded Aliasing (`CL-01`, `CL-02`)
+### 2.1 `Test 1` (`1A–1C`) — Division-Free Algebraic `PolyADAA`, Wavefolder & Bitcrusher (`CL-01`, `CL-02`)
+1. **`Test 1A` (Linear Passband Preservation):** Verifies that separating the un-delayed linear path $\alpha_c x_c[n]$ from the $1\times$ passive B-spline `PolyADAA` blend preserves unity passband gain within `1e-12 dB` at `22 kHz` (`f_s = 48 kHz`).
+2. **`Test 1B` (Division-Free Midpoint-Difference & 6-Step Rail Crossing):** Verifies exact midpoint-difference factorization (`< 1e-12` against `f64` quotients), 6-step division-free `f64` Newton reciprocal across unclamped `±1` rail crossings (`< 2^-24 + 2^-44` error in [`stage2_rail_spec_references.rs`](../../packages/engine/tests/stage2_rail_spec_references.rs)), and `C²` cubic-envelope wavefolder `PolyADAA` ($Q_1..Q_8$, [`test_stage2_spec_references.py`](../../tests/test_stage2_spec_references.py)).
+3. **`Test 1C` (Cascaded Aliasing & Family 5 Bitcrusher):** Verifies multi-stage aliasing reduction and exact dyadic half-up quantization, zero/full-rate latching, and fixed-hertz `u128` reciprocal rate transfer ([`test_bitcrusher_spec_references.py`](../../tests/test_bitcrusher_spec_references.py)).
 
-- **Reference Implementations:** [`packages/engine/src/core1/reference.rs`](../../packages/engine/src/core1/reference.rs) and [`packages/trainer/tests/integration/test_dnam_verification.py`](../../packages/trainer/tests/integration/test_dnam_verification.py).
-- **Sub-Tests & Acceptance Criteria:**
-  1. **`Test 1A` (Linear Passband Preservation):** Cascades 8 layers at $f_s = 48\text{ kHz}$ with a $16\text{ kHz}$ sine wave. Verifies that applying a midpoint $(1 + z^{-1})/2$ filter to the full signal causes $> 40\text{ dB}$ high-frequency droop (`-45.88 dB`), whereas DNAM's split linear bypass $\alpha_c x_c[n]$ + `1× B-Spline PolyADAA` nonlinear branch preserves a flat $0.00\text{ dB}$ linear passband.
-  2. **`Test 1B` (Division-Free Midpoint-Difference Identity):** Evaluates the exact quotient $\frac{\mathcal{F}_c(u_n) - \mathcal{F}_c(u_{n-1})}{u_n - u_{n-1}}$ vs. the division-free midpoint-difference polynomial $\mathcal{A}_c(m_n, d_n)$ across $10,000$ random pairs $(u_{n-1}, u_n) \in [-0.99, +0.99]^2$. Verifies maximum absolute error $< 10^{-12}$ (**`5.25 × 10⁻¹⁴`**) with zero `FDIV` instructions and zero $0/0$ branches as $d_n \to 0$.
-  3. **`Test 1C` (8-Layer Cascaded Distortion Aliasing at $f_0 = 3,450\text{ Hz}$):** Drives 8 cascaded distortion stages with a high-amplitude $f_0 = 3,450\text{ Hz}$ sine wave ($A = 1.6$). Compares non-harmonic aliased bin energy of `NAM A2` `LeakyReLU(0.01)` (`-23.20 dBc`) against DNAM `1× B-Spline PolyADAA` (`-62.08 dBc`), verifying **$> 35.0\text{ dB}$ (`38.87 dB`) aliasing suppression**.
+### 2.2 `Test 2` (`2A–2C`) — Op-M Symplectic Resonator, Contractive Rotor, `H1` Hilbert & `T1` Tracker (`CL-03`–`CL-05`)
+1. **`Test 2A` (Radial-Polar Sweep `Q` Preservation):** Verifies radial-polar interpolation preserves `> 99%` of resonator decay proxy $1/(1-r)$ at sweep midpoints where Cartesian interpolation collapses below `10%`.
+2. **`Test 2B` (Quadrant-Reduced Contractive Rotor & `Q0.192` LFO Phase, `CL-03`):** Verifies $|u_{\mathrm{rot}}|_2 \le 1.0$ across all `f32` angles in $(-\pi, \pi)$ (`< 2.3e-7 rad` error), exact `(1.0, 0.0)` zero-increment hold, and `Q0.192` slow-LFO phase progression ([`test_control_math_spec_references.py`](../../tests/test_control_math_spec_references.py), [`test_lfo_precision_spec_references.py`](../../tests/test_lfo_precision_spec_references.py)).
+3. **`Test 2C` (Parallel Scan, `H1` Hilbert & `T1` Tracker):** Verifies $O(\log_2 L)$ associative scan parity (`< 1e-13`), 15-anchor `H1` Hilbert quadrature phase (`-90° ± 0.34°`, [`test_op_m_profile_bounds.py`](../../tests/test_op_m_profile_bounds.py), [`test_op_m_profile_certified_bounds.py`](../../tests/test_op_m_profile_certified_bounds.py)), `T1` DC blocker bit-exact midpoint search and conditioning ([`test_stage1_tracker_coefficients.py`](../../tests/test_stage1_tracker_coefficients.py), [`stage1_conditioning_spec_references.rs`](../../packages/engine/tests/stage1_conditioning_spec_references.rs)), and Stage III ZOH cabinet rate conversion ([`test_cabinet_modal_spec_references.py`](../../tests/test_cabinet_modal_spec_references.py), [`stage3_first_tap_spec_references.rs`](../../packages/engine/tests/stage3_first_tap_spec_references.rs)).
 
-### 2.2 `Test 2` (`2A–2C`) — Radial-Polar Selective RG-LRU, Algebraic Rotor & Parallel Scan (`CL-03`–`CL-05`)
+### 2.3 `Test 3` — Modulated Fractional Delay: Stateless 4-Tap Catmull-Rom vs. Recursive Thiran (`CL-06`)
+Verifies stateless 4-tap Horner Catmull-Rom interpolation under LFO sweep (`> 15×` lower 2nd-difference boundary error than recursive Thiran), cold-allocated 64B-aligned delay sizing, branchless arbitrary-length wrap, integer-plus-`Q0.32` delay pointers with inward `f32` reader bounds, and centered `M=2` granular pitch shifting ([`test_op_t_buffer_spec_references.py`](../../tests/test_op_t_buffer_spec_references.py), [`test_passive_delay_spec_references.py`](../../tests/test_passive_delay_spec_references.py)).
 
-- **Reference Implementations:** [`packages/engine/src/core1/reference.rs`](../../packages/engine/src/core1/reference.rs) and [`packages/trainer/tests/integration/test_dnam_verification.py`](../../packages/trainer/tests/integration/test_dnam_verification.py).
-- **Sub-Tests & Acceptance Criteria:**
-  1. **`Test 2A` (Mid-Sweep Resonance $Q$ Preservation):** Sweeps a resonator pole with radius $r_0 = 0.992$ ($Q_0 = 125.0$) from $\theta_{\text{low}} = 0.05\pi$ to $\theta_{\text{high}} = 0.40\pi$. Verifies that Cartesian midpoint interpolation collapses $Q$ to $< 0.10 Q_0$ (`Q = 6.5`), whereas DNAM's radial-polar factorization with $3\text{ kHz}$ phase-increment linear interpolation preserves **`Q > 0.99 Q_0` (`Q = 124.7`, `99.80%`)**.
-  2. **`Test 2B` (Branchless 4-FMA + 1-Step Newton Unit-Circle Rotor, `CL-03`):** Evaluates the range-reduced polynomial + Newton projection $y_1 = 1.5 - 0.5(\hat{c}^2 + \hat{s}^2)$ across $20,000$ angles $\Delta\theta \in [0, \pi]$. Verifies worst-case unit-circle magnitude error $< 2 \times 10^{-8}$ (**`9.99 × 10⁻⁹`**) and strict upper bound $|u_{\text{rot}}| \le 1.0 + 10^{-15}$ (`0 FSQRT`, `0 FDIV`, `0 libm`).
-  3. **`Test 2C` (Blelloch Parallel Associative Scan Equivalence):** Compares sequential sample-by-sample recurrence $z[n] = a[n] z[n-1] + b[n]$ against the $\mathcal{O}(\log_2 L)$ parallel associative scan over $L = 1,024$ complex samples, verifying maximum discrepancy $< 10^{-13}$ (**`9.42 × 10⁻¹⁶`**).
-
-### 2.3 `Test 3` — Modulated Fractional Delay: Cubic Lagrange FIR vs. Recursive Thiran (`CL-06`)
-
-- **Reference Implementation:** [`packages/engine/src/core2/reference.rs`](../../packages/engine/src/core2/reference.rs).
-- **Stimulus & Acceptance Criterion:** Modulates a $5\text{ kHz}$ sine wave with a $\tau[n] = 120 + 60 \sin(2\pi \cdot 3 t)$ sample LFO sweep at $48\text{ kHz}$. Measures the 2nd-difference boundary click jerk $|\Delta^2(y - y_{\text{exact}})|_{\max}$ when $\tau[n]$ crosses integer sample boundaries, verifying that 4-Tap Cubic Lagrange FIR interpolation (`0.00087`) is **$> 15\times$ (`54×`) smoother** than 1st-order recursive Thiran all-pass interpolation (`0.04694`).
-
-### 2.4 `Test 4` — `M-UFDN` Coercive Lyapunov Saturation & Zero-DC Loop Stability (`CL-08`–`CL-11`)
-
-- **Reference Implementation:** [`packages/engine/src/core2/reference.rs`](../../packages/engine/src/core2/reference.rs).
-- **Stimulus & Acceptance Criteria:** Injects a $+20\text{ dBFS}$ sine burst with a $+2.0$ DC offset into an 8-line `M-UFDN` configured in a self-oscillating dub swell regime ($g_{\text{lin}} = 0.98$, $g_{\text{regen}} = 0.20 \implies g_{\text{eff,max}} = 1.18 > 1.0$, $V_{\text{ceil}} = 0.985$, $R_{\text{dc}} = 0.995$). Verifies:
-  1. Peak tank state never exceeds the Lyapunov ceiling: $\max |s_m[n]| \le V_{\text{ceil}} + 10^{-9}$ (**`0.9850`**).
-  2. Residual DC offset after input removal is $< 10^{-5}$ (**`1.03 × 10⁻⁶`**).
-  3. Once tank energy drops below the coercive knee $\sigma_m$, the tail decays monotonically at $g_{\text{lin}} \le 0.9990$.
+### 2.4 `Test 4` — Stage IV Spatial Tank Saturation, DC & Loop Stability (`CL-08`–`CL-11`)
+Verifies Stage IV unity-slope normalized cubic saturation ($V_{\text{ceil}} \le \mathtt{0x3F7C28F5}$), blended feedback knee $K(u)$ ([`test_feedback_knee_spec_references.py`](../../tests/test_feedback_knee_spec_references.py)), grouped max-tree bounded-history feedback guard ([`test_feedback_guard_spec_references.py`](../../tests/test_feedback_guard_spec_references.py)), and input/readout `5 Hz` DC conditioning (`0x3F7FD51F`) across captured freeze and play-over states ([`test_captured_freeze_spec_references.py`](../../tests/test_captured_freeze_spec_references.py)).
 
 ### 2.5 `Test 5` — Givens + Householder Stereo Mixing Matrix $\mathbf{U}(\psi, \mathbf{v})$ Orthogonality
-
-- **Reference Implementation:** [`packages/engine/src/core2/reference.rs`](../../packages/engine/src/core2/reference.rs).
-- **Stimulus & Acceptance Criteria:** Evaluates $\mathbf{U}(\psi, \mathbf{v}) = (\mathbf{I}_M - 2\mathbf{v}\mathbf{v}^\top)\mathbf{R}_{\text{Givens}}(\psi)$ across $\psi \in \lbrace 0, \pi/6, \pi/4, \pi/2 \rbrace$ (spanning Parallel Dual-Mono, 3D Cross-Coupled Stereo, and True Ping-Pong). Verifies both $\Vert \mathbf{U}^\top \mathbf{U} - \mathbf{I}_M\Vert _{\max} < 10^{-14}$ and $\max_k \big||\lambda_k(\mathbf{U})| - 1.0\big| < 10^{-14}$.
+Verifies $\Vert \mathbf{U}^\top \mathbf{U} - \mathbf{I} \Vert_\infty < 10^{-14}$ (`f64`) and vector energy preservation across Dual-Mono ($\psi = 0$), Reverb ($\psi = \pi/4$), and Ping-Pong ($\psi = \pi/2$) configurations.
 
 ### 2.6 `Test 6` — Multi-Scale Surrogate Envelope Delay Gradient Convergence
+Verifies coarse-to-fine Gaussian envelope derivative surrogate convergence from `23.0` to `78.42` samples within `< 0.05` samples in 140 steps.
 
-- **Reference Implementation:** [`packages/trainer/tests/integration/test_dnam_verification.py`](../../packages/trainer/tests/integration/test_dnam_verification.py).
-- **Stimulus & Acceptance Criterion:** Optimizes a fractional delay parameter initialized at $\tau_{\text{init}} = 85.00\text{ samples}$ toward a ground-truth harmonic transient at $\tau_{\text{true}} = 150.35\text{ samples}$ ($65.35$-sample initial error, $> 1.2\times$ the $880\text{ Hz}$ carrier period). Verifies that coarse Gaussian-derivative envelope gradients ($\sigma = 35.0\text{ samples}$) followed by fine Cubic Lagrange carrier refinement converge to $|\hat{\tau} - \tau_{\text{true}}| < 0.01\text{ samples}$ (**`0.0035 samples`**).
-
-### 2.7 `Test 7` (`7A–7B`) — Step-0 Wiener-Hopf Warm-Start & Stage-4 Dual-Ridge Polish (`CL-18`)
-
-- **Reference Implementation:** [`packages/trainer/tests/integration/test_dnam_verification.py`](../../packages/trainer/tests/integration/test_dnam_verification.py).
-- **Sub-Tests & Acceptance Criteria:**
-  1. **`Test 7A` (Step-0 Orthonormal Warm-Start):** Verifies that solving the Step-0 `float64` Tikhonov-regularized Wiener-Hopf normal equations ($\lambda_{\text{init}} = 10^{-3} \bar{\tau}$) achieves **`< -20.0 dB` (`-25.39 dB`) ESR** before Epoch 1 begins.
-  2. **`Test 7B` (Post-Adam Stage-4 Exact Polish):** Runs 100 steps of Adam (`ESR = -35.67 dB`) followed by a single Stage-4 `float64` normal-equation polish ($\lambda_{\text{polish}} = 10^{-6} \bar{\tau}$), verifying final **`ESR < -45.0 dB` (`-47.63 dB`, `+11.96 dB` instant improvement)**.
+### 2.7 `Test 7` (`7A–7B`) — Step-0 Warm-Start, Weighted Gram Contraction & Sweep-2 Kronecker Polish (`CL-18`)
+Verifies log-octave pole initialization (`Test 7A`), exact-integer / 192-bit wide-significand weighted Gram contraction bounds ($|\hat g - g| \le \gamma_N S$, [`test_gram_precision_spec_references.py`](../../tests/test_gram_precision_spec_references.py)), and joint host-`float64` Kronecker head polish (`Test 7B`).
 
 ### 2.8 `Test 8` (`8A–8I`) — Parametric Control Bus, 3-Phase Audit, `.dnam-ckpt` Resume & Provenance (`CL-07`, `CL-12`–`CL-20`)
-
-- **Reference Implementation:** [`packages/trainer/tests/integration/test_dnam_verification.py`](../../packages/trainer/tests/integration/test_dnam_verification.py).
-- **Sub-Tests & Acceptance Criteria:**
-  1. **`Test 8A` (Physical-Parameter Delay Interpolation vs. Audio Crossfading):** Verifies that 3-node Lobatto interpolation of physical delay time $\tau_0(u)$ achieves $< 10^{-9}\text{ ms}$ (**`3.41 × 10⁻¹³ ms`**) accuracy at intermediate knob positions (`u = 0.5`), whereas audio crossfading produces a comb-filtered double echo (`+0.88 dB` error).
-  2. **`Test 8B` (Dual-Mode Delay Transitions — `Range` vs. `Switch`, `CL-06`, `CL-07`):** Verifies that discrete `switch` transitions execute a $128$-sample (`2.67 ms`) Hann-windowed dual-pointer crossfade that is **`50.7×` smoother** than a single-pointer jump with zero Doppler pitch sweep.
-  3. **`Test 8C` (SVD-Orthonormalized Kronecker Multi-Stem Conditioning & Unseen Combo Generalization):** Verifies that SVD-orthonormalized Lobatto + Rank-4 FM basis conditioning reduces Kronecker condition number from $\infty \to 5.19 \times 10^5$ and generalizes to an unseen 3-control combination (`gain = 6.5, treble = 7.5, bright = "on"`) at **`< -35.0 dB` (`-38.46 dB`) ESR**.
-  4. **`Test 8D` (Cardinality-Bounded Degree $K_p$ & Physical Variance Gate $G_{p,i}$, `CL-13`, `CL-14`):** Verifies that adding a 2nd stem on a previously static knob increases $K_p: 0 \to 1$ with **`0.00` perturbation** at old stems, and that $G_{p,i} = 0.0$ hard-locks invariant delay/LFO paths to `0.0000 ms` across all knob positions.
-  5. **`Test 8E` (Phase-1 Pre-Flight Audit — `[CLAMP-RANGE]`, `[CLAMP-SWITCH]`, `[CLAMP-STABILITY]`, `CL-15`):** Verifies non-blocking Step-0 clamping of unobserved ranges (`[0, 10] -> [2, 8]`), unobserved switch options (`['ultra']` masked), and unstable corners (`conditional_max: {"boost=on": 9.37}`).
-  6. **`Test 8F` (Phase-2 Stop-Gradient Corner Barrier $\mathcal{L}_{\text{barrier}}$ & Phase-3 `[CLAMP-DYNAMIC]`, `CL-16`, `CL-17`):** Verifies that $\mathcal{L}_{\text{barrier}}$ pulls an unstable corner's feedback gain from `1.0400 -> 0.9990` with **`0.00 × 10⁰` gradient interference** on recorded 1st-order stems, and that Phase-3 `[CLAMP-DYNAMIC]` tightens `delay_ms` minimum (`0.00 -> 0.08`) so LFO troughs never dip below $4.0\text{ samples}$.
-  7. **`Test 8G` (`uplo='U'` Nested Principal Submatrix Prefix Theorem & `.dnam-ckpt` Parity):** Verifies exact $0.00$ reconstruction error for `Lite` (`17,664 B`), `Full` (`68,096 B`), `Pro` (`151,296 B`), and `Ultra` (`267,264 B`) prefixes of `Arena 4`, and **`1.05 × 10⁻⁹`** weight parity between `< 5 s` Tier-1 `.dnam-ckpt` resume and full retraining from scratch.
-  8. **`Test 8H` (64B Binary Framing, 3-State `PolyADAA` Equilibrium, Isometric Gauge & Tardos Collusion Watermark):** Verifies `sizeof(DnamPreamble) == 64`, `sizeof(ControlClampDescriptor) == 64`, `0.000000` Sample-0 DC transient on preset load, `4.00 × 10⁻¹⁵` isometric gauge cancellation (`0.0000 dB` audio distortion), and **`Z ≥ 24.98σ`** traitor identification after 4-buyer weight averaging + `f32 -> fp16` truncation.
-  9. **`Test 8I` (4-Tier `Lite`/`Full`/`Pro`/`Ultra` Hierarchy, `CL-19` Tier Stripping & `CL-20` `4×` Bounce):** Verifies 64-byte alignment (`168, 349, 566, 1000` cache lines), zero-re-signing container tier stripping (`strip_container_to_tier`), and `4×` ZOH oversampled offline bounce with `12`-sample PDC trim.
+Verifies:
+- **Control Numerics & Timing (`8A–8D`):** Binary64 declared-range normalization ([`test_control_normalization_spec_references.py`](../../tests/test_control_normalization_spec_references.py)), inward `f32` physical rank bounds ([`test_control_bound_spec_references.py`](../../tests/test_control_bound_spec_references.py)), exact-integer sufficient-statistic accumulation ([`test_control_accumulator_spec_references.py`](../../tests/test_control_accumulator_spec_references.py), [`control_accumulator_spec_references.rs`](../../packages/engine/tests/control_accumulator_spec_references.rs)), outward-checked trust-region clipping ([`trust_clip_spec_references.rs`](../../packages/engine/tests/trust_clip_spec_references.rs)), bounded SPSC ingress & tick timing ([`test_ingress_publication_spec_references.py`](../../tests/test_ingress_publication_spec_references.py), [`test_control_tick_spec_references.py`](../../tests/test_control_tick_spec_references.py)), stereo-linked detector imaging ([`test_stereo_link_spec_references.py`](../../tests/test_stereo_link_spec_references.py)), and `Q64`/`Q32` tempo tracking + physical `f32` calibration inversion ([`test_tempo_clock_spec_references.py`](../../tests/test_tempo_clock_spec_references.py), [`tempo_fixed_point_spec_references.rs`](../../packages/engine/tests/tempo_fixed_point_spec_references.rs), [`test_tempo_physical_inversion_spec_references.py`](../../tests/test_tempo_physical_inversion_spec_references.py), [`test_tempo_selection_spec_references.py`](../../tests/test_tempo_selection_spec_references.py)).
+- **Audit, Resume & Containers (`8E–8I`):** Non-Stop 3-Phase clamping & structured conditional selectors (`CL-15`–`CL-17`, [`test_control_condition_spec_references.py`](../../tests/test_control_condition_spec_references.py)), capture excitation & paired-stem provenance ([`test_excitation_schedule_spec_references.py`](../../tests/test_excitation_schedule_spec_references.py), [`test_paired_capture_spec_references.py`](../../tests/test_paired_capture_spec_references.py)), `CP1` packed contributor projections ([`test_control_projection_spec_references.py`](../../tests/test_control_projection_spec_references.py)), tier-bundled `.dnam-ckpt` `DCA1` framing and `DNAM-GRAM-INPUT-v1` fingerprinting ([`test_checkpoint_wire_spec_references.py`](../../tests/test_checkpoint_wire_spec_references.py)), RFC 8785 JCS header canonicalization ([`immutable_header_jcs_spec_references.rs`](../../packages/engine/tests/immutable_header_jcs_spec_references.rs)), `DAU1`/`DAI1`/`DSA1`/`DNPL` + RFC 9180 HPKE envelopes ([`signed_prefix_spec_references.rs`](../../packages/engine/tests/signed_prefix_spec_references.rs), [`encrypted_record_spec_references.rs`](../../packages/engine/tests/encrypted_record_spec_references.rs)), license-scoped watermark seeds ([`test_watermark_spec_references.py`](../../tests/test_watermark_spec_references.py)), and `DMU1`/`DME1` mutable suffixes ([`open_mutable_spec_references.rs`](../../packages/engine/tests/open_mutable_spec_references.rs)).
 
 ---
 
-## 3. Automated Repository, Documentation & Container Guardrails (`G-01`–`G-08`)
+## 3. Phase 1 Design Closure & Verification Gate Taxonomy
+
+All Phase 1 specification and design choices are finalized in their canonical `docs/` files, with R&D trade-offs and counterexamples archived in [`../rnd/tora_phase1_decisions.md`](../rnd/tora_phase1_decisions.md):
+- **Phase 2 Gates (Rust Engine):** Production realization and unit/property/differential verification of all operators (`Op-T`, `Op-M`, `Op-N`), Stage 0–IV routing, `3 kHz` control bus, `2.0` containers, and `≥ 95%` line coverage in `packages/engine/`.
+- **Phase 3–5 Gates (SDKs, Trainer & Studio):** PyO3/WASM SDK bindings, 32-bit accelerator forward/Gram parity, two-sweep training, `.dnam-ckpt` resume, and Studio capture/UI integration.
+- **Phase 6 Gates (Target Hardware & Perceptual Certification):** End-to-end `bESR` / `MR-STFT` / `LTAS` / `SegESR` device benchmarks, RK3582 Cortex-A76 WCET and State RAM verification (`REQ-6.1`), and hardware TrustZone enclave validation.
+
+---
+
+## 4. Canonical TORA Requirement Verification Matrix (`REQ-1`–`REQ-8.8`)
+
+| Goal ID | Requirement Domain | TORA Architectural Realization & Verification Scope | Status |
+| :--- | :--- | :--- | :---: |
+| **`REQ-1`** | **Model Classes & Accuracy** | `Op-T`, `Op-M`, and `Op-N` across Stages 0–IV and the 256-D Mid/Side Kronecker head; full-device accuracy verified in Phase 6. | `Partial` |
+| **`REQ-1.5`** | **Full-Rig Multi-Control Modeling** | Packed tier-local `CP1` projections (`8-D` Rank-4 in `Lite..Pro`, `16-D` Rank-8 + `16×4` stage-dispatch delta in `Ultra`). | `Partial` |
+| **`REQ-2`** | **Quality, Control Bus & Tempo Sync** | Per-output noise-adjusted `bESR`, `MR-STFT`, 33-band `LTAS`, and duration-weighted `SegESR` with non-stop 3-phase clamping. | `Partial` |
+| **`REQ-2.5`** | **MIDI / Host Tempo Sync** | `20–400 BPM` `Q64`/`Q32` tempo tracking across 12 subdivisions, reachable `f32` physical inversion, and `SmoothRelock` / `ImmediatePhaseLock`. | `Partial` |
+| **`REQ-3`** | **Continuous Checkpointing & Stem Resume** | Tier-bundled `.dnam-ckpt` (`DCA1`), `uplo='U'` `Arena 4` slices, SHA-256 Gram-input fingerprint, and windowed `< 32 MiB` refresh. | `Partial` |
+| **`REQ-4`** | **Accelerator-First, Accurate & Memory-Scaled Training** | 32-bit device streaming, weighted Gram contraction bound (`|ĝ - g| ≤ γ_N S`), batched host `float64` solver, and `< 8 GiB` host budget. | `Partial` |
+| **`REQ-5`** | **Multi-Tier Slimmable Scaling** | Four nested tiers (`Lite ⊂ Full ⊂ Pro ⊂ Ultra`), single-run joint training, on-demand bounded tier crossfade, and keyless prefix stripping. | `Partial` |
+| **`REQ-6`** | **Embedded Real-Time Execution** | `≥ 10× Lite`, `≥ 6× Full`, `≥ 2× Pro` @ `48 kHz` on `1×` Cortex-A76, zero real-time `FDIV`/`FSQRT`/`libm`, and zero callback allocations. | `Partial` |
+| **`REQ-7`** | **Unclipped `f32` Signal Chain, Topologies & Stability** | `±100.0` (`+40 dBFS`) certified unclipped envelope, `±1e9` all-finite safety guards, `1→1`/`2→1`/`1→2`/`2→2` topologies, and `CL-01`–`CL-20`. | `Partial` |
+| **`REQ-8.1`** | **Cryptographic Provenance & Preset-Safe Metadata** | RFC 8785 JCS `immutable_header_sha256`, `DAU1`/`DAI1`/`DSA1` `Ed25519` prefix commitments, and growable `DMU1`/`DME1` + `DMUE` suffix. | `Partial` |
+| **`REQ-8.2`** | **Creator-Signed Distribution Policy & OEM Exclusivity** | Signed `metadata.distribution_policy` (`allowed_protection_profiles`, `allowed_oem_vendors`) enforced at issuance and load time. | `Partial` |
+| **`REQ-8.3`** | **Graduated Protection Profiles & OEM Integration** | `Open`, `DeviceAllowlisted`, and `EnclaveSealed` profiles with V2 `OemDeviceCertificate` signing and RFC 9180 HPKE recipient slots. | `Partial` |
+| **`REQ-8.4`** | **Offline Stage Reliability & Zero Real-Time Overhead** | Indefinite offline authorization for issued protected models; all verification and decryption complete on the cold load path (`0` audio flops). | `Partial` |
+| **`REQ-8.5`** | **Buyer Watermarking** | Dual-mechanism buyer watermark (Stage III reciprocal gauge + Stage II Coupled Tardos code) with `DNAM-WM-*-SEED-V1` HMAC derivation. | `Partial` |
+| **`REQ-8.6`** | **Anti-Cloning Gate & Evidence-Based Revocation** | 3-stage ingestion gate (signatures + Stage III gauge-invariant component + synthetic chirp probe); revocation requires independent source evidence. | `Partial` |
+| **`REQ-8.7`** | **Interactive Storefront Auditioning (`.dnam-prev`)** | `Lite`-only `.dnam-prev` omitting `Full..Ultra`, `P=1` bounded window, `P≥2` fixed-anchor rank-`r` containment, and `3 kHz` probe guard. | `Partial` |
+| **`REQ-8.8`** | **Declarative, Code-Execution-Free Containers** | 64B-aligned declarative `.dnam`, `.dnam-ckpt`, `.dnam-seal`, `.dnam-prev`, and `.dnce` formats with zero `pickle` execution. | `Partial` |
+
+---
+
+## 5. Automated Repository, Documentation & Container Guardrails (`G-01`–`G-08`)
 
 Enforced on every commit and CI run by the top-level project guardrail suite ([`tests/test_guardrails.py`](../../tests/test_guardrails.py), `moon check tests`), package guardrail tests ([`packages/trainer/tests/test_guardrails.py`](../../packages/trainer/tests/test_guardrails.py)), and container validation suites:
 
 | Guardrail ID | Verification Test / Module | Enforced Architectural / Documentation Invariant |
 | :--- | :--- | :--- |
-| **`G-01`** | `test_zero_forbidden_imports_and_zero_type_ignore` ([`packages/trainer/tests/test_guardrails.py`](../../packages/trainer/tests/test_guardrails.py)) | Zero forbidden heavy/legacy imports (`scipy`, `pandas`, `matplotlib`, `soundfile`) and zero `# type: ignore` / `# pyrefly: ignore` directives across `packages/trainer/src/` and `packages/trainer/tests/`. |
+| **`G-01`** | `test_zero_forbidden_imports_and_zero_type_ignore` ([`packages/trainer/tests/test_guardrails.py`](../../packages/trainer/tests/test_guardrails.py)) | Zero forbidden heavy imports (`scipy`, `pandas`, `matplotlib`, `soundfile`) and zero `# type: ignore` / `# pyrefly: ignore` directives across `packages/trainer/src/` and `packages/trainer/tests/`. |
 | **`G-02`** | `test_progressive_disclosure_agents_md_byte_limits` ([`tests/test_guardrails.py`](../../tests/test_guardrails.py)) | Root [`AGENTS.md`](../../AGENTS.md) must remain strictly `< 5,000 B` and every scoped `packages/**/AGENTS.md` and [`tests/AGENTS.md`](../../tests/AGENTS.md) must remain `< 2,500 B` (routing maps only; zero duplicated equations). |
 | **`G-03`** | `test_clamp_and_requirement_registries_documented` ([`tests/test_guardrails.py`](../../tests/test_guardrails.py)) | [`../CONTRIBUTING.md`](../CONTRIBUTING.md) must exist, [`../training/clamp_and_audit_registry.md`](../training/clamp_and_audit_registry.md) must document all canonical clamps (`CL-01` through `CL-20`) with existing target module paths on disk, and [`../overview/system_goals_and_requirements.md`](../overview/system_goals_and_requirements.md) must document all 40 requirements (`REQ-1.1` through `REQ-8.8`) in canonical table rows with strictly implementation-agnostic normative text. |
-| **`G-04`** | `test_no_inline_latex_math_in_markdown_tables` ([`tests/test_guardrails.py`](../../tests/test_guardrails.py)) | No Markdown table row (any line starting with `|`) in any `.md` file may contain raw `$` delimiters outside backticks `` `...` `` (prevents table pipe `|` vs. math delimiter parser collisions). |
+| **`G-04`** | `test_no_inline_latex_math_in_markdown_tables` ([`tests/test_guardrails.py`](../../tests/test_guardrails.py)) | No Markdown table row (any line starting with `\|`) in any `.md` file may contain raw `$` delimiters outside backticks `` `...` `` (prevents table pipe `\|` vs. math delimiter parser collisions). |
 | **`G-05`** | `test_valid_github_latex_math_across_docs` ([`tests/test_guardrails.py`](../../tests/test_guardrails.py)) | All `$...$` and `$$...$$` blocks across the repository must use strict GitHub/MathJax-compatible LaTeX (balanced braces, no `\operatorname`, no punctuation escapes `\_`, `\;`, `\,`, `\{`, `\}`, `\|`, no underscores inside `\text{...}`), and no semicolons `;` inside Mermaid `sequenceDiagram` blocks. |
-| **`G-06`** | `test_device_32bit_only_and_no_legacy_window_tables` ([`packages/trainer/tests/test_guardrails.py`](../../packages/trainer/tests/test_guardrails.py)) | Zero 64-bit (`float64`/`complex128`/`int64`) device tensor allocations and zero hardcoded `500_000`-sample window tables across `dsp/{poly_adaa,selective_rglru,modulated_ufdn}.py` and `training/{cascade_orthogonal_fft,cascade_selective_stages,selective_cascade}.py`. |
+| **`G-06`** | `test_device_32bit_only_and_no_legacy_window_tables` ([`packages/trainer/tests/test_guardrails.py`](../../packages/trainer/tests/test_guardrails.py)) | Zero 64-bit (`float64`/`complex128`/`int64`) device tensor allocations and zero hardcoded `500_000`-sample window tables across `dsp/{op_t,op_m,op_n,router,stage1_pre,stage2_cascade,stage3_cabinet,stage4_tank,head_kronecker}.py` and `training/{step0_sysid,sweep1_cascade,sweep2_tank,polish_head,pipeline}.py`. |
 | **`G-07`** | `test_8h` & `test_8i` ([`test_dnam_verification.py`](../../packages/trainer/tests/integration/test_dnam_verification.py)) | `.dnam`, `.dnam-ckpt`, and `.dnam-seal` loaders fail fast with explicit errors on invalid magic bytes, `CRC32C` mismatch, unaligned arena offsets (`% 64 != 0`), or invalid channel counts (`C not in {4, 8, 12, 16}`). |
 | **`G-08`** | `test_relative_markdown_links_resolve` ([`tests/test_guardrails.py`](../../tests/test_guardrails.py)) | Every relative Markdown file link and `#section-anchor` fragment across `AGENTS.md`, `README.md`, `CONTRIBUTING.md`, `CLA.md`, `docs/**/*.md`, `tests/**/*.md`, and `packages/**/*.md` resolves to an existing file/directory and GitHub heading slug on disk. |

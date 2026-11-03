@@ -8,7 +8,7 @@ All contributions must also comply with the root [`CONTRIBUTING.md`](../../CONTR
 
 ## 1. Architecture & Design System Stack
 
-- **Tailwind CSS v4 (`@tailwindcss/vite` + `@astrojs/starlight-tailwind`):** [`src/styles.css`](src/styles.css) defines `@import "tailwindcss";` and `@theme` tokens (`--color-dnam-surface`, `--color-dnam-core1`, `--color-dnam-core2`, `--color-dnam-control`, `--color-dnam-safe`, `--color-dnam-warn`, `--color-dnam-danger`, `--font-sans`, `--font-mono`).
+- **Tailwind CSS v4 (`@tailwindcss/vite` + `@astrojs/starlight-tailwind`):** [`src/styles.css`](src/styles.css) defines `@import "tailwindcss";` and `@theme` tokens (`--color-dnam-surface`, accent themes, `--color-dnam-control`, `--color-dnam-safe`, `--color-dnam-warn`, `--color-dnam-danger`, `--font-sans`, `--font-mono`).
 - **`shadcn/ui` (Base UI / `@base-ui/react`) & `lucide-react`:** Base primitives in [`src/components/ui/`](src/components/ui/index.ts) follow [`components.json`](components.json) (`base-nova` style, `@base-ui/react` primitives with `render` composition, `class-variance-authority`, `clsx`, `tailwind-merge`).
 - **Host-Agnostic Audio Bridge (`DnamAudioHost`):** Components in `src/components/rack/` and `src/components/controls/` communicate exclusively through `useDnamAudioHost()` so the same components drive WebAudio `AudioWorklet` in `packages/web` and native Rust SIMD (`ARM SME` / `NEON` / `AVX2+FMA`) in `packages/studio`.
 - **React Cosmos Workbench:** Develop and preview components in isolation via [`cosmos.config.json`](cosmos.config.json), [`src/cosmos.decorator.tsx`](src/cosmos.decorator.tsx), and co-located domain fixtures (`src/components/**/*.fixture.tsx`) (`moon run ui:dev` / `moon run ui:cosmos-export`).

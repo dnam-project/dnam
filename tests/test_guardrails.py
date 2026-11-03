@@ -70,10 +70,11 @@ def test_clamp_and_requirement_registries_documented() -> None:
         assert tag in text, f"Missing clamp ID {tag} in {reg_doc}"
         row_match = re.search(rf"^\|\s*\*\*`{tag}`\*\*.*$", text, flags=re.MULTILINE)
         assert row_match is not None, f"Missing table row for {tag} in {reg_doc}"
-        mod_match = re.search(r"`(packages/[^`]+\.py)`", row_match.group(0))
-        assert mod_match is not None, f"Missing target module path for {tag} in {reg_doc}"
-        target_mod = MONOREPO_ROOT / mod_match.group(1)
-        assert target_mod.is_file(), f"Target module {target_mod} for {tag} does not exist"
+        mod_matches = re.findall(r"`(packages/[^`]+\.(?:py|rs))`", row_match.group(0))
+        assert mod_matches, f"Missing target module path for {tag} in {reg_doc}"
+        assert any((MONOREPO_ROOT / m).is_file() for m in mod_matches), (
+            f"None of target modules {mod_matches} for {tag} exist on disk"
+        )
 
     goals_doc = MONOREPO_ROOT / "docs" / "overview" / "system_goals_and_requirements.md"
     goals_text = goals_doc.read_text(encoding="utf-8")
@@ -143,7 +144,7 @@ def test_valid_github_latex_math_across_docs() -> None:
     for md_path in md_files:
         content = md_path.read_text(encoding="utf-8")
         no_fenced = re.sub(
-            r"```.*?```",
+            r"(?m)^```[^\n]*\n.*?\n^```[^\n]*$",
             lambda m: "\n" * m.group(0).count("\n"),
             content,
             flags=re.DOTALL,
@@ -200,7 +201,12 @@ def _github_heading_slugs(md_path: Path) -> set[str]:
     slugs: set[str] = set()
     counts: dict[str, int] = {}
     content = md_path.read_text(encoding="utf-8")
-    no_fenced = re.sub(r"```.*?```", "", content, flags=re.DOTALL)
+    no_fenced = re.sub(
+        r"(?m)^```[^\n]*\n.*?\n^```[^\n]*$",
+        "",
+        content,
+        flags=re.DOTALL,
+    )
     for line in no_fenced.splitlines():
         m = re.match(r"^(#{1,6})\s+(.*)$", line.strip())
         if not m:
@@ -230,7 +236,7 @@ def test_relative_markdown_links_resolve() -> None:
     for md_path in md_files:
         content = md_path.read_text(encoding="utf-8")
         no_fenced = re.sub(
-            r"```.*?```",
+            r"(?m)^```[^\n]*\n.*?\n^```[^\n]*$",
             lambda m: "\n" * m.group(0).count("\n"),
             content,
             flags=re.DOTALL,
