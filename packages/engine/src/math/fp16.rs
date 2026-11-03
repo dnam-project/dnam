@@ -32,7 +32,8 @@ pub fn f32_to_fp16(val: f32) -> u16 {
     if round_bit != 0 && (sticky || (half_mant & 1) != 0) {
         half_mant += 1;
     }
-    sign + (((new_exp as u16) << 10) + half_mant)
+    let combined = (((new_exp as u16) << 10) + half_mant).min(0x7BFF);
+    sign | combined
 }
 
 /// Branchless IEEE-754 `fp16` (`u16`) to `f32` conversion.
@@ -83,6 +84,16 @@ mod tests {
 
         let ovf_h = f32_to_fp16(100_000.0);
         assert_eq!(ovf_h, 0x7BFF);
+
+        // Rounding near max finite fp16 ([65520.0, 65536.0)) must clamp to 0x7BFF/0xFBFF, never ±Inf
+        for &near_max in &[65504.0f32, 65519.0, 65520.0, 65535.0] {
+            let hp = f32_to_fp16(near_max);
+            let hn = f32_to_fp16(-near_max);
+            assert_eq!(hp, 0x7BFF);
+            assert_eq!(hn, 0xFBFF);
+            assert!(fp16_to_f32(hp).is_finite());
+            assert!(fp16_to_f32(hn).is_finite());
+        }
 
         let und_h = f32_to_fp16(1.0e-10);
         assert_eq!(fp16_to_f32(und_h), 0.0);

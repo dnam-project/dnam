@@ -6,7 +6,7 @@
 //!   scheduling) for the 64-element output head (`dot_product_16taps_4ch`, `stereo_head_dot_16x4`,
 //!   `collapse_svd_head_slice`).
 //! - Uses register-resident 128-bit [`NeonVec4`](super::neon::NeonVec4) (`float32x4_t`) for per-sample
-//!   $C=4$ state-space recurrences (`PolyADAA`, `SelectiveRgLru`, `M-UFDN` Householder/all-pass)
+//!   $C=4$ state-space recurrences (`Op-N`, `Op-M`, `Op-T` Householder/all-pass)
 //!   to avoid `smstart`/`smstop` streaming-mode transition overhead on 4-lane per-sample updates.
 
 use core::sync::atomic::{AtomicU8, Ordering};
@@ -90,7 +90,17 @@ impl ArmSmeBackend {
     /// read-after-write latency stalls.
     #[inline]
     pub fn tile_dot64(a: &[f32; 64], b: &[f32; 64]) -> f32 {
-        NeonBackend::dot_product_16taps_4ch(a, b)
+        let mut sum0 = 0.0_f32;
+        let mut sum1 = 0.0_f32;
+        let mut sum2 = 0.0_f32;
+        let mut sum3 = 0.0_f32;
+        for i in (0..64).step_by(4) {
+            sum0 += a[i] * b[i];
+            sum1 += a[i + 1] * b[i + 1];
+            sum2 += a[i + 2] * b[i + 2];
+            sum3 += a[i + 3] * b[i + 3];
+        }
+        (sum0 + sum1) + (sum2 + sum3)
     }
 
     /// Collapses a slice of SVD stereo output head weights using $4 \times 4$ outer-product
@@ -186,20 +196,6 @@ impl MathBackend for ArmSmeBackend {
     }
 
     #[inline(always)]
-    fn dot_product_16taps_4ch(taps_64: &[f32; 64], weights_64: &[f32; 64]) -> f32 {
-        Self::tile_dot64(taps_64, weights_64)
-    }
-
-    #[inline(always)]
-    fn dot_product_16taps_4ch_stereo(
-        taps_64: &[f32; 64],
-        weights_l: &[f32; 64],
-        weights_r: &[f32; 64],
-    ) -> [f32; 2] {
-        NeonBackend::dot_product_16taps_4ch_stereo(taps_64, weights_l, weights_r)
-    }
-
-    #[inline(always)]
     fn f32x4_to_fp16x4(src: &[f32; 4]) -> [u16; 4] {
         NeonBackend::f32x4_to_fp16x4(src)
     }
@@ -210,18 +206,66 @@ impl MathBackend for ArmSmeBackend {
     }
 
     #[inline]
-    fn collapse_svd_head_slice(
-        base: &[f32],
-        svd_modes: &[f32],
-        z_head: &[f32; 4],
-        active_rank: usize,
-        out_collapsed: &mut [f32],
-    ) {
-        Self::tile_collapse_svd_slice(base, svd_modes, z_head, active_rank, out_collapsed);
-    }
-
-    #[inline]
     fn crc32c(data: &[u8]) -> u32 {
         NeonBackend::crc32c(data)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_arm_sme_backend_and_tiles() {
+        let _ = ArmSmeBackend::is_supported();
+
+        let a = [0.1f32; 64];
+        let b = [0.2f32; 64];
+        let d = ArmSmeBackend::tile_dot64(&a, &b);
+        assert!((d - 64.0 * 0.1 * 0.2).abs() < 1e-4);
+
+        let base = [1.0f32; 8];
+        let svd_modes = [0.5f32; 32];
+        let z_head = [0.1f32, 0.2, 0.3, 0.4];
+        let mut out = [0.0f32; 8];
+
+        // active_rank == 4
+        ArmSmeBackend::tile_collapse_svd_slice(&base, &svd_modes, &z_head, 4, &mut out);
+        for &v in &out {
+            assert!(v.is_finite());
+        }
+
+        // active_rank < 4
+        ArmSmeBackend::tile_collapse_svd_slice(&base, &svd_modes, &z_head, 2, &mut out);
+        for &v in &out {
+            assert!(v.is_finite());
+        }
+
+        // MathBackend delegated methods
+        let bias = NeonVec4::splat(0.1);
+        let mat = [[0.1f32; 4]; 4];
+        let _ = ArmSmeBackend::fma_mat4x4_vec4(bias, &mat, &[0.5; 4]);
+
+        let w_tile = [[0.1f32; 4]; 4];
+        let h_tap = [[0.2f32; 4]; 4];
+        let w1 = [w_tile; 6];
+        let h1 = [&h_tap; 6];
+        let _ = ArmSmeBackend::conv6_taps_1group(bias, &w1, &h1);
+
+        let w2 = [w_tile; 12];
+        let _ = ArmSmeBackend::conv6_taps_2groups(bias, &w2, &h1);
+
+        let w3 = [w_tile; 18];
+        let _ = ArmSmeBackend::conv6_taps_3groups(bias, &w3, &h1);
+
+        let w4 = [w_tile; 24];
+        let _ = ArmSmeBackend::conv6_taps_4groups(bias, &w4, &h1);
+
+        let fp16 = ArmSmeBackend::f32x4_to_fp16x4(&[1.0, 2.0, 3.0, 4.0]);
+        let f32_back = ArmSmeBackend::fp16x4_to_f32x4(&fp16);
+        assert!((f32_back[0] - 1.0).abs() < 1e-3);
+
+        let crc = ArmSmeBackend::crc32c(b"123456789");
+        assert_eq!(crc, 0xe3069283);
     }
 }

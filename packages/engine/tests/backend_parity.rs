@@ -9,10 +9,11 @@ use dnam_engine::container::{
     ARENA_OFFSET_FULL_END, ARENA_OFFSET_LITE_END, ARENA_OFFSET_PRO_END, ARENA_OFFSET_ULTRA_END,
     build_dnam_container,
 };
-use dnam_engine::math::{BackendKind, DefaultMathBackend, ScalarBackend};
+use dnam_engine::math::{BackendKind, DefaultMathBackend, ScalarBackend, SimdVec4};
 use dnam_engine::schema::{
-    ControlBusConfig, Core1Config, Core2Config, DatasetProvenance, DnamJsonHeader, IoConfig,
-    ModelMetadata, SlimmableTiersConfig, TierProfile,
+    ControlBusConfig, DatasetProvenance, DnamJsonHeader, IoConfig, ModelMetadata, RouterConfig,
+    SlimmableTiersConfig, Stage1PreFxConfig, Stage2CascadeConfig, Stage3CabinetKautzConfig,
+    Stage4SpatialTankConfig, TierProfile,
 };
 use dnam_engine::{DnamEngine, DynamicDnamEngine, Tier};
 
@@ -20,7 +21,7 @@ fn build_parity_container() -> Vec<u8> {
     let mut header = DnamJsonHeader {
         version: "1.0.0".to_string(),
         container_kind: "dnam".to_string(),
-        architecture: "DNAM_TriPhysics".to_string(),
+        architecture: "DNAM_TORA".to_string(),
         sample_rate_train_hz: 48_000,
         metadata: ModelMetadata {
             name: "Backend Parity Test Rig".to_string(),
@@ -37,9 +38,11 @@ fn build_parity_container() -> Vec<u8> {
         io_config: IoConfig::default(),
         slimmable_tiers: SlimmableTiersConfig {
             lite: TierProfile {
+                feature_bus_dim: 64,
                 channels: 4,
-                fdn_lines: 4,
-                early_taps: 4,
+                early_fir_taps: 16,
+                kautz_modes: 4,
+                tank_lines: 4,
                 head_svd_rank: 4,
                 loudness_lufs: -20.5,
                 output_trim_db: 0.0,
@@ -48,9 +51,11 @@ fn build_parity_container() -> Vec<u8> {
                 prefix_crc32c: 0,
             },
             full: TierProfile {
+                feature_bus_dim: 128,
                 channels: 8,
-                fdn_lines: 8,
-                early_taps: 8,
+                early_fir_taps: 32,
+                kautz_modes: 8,
+                tank_lines: 8,
                 head_svd_rank: 4,
                 loudness_lufs: -20.5,
                 output_trim_db: 0.0,
@@ -59,9 +64,11 @@ fn build_parity_container() -> Vec<u8> {
                 prefix_crc32c: 0,
             },
             pro: TierProfile {
+                feature_bus_dim: 192,
                 channels: 12,
-                fdn_lines: 8,
-                early_taps: 8,
+                early_fir_taps: 48,
+                kautz_modes: 16,
+                tank_lines: 8,
                 head_svd_rank: 4,
                 loudness_lufs: -20.5,
                 output_trim_db: 0.0,
@@ -70,9 +77,11 @@ fn build_parity_container() -> Vec<u8> {
                 prefix_crc32c: 0,
             },
             ultra: TierProfile {
+                feature_bus_dim: 256,
                 channels: 16,
-                fdn_lines: 16,
-                early_taps: 16,
+                early_fir_taps: 64,
+                kautz_modes: 32,
+                tank_lines: 16,
                 head_svd_rank: 8,
                 loudness_lufs: -20.5,
                 output_trim_db: 0.0,
@@ -84,76 +93,49 @@ fn build_parity_container() -> Vec<u8> {
         controls_schema: Vec::new(),
         presets: Vec::new(),
         control_bus: ControlBusConfig::default(),
-        core1_hybrid_ssm: Core1Config::default(),
-        core2_mufdn: Core2Config {
-            active: true,
-            ring_buffer_pow2_log2: 11,
-            ..Default::default()
-        },
+        stage0_router: RouterConfig::default(),
+        stage1_pre: Stage1PreFxConfig::default(),
+        stage2_cascade: Stage2CascadeConfig::default(),
+        stage3_cabinet: Stage3CabinetKautzConfig::default(),
+        stage4_tank: Stage4SpatialTankConfig::default(),
         tensor_directory: BTreeMap::new(),
         stems_registry: None,
         audit_report: None,
     };
 
     let mut arena = vec![0u8; 64_000];
-    for i in 0..4 {
-        let off = (i * 4 + (i % 2)) * 4;
-        arena[off..off + 4].copy_from_slice(&0.6_f32.to_le_bytes());
-    }
-    for t in 0..3 {
-        arena[104 + t * 4..108 + t * 4].copy_from_slice(&1.0_f32.to_le_bytes());
-    }
-    arena[63_456..63_460].copy_from_slice(&1.0_f32.to_le_bytes());
-    arena[116..120].copy_from_slice(&0.2_f32.to_le_bytes());
-    arena[120..124].copy_from_slice(&0.8_f32.to_le_bytes());
     arena[124..128].copy_from_slice(&0.9993_f32.to_le_bytes());
 
+    let cascade_w_bases = [1_024_usize, 11_264_usize, 22_336_usize, 36_224_usize];
+    let cascade_w_counts = [768_usize, 1536_usize, 2304_usize, 3072_usize];
     for tier in 0..4 {
+        let cw_base = cascade_w_bases[tier];
+        for w in 0..cascade_w_counts[tier] {
+            let val = 0.015_f32 * (((w + tier * 5) % 9) as f32 - 4.0);
+            let off = cw_base + w * 4;
+            arena[off..off + 4].copy_from_slice(&val.to_le_bytes());
+        }
         for blk in 0..4 {
-            let (blk_base, adaa0_off, adaa1_off, rg_off) = match tier {
-                0 => (128 + blk * 1024, 384, 832, 896),
-                1 => (10_816 + blk * 1792, 768, 1600, 1664),
-                2 => (22_400 + blk * 2560, 1152, 2368, 2432),
-                _ => (36_288 + blk * 3328, 1536, 3136, 3200),
-            };
-            for w in 0..96 {
-                let val = 0.015_f32 * (((blk * 19 + w + tier * 5) % 9) as f32 - 4.0);
-                let off = blk_base + w * 4;
-                arena[off..off + 4].copy_from_slice(&val.to_le_bytes());
-            }
-            for &a_off in &[adaa0_off, adaa1_off] {
-                let base = blk_base + a_off;
-                for lane in 0..4 {
-                    arena[base + 16 + lane * 4..base + 16 + (lane + 1) * 4]
-                        .copy_from_slice(&0.6_f32.to_le_bytes());
-                    arena[base + 32 + lane * 4..base + 32 + (lane + 1) * 4]
-                        .copy_from_slice(&0.8_f32.to_le_bytes());
-                    arena[base + 48 + lane * 4..base + 48 + (lane + 1) * 4]
-                        .copy_from_slice(&0.25_f32.to_le_bytes());
-                }
-            }
-            let rg_base = blk_base + rg_off;
+            let k_base = dnam_engine::provenance::kautz_soa_byte_offset(tier, blk);
             for lane in 0..4 {
-                arena[rg_base + lane * 4..rg_base + (lane + 1) * 4]
+                arena[k_base + lane * 4..k_base + (lane + 1) * 4]
                     .copy_from_slice(&0.91_f32.to_le_bytes());
-                arena[rg_base + 16 + lane * 4..rg_base + 16 + (lane + 1) * 4]
+                arena[k_base + 16 + lane * 4..k_base + 16 + (lane + 1) * 4]
                     .copy_from_slice(&0.06_f32.to_le_bytes());
-                arena[rg_base + 32 + lane * 4..rg_base + 32 + (lane + 1) * 4]
+                arena[k_base + 32 + lane * 4..k_base + 32 + (lane + 1) * 4]
                     .copy_from_slice(&0.12_f32.to_le_bytes());
-                arena[rg_base + 48 + lane * 4..rg_base + 48 + (lane + 1) * 4]
+                arena[k_base + 48 + lane * 4..k_base + 48 + (lane + 1) * 4]
                     .copy_from_slice(&0.35_f32.to_le_bytes());
-                arena[rg_base + 64 + lane * 4..rg_base + 64 + (lane + 1) * 4]
-                    .copy_from_slice(&0.45_f32.to_le_bytes());
-                arena[rg_base + 80 + lane * 4..rg_base + 80 + (lane + 1) * 4]
+                arena[k_base + 64 + lane * 4..k_base + 64 + (lane + 1) * 4]
                     .copy_from_slice(&0.30_f32.to_le_bytes());
-                arena[rg_base + 96 + lane * 4..rg_base + 96 + (lane + 1) * 4]
+                arena[k_base + 80 + lane * 4..k_base + 80 + (lane + 1) * 4]
                     .copy_from_slice(&(-0.20_f32).to_le_bytes());
             }
         }
     }
 
-    for &hbase in &[4224_usize, 17_984_usize, 32_640_usize, 49_600_usize] {
-        for i in 0..128 {
+    for &hbase in &[4_928_usize, 18_048_usize, 31_936_usize, 57_600_usize] {
+        for i in 0..640 {
             let val = 0.04_f32 * (((i * 11 + 3) % 15) as f32 - 7.0);
             let off = hbase + i * 4;
             arena[off..off + 4].copy_from_slice(&val.to_le_bytes());
@@ -254,4 +236,66 @@ fn test_cross_backend_parity_and_4_io_topologies() {
         .zip(d_dl.iter())
         .fold(0.0_f32, |acc, (&a, &b)| acc.max((a - b).abs()));
     assert!(dyn_err < 1e-5);
+}
+
+fn exercise_math_backend<B: dnam_engine::math::MathBackend>() {
+    let _ = B::NAME;
+    let _ = B::KIND.name();
+
+    let v0 = B::Vec4::zero();
+    assert_eq!(v0.to_array(), [0.0; 4]);
+    let va = B::Vec4::from_array([1.0, -2.0, 3.0, -4.0]);
+    let vb = B::Vec4::splat(2.0);
+    let _ = va.add(vb);
+    let _ = va.sub(vb);
+    let _ = va.mul(vb);
+    let _ = va.fma(vb, vb);
+    let _ = va.fms(vb, vb);
+    let _ = va.max(vb);
+    let _ = va.min(vb);
+    let _ = va.clamp(B::Vec4::splat(-1.0), B::Vec4::splat(1.0));
+    let _ = va.abs();
+    let _ = va.horizontal_sum();
+    let _ = va.dot(vb);
+
+    let mat = [[0.1_f32; 4]; 4];
+    let v_mat = B::fma_mat4x4_vec4(B::Vec4::zero(), &mat, &[1.0, 2.0, 3.0, 4.0]);
+    assert!(v_mat.horizontal_sum().is_finite());
+
+    let h_frame = [[0.2_f32; 4]; 4];
+    let h_taps = [&h_frame; 6];
+    let w1 = [[[0.1_f32; 4]; 4]; 6];
+    let _ = B::conv6_taps_1group(B::Vec4::zero(), &w1, &h_taps);
+
+    let fp16_4 = B::f32x4_to_fp16x4(&[0.5, -0.5, 1.0, 0.0]);
+    let f32_4 = B::fp16x4_to_f32x4(&fp16_4);
+    assert!((f32_4[0] - 0.5).abs() < 1e-3);
+
+    assert_eq!(B::crc32c(b"123456789"), 0xE306_9283);
+    let (cp, sp) = B::fast_unit_phasor(0.7);
+    assert!((cp * cp + sp * sp - 1.0).abs() < 1e-4);
+}
+
+#[test]
+fn test_all_math_backends_and_backend_kind_names() {
+    for (kind, expected) in [
+        (BackendKind::Scalar, "Scalar"),
+        (BackendKind::ArmNeon, "ARM64 NEON"),
+        (BackendKind::Neon, "ARM64 NEON"),
+        (BackendKind::ArmSme, "ARM SME"),
+        (BackendKind::X86Sse42, "x86 SSE4.2"),
+        (BackendKind::X86Avx2Fma, "x86 AVX2"),
+        (BackendKind::X86Simd, "x86 AVX2"),
+        (BackendKind::WasmSimd128, "WASM SIMD"),
+    ] {
+        assert_eq!(kind.name(), expected);
+    }
+    let _ = dnam_engine::math::detect_best_backend();
+
+    exercise_math_backend::<ScalarBackend>();
+    exercise_math_backend::<DefaultMathBackend>();
+    #[cfg(target_arch = "aarch64")]
+    {
+        exercise_math_backend::<dnam_engine::math::ArmSmeBackend>();
+    }
 }

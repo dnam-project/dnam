@@ -207,7 +207,7 @@ pub unsafe extern "C" fn dnam_engine_set_control_immediate(
     }
 }
 
-/// Resets all Core 1 and Core 2 states to their exact analytical DC resting equilibrium.
+/// Resets all TORA stage and operator states to their exact analytical DC resting equilibrium.
 ///
 /// # Safety
 /// `handle` must be a valid non-null pointer to a [`DnamEngineHandle`].
@@ -289,5 +289,171 @@ pub unsafe extern "C" fn dnam_engine_get_telemetry(
     // SAFETY: Caller guarantees `handle` and `out_snapshot` are either null or valid pointers.
     if let (Some(h), Some(out)) = unsafe { (handle.as_ref(), out_snapshot.as_mut()) } {
         *out = h.engine.telemetry_snapshot();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::container::{ARENA_OFFSET_ULTRA_END, build_dnam_container};
+    use crate::schema::DnamJsonHeader;
+    extern crate alloc;
+    use alloc::vec;
+
+    #[test]
+    fn test_all_ffi_functions_and_null_safety() {
+        let mut header = DnamJsonHeader::default_reference();
+        let arena = vec![0u8; ARENA_OFFSET_ULTRA_END as usize];
+        let container = build_dnam_container(&mut header, &arena, &arena, false).unwrap();
+
+        // SAFETY: Unit test exercises FFI C-ABI interface with both null and valid test pointers.
+        unsafe {
+            // Null pointer safety
+            assert!(dnam_engine_create_from_bytes(core::ptr::null(), 0, 0, 48000).is_null());
+            assert!(dnam_engine_create_with_max_tier(core::ptr::null(), 0, 0, 0, 48000).is_null());
+            dnam_engine_destroy(core::ptr::null_mut());
+            dnam_engine_set_tier(core::ptr::null_mut(), 0);
+            dnam_engine_set_max_supported_tier(core::ptr::null_mut(), 0);
+            dnam_engine_set_offline_bounce(core::ptr::null_mut(), true);
+            dnam_engine_set_maximize_tier_on_bounce(core::ptr::null_mut(), true);
+            assert_eq!(dnam_engine_get_latency_samples(core::ptr::null()), 0);
+            assert_eq!(
+                dnam_engine_set_sample_rate(core::ptr::null_mut(), 48000),
+                -1
+            );
+            dnam_engine_set_control_value(core::ptr::null_mut(), 0, 0.5);
+            dnam_engine_set_control_immediate(core::ptr::null_mut(), 0, 0.5);
+            dnam_engine_reset(core::ptr::null_mut());
+            dnam_engine_process_block(
+                core::ptr::null_mut(),
+                core::ptr::null(),
+                core::ptr::null(),
+                core::ptr::null_mut(),
+                core::ptr::null_mut(),
+                0,
+            );
+            dnam_engine_process_mono(
+                core::ptr::null_mut(),
+                core::ptr::null(),
+                core::ptr::null_mut(),
+                0,
+            );
+            dnam_engine_get_telemetry(core::ptr::null(), core::ptr::null_mut());
+
+            // Valid handle with create_with_max_tier
+            let handle =
+                dnam_engine_create_with_max_tier(container.as_ptr(), container.len(), 1, 2, 48000);
+            assert!(!handle.is_null());
+
+            dnam_engine_set_max_supported_tier(handle, 1);
+            dnam_engine_set_offline_bounce(handle, true);
+            assert_eq!(dnam_engine_get_latency_samples(handle), 12);
+            dnam_engine_set_offline_bounce(handle, false);
+            assert_eq!(dnam_engine_get_latency_samples(handle), 0);
+            dnam_engine_set_maximize_tier_on_bounce(handle, true);
+
+            let l_in = [0.1f32; 16];
+            let r_in = [-0.1f32; 16];
+            let mut l_out = [0.0f32; 16];
+            let mut r_out = [0.0f32; 16];
+            dnam_engine_process_block(
+                handle,
+                l_in.as_ptr(),
+                r_in.as_ptr(),
+                l_out.as_mut_ptr(),
+                r_out.as_mut_ptr(),
+                16,
+            );
+            dnam_engine_process_mono(handle, l_in.as_ptr(), l_out.as_mut_ptr(), 16);
+
+            let mut snap = core::mem::MaybeUninit::<DnamTelemetrySnapshot>::uninit();
+            dnam_engine_get_telemetry(handle, snap.as_mut_ptr());
+
+            // Edge cases: null pointers in process_block and process_mono
+            dnam_engine_process_block(
+                handle,
+                core::ptr::null(),
+                r_in.as_ptr(),
+                l_out.as_mut_ptr(),
+                r_out.as_mut_ptr(),
+                16,
+            );
+            dnam_engine_process_block(
+                handle,
+                l_in.as_ptr(),
+                core::ptr::null(),
+                l_out.as_mut_ptr(),
+                r_out.as_mut_ptr(),
+                16,
+            );
+            dnam_engine_process_block(
+                handle,
+                l_in.as_ptr(),
+                r_in.as_ptr(),
+                core::ptr::null_mut(),
+                r_out.as_mut_ptr(),
+                16,
+            );
+            dnam_engine_process_block(
+                handle,
+                l_in.as_ptr(),
+                r_in.as_ptr(),
+                l_out.as_mut_ptr(),
+                core::ptr::null_mut(),
+                16,
+            );
+            dnam_engine_process_block(
+                handle,
+                l_in.as_ptr(),
+                r_in.as_ptr(),
+                l_out.as_mut_ptr(),
+                r_out.as_mut_ptr(),
+                0,
+            );
+
+            dnam_engine_process_mono(handle, core::ptr::null(), l_out.as_mut_ptr(), 16);
+            dnam_engine_process_mono(handle, l_in.as_ptr(), core::ptr::null_mut(), 16);
+            dnam_engine_process_mono(handle, l_in.as_ptr(), l_out.as_mut_ptr(), 0);
+
+            // Valid setters on active handle
+            dnam_engine_set_tier(handle, 2);
+            dnam_engine_set_control_value(handle, 0, 0.7);
+            dnam_engine_set_control_immediate(handle, 0, 0.7);
+            dnam_engine_reset(handle);
+            assert_eq!(dnam_engine_set_sample_rate(handle, 48000), 0);
+            assert_eq!(dnam_engine_set_sample_rate(handle, 0), -1);
+
+            // Valid container via dnam_engine_create_from_bytes + Debug formatting
+            let handle2 =
+                dnam_engine_create_from_bytes(container.as_ptr(), container.len(), 0, 48000);
+            assert!(!handle2.is_null());
+            let dbg_str = alloc::format!("{:?}", *handle2);
+            assert!(dbg_str.contains("DnamEngineHandle"));
+            dnam_engine_destroy(handle2);
+
+            // Invalid container parsing returns null
+            let invalid_bytes = [0u8; 128];
+            assert!(
+                dnam_engine_create_from_bytes(
+                    invalid_bytes.as_ptr(),
+                    invalid_bytes.len(),
+                    0,
+                    48000
+                )
+                .is_null()
+            );
+            assert!(
+                dnam_engine_create_with_max_tier(
+                    invalid_bytes.as_ptr(),
+                    invalid_bytes.len(),
+                    0,
+                    0,
+                    48000
+                )
+                .is_null()
+            );
+
+            dnam_engine_destroy(handle);
+        }
     }
 }

@@ -16,16 +16,17 @@ use dnam_engine::math::{DefaultMathBackend, MathBackend, ScalarBackend};
 use dnam_engine::memory::{AlignedBuffer, CacheLine64};
 use dnam_engine::provenance::DefaultCryptoProvider;
 use dnam_engine::schema::{
-    ControlBusConfig, ControlKind, ControlSchemaDef, ControlUiHints, Core1Config, Core2Config,
-    DatasetProvenance, DnamJsonHeader, IoConfig, ModelMetadata, SlimmableTiersConfig, TierProfile,
+    ControlBusConfig, ControlKind, ControlSchemaDef, ControlUiHints, DatasetProvenance,
+    DnamJsonHeader, IoConfig, ModelMetadata, RouterConfig, SlimmableTiersConfig, Stage1PreFxConfig,
+    Stage2CascadeConfig, Stage3CabinetKautzConfig, Stage4SpatialTankConfig, TierProfile,
 };
 use dnam_engine::{DnamEngine, Tier};
 
-fn make_bench_container(core2_active: bool) -> AlignedBuffer<CacheLine64> {
+fn make_bench_container() -> AlignedBuffer<CacheLine64> {
     let mut header = DnamJsonHeader {
         version: "1.0.0".to_string(),
         container_kind: "dnam".to_string(),
-        architecture: "DNAM_TriPhysics".to_string(),
+        architecture: "DNAM_TORA".to_string(),
         sample_rate_train_hz: 48_000,
         metadata: ModelMetadata {
             name: "WCET Benchmark Model".to_string(),
@@ -42,9 +43,11 @@ fn make_bench_container(core2_active: bool) -> AlignedBuffer<CacheLine64> {
         io_config: IoConfig::default(),
         slimmable_tiers: SlimmableTiersConfig {
             lite: TierProfile {
+                feature_bus_dim: 64,
                 channels: 4,
-                fdn_lines: if core2_active { 4 } else { 0 },
-                early_taps: 4,
+                early_fir_taps: 16,
+                kautz_modes: 4,
+                tank_lines: 4,
                 head_svd_rank: 4,
                 loudness_lufs: -20.5,
                 output_trim_db: 0.0,
@@ -53,9 +56,11 @@ fn make_bench_container(core2_active: bool) -> AlignedBuffer<CacheLine64> {
                 prefix_crc32c: 0,
             },
             full: TierProfile {
+                feature_bus_dim: 128,
                 channels: 8,
-                fdn_lines: if core2_active { 8 } else { 0 },
-                early_taps: 8,
+                early_fir_taps: 32,
+                kautz_modes: 8,
+                tank_lines: 8,
                 head_svd_rank: 4,
                 loudness_lufs: -20.5,
                 output_trim_db: 0.0,
@@ -64,9 +69,11 @@ fn make_bench_container(core2_active: bool) -> AlignedBuffer<CacheLine64> {
                 prefix_crc32c: 0,
             },
             pro: TierProfile {
+                feature_bus_dim: 192,
                 channels: 12,
-                fdn_lines: if core2_active { 8 } else { 0 },
-                early_taps: 8,
+                early_fir_taps: 48,
+                kautz_modes: 16,
+                tank_lines: 8,
                 head_svd_rank: 4,
                 loudness_lufs: -20.5,
                 output_trim_db: 0.0,
@@ -75,9 +82,11 @@ fn make_bench_container(core2_active: bool) -> AlignedBuffer<CacheLine64> {
                 prefix_crc32c: 0,
             },
             ultra: TierProfile {
+                feature_bus_dim: 256,
                 channels: 16,
-                fdn_lines: if core2_active { 16 } else { 0 },
-                early_taps: 16,
+                early_fir_taps: 64,
+                kautz_modes: 32,
+                tank_lines: 16,
                 head_svd_rank: 8,
                 loudness_lufs: -20.5,
                 output_trim_db: 0.0,
@@ -128,12 +137,11 @@ fn make_bench_container(core2_active: bool) -> AlignedBuffer<CacheLine64> {
         ],
         presets: Vec::new(),
         control_bus: ControlBusConfig::default(),
-        core1_hybrid_ssm: Core1Config::default(),
-        core2_mufdn: Core2Config {
-            active: core2_active,
-            ring_buffer_pow2_log2: if core2_active { 11 } else { 0 },
-            ..Default::default()
-        },
+        stage0_router: RouterConfig::default(),
+        stage1_pre: Stage1PreFxConfig::default(),
+        stage2_cascade: Stage2CascadeConfig::default(),
+        stage3_cabinet: Stage3CabinetKautzConfig::default(),
+        stage4_tank: Stage4SpatialTankConfig::default(),
         tensor_directory: BTreeMap::new(),
         stems_registry: None,
         audit_report: None,
@@ -283,8 +291,7 @@ fn bench_wcet_tail_latency<B: MathBackend>(container: &[u8], tier: Tier, label: 
 }
 
 fn main() {
-    let container_full = make_bench_container(true);
-    let container_core1 = make_bench_container(false);
+    let container_full = make_bench_container();
 
     let iters = 1_000;
     let crypto = DefaultCryptoProvider::default();
@@ -312,46 +319,10 @@ fn main() {
         "|----------------------------------|-------------|---------------|-------------|----------|"
     );
 
-    bench_tier::<DefaultMathBackend>(
-        container_core1.as_bytes(),
-        Tier::Lite,
-        "Lite (C=4, Core 1 Only)",
-    );
-    bench_tier::<DefaultMathBackend>(
-        container_full.as_bytes(),
-        Tier::Lite,
-        "Lite (C=4, Core 1 + Core 2)",
-    );
-    bench_tier::<DefaultMathBackend>(
-        container_core1.as_bytes(),
-        Tier::Full,
-        "Full (C=8, Core 1 Only)",
-    );
-    bench_tier::<DefaultMathBackend>(
-        container_full.as_bytes(),
-        Tier::Full,
-        "Full (C=8, Core 1 + Core 2)",
-    );
-    bench_tier::<DefaultMathBackend>(
-        container_core1.as_bytes(),
-        Tier::Pro,
-        "Pro (C=12, Core 1 Only)",
-    );
-    bench_tier::<DefaultMathBackend>(
-        container_full.as_bytes(),
-        Tier::Pro,
-        "Pro (C=12, Core 1 + Core 2)",
-    );
-    bench_tier::<DefaultMathBackend>(
-        container_core1.as_bytes(),
-        Tier::Ultra,
-        "Ultra (C=16, Core 1 Only)",
-    );
-    bench_tier::<DefaultMathBackend>(
-        container_full.as_bytes(),
-        Tier::Ultra,
-        "Ultra (C=16, Core 1 + Core 2)",
-    );
+    bench_tier::<DefaultMathBackend>(container_full.as_bytes(), Tier::Lite, "Lite (C=4)");
+    bench_tier::<DefaultMathBackend>(container_full.as_bytes(), Tier::Full, "Full (C=8)");
+    bench_tier::<DefaultMathBackend>(container_full.as_bytes(), Tier::Pro, "Pro (C=12)");
+    bench_tier::<DefaultMathBackend>(container_full.as_bytes(), Tier::Ultra, "Ultra (C=16)");
     bench_tier_bounce::<DefaultMathBackend>(
         container_full.as_bytes(),
         Tier::Ultra,
@@ -361,11 +332,7 @@ fn main() {
     #[cfg(target_arch = "aarch64")]
     {
         use dnam_engine::math::ArmSmeBackend;
-        bench_tier::<ArmSmeBackend>(
-            container_full.as_bytes(),
-            Tier::Full,
-            "Full (C=8, ARM SME + Core 2)",
-        );
+        bench_tier::<ArmSmeBackend>(container_full.as_bytes(), Tier::Full, "Full (C=8, ARM SME)");
     }
 
     bench_tier::<ScalarBackend>(
@@ -383,7 +350,7 @@ fn main() {
     println!(
         " Real-Time WCET & Tail-Latency Jitter Audit (2,000 x 128-Sample Blocks = 2,666.67 us Budget)"
     );
-    println!(" Active Continuous Knob Modulation + Core 2 Switch Crossfading");
+    println!(" Active Continuous Knob Modulation + Stage IV Tank Switch Crossfading");
     println!(
         "=========================================================================================="
     );

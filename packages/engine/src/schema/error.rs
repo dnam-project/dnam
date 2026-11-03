@@ -32,7 +32,7 @@ pub enum DnamError {
     },
     /// Castagnoli `CRC32C` checksum mismatch on the JSON header or tier arena prefix.
     Crc32cMismatch {
-        /// Region name (`"header"`, `"arena_lite"`, `"arena_full"`, `"arena_ultra"`, or `"arena3_stem"`).
+        /// Region name (`"header"`, `"arena_lite"`, `"arena_full"`, `"arena_ultra"`, or `"arena4_stem"`).
         region: &'static str,
         /// Expected CRC32C stored in container.
         expected: u32,

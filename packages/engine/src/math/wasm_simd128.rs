@@ -5,7 +5,7 @@ use super::{BackendKind, MathBackend, SimdVec4};
 #[cfg(target_feature = "simd128")]
 use core::arch::wasm32::{
     f32x4_abs, f32x4_add, f32x4_extract_lane, f32x4_mul, f32x4_pmax, f32x4_pmin, f32x4_splat,
-    f32x4_sub, i32x4_shuffle, v128,
+    f32x4_sub, i32x4_eq, i32x4_shuffle, i32x4_splat, v128, v128_and, v128_andnot,
 };
 
 /// WebAssembly 4-lane `f32` vector (`v128` when `simd128` is enabled, or `[f32; 4]` fallback).
@@ -75,6 +75,14 @@ impl SimdVec4 for WasmVec4 {
     #[inline(always)]
     fn abs(self) -> Self {
         Self(f32x4_abs(self.0))
+    }
+
+    #[inline(always)]
+    fn flush_subnormal(self) -> Self {
+        let exponent = v128_and(self.0, i32x4_splat(0x7f80_0000));
+        let zero_exponent = i32x4_eq(exponent, i32x4_splat(0));
+        let mantissa_to_clear = v128_and(zero_exponent, i32x4_splat(0x007f_ffff));
+        Self(v128_andnot(self.0, mantissa_to_clear))
     }
 
     #[inline(always)]

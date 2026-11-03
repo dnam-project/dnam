@@ -1,6 +1,6 @@
 //! 64-byte cache-line aligned memory management, OS page pre-faulting, and zero-copy storage.
 //!
-//! Ensures all weight arenas (`Arena 0..2`) and Core 2 `fp16` delay ring buffers are strictly
+//! Ensures all weight arenas (`Arena 0..2`) and Stage IV tank `fp16` delay ring buffers are strictly
 //! 64-byte aligned (`ptr % 64 == 0`) across ARM64, x86-64, and WebAssembly, while eliminating
 //! first-touch OS page faults on the real-time audio thread.
 
@@ -258,7 +258,7 @@ impl<'a> ArenaStorage<'a> {
     }
 }
 
-/// Core 2 `M-UFDN` `fp16` (`u16`) delay ring-buffer storage supporting either owned 64B-aligned
+/// Stage IV Spatial Tank `fp16` (`u16`) delay ring-buffer storage supporting either owned 64B-aligned
 /// heap memory (`Owned`) or caller-supplied static/shared scratch memory (`Borrowed`).
 #[derive(Debug)]
 pub enum DelayScratchStorage<'a> {

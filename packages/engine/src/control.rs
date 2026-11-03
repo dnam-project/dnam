@@ -1,27 +1,27 @@
-//! $3\text{ kHz}$ Parametric Control Bus, `ControlClampDescriptor` & Anti-Zipper Smoother (`control`).
+//! $3\text{ kHz}$ Parametric Control Bus, `ControlChannelRecord` & Anti-Zipper Smoother (`control`).
 //!
-//! Implements Subsystem 3 from [`docs/dsp/parametric_control_bus.md`](../../../docs/dsp/parametric_control_bus.md)
-//! and [`docs/training/clamp_and_audit_registry.md`](../../../docs/training/clamp_and_audit_registry.md).
+//! Implements Subsystem 3 from `docs/dsp/parametric_control_bus.md`
+//! and `docs/training/clamp_and_audit_registry.md`.
 
 pub mod bus;
 pub mod descriptor;
+pub mod record;
 pub mod reference;
 
 pub use bus::ControlBus;
 pub use descriptor::{ConditionalClampRule, ControlClampDescriptor};
+pub use record::{ControlChannelRecord, ControlLatentProjection, LatentAccumulator64B};
 pub use reference::{
     eval_chebyshev_lfo_4harm_f64, eval_newton_lobatto_basis_f64, eval_rank4_fm_interaction_f64,
     eval_trust_region_softclip_f64,
 };
 
-/// Maximum number of parametric user controls (`range` + `switch`) in the inline `Arena 0` clamp table.
-pub const MAX_CONTROLS: usize = 16;
-
-/// SVD principal control subspace rank ($D_h = 4$).
-pub const SVD_HEAD_RANK: usize = 4;
-
-/// Factorization Machine interaction rank ($R = 4$).
-pub const FM_INTERACTION_RANK: usize = 4;
+/// Number of leading control slots captured in the fixed C-ABI [`crate::DnamTelemetrySnapshot`] preview array.
+/// Note: TORA supports an arbitrary number of user controls $P \in [0, 255]$ via the unified 128-byte
+/// [`ControlChannelRecord`] table and $\mathcal{O}(1)$ [`LatentAccumulator64B`] (`Theorem 3`), while
+/// SVD head rank ($D_h \in \{4, 8\}$) and FM interaction rank ($R \in \{4, 8\}$) scale dynamically with
+/// [`crate::Tier::svd_control_modes`] and [`crate::Tier::fm_interaction_rank`].
+pub const TELEMETRY_CONTROL_SLOTS: usize = 16;
 
 /// Anti-zipper convergence threshold: once $|u_p - u_{p,\text{target}}| < 10^{-6}$, the smoother snaps
 /// to `u_target` and re-engages the static `0 MACs/sample` head cache.

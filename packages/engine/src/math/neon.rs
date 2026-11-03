@@ -145,24 +145,14 @@ impl MathBackend for NeonBackend {
     }
 
     #[inline(always)]
-    fn dot_product_16taps_4ch(taps_64: &[f32; 64], weights_64: &[f32; 64]) -> f32 {
-        // SAFETY: `aarch64` guarantees baseline NEON availability.
-        unsafe { neon_dot64(taps_64, weights_64) }
-    }
-
-    #[inline(always)]
-    fn dot_product_16taps_4ch_stereo(
-        taps_64: &[f32; 64],
-        weights_l: &[f32; 64],
-        weights_r: &[f32; 64],
-    ) -> [f32; 2] {
-        // SAFETY: `aarch64` guarantees baseline NEON availability.
-        unsafe { neon_dot64_stereo(taps_64, weights_l, weights_r) }
-    }
-
-    #[inline(always)]
     fn f32x4_to_fp16x4(src: &[f32; 4]) -> [u16; 4] {
-        let v_in = NeonVec4::load(src).0;
+        // Clamp to finite fp16 range [-65504.0, 65504.0] via branchless FMAXNM/FMINNM
+        // so values >= 65520.0, ±Inf, or NaN never produce non-finite fp16 bits.
+        let v_raw = NeonVec4::load(src);
+        let v_clamped = v_raw
+            .min(NeonVec4::splat(65504.0))
+            .max(NeonVec4::splat(-65504.0));
+        let v_in = v_clamped.0;
         let bits_u64: u64;
         // SAFETY: `fcvtn` is a mandatory baseline ARMv8.0-A NEON instruction converting
         // 4 IEEE-754 `f32` lanes to 4 `fp16` lanes in a single cycle.
@@ -354,6 +344,7 @@ pub(crate) fn neon_conv6_4groups(
 
 /// Evaluates a 64-element dot product using 4 independent NEON accumulators (`za0..za3`)
 /// with zero `unsafe` blocks.
+#[allow(dead_code)]
 #[target_feature(enable = "neon")]
 #[inline]
 pub(crate) fn neon_dot64(a: &[f32; 64], b: &[f32; 64]) -> f32 {
@@ -381,6 +372,7 @@ pub(crate) fn neon_dot64(a: &[f32; 64], b: &[f32; 64]) -> f32 {
 
 /// Evaluates a fused stereo (`L` and `R`) 64-element dot product in a single pass over `taps_64`
 /// with zero `unsafe` blocks.
+#[allow(dead_code)]
 #[target_feature(enable = "neon")]
 #[inline]
 pub(crate) fn neon_dot64_stereo(taps: &[f32; 64], w_l: &[f32; 64], w_r: &[f32; 64]) -> [f32; 2] {
@@ -446,4 +438,127 @@ fn crc32c_arm64_hw_inner(crc_init: u32, data: &[u8]) -> u32 {
         crc = __crc32cb(crc, byte);
     }
     !crc
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_neon_vec4_operations() {
+        let v1 = NeonVec4::splat(2.0);
+        let v2 = NeonVec4::splat(3.0);
+        let mut dst = [0.0f32; 4];
+        v1.store(&mut dst);
+        assert_eq!(dst, [2.0; 4]);
+
+        let v_add = v1.add(v2);
+        v_add.store(&mut dst);
+        assert_eq!(dst, [5.0; 4]);
+
+        let v_sub = v2.sub(v1);
+        v_sub.store(&mut dst);
+        assert_eq!(dst, [1.0; 4]);
+
+        let v_mul = v1.mul(v2);
+        v_mul.store(&mut dst);
+        assert_eq!(dst, [6.0; 4]);
+
+        let v_fma = v1.fma(v2, v1); // 2 + 3 * 2 = 8
+        v_fma.store(&mut dst);
+        assert_eq!(dst, [8.0; 4]);
+
+        let v_fms = v1.fms(v2, v1); // 2 - 3 * 2 = -4
+        v_fms.store(&mut dst);
+        assert_eq!(dst, [-4.0; 4]);
+
+        let v_max = v1.max(v2);
+        v_max.store(&mut dst);
+        assert_eq!(dst, [3.0; 4]);
+
+        let v_min = v1.min(v2);
+        v_min.store(&mut dst);
+        assert_eq!(dst, [2.0; 4]);
+
+        let v_neg = NeonVec4::splat(-5.0);
+        let v_abs = v_neg.abs();
+        v_abs.store(&mut dst);
+        assert_eq!(dst, [5.0; 4]);
+
+        let sum = v1.horizontal_sum();
+        assert_eq!(sum, 8.0);
+    }
+
+    #[test]
+    fn test_neon_backend_fp16_conversions_and_crc() {
+        let f = [1.0f32, -2.5, 3.25, 0.0];
+        let h = NeonBackend::f32x4_to_fp16x4(&f);
+        let back = NeonBackend::fp16x4_to_f32x4(&h);
+        for i in 0..4 {
+            assert!((f[i] - back[i]).abs() < 1e-3);
+        }
+
+        // Verify finite saturation at [65520.0, 100000.0] never overflows to ±Inf
+        let extreme = [65520.0f32, -65520.0, 100_000.0, -100_000.0];
+        let h_ext = NeonBackend::f32x4_to_fp16x4(&extreme);
+        assert_eq!(h_ext, [0x7BFF, 0xFBFF, 0x7BFF, 0xFBFF]);
+        let back_ext = NeonBackend::fp16x4_to_f32x4(&h_ext);
+        for &v in &back_ext {
+            assert!(v.is_finite());
+        }
+
+        let data = b"123456789";
+        let crc = NeonBackend::crc32c(data);
+        assert_eq!(crc, 0xe3069283);
+    }
+
+    #[test]
+    fn test_neon_backend_convolutions_and_dots() {
+        let bias = NeonVec4::splat(0.1);
+        let w_tile = [[0.1f32; 4]; 4];
+        let h_tap = [[0.2f32; 4]; 4];
+
+        // Mat-vec FMA
+        let mv = NeonBackend::fma_mat4x4_vec4(bias, &w_tile, &[0.5; 4]);
+        let mut dst = [0.0f32; 4];
+        mv.store(&mut dst);
+        assert!(dst[0].is_finite());
+
+        // 1 group
+        let w1 = [w_tile; 6];
+        let h1 = [&h_tap; 6];
+        let r1 = NeonBackend::conv6_taps_1group(bias, &w1, &h1);
+        r1.store(&mut dst);
+        assert!(dst[0].is_finite());
+
+        // 2 groups
+        let w2 = [w_tile; 12];
+        let r2 = NeonBackend::conv6_taps_2groups(bias, &w2, &h1);
+        r2.store(&mut dst);
+        assert!(dst[0].is_finite());
+
+        // 3 groups
+        let w3 = [w_tile; 18];
+        let r3 = NeonBackend::conv6_taps_3groups(bias, &w3, &h1);
+        r3.store(&mut dst);
+        assert!(dst[0].is_finite());
+
+        // 4 groups
+        let w4 = [w_tile; 24];
+        let r4 = NeonBackend::conv6_taps_4groups(bias, &w4, &h1);
+        r4.store(&mut dst);
+        assert!(dst[0].is_finite());
+
+        // dot64 and dot64_stereo
+        let taps = [0.1f32; 64];
+        let wl = [0.2f32; 64];
+        let wr = [0.3f32; 64];
+        // SAFETY: Unit test inputs are 64-element aligned buffers matching neon target requirements.
+        let d = unsafe { neon_dot64(&taps, &wl) };
+        assert!(d.is_finite());
+        // SAFETY: Unit test inputs are 64-element aligned buffers matching neon target requirements.
+        let stereo = unsafe { neon_dot64_stereo(&taps, &wl, &wr) };
+        assert!(stereo[0].is_finite());
+        assert!(stereo[1].is_finite());
+    }
 }

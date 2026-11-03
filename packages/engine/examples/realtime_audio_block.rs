@@ -17,8 +17,9 @@ use dnam_engine::container::{
 use dnam_engine::math::DefaultMathBackend;
 use dnam_engine::memory::{AlignedBuffer, CacheLine64};
 use dnam_engine::schema::{
-    ControlBusConfig, ControlKind, ControlSchemaDef, ControlUiHints, Core1Config, Core2Config,
-    DatasetProvenance, DnamJsonHeader, IoConfig, ModelMetadata, PresetDef, SlimmableTiersConfig,
+    ControlBusConfig, ControlKind, ControlSchemaDef, ControlUiHints, DatasetProvenance,
+    DnamJsonHeader, IoConfig, ModelMetadata, PresetDef, RouterConfig, SlimmableTiersConfig,
+    Stage1PreFxConfig, Stage2CascadeConfig, Stage3CabinetKautzConfig, Stage4SpatialTankConfig,
     TierProfile,
 };
 use dnam_engine::{DnamEngine, DynamicDnamEngine, Tier};
@@ -27,10 +28,10 @@ fn build_demo_dnam_container() -> AlignedBuffer<CacheLine64> {
     let mut header = DnamJsonHeader {
         version: "1.0.0".to_string(),
         container_kind: "dnam".to_string(),
-        architecture: "DNAM_TriPhysics".to_string(),
+        architecture: "DNAM_TORA".to_string(),
         sample_rate_train_hz: 48_000,
         metadata: ModelMetadata {
-            name: "Tri-Physics Crunch & Tape Echo".to_string(),
+            name: "TORA Crunch & Tape Echo".to_string(),
             author: Some("DNAM Studio".to_string()),
             description: Some("Demo stereo amp + modulated diffusive delay".to_string()),
             license: Some("CC-BY-4.0".to_string()),
@@ -44,9 +45,11 @@ fn build_demo_dnam_container() -> AlignedBuffer<CacheLine64> {
         io_config: IoConfig::default(),
         slimmable_tiers: SlimmableTiersConfig {
             lite: TierProfile {
+                feature_bus_dim: 64,
                 channels: 4,
-                fdn_lines: 4,
-                early_taps: 4,
+                early_fir_taps: 16,
+                kautz_modes: 4,
+                tank_lines: 4,
                 head_svd_rank: 4,
                 loudness_lufs: -20.5,
                 output_trim_db: 0.0,
@@ -55,9 +58,11 @@ fn build_demo_dnam_container() -> AlignedBuffer<CacheLine64> {
                 prefix_crc32c: 0,
             },
             full: TierProfile {
+                feature_bus_dim: 128,
                 channels: 8,
-                fdn_lines: 8,
-                early_taps: 8,
+                early_fir_taps: 32,
+                kautz_modes: 8,
+                tank_lines: 8,
                 head_svd_rank: 4,
                 loudness_lufs: -20.5,
                 output_trim_db: 0.0,
@@ -66,9 +71,11 @@ fn build_demo_dnam_container() -> AlignedBuffer<CacheLine64> {
                 prefix_crc32c: 0,
             },
             pro: TierProfile {
+                feature_bus_dim: 192,
                 channels: 12,
-                fdn_lines: 8,
-                early_taps: 8,
+                early_fir_taps: 48,
+                kautz_modes: 16,
+                tank_lines: 8,
                 head_svd_rank: 4,
                 loudness_lufs: -20.5,
                 output_trim_db: 0.0,
@@ -77,9 +84,11 @@ fn build_demo_dnam_container() -> AlignedBuffer<CacheLine64> {
                 prefix_crc32c: 0,
             },
             ultra: TierProfile {
+                feature_bus_dim: 256,
                 channels: 16,
-                fdn_lines: 16,
-                early_taps: 16,
+                early_fir_taps: 64,
+                kautz_modes: 32,
+                tank_lines: 16,
                 head_svd_rank: 8,
                 loudness_lufs: -20.5,
                 output_trim_db: 0.0,
@@ -139,12 +148,11 @@ fn build_demo_dnam_container() -> AlignedBuffer<CacheLine64> {
             user_metadata: BTreeMap::new(),
         }],
         control_bus: ControlBusConfig::default(),
-        core1_hybrid_ssm: Core1Config::default(),
-        core2_mufdn: Core2Config {
-            active: true,
-            ring_buffer_pow2_log2: 11,
-            ..Default::default()
-        },
+        stage0_router: RouterConfig::default(),
+        stage1_pre: Stage1PreFxConfig::default(),
+        stage2_cascade: Stage2CascadeConfig::default(),
+        stage3_cabinet: Stage3CabinetKautzConfig::default(),
+        stage4_tank: Stage4SpatialTankConfig::default(),
         tensor_directory: BTreeMap::new(),
         stems_registry: None,
         audit_report: None,
@@ -203,7 +211,7 @@ fn main() {
     println!(
         "Processed 2x128 stereo frames | Active Tier: {:?} | Max PolyADAA Drive: {:.4} | Max Pole Radius: {:.6}",
         Tier::from_u8(snap.active_tier),
-        snap.max_adaa_drive,
+        snap.max_op_n_drive,
         snap.max_pole_radius,
     );
 }

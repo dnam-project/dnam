@@ -51,6 +51,7 @@ pub trait CryptoProvider {
     /// Unwraps the 32-byte Content Encryption Key (`CEK`) for an authorized hardware device
     /// inside the platform's secure enclave (`OP-TEE`, `SEP`, `TPM 2.0`, or software `X25519`),
     /// returning a [`Zeroizing`] buffer that automatically wipes its stack memory on drop.
+    /// X25519 providers must reject non-contributory shared secrets.
     fn unwrap_device_cek(
         &self,
         receipt: &MarketplaceReceipt,
@@ -239,9 +240,9 @@ impl RustCryptoProvider {
         })
     }
 
-    /// Wraps a 32-byte Content Encryption Key (`CEK`) for a target device's `X25519` public key
-    /// using RFC 9180 HPKE (`X25519-HKDF-SHA256` + `ChaCha20-Poly1305`), returning the 48-byte
-    /// `wrapped_cek` (`32 B` ciphertext + `16 B` Poly1305 tag).
+    /// Legacy X25519/HKDF/ChaCha20-Poly1305 CEK wrapping, not RFC 9180 HPKE.
+    /// It rejects non-contributory shared secrets but does not implement the
+    /// selected authenticated-container protocol. The slot is 32 bytes plus a 16-byte tag.
     pub fn wrap_device_cek(
         ephemeral_secret_x25519: &[u8; 32],
         device_pubkey_x25519: &[u8; 32],
@@ -257,6 +258,11 @@ impl RustCryptoProvider {
         let esk = StaticSecret::from(*ephemeral_secret_x25519);
         let dpk = PublicKey::from(*device_pubkey_x25519);
         let shared = esk.diffie_hellman(&dpk);
+        if !shared.was_contributory() {
+            return Err(DnamError::CryptoVerificationFailed(
+                "non-contributory X25519 shared secret",
+            ));
+        }
 
         let hk = Hkdf::<Sha256>::new(Some(device_id_hash.as_bytes()), shared.as_bytes());
         let mut okm = Zeroizing::new([0u8; 44]); // 32B key + 12B nonce
@@ -337,6 +343,11 @@ impl CryptoProvider for RustCryptoProvider {
         let dsk = StaticSecret::from(**dsk_bytes);
         let epk = PublicKey::from(epk_bytes);
         let shared = dsk.diffie_hellman(&epk);
+        if !shared.was_contributory() {
+            return Err(DnamError::CryptoVerificationFailed(
+                "non-contributory X25519 shared secret",
+            ));
+        }
 
         let hk = Hkdf::<Sha256>::new(Some(device.device_id_hash.as_bytes()), shared.as_bytes());
         let mut okm = Zeroizing::new([0u8; 44]);

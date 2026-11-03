@@ -9,6 +9,8 @@ pub mod backend;
 #[forbid(unsafe_code)]
 pub mod crc32c;
 #[forbid(unsafe_code)]
+pub mod default_ops;
+#[forbid(unsafe_code)]
 pub mod fp16;
 #[forbid(unsafe_code)]
 pub mod init_math;
@@ -30,7 +32,8 @@ pub mod x86_simd;
 #[forbid(unsafe_code)]
 pub mod wasm_simd128;
 
-pub use backend::{MathBackend, SimdVec4};
+pub use backend::{MathBackend, SimdVec4, flush_subnormal_f32_bits};
+pub(crate) use backend::{flush_recursive_state_f32, flush_recursive_state_vec4};
 pub use crc32c::{crc32c, crc32c_slice};
 pub use fp16::{
     f32_to_fp16, f32_to_fp16 as f32_to_fp16_bits, fp16_to_f32, fp16_to_f32 as fp16_bits_to_f32,

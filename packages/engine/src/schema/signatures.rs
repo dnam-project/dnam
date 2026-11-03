@@ -216,3 +216,45 @@ pub struct RoyaltySplit {
     /// Share in basis points (`0..=10000`).
     pub share_bps: u16,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_protection_profiles_and_distribution_policy() {
+        for profile in [
+            DnamProtectionProfile::Open,
+            DnamProtectionProfile::DeviceAllowlisted,
+            DnamProtectionProfile::EnclaveSealed,
+        ] {
+            let s = profile.as_str();
+            assert_eq!(DnamProtectionProfile::from_str_name(s).unwrap(), profile);
+        }
+        assert!(DnamProtectionProfile::from_str_name("invalid").is_err());
+
+        // Empty policy allows everything
+        let empty_policy = DistributionPolicy::default();
+        assert!(empty_policy.is_profile_allowed(DnamProtectionProfile::Open));
+        assert!(empty_policy.is_profile_allowed(DnamProtectionProfile::EnclaveSealed));
+        assert!(empty_policy.is_oem_device_allowed("any_vendor", "any_model"));
+
+        // Restricted policy
+        let policy = DistributionPolicy {
+            allowed_protection_profiles: alloc::vec![DnamProtectionProfile::DeviceAllowlisted],
+            allowed_oem_vendors: alloc::vec![
+                "darkglass".to_string(),
+                "neural:quad_cortex".to_string(),
+            ],
+        };
+        assert!(!policy.is_profile_allowed(DnamProtectionProfile::Open));
+        assert!(policy.is_profile_allowed(DnamProtectionProfile::DeviceAllowlisted));
+
+        assert!(policy.is_oem_device_allowed("Darkglass", "rk3582"));
+        assert!(policy.is_oem_device_allowed("neural", "quad_cortex"));
+        assert!(!policy.is_oem_device_allowed("neural", "other_device"));
+        assert!(!policy.is_oem_device_allowed("other_vendor", "model"));
+
+        assert_eq!(default_encryption_mode(), "none");
+    }
+}

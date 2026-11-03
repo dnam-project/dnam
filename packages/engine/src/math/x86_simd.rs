@@ -15,7 +15,8 @@ pub struct X86Vec4(pub __m128);
 impl SimdVec4 for X86Vec4 {
     #[inline(always)]
     fn splat(val: f32) -> Self {
-        Self(_mm_set1_ps(val))
+        // SAFETY: SSE is part of the x86-64 baseline.
+        unsafe { Self(_mm_set1_ps(val)) }
     }
 
     #[inline(always)]
@@ -30,24 +31,28 @@ impl SimdVec4 for X86Vec4 {
 
     #[inline(always)]
     fn add(self, rhs: Self) -> Self {
-        Self(_mm_add_ps(self.0, rhs.0))
+        // SAFETY: SSE is part of the x86-64 baseline.
+        unsafe { Self(_mm_add_ps(self.0, rhs.0)) }
     }
 
     #[inline(always)]
     fn sub(self, rhs: Self) -> Self {
-        Self(_mm_sub_ps(self.0, rhs.0))
+        // SAFETY: SSE is part of the x86-64 baseline.
+        unsafe { Self(_mm_sub_ps(self.0, rhs.0)) }
     }
 
     #[inline(always)]
     fn mul(self, rhs: Self) -> Self {
-        Self(_mm_mul_ps(self.0, rhs.0))
+        // SAFETY: SSE is part of the x86-64 baseline.
+        unsafe { Self(_mm_mul_ps(self.0, rhs.0)) }
     }
 
     #[inline(always)]
     fn fma(self, a: Self, b: Self) -> Self {
         #[cfg(target_feature = "fma")]
         {
-            Self(core::arch::x86_64::_mm_fmadd_ps(a.0, b.0, self.0))
+            // SAFETY: This branch is compiled only when FMA is a target feature.
+            unsafe { Self(core::arch::x86_64::_mm_fmadd_ps(a.0, b.0, self.0)) }
         }
         #[cfg(not(target_feature = "fma"))]
         {
@@ -59,7 +64,8 @@ impl SimdVec4 for X86Vec4 {
     fn fms(self, a: Self, b: Self) -> Self {
         #[cfg(target_feature = "fma")]
         {
-            Self(core::arch::x86_64::_mm_fnmadd_ps(a.0, b.0, self.0))
+            // SAFETY: This branch is compiled only when FMA is a target feature.
+            unsafe { Self(core::arch::x86_64::_mm_fnmadd_ps(a.0, b.0, self.0)) }
         }
         #[cfg(not(target_feature = "fma"))]
         {
@@ -69,27 +75,35 @@ impl SimdVec4 for X86Vec4 {
 
     #[inline(always)]
     fn max(self, rhs: Self) -> Self {
-        Self(_mm_max_ps(self.0, rhs.0))
+        // SAFETY: SSE is part of the x86-64 baseline.
+        unsafe { Self(_mm_max_ps(self.0, rhs.0)) }
     }
 
     #[inline(always)]
     fn min(self, rhs: Self) -> Self {
-        Self(_mm_min_ps(self.0, rhs.0))
+        // SAFETY: SSE is part of the x86-64 baseline.
+        unsafe { Self(_mm_min_ps(self.0, rhs.0)) }
     }
 
     #[inline(always)]
     fn abs(self) -> Self {
-        let sign_mask = _mm_set1_ps(-0.0f32);
-        Self(_mm_andnot_ps(sign_mask, self.0))
+        // SAFETY: SSE is part of the x86-64 baseline.
+        unsafe {
+            let sign_mask = _mm_set1_ps(-0.0f32);
+            Self(_mm_andnot_ps(sign_mask, self.0))
+        }
     }
 
     #[inline(always)]
     fn horizontal_sum(self) -> f32 {
         #[cfg(target_feature = "sse3")]
         {
-            let s1 = _mm_hadd_ps(self.0, self.0);
-            let s2 = _mm_hadd_ps(s1, s1);
-            _mm_cvtss_f32(s2)
+            // SAFETY: This branch is compiled only when SSE3 is a target feature.
+            unsafe {
+                let s1 = _mm_hadd_ps(self.0, self.0);
+                let s2 = _mm_hadd_ps(s1, s1);
+                _mm_cvtss_f32(s2)
+            }
         }
         #[cfg(not(target_feature = "sse3"))]
         {
@@ -118,17 +132,20 @@ impl MathBackend for X86SimdBackend {
         #[cfg(target_feature = "sse4.2")]
         {
             use core::arch::x86_64::{_mm_crc32_u8, _mm_crc32_u64};
-            let mut crc = !0u64;
-            let (chunks, remainder) = data.as_chunks::<8>();
-            for chunk in chunks {
-                let val = u64::from_le_bytes(*chunk);
-                crc = _mm_crc32_u64(crc, val);
+            // SAFETY: This branch is compiled only when SSE4.2 is a target feature.
+            unsafe {
+                let mut crc = !0u64;
+                let (chunks, remainder) = data.as_chunks::<8>();
+                for chunk in chunks {
+                    let val = u64::from_le_bytes(*chunk);
+                    crc = _mm_crc32_u64(crc, val);
+                }
+                let mut crc32 = crc as u32;
+                for &byte in remainder {
+                    crc32 = _mm_crc32_u8(crc32, byte);
+                }
+                !crc32
             }
-            let mut crc32 = crc as u32;
-            for &byte in remainder {
-                crc32 = _mm_crc32_u8(crc32, byte);
-            }
-            return !crc32;
         }
         #[cfg(not(target_feature = "sse4.2"))]
         {

@@ -8,8 +8,10 @@
 //! from [`docs/containers/dnam_binary_format.md`](../../../docs/containers/dnam_binary_format.md)
 //! and [`docs/containers/checkpoint_and_cache_format.md`](../../../docs/containers/checkpoint_and_cache_format.md).
 
+pub mod builder;
 pub mod ckpt;
 pub mod preamble;
+pub mod strip;
 pub mod view;
 pub mod zoh;
 
@@ -19,15 +21,14 @@ pub use crate::provenance::{
     DNSL_MAGIC, DnamSealEnvelopePreamble, DnamSealRecipientSlot, FLAG_SEAL_CHACHA20_FULL,
     MAX_SEAL_RECIPIENTS, unseal_dnam_container,
 };
+pub use builder::{build_dnam_container, update_header_in_place};
 pub use ckpt::{
-    ARENA4_HEADER_BYTES, DNCA_MAGIC, pack_uplo_u_f64, unpack_uplo_u_f64, uplo_u_packed_len,
-    verify_ckpt_arena4_calib_stats, verify_ckpt_stem_crc32c,
+    ARENA5_HEADER_BYTES, DNCA_MAGIC, pack_uplo_u_f64, unpack_uplo_u_f64, uplo_u_packed_len,
+    verify_ckpt_arena5_calib_stats, verify_ckpt_stem_arena4_crc32c,
 };
 pub use preamble::DnamPreamble;
-pub use view::{
-    DnamContainerView, build_dnam_container, compute_header_crc32c, strip_container_to_tier,
-    update_header_in_place,
-};
+pub use strip::strip_container_to_tier;
+pub use view::{DnamContainerView, compute_header_crc32c};
 pub use zoh::ZohRescaledParams;
 
 /// Magic bytes for a `.dnam` deployment model container (`0x4D414E44` little-endian).
@@ -70,16 +71,16 @@ pub const ARENA_ULTRA_END_CL: u16 = 1_000;
 pub const DEFAULT_PAGE_ALIGNED_ARENA_OFFSET: u32 = 4_096;
 
 /// Per-stem `.dnam-ckpt` byte length for `Lite` ($N=64$: `16,640 B` `G_audio` + `1,024 B` `C_audio` = `17,664 B`).
-pub const ARENA3_STEM_BYTES_LITE: usize = 17_664;
+pub const ARENA4_STEM_BYTES_LITE: usize = 17_664;
 
 /// Per-stem `.dnam-ckpt` byte length for `Full` ($N=128$: `66,048 B` `G_audio` + `2,048 B` `C_audio` = `68,096 B`).
-pub const ARENA3_STEM_BYTES_FULL: usize = 68_096;
+pub const ARENA4_STEM_BYTES_FULL: usize = 68_096;
 
 /// Per-stem `.dnam-ckpt` byte length for `Pro` ($N=192$: `148,224 B` `G_audio` + `3,072 B` `C_audio` = `151,296 B`).
-pub const ARENA3_STEM_BYTES_PRO: usize = 151_296;
+pub const ARENA4_STEM_BYTES_PRO: usize = 151_296;
 
 /// Per-stem `.dnam-ckpt` byte length for `Ultra` ($N=256$: `263,168 B` `G_audio` + `4,096 B` `C_audio` = `267,264 B`).
-pub const ARENA3_STEM_BYTES_ULTRA: usize = 267_264;
+pub const ARENA4_STEM_BYTES_ULTRA: usize = 267_264;
 
 // ============================================================================
 // Preamble Flag Bits (`flags: u16`)
@@ -95,14 +96,6 @@ pub const FLAG_HAS_PRO_DELTA: u16 = 1 << 2;
 pub const FLAG_HAS_ULTRA_DELTA: u16 = 1 << 3;
 /// Bit 4 (`16`): `.dnam-ckpt` stem statistics are present.
 pub const FLAG_HAS_CKPT_STEMS: u16 = 1 << 4;
-/// Bit 5 (`32`): Core 1 weights are interleaved in execution order (`Core1BlockSlice`).
-pub const FLAG_EXEC_ORDER_SOA: u16 = 1 << 5;
-/// Bit 6 (`64`): First Lobatto node is anchored at the default preset (`0` flops at Sample 0).
-pub const FLAG_DEFAULT_ANCHORED: u16 = 1 << 6;
-/// Bit 7 (`128`): Core 2 (`M-UFDN`) is active (`0` = bypassed with `0 KB` delay RAM).
-pub const FLAG_CORE2_ACTIVE: u16 = 1 << 7;
-/// Bit 8 (`256`): $3\text{ kHz}$ LFOs and envelope followers are active.
-pub const FLAG_LFO_ENV_ACTIVE: u16 = 1 << 8;
 /// Bit 9 (`512`): Stereo output head enabled (`1 = stereo`, `0 = mono` saving 50% head MACs).
 pub const FLAG_STEREO_OUT: u16 = 1 << 9;
 /// Bit 10 (`1024`): Split-payload `Ed25519` signatures are present in `metadata.signatures`.

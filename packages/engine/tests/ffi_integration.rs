@@ -5,16 +5,18 @@
 use dnam_engine::DnamTelemetrySnapshot;
 use dnam_engine::container::{ARENA_OFFSET_ULTRA_END, build_dnam_container};
 use dnam_engine::ffi::{
-    dnam_engine_create_from_bytes, dnam_engine_destroy, dnam_engine_get_telemetry,
-    dnam_engine_process_block, dnam_engine_process_mono, dnam_engine_reset,
-    dnam_engine_set_control_immediate, dnam_engine_set_control_value, dnam_engine_set_sample_rate,
-    dnam_engine_set_tier,
+    dnam_engine_create_from_bytes, dnam_engine_create_with_max_tier, dnam_engine_destroy,
+    dnam_engine_get_latency_samples, dnam_engine_get_telemetry, dnam_engine_process_block,
+    dnam_engine_process_mono, dnam_engine_reset, dnam_engine_set_control_immediate,
+    dnam_engine_set_control_value, dnam_engine_set_max_supported_tier,
+    dnam_engine_set_maximize_tier_on_bounce, dnam_engine_set_offline_bounce,
+    dnam_engine_set_sample_rate, dnam_engine_set_tier,
 };
 use dnam_engine::schema::DnamJsonHeader;
 
 #[test]
 fn test_c_abi_ffi_lifecycle_and_null_pointer_safety() {
-    let mut header = DnamJsonHeader::default_reference(false);
+    let mut header = DnamJsonHeader::default_reference();
     let arena = vec![0u8; ARENA_OFFSET_ULTRA_END as usize];
     let container = build_dnam_container(&mut header, &arena, &arena, false).unwrap();
 
@@ -24,9 +26,16 @@ fn test_c_abi_ffi_lifecycle_and_null_pointer_safety() {
         assert!(dnam_engine_create_from_bytes(core::ptr::null(), 100, 0, 48_000).is_null());
         assert!(dnam_engine_create_from_bytes(container.as_ptr(), 32, 0, 48_000).is_null());
         assert!(dnam_engine_create_from_bytes([0u8; 128].as_ptr(), 128, 0, 48_000).is_null());
+        assert!(dnam_engine_create_with_max_tier(core::ptr::null(), 100, 0, 1, 48_000).is_null());
+        assert!(dnam_engine_create_with_max_tier(container.as_ptr(), 32, 0, 1, 48_000).is_null());
+        assert!(dnam_engine_create_with_max_tier([0u8; 128].as_ptr(), 128, 0, 1, 48_000).is_null());
 
         dnam_engine_destroy(core::ptr::null_mut());
         dnam_engine_set_tier(core::ptr::null_mut(), 1);
+        dnam_engine_set_max_supported_tier(core::ptr::null_mut(), 1);
+        dnam_engine_set_offline_bounce(core::ptr::null_mut(), true);
+        dnam_engine_set_maximize_tier_on_bounce(core::ptr::null_mut(), true);
+        assert_eq!(dnam_engine_get_latency_samples(core::ptr::null()), 0);
         assert_eq!(
             dnam_engine_set_sample_rate(core::ptr::null_mut(), 48_000),
             -1
@@ -49,6 +58,17 @@ fn test_c_abi_ffi_lifecycle_and_null_pointer_safety() {
             64,
         );
         dnam_engine_get_telemetry(core::ptr::null(), core::ptr::null_mut());
+
+        let capped_handle =
+            dnam_engine_create_with_max_tier(container.as_ptr(), container.len(), 3, 1, 48_000);
+        assert!(!capped_handle.is_null());
+        dnam_engine_set_max_supported_tier(capped_handle, 2);
+        dnam_engine_set_maximize_tier_on_bounce(capped_handle, true);
+        dnam_engine_set_offline_bounce(capped_handle, true);
+        assert_eq!(dnam_engine_get_latency_samples(capped_handle), 12);
+        dnam_engine_set_offline_bounce(capped_handle, false);
+        assert_eq!(dnam_engine_get_latency_samples(capped_handle), 0);
+        dnam_engine_destroy(capped_handle);
 
         let handle = dnam_engine_create_from_bytes(container.as_ptr(), container.len(), 2, 48_000);
         assert!(!handle.is_null());

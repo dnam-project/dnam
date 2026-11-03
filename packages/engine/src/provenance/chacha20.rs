@@ -79,7 +79,7 @@ pub const fn chacha20_block_64b(
 }
 
 /// Encrypts or decrypts a 64-byte aligned tensor arena prefix in-place using RFC 8439 `ChaCha20`
-/// (`Lite=168`, `Full=349`, `Ultra=566` blocks, `0` bytes padding overhead).
+/// (`Lite=168`, `Full=349`, `Pro=566`, `Ultra=1000` blocks, `0` bytes padding overhead).
 #[inline]
 pub fn chacha20_xor_arena_blocks(
     arena: &mut [u8],

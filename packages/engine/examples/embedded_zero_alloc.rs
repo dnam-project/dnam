@@ -18,8 +18,9 @@ use dnam_engine::container::{
 use dnam_engine::math::DefaultMathBackend;
 use dnam_engine::memory::{AlignedBuffer, AlignedFp16Block, CacheLine64};
 use dnam_engine::schema::{
-    ControlBusConfig, Core1Config, Core2Config, DatasetProvenance, DnamJsonHeader, IoConfig,
-    ModelMetadata, SlimmableTiersConfig, TierProfile,
+    ControlBusConfig, DatasetProvenance, DnamJsonHeader, IoConfig, ModelMetadata, RouterConfig,
+    SlimmableTiersConfig, Stage1PreFxConfig, Stage2CascadeConfig, Stage3CabinetKautzConfig,
+    Stage4SpatialTankConfig, TierProfile,
 };
 use dnam_engine::{DnamEngine, Tier};
 
@@ -27,7 +28,7 @@ fn build_demo_model(name: &str, seed: u8) -> AlignedBuffer<CacheLine64> {
     let mut header = DnamJsonHeader {
         version: "1.0.0".to_string(),
         container_kind: "dnam".to_string(),
-        architecture: "DNAM_TriPhysics".to_string(),
+        architecture: "DNAM_TORA".to_string(),
         sample_rate_train_hz: 48_000,
         metadata: ModelMetadata {
             name: name.to_string(),
@@ -44,9 +45,11 @@ fn build_demo_model(name: &str, seed: u8) -> AlignedBuffer<CacheLine64> {
         io_config: IoConfig::default(),
         slimmable_tiers: SlimmableTiersConfig {
             lite: TierProfile {
+                feature_bus_dim: 64,
                 channels: 4,
-                fdn_lines: 4,
-                early_taps: 4,
+                early_fir_taps: 16,
+                kautz_modes: 4,
+                tank_lines: 4,
                 head_svd_rank: 4,
                 loudness_lufs: -20.5,
                 output_trim_db: 0.0,
@@ -55,9 +58,11 @@ fn build_demo_model(name: &str, seed: u8) -> AlignedBuffer<CacheLine64> {
                 prefix_crc32c: 0,
             },
             full: TierProfile {
+                feature_bus_dim: 128,
                 channels: 8,
-                fdn_lines: 8,
-                early_taps: 8,
+                early_fir_taps: 32,
+                kautz_modes: 8,
+                tank_lines: 8,
                 head_svd_rank: 4,
                 loudness_lufs: -20.5,
                 output_trim_db: 0.0,
@@ -66,9 +71,11 @@ fn build_demo_model(name: &str, seed: u8) -> AlignedBuffer<CacheLine64> {
                 prefix_crc32c: 0,
             },
             pro: TierProfile {
+                feature_bus_dim: 192,
                 channels: 12,
-                fdn_lines: 8,
-                early_taps: 8,
+                early_fir_taps: 48,
+                kautz_modes: 16,
+                tank_lines: 8,
                 head_svd_rank: 4,
                 loudness_lufs: -20.5,
                 output_trim_db: 0.0,
@@ -77,9 +84,11 @@ fn build_demo_model(name: &str, seed: u8) -> AlignedBuffer<CacheLine64> {
                 prefix_crc32c: 0,
             },
             ultra: TierProfile {
+                feature_bus_dim: 256,
                 channels: 16,
-                fdn_lines: 16,
-                early_taps: 16,
+                early_fir_taps: 64,
+                kautz_modes: 32,
+                tank_lines: 16,
                 head_svd_rank: 8,
                 loudness_lufs: -20.5,
                 output_trim_db: 0.0,
@@ -91,12 +100,11 @@ fn build_demo_model(name: &str, seed: u8) -> AlignedBuffer<CacheLine64> {
         controls_schema: Vec::new(),
         presets: Vec::new(),
         control_bus: ControlBusConfig::default(),
-        core1_hybrid_ssm: Core1Config::default(),
-        core2_mufdn: Core2Config {
-            active: true,
-            ring_buffer_pow2_log2: 11,
-            ..Default::default()
-        },
+        stage0_router: RouterConfig::default(),
+        stage1_pre: Stage1PreFxConfig::default(),
+        stage2_cascade: Stage2CascadeConfig::default(),
+        stage3_cabinet: Stage3CabinetKautzConfig::default(),
+        stage4_tank: Stage4SpatialTankConfig::default(),
         tensor_directory: BTreeMap::new(),
         stems_registry: None,
         audit_report: None,
@@ -137,7 +145,7 @@ fn main() {
     }
 
     // Pattern 2: Pre-allocated max-capacity engine with zero-allocation in-place model hot-swap
-    let mut hot_swap_engine = DnamEngine::<DefaultMathBackend>::with_max_capacity(11);
+    let mut hot_swap_engine = DnamEngine::<DefaultMathBackend>::with_max_capacity();
     hot_swap_engine
         .reload_model_in_place(model_a.as_bytes(), Tier::Full, 48_000)
         .expect("hot-swap Model A");

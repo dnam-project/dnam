@@ -5,6 +5,7 @@
 use alloc::string::ToString;
 use alloc::vec::Vec;
 
+use crate::control::ControlChannelRecord;
 use crate::memory::{AlignedBuffer, ArenaStorage, CacheLine64};
 use crate::provenance::{
     CryptoProvider, DNSL_MAGIC, VerificationStatus, chacha20_xor_arena_blocks, decode_hex_array,
@@ -15,13 +16,8 @@ use crate::types::Tier;
 
 use super::preamble::DnamPreamble;
 use super::{
-    ARENA_FULL_END_CL, ARENA_LITE_END_CL, ARENA_OFFSET_FULL_END, ARENA_OFFSET_LITE_END,
-    ARENA_OFFSET_PRO_END, ARENA_OFFSET_ULTRA_END, ARENA_PRO_END_CL, ARENA_ULTRA_END_CL,
-    ARENA3_STEM_BYTES_PRO, ARENA3_STEM_BYTES_ULTRA, DNAM_MAGIC, DNCK_MAGIC, FLAG_CORE2_ACTIVE,
-    FLAG_DEFAULT_ANCHORED, FLAG_ENCRYPTED_ARENA, FLAG_EXEC_ORDER_SOA, FLAG_HAS_CALIB_STATS,
-    FLAG_HAS_CKPT_STEMS, FLAG_HAS_FULL_DELTA, FLAG_HAS_LITE, FLAG_HAS_PRO_DELTA,
-    FLAG_HAS_SIGNATURES, FLAG_HAS_ULTRA_DELTA, FLAG_LFO_ENV_ACTIVE, FLAG_STEREO_OUT, crc32c_update,
-    verify_ckpt_arena4_calib_stats,
+    ARENA4_STEM_BYTES_PRO, ARENA4_STEM_BYTES_ULTRA, DNAM_MAGIC, DNCK_MAGIC, FLAG_HAS_FULL_DELTA,
+    FLAG_HAS_PRO_DELTA, FLAG_HAS_ULTRA_DELTA, crc32c_update, verify_ckpt_arena5_calib_stats,
 };
 
 /// Computes `header_crc32c` over `container_bytes[0..tensor_arena_offset]` with
@@ -43,6 +39,8 @@ pub struct DnamContainerView<'a> {
     pub verification_status: VerificationStatus,
     /// Resolved container protection profile (`Open`, `DeviceAllowlisted`, or `EnclaveSealed`).
     pub protection_profile: DnamProtectionProfile,
+    /// Unified 128-byte `ControlChannelRecord[0..P]` table parsed from Region 2B (`control_table_offset..tensor_arena_offset`).
+    pub control_records: Vec<ControlChannelRecord>,
     /// 64-byte aligned tensor arena storage (`Borrowed` on aligned `mmap`, or `Owned` if decrypted/copied).
     pub arena_storage: ArenaStorage<'a>,
 }
@@ -75,6 +73,7 @@ impl<'a> DnamContainerView<'a> {
                 header: owned_view.header,
                 verification_status: owned_view.verification_status,
                 protection_profile: owned_view.protection_profile,
+                control_records: owned_view.control_records,
                 arena_storage: ArenaStorage::from_slice_owned(owned_view.arena_storage.as_bytes()),
             });
         }
@@ -126,6 +125,22 @@ impl<'a> DnamContainerView<'a> {
         let schema_ver = header.schema_version()?;
         schema_ver.ensure_matches_preamble(preamble.version_major, preamble.version_minor)?;
 
+        let p_ctrls = header.controls_schema.len();
+        if arena_off < 64 + json_len + 128 * p_ctrls {
+            return Err(DnamError::BufferTooSmall {
+                expected: 64 + json_len + 128 * p_ctrls,
+                actual: arena_off,
+            });
+        }
+        let control_table_off = arena_off - 128 * p_ctrls;
+        let mut control_records = Vec::with_capacity(p_ctrls);
+        for p in 0..p_ctrls {
+            let rec_off = control_table_off + p * 128;
+            let mut rec_bytes = [0u8; 128];
+            rec_bytes.copy_from_slice(&bytes[rec_off..rec_off + 128]);
+            control_records.push(ControlChannelRecord::from_bytes(&rec_bytes));
+        }
+
         // If capped by max_supported_tier on a runtime .dnam, mask out higher tier flags in the view preamble
         if preamble.magic == DNAM_MAGIC && effective_max_tier < preamble.highest_tier() {
             if effective_max_tier < Tier::Ultra {
@@ -138,9 +153,6 @@ impl<'a> DnamContainerView<'a> {
                 preamble.flags &= !FLAG_HAS_FULL_DELTA;
             }
             preamble.tensor_arena_byte_len = arena_len as u32;
-            preamble.head_svd_rank = preamble
-                .head_svd_rank
-                .min(effective_max_tier.svd_control_modes() as u8);
         }
 
         // 3. Prepare or decrypt Arena prefix up to arena_len
@@ -236,14 +248,14 @@ impl<'a> DnamContainerView<'a> {
                 .unwrap_or_else(|| {
                     let num_stems = preamble.num_ckpt_stems as usize;
                     let stride =
-                        if plain_bytes.len() >= weights_end + num_stems * ARENA3_STEM_BYTES_ULTRA {
-                            ARENA3_STEM_BYTES_ULTRA
+                        if plain_bytes.len() >= weights_end + num_stems * ARENA4_STEM_BYTES_ULTRA {
+                            ARENA4_STEM_BYTES_ULTRA
                         } else {
-                            ARENA3_STEM_BYTES_PRO
+                            ARENA4_STEM_BYTES_PRO
                         };
                     weights_end + num_stems * stride
                 });
-            verify_ckpt_arena4_calib_stats(plain_bytes, stems_end)?;
+            verify_ckpt_arena5_calib_stats(plain_bytes, stems_end)?;
         }
 
         // 5. Verify split-payload Ed25519 provenance over the loaded model weight arena prefix
@@ -262,6 +274,7 @@ impl<'a> DnamContainerView<'a> {
             header,
             verification_status,
             protection_profile,
+            control_records,
             arena_storage,
         })
     }
@@ -328,309 +341,44 @@ impl<'a> DnamContainerView<'a> {
         }
         Ok(())
     }
+
+    /// Returns the byte offset of the 128-byte `ControlChannelRecord[0..P]` table.
+    /// Canonical Reference: `docs/dsp/parametric_control_bus.md` §5:
+    /// `control_table_offset = tensor_arena_offset - 128 * P`.
+    #[inline]
+    pub fn control_table_offset(&self) -> usize {
+        let p = self.header.controls_schema.len();
+        (self.preamble.tensor_arena_offset as usize).saturating_sub(128 * p)
+    }
 }
 
-/// Builds a complete 4 KB page-aligned `.dnam` or `.dnam-ckpt` container byte vector from a
-/// [`DnamJsonHeader`] and plaintext (or encrypted) tensor arena (`Arena 0..3` or `Arena 0..5`).
-pub fn build_dnam_container(
-    header: &mut DnamJsonHeader,
-    plaintext_arena_crc_source: &[u8],
-    stored_arena_bytes: &[u8],
-    encrypted_arena: bool,
-) -> Result<Vec<u8>, DnamError> {
-    if stored_arena_bytes.len() < ARENA_OFFSET_LITE_END as usize
-        || (stored_arena_bytes.len() & 0x3F) != 0
-    {
-        return Err(DnamError::UnalignedOffset {
-            field: "stored_arena_bytes.len",
-            offset: stored_arena_bytes.len() as u32,
-        });
-    }
-
-    let is_ckpt = header.container_kind == "dnam-ckpt";
-    let magic = if is_ckpt { DNCK_MAGIC } else { DNAM_MAGIC };
-    let num_ckpt_stems = header.stems_registry.as_ref().map_or(0, |s| s.len() as u16);
-
-    if !is_ckpt && stored_arena_bytes.len() > ARENA_OFFSET_ULTRA_END as usize {
-        return Err(DnamError::SchemaValidationError(
-            "runtime .dnam arena cannot exceed ARENA_OFFSET_ULTRA_END (64,000 B)".to_string(),
-        ));
-    }
-
-    let first_stem_off = if is_ckpt {
-        header.stems_registry.as_ref().and_then(|stems| {
-            stems
-                .iter()
-                .map(|s| s.g_audio_uplo_u_f64.byte_offset as usize)
-                .min()
-                .filter(|&off| off >= ARENA_OFFSET_LITE_END as usize)
-        })
-    } else {
-        None
-    };
-    let weights_capacity = first_stem_off.map_or(stored_arena_bytes.len(), |off| {
-        stored_arena_bytes.len().min(off)
-    });
-    let weights_end = if weights_capacity >= ARENA_OFFSET_ULTRA_END as usize {
-        ARENA_OFFSET_ULTRA_END as usize
-    } else if weights_capacity >= ARENA_OFFSET_PRO_END as usize {
-        ARENA_OFFSET_PRO_END as usize
-    } else if weights_capacity >= ARENA_OFFSET_FULL_END as usize {
-        ARENA_OFFSET_FULL_END as usize
-    } else {
-        ARENA_OFFSET_LITE_END as usize
-    };
-
-    let crc_src_len = plaintext_arena_crc_source.len().min(weights_end);
-    let lite_end = ARENA_OFFSET_LITE_END as usize;
-    let full_end = (ARENA_OFFSET_FULL_END as usize).min(crc_src_len);
-    let pro_end = (ARENA_OFFSET_PRO_END as usize).min(crc_src_len);
-    let ultra_end = (ARENA_OFFSET_ULTRA_END as usize).min(crc_src_len);
-
-    let crc_lite = crc32c_update(0, &plaintext_arena_crc_source[..lite_end]);
-    let crc_full = if full_end >= ARENA_OFFSET_FULL_END as usize {
-        crc32c_update(crc_lite, &plaintext_arena_crc_source[lite_end..full_end])
-    } else {
-        crc_lite
-    };
-    let crc_pro = if pro_end >= ARENA_OFFSET_PRO_END as usize {
-        crc32c_update(crc_full, &plaintext_arena_crc_source[full_end..pro_end])
-    } else {
-        crc_full
-    };
-    let crc_ultra = if ultra_end >= ARENA_OFFSET_ULTRA_END as usize {
-        crc32c_update(crc_pro, &plaintext_arena_crc_source[pro_end..ultra_end])
-    } else {
-        crc_pro
-    };
-
-    header.slimmable_tiers.lite.prefix_crc32c = crc_lite;
-    header.slimmable_tiers.full.prefix_crc32c = crc_full;
-    header.slimmable_tiers.pro.prefix_crc32c = crc_pro;
-    header.slimmable_tiers.ultra.prefix_crc32c = crc_ultra;
-
-    let stems_end = header
-        .stems_registry
-        .as_ref()
-        .and_then(|stems| {
-            stems
-                .iter()
-                .map(|s| (s.c_audio_tier_f64.byte_offset + s.c_audio_tier_f64.byte_length) as usize)
-                .max()
-                .filter(|&end| end >= weights_end)
-        })
-        .unwrap_or_else(|| {
-            let n_stems = num_ckpt_stems as usize;
-            let stride =
-                if stored_arena_bytes.len() >= weights_end + n_stems * ARENA3_STEM_BYTES_ULTRA {
-                    ARENA3_STEM_BYTES_ULTRA
-                } else {
-                    ARENA3_STEM_BYTES_PRO
-                };
-            weights_end + n_stems * stride
-        });
-    let has_calib_stats = is_ckpt && stored_arena_bytes.len() > stems_end;
-    if has_calib_stats {
-        verify_ckpt_arena4_calib_stats(stored_arena_bytes, stems_end)?;
-        if header.metadata.signatures.is_none() && header.schema_version()?.minor < 1 {
-            header.version = crate::schema::SchemaVersion::V1_1_0.as_semver_string();
-        }
-    }
-
-    let json_bytes =
-        serde_json::to_vec(header).map_err(|e| DnamError::InvalidJsonHeader(e.to_string()))?;
-    let min_header_region = 64 + json_bytes.len();
-    let tensor_arena_offset = min_header_region.div_ceil(4096).max(1) * 4096;
-
-    let mut flags = FLAG_HAS_LITE | FLAG_EXEC_ORDER_SOA | FLAG_DEFAULT_ANCHORED;
-    if weights_end >= ARENA_OFFSET_FULL_END as usize {
-        flags |= FLAG_HAS_FULL_DELTA;
-    }
-    if weights_end >= ARENA_OFFSET_PRO_END as usize {
-        flags |= FLAG_HAS_PRO_DELTA;
-    }
-    if weights_end >= ARENA_OFFSET_ULTRA_END as usize {
-        flags |= FLAG_HAS_ULTRA_DELTA;
-    }
-    if is_ckpt
-        && header
-            .stems_registry
-            .as_ref()
-            .is_some_and(|s| !s.is_empty())
-    {
-        flags |= FLAG_HAS_CKPT_STEMS;
-    }
-    if header.core2_mufdn.active {
-        flags |= FLAG_CORE2_ACTIVE;
-    }
-    if header.control_bus.envelopes > 0 || header.control_bus.lfo_oscillators > 0 {
-        flags |= FLAG_LFO_ENV_ACTIVE;
-    }
-    if header.io_config.output_mode != "mono" {
-        flags |= FLAG_STEREO_OUT;
-    }
-    if header.metadata.signatures.is_some() {
-        flags |= FLAG_HAS_SIGNATURES;
-    }
-    if encrypted_arena {
-        flags |= FLAG_ENCRYPTED_ARENA;
-    }
-    if has_calib_stats {
-        flags |= FLAG_HAS_CALIB_STATS;
-    }
-
-    let schema_ver = header.schema_version()?;
-    let head_svd_rank = if weights_end >= ARENA_OFFSET_ULTRA_END as usize {
-        header.slimmable_tiers.ultra.head_svd_rank
-    } else if weights_end >= ARENA_OFFSET_PRO_END as usize {
-        header.slimmable_tiers.pro.head_svd_rank
-    } else if weights_end >= ARENA_OFFSET_FULL_END as usize {
-        header.slimmable_tiers.full.head_svd_rank
-    } else {
-        header.slimmable_tiers.lite.head_svd_rank
-    };
-
-    let mut preamble = DnamPreamble {
-        magic,
-        version_major: schema_ver.major,
-        version_minor: schema_ver.minor,
-        flags,
-        num_controls: header.controls_schema.len() as u8,
-        ring_buffer_pow2_log2: if header.core2_mufdn.active {
-            header.core2_mufdn.ring_buffer_pow2_log2
-        } else {
-            0
-        },
-        sample_rate_train_hz: header.sample_rate_train_hz,
-        json_header_byte_len: json_bytes.len() as u32,
-        tensor_arena_offset: tensor_arena_offset as u32,
-        tensor_arena_byte_len: stored_arena_bytes.len() as u32,
-        arena_lite_end_cl: ARENA_LITE_END_CL,
-        arena_full_end_cl: ARENA_FULL_END_CL,
-        arena_pro_end_cl: ARENA_PRO_END_CL,
-        arena_ultra_end_cl: ARENA_ULTRA_END_CL,
-        arena_crc32c_lite: crc_lite,
-        arena_crc32c_full: crc_full,
-        arena_crc32c_pro: crc_pro,
-        arena_crc32c_ultra: crc_ultra,
-        num_ckpt_stems,
-        control_decimation: header.control_bus.decimation as u8,
-        head_svd_rank,
-        tail_time_ms: header.io_config.tail_time_ms,
-        header_crc32c: 0,
-    };
-
-    let total_len = tensor_arena_offset + stored_arena_bytes.len();
-    let mut out = alloc::vec![0x20_u8; total_len];
-    out[0..64].copy_from_slice(&preamble.to_bytes());
-    out[64..64 + json_bytes.len()].copy_from_slice(&json_bytes);
-    out[tensor_arena_offset..].copy_from_slice(stored_arena_bytes);
-
-    preamble.header_crc32c = compute_header_crc32c(&out, tensor_arena_offset);
-    out[60..64].copy_from_slice(&preamble.header_crc32c.to_le_bytes());
-    Ok(out)
-}
-
-/// Strips a `.dnam` container down to `max_tier` (`Lite = 10,752 B`, `Full = 22,336 B`,
-/// `Pro = 36,224 B`, or `Ultra = 64,000 B`) **without modifying the UTF-8 JSON header**,
-/// preserving `immutable_header_sha256`, `creator_signature`, and `marketplace_receipt`
-/// with zero re-signing required.
-pub fn strip_container_to_tier(
-    container_bytes: &[u8],
-    max_tier: Tier,
-) -> Result<Vec<u8>, DnamError> {
-    let mut preamble = DnamPreamble::from_bytes(container_bytes)?;
-    if preamble.magic != DNAM_MAGIC {
-        return Err(DnamError::SchemaValidationError(
-            "strip_container_to_tier only applies to runtime .dnam containers".to_string(),
-        ));
-    }
-    let arena_off = preamble.tensor_arena_offset as usize;
-    let arena_len = preamble.tensor_arena_byte_len as usize;
-    if container_bytes.len() < arena_off + arena_len {
-        return Err(DnamError::BufferTooSmall {
-            expected: arena_off + arena_len,
-            actual: container_bytes.len(),
-        });
-    }
-    let effective_tier = preamble.highest_tier().min(max_tier);
-    let target_arena_len = preamble.arena_end_for_tier(effective_tier).min(arena_len);
-
-    if effective_tier < Tier::Ultra {
-        preamble.flags &= !FLAG_HAS_ULTRA_DELTA;
-    }
-    if effective_tier < Tier::Pro {
-        preamble.flags &= !FLAG_HAS_PRO_DELTA;
-    }
-    if effective_tier < Tier::Full {
-        preamble.flags &= !FLAG_HAS_FULL_DELTA;
-    }
-    preamble.tensor_arena_byte_len = target_arena_len as u32;
-    preamble.head_svd_rank = preamble
-        .head_svd_rank
-        .min(effective_tier.svd_control_modes() as u8);
-
-    let mut stripped = container_bytes[..arena_off + target_arena_len].to_vec();
-    stripped[0..64].copy_from_slice(&preamble.to_bytes());
-    let new_crc = compute_header_crc32c(&stripped, arena_off);
-    stripped[60..64].copy_from_slice(&new_crc.to_le_bytes());
-    Ok(stripped)
-}
-
-/// Updates the JSON header (`presets`, `user_metadata`, or `authorized_devices`) **100% in-place**
-/// inside the pre-allocated 4 KB header region (`0x40..tensor_arena_offset`).
-pub fn update_header_in_place(
-    container_bytes: &mut [u8],
-    updated_header: &DnamJsonHeader,
-) -> Result<(), DnamError> {
-    let mut preamble = DnamPreamble::from_bytes(container_bytes)?;
-    let arena_off = preamble.tensor_arena_offset as usize;
-    if container_bytes.len() < arena_off {
-        return Err(DnamError::BufferTooSmall {
-            expected: arena_off,
-            actual: container_bytes.len(),
-        });
-    }
-    let capacity = arena_off.saturating_sub(64);
-    let json_bytes = serde_json::to_vec(updated_header)
-        .map_err(|e| DnamError::InvalidJsonHeader(e.to_string()))?;
-    if json_bytes.len() > capacity {
-        return Err(DnamError::HeaderCapacityExceeded {
-            required: json_bytes.len(),
-            capacity,
-        });
-    }
-
-    container_bytes[64..64 + json_bytes.len()].copy_from_slice(&json_bytes);
-    container_bytes[64 + json_bytes.len()..arena_off].fill(0x20);
-
-    preamble.json_header_byte_len = json_bytes.len() as u32;
-    if updated_header.metadata.signatures.is_some() {
-        preamble.flags |= FLAG_HAS_SIGNATURES;
-    }
-    container_bytes[0..64].copy_from_slice(&preamble.to_bytes());
-    let new_crc = compute_header_crc32c(container_bytes, arena_off);
-    container_bytes[60..64].copy_from_slice(&new_crc.to_le_bytes());
-    Ok(())
-}
+pub use super::builder::{build_dnam_container, update_header_in_place};
+pub use super::strip::strip_container_to_tier;
 
 #[cfg(test)]
 mod tests {
+    use super::super::{
+        ARENA_OFFSET_FULL_END, ARENA_OFFSET_LITE_END, ARENA_OFFSET_PRO_END, ARENA_OFFSET_ULTRA_END,
+    };
     use super::*;
     use crate::provenance::DefaultCryptoProvider;
     use crate::schema::{
-        ControlBusConfig, Core1Config, Core2Config, DatasetProvenance, ExtractedPhysics, IoConfig,
-        ModelMetadata, SlimmableTiersConfig, StemProvenance, StemRegistryEntry, TensorSliceEntry,
-        TierProfile,
+        ControlBusConfig, DatasetProvenance, ExtractedPhysics, IoConfig, ModelMetadata,
+        RouterConfig, SlimmableTiersConfig, Stage1PreFxConfig, Stage2CascadeConfig,
+        Stage3CabinetKautzConfig, Stage4SpatialTankConfig, StemProvenance, StemRegistryEntry,
+        TensorSliceEntry, TierProfile,
     };
     use alloc::collections::BTreeMap;
+    use alloc::vec::Vec;
     use alloc::{format, vec};
 
     fn make_base_header(name: &str) -> DnamJsonHeader {
-        let mk_tier = |ch: u8, fdn: u8, rank: u8, end_off: u32| TierProfile {
+        let mk_tier = |ch: u8, tank: u8, rank: u8, end_off: u32| TierProfile {
+            feature_bus_dim: (ch as u16) * 16,
             channels: ch,
-            fdn_lines: fdn,
-            early_taps: fdn,
+            early_fir_taps: tank * 4,
+            kautz_modes: tank,
+            tank_lines: tank,
             head_svd_rank: rank,
             loudness_lufs: -20.5,
             output_trim_db: 0.0,
@@ -641,7 +389,7 @@ mod tests {
         DnamJsonHeader {
             version: "1.0.0".to_string(),
             container_kind: "dnam".to_string(),
-            architecture: "DNAM_TriPhysics".to_string(),
+            architecture: "DNAM_TORA".to_string(),
             sample_rate_train_hz: 48_000,
             metadata: ModelMetadata {
                 name: name.to_string(),
@@ -665,8 +413,11 @@ mod tests {
             controls_schema: Vec::new(),
             presets: Vec::new(),
             control_bus: ControlBusConfig::default(),
-            core1_hybrid_ssm: Core1Config::default(),
-            core2_mufdn: Core2Config::default(),
+            stage0_router: RouterConfig::default(),
+            stage1_pre: Stage1PreFxConfig::default(),
+            stage2_cascade: Stage2CascadeConfig::default(),
+            stage3_cabinet: Stage3CabinetKautzConfig::default(),
+            stage4_tank: Stage4SpatialTankConfig::default(),
             tensor_directory: BTreeMap::new(),
             stems_registry: None,
             audit_report: None,
@@ -753,7 +504,7 @@ mod tests {
                 target_pcm_sha256: "11".repeat(32),
                 num_frames: 48_000,
             },
-            stem_arena3_crc32c: super::super::crc32c_compute(&[0u8; 64]),
+            stem_arena4_crc32c: super::super::crc32c_compute(&[0u8; 64]),
             user_metadata: BTreeMap::new(),
             extracted_physics: Some(ExtractedPhysics {
                 delays_ms: vec![10.0],
@@ -777,5 +528,69 @@ mod tests {
                 .insert(format!("key_{i}"), serde_json::json!("x".repeat(50)));
         }
         assert!(update_header_in_place(&mut ultra_bytes, &huge_hdr).is_err());
+
+        // Test stripping to Full and Lite
+        let stripped_full = strip_container_to_tier(&ultra_bytes, Tier::Full).unwrap();
+        let full_v = DnamContainerView::from_bytes(&stripped_full, &crypto).unwrap();
+        assert_eq!(full_v.preamble.highest_tier(), Tier::Full);
+
+        let stripped_lite = strip_container_to_tier(&ultra_bytes, Tier::Lite).unwrap();
+        let lite_v = DnamContainerView::from_bytes(&stripped_lite, &crypto).unwrap();
+        assert_eq!(lite_v.preamble.highest_tier(), Tier::Lite);
+
+        // Test capped view at Full and Lite
+        let capped_full =
+            DnamContainerView::from_bytes_with_max_tier(&ultra_bytes, &crypto, Tier::Full).unwrap();
+        assert_eq!(capped_full.preamble.highest_tier(), Tier::Full);
+        let capped_lite =
+            DnamContainerView::from_bytes_with_max_tier(&ultra_bytes, &crypto, Tier::Lite).unwrap();
+        assert_eq!(capped_lite.preamble.highest_tier(), Tier::Lite);
+
+        // Test valid in-place header update
+        let mut mod_hdr = make_base_header("Modified");
+        mod_hdr.metadata.name = "NewName".to_string();
+        update_header_in_place(&mut ultra_bytes, &mod_hdr).unwrap();
+        let updated_v = DnamContainerView::from_bytes(&ultra_bytes, &crypto).unwrap();
+        assert_eq!(updated_v.header.metadata.name, "NewName");
+
+        // Test forbidden calib stats on DNAM_MAGIC
+        let flags_val = u16::from_le_bytes([ultra_bytes[8], ultra_bytes[9]])
+            | super::super::FLAG_HAS_CALIB_STATS;
+        ultra_bytes[8..10].copy_from_slice(&flags_val.to_le_bytes());
+        // recompute header crc
+        let pr = DnamPreamble::from_bytes(&ultra_bytes).unwrap();
+        let off = pr.tensor_arena_offset as usize;
+        let c = compute_header_crc32c(&ultra_bytes, off);
+        ultra_bytes[60..64].copy_from_slice(&c.to_le_bytes());
+        assert!(DnamContainerView::from_bytes(&ultra_bytes, &crypto).is_err());
+
+        // Error branch tests:
+        // 1. Buffer too small for tensor arena
+        let truncated_len = ultra_bytes.len() - 100;
+        assert!(DnamContainerView::from_bytes(&ultra_bytes[..truncated_len], &crypto).is_err());
+
+        // 2. Header CRC mismatch
+        let mut bad_crc = ultra_bytes.clone();
+        bad_crc[60] ^= 0x55;
+        assert!(DnamContainerView::from_bytes(&bad_crc, &crypto).is_err());
+
+        // 3. Invalid JSON header
+        let mut bad_json = ultra_bytes.clone();
+        bad_json[64..72].copy_from_slice(b"invalid_");
+        let c_bad_json = compute_header_crc32c(&bad_json, off);
+        bad_json[60..64].copy_from_slice(&c_bad_json.to_le_bytes());
+        assert!(DnamContainerView::from_bytes(&bad_json, &crypto).is_err());
+
+        // 4. Schema version mismatch
+        let mut ver_mismatch = ultra_bytes.clone();
+        ver_mismatch[4] = 99; // corrupt version_major
+        let c_ver = compute_header_crc32c(&ver_mismatch, off);
+        ver_mismatch[60..64].copy_from_slice(&c_ver.to_le_bytes());
+        assert!(DnamContainerView::from_bytes(&ver_mismatch, &crypto).is_err());
+
+        // 5. DNSL sealed magic with corrupt container
+        let mut corrupt_dnsl = [0u8; 128];
+        corrupt_dnsl[0..4].copy_from_slice(&DNSL_MAGIC);
+        assert!(DnamContainerView::from_bytes(&corrupt_dnsl, &crypto).is_err());
     }
 }

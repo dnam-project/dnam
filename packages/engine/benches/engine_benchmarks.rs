@@ -17,16 +17,17 @@ use dnam_engine::math::{DefaultMathBackend, MathBackend, ScalarBackend};
 use dnam_engine::memory::{AlignedBuffer, CacheLine64};
 use dnam_engine::provenance::{DefaultCryptoProvider, extract_structural_hash_224d};
 use dnam_engine::schema::{
-    ControlBusConfig, ControlKind, ControlSchemaDef, ControlUiHints, Core1Config, Core2Config,
-    DatasetProvenance, DnamJsonHeader, IoConfig, ModelMetadata, SlimmableTiersConfig, TierProfile,
+    ControlBusConfig, ControlKind, ControlSchemaDef, ControlUiHints, DatasetProvenance,
+    DnamJsonHeader, IoConfig, ModelMetadata, RouterConfig, SlimmableTiersConfig, Stage1PreFxConfig,
+    Stage2CascadeConfig, Stage3CabinetKautzConfig, Stage4SpatialTankConfig, TierProfile,
 };
-use dnam_engine::{DnamEngine, Tier};
+use dnam_engine::{DnamEngine, FtzDazGuard, Tier};
 
-fn make_bench_container(core2_active: bool) -> AlignedBuffer<CacheLine64> {
+fn make_bench_container() -> AlignedBuffer<CacheLine64> {
     let mut header = DnamJsonHeader {
         version: "1.0.0".to_string(),
         container_kind: "dnam".to_string(),
-        architecture: "DNAM_TriPhysics".to_string(),
+        architecture: "DNAM_TORA".to_string(),
         sample_rate_train_hz: 48_000,
         metadata: ModelMetadata {
             name: "Criterion Benchmark Model".to_string(),
@@ -43,9 +44,11 @@ fn make_bench_container(core2_active: bool) -> AlignedBuffer<CacheLine64> {
         io_config: IoConfig::default(),
         slimmable_tiers: SlimmableTiersConfig {
             lite: TierProfile {
+                feature_bus_dim: 64,
                 channels: 4,
-                fdn_lines: if core2_active { 4 } else { 0 },
-                early_taps: 4,
+                early_fir_taps: 16,
+                kautz_modes: 4,
+                tank_lines: 4,
                 head_svd_rank: 4,
                 loudness_lufs: -20.5,
                 output_trim_db: 0.0,
@@ -54,9 +57,11 @@ fn make_bench_container(core2_active: bool) -> AlignedBuffer<CacheLine64> {
                 prefix_crc32c: 0,
             },
             full: TierProfile {
+                feature_bus_dim: 128,
                 channels: 8,
-                fdn_lines: if core2_active { 8 } else { 0 },
-                early_taps: 8,
+                early_fir_taps: 32,
+                kautz_modes: 8,
+                tank_lines: 8,
                 head_svd_rank: 4,
                 loudness_lufs: -20.5,
                 output_trim_db: 0.0,
@@ -65,9 +70,11 @@ fn make_bench_container(core2_active: bool) -> AlignedBuffer<CacheLine64> {
                 prefix_crc32c: 0,
             },
             pro: TierProfile {
+                feature_bus_dim: 192,
                 channels: 12,
-                fdn_lines: if core2_active { 8 } else { 0 },
-                early_taps: 8,
+                early_fir_taps: 48,
+                kautz_modes: 16,
+                tank_lines: 8,
                 head_svd_rank: 4,
                 loudness_lufs: -20.5,
                 output_trim_db: 0.0,
@@ -76,9 +83,11 @@ fn make_bench_container(core2_active: bool) -> AlignedBuffer<CacheLine64> {
                 prefix_crc32c: 0,
             },
             ultra: TierProfile {
+                feature_bus_dim: 256,
                 channels: 16,
-                fdn_lines: if core2_active { 16 } else { 0 },
-                early_taps: 16,
+                early_fir_taps: 64,
+                kautz_modes: 32,
+                tank_lines: 16,
                 head_svd_rank: 8,
                 loudness_lufs: -20.5,
                 output_trim_db: 0.0,
@@ -108,12 +117,11 @@ fn make_bench_container(core2_active: bool) -> AlignedBuffer<CacheLine64> {
         }],
         presets: Vec::new(),
         control_bus: ControlBusConfig::default(),
-        core1_hybrid_ssm: Core1Config::default(),
-        core2_mufdn: Core2Config {
-            active: core2_active,
-            ring_buffer_pow2_log2: if core2_active { 11 } else { 0 },
-            ..Default::default()
-        },
+        stage0_router: RouterConfig::default(),
+        stage1_pre: Stage1PreFxConfig::default(),
+        stage2_cascade: Stage2CascadeConfig::default(),
+        stage3_cabinet: Stage3CabinetKautzConfig::default(),
+        stage4_tank: Stage4SpatialTankConfig::default(),
         tensor_directory: BTreeMap::new(),
         stems_registry: None,
         audit_report: None,
@@ -130,7 +138,7 @@ fn make_bench_container(core2_active: bool) -> AlignedBuffer<CacheLine64> {
 }
 
 fn bench_container_and_zoh(c: &mut Criterion) {
-    let container = make_bench_container(true);
+    let container = make_bench_container();
     let crypto = DefaultCryptoProvider::default();
     let mut group = c.benchmark_group("container_and_zoh");
     group.throughput(Throughput::Bytes(container.as_bytes().len() as u64));
@@ -148,7 +156,6 @@ fn bench_container_and_zoh(c: &mut Criterion) {
             let rescaled = ZohRescaledParams::compute(
                 black_box(48_000),
                 black_box(96_000),
-                16,
                 0.9993,
                 0.995,
                 64.0,
@@ -159,7 +166,7 @@ fn bench_container_and_zoh(c: &mut Criterion) {
         });
     });
 
-    let mut engine = DnamEngine::<DefaultMathBackend>::with_max_capacity(11);
+    let mut engine = DnamEngine::<DefaultMathBackend>::with_max_capacity();
     group.bench_function("hot_swap_reload_in_place", |b| {
         b.iter(|| {
             engine
@@ -197,29 +204,21 @@ fn bench_tier_profile<B: MathBackend>(
 }
 
 fn bench_process_block_tiers_and_backends(c: &mut Criterion) {
-    let container_full = make_bench_container(true);
-    let container_core1 = make_bench_container(false);
+    let container_full = make_bench_container();
 
     let mut group = c.benchmark_group("process_block_128");
     group.throughput(Throughput::Elements(128));
 
     for (profile_name, bytes, tier) in [
-        ("lite_core1_only", container_core1.as_bytes(), Tier::Lite),
-        ("lite_core1_core2", container_full.as_bytes(), Tier::Lite),
-        ("full_core1_only", container_core1.as_bytes(), Tier::Full),
-        ("full_core1_core2", container_full.as_bytes(), Tier::Full),
-        ("ultra_core1_only", container_core1.as_bytes(), Tier::Ultra),
-        ("ultra_core1_core2", container_full.as_bytes(), Tier::Ultra),
+        ("lite", container_full.as_bytes(), Tier::Lite),
+        ("full", container_full.as_bytes(), Tier::Full),
+        ("pro", container_full.as_bytes(), Tier::Pro),
+        ("ultra", container_full.as_bytes(), Tier::Ultra),
     ] {
         bench_tier_profile::<DefaultMathBackend>(&mut group, bytes, tier, profile_name);
     }
 
-    bench_tier_profile::<ScalarBackend>(
-        &mut group,
-        container_full.as_bytes(),
-        Tier::Full,
-        "full_core1_core2",
-    );
+    bench_tier_profile::<ScalarBackend>(&mut group, container_full.as_bytes(), Tier::Full, "full");
 
     #[cfg(target_arch = "aarch64")]
     {
@@ -228,7 +227,7 @@ fn bench_process_block_tiers_and_backends(c: &mut Criterion) {
             &mut group,
             container_full.as_bytes(),
             Tier::Full,
-            "full_core1_core2",
+            "full",
         );
     }
 
@@ -236,7 +235,7 @@ fn bench_process_block_tiers_and_backends(c: &mut Criterion) {
 }
 
 fn bench_io_topologies_and_buffer_sizes(c: &mut Criterion) {
-    let container = make_bench_container(true);
+    let container = make_bench_container();
 
     let mut topo_group = c.benchmark_group("io_topologies_full_128");
     topo_group.throughput(Throughput::Elements(128));
@@ -302,7 +301,7 @@ fn bench_io_topologies_and_buffer_sizes(c: &mut Criterion) {
 }
 
 fn bench_isolated_subsystems(c: &mut Criterion) {
-    let container = make_bench_container(true);
+    let container = make_bench_container();
     let mut engine =
         DnamEngine::<DefaultMathBackend>::from_bytes(container.as_bytes(), Tier::Full, 48_000)
             .unwrap();
@@ -312,43 +311,28 @@ fn bench_isolated_subsystems(c: &mut Criterion) {
 
     let mut sub_group = c.benchmark_group("isolated_subsystems");
 
-    sub_group.bench_function("core1_sample_full", |b| {
-        b.iter(|| {
-            black_box(engine.core1.process_sample(
-                black_box(0.15),
-                black_box(-0.15),
-                arena,
-                2,
-                false,
-            ))
-        });
+    sub_group.bench_function("tora_step_frame_full", |b| {
+        let _audio = FtzDazGuard::new();
+        b.iter(|| black_box(engine.step_frame_tora(black_box(0.15), black_box(-0.15), false)));
     });
 
-    let core1_tap = [[0.1_f32; 4]; 4];
-    let delay_mod = [0.5_f32; 8];
-    sub_group.bench_function("core2_sample_full_8lines", |b| {
+    sub_group.bench_function("stage4_spatial_tank_stereo", |b| {
+        let _audio = FtzDazGuard::new();
         b.iter(|| {
-            black_box(engine.core2.process_sample(
-                black_box(0.15),
-                black_box(-0.15),
-                black_box(&core1_tap),
-                black_box(&delay_mod),
-                2,
-            ))
+            black_box(
+                engine
+                    .stage_pipeline
+                    .stage4
+                    .step_stereo(black_box(0.15), black_box(-0.15)),
+            )
         });
     });
 
     sub_group.bench_function("control_bus_tick_3khz", |b| {
+        let _audio = FtzDazGuard::new();
         b.iter(|| {
             engine.control_bus.set_control_value(0, black_box(0.75));
-            let changed = engine
-                .control_bus
-                .tick_3khz(black_box(0.1), black_box(true), arena);
-            if changed {
-                engine
-                    .core1
-                    .collapse_stereo_head_3khz(arena, &engine.control_bus.z_head, 2);
-            }
+            let changed = engine.control_bus.tick_3khz(black_box(0.1), arena);
             black_box(changed)
         });
     });
@@ -361,7 +345,7 @@ fn bench_isolated_subsystems(c: &mut Criterion) {
 }
 
 fn bench_denormal_and_multi_instance(c: &mut Criterion) {
-    let container = make_bench_container(true);
+    let container = make_bench_container();
 
     let mut denorm_group = c.benchmark_group("denormal_subnormal_stress");
     denorm_group.throughput(Throughput::Elements(128));

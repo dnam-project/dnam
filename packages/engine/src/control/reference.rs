@@ -73,7 +73,7 @@ mod tests {
             let mut d = ControlClampDescriptor::empty();
             d.ctrl_kind = 0;
             d.lobatto_degree = deg;
-            d.anchor_nodes_norm = [0.0, -0.5, 0.5, 0.0];
+            d.anchor_nodes_norm = [0.0, -0.5, 0.5];
             let b32 = d.eval_lobatto_basis(0.25);
             let b64 = eval_newton_lobatto_basis_f64(0.25, [0.0, -0.5, 0.5], deg as usize);
             assert!((b32[0] as f64 - b64[0]).abs() < 1e-6);

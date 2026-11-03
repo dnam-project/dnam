@@ -7,11 +7,29 @@ use alloc::vec::Vec;
 
 use serde::{Deserialize, Serialize};
 
-use crate::control::{ConditionalClampRule, ControlClampDescriptor, MAX_CONTROLS};
+use crate::control::{ConditionalClampRule, ControlClampDescriptor};
 
 use super::controls::{ControlKind, ControlSchemaDef, PresetDef};
 use super::error::DnamError;
 use super::signatures::{DatasetProvenance, DistributionPolicy, ModelSignatures};
+
+pub use super::ckpt_meta::{AuditReport, ExtractedPhysics, StemProvenance, StemRegistryEntry};
+pub use super::io_and_tiers::{
+    BlendMode, IoConfig, LevelingConfig, LevelingMetric, ModelCapabilities, SlimmableTiersConfig,
+    TierProfile, default_blend_one, default_head_svd_rank, default_input_ref_dbfs, default_inputs,
+    default_output_mode, default_pro_tier_profile, default_true,
+};
+pub use super::json_wire::TensorSliceEntry;
+pub use super::stages::{
+    ControlBusConfig, RouterConfig, Stage1PreFxConfig, Stage2CascadeConfig,
+    Stage3CabinetKautzConfig, Stage4SpatialTankConfig, default_ac_pole, default_adaa_mode,
+    default_allpass_delays, default_cascade_stages, default_dc_pole, default_delay_storage,
+    default_envelopes, default_fir_taps, default_fm_rank, default_gate_threshold_db,
+    default_interp, default_kautz_modals, default_lfo_harmonics, default_lfos,
+    default_loop_ceiling, default_modulation_bus_dim, default_router_ports,
+    default_sub_crossover_hz, default_switch_xfade, default_trust_radius, default_tzf_tap,
+    deserialize_allpass_delays,
+};
 
 /// Semantic version (`major.minor.patch`) of the `.dnam` and `.dnam-ckpt` container schema.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -143,27 +161,11 @@ fn default_container_kind() -> String {
 }
 
 fn default_architecture() -> String {
-    "DNAM_TriPhysics".to_string()
+    "DNAM_TORA".to_string()
 }
 
 const fn default_sample_rate() -> u32 {
     48_000
-}
-
-const fn default_input_ref_dbfs() -> f32 {
-    -20.5
-}
-
-const fn default_inputs() -> u8 {
-    2
-}
-
-fn default_output_mode() -> String {
-    "stereo".to_string()
-}
-
-const fn default_head_svd_rank() -> u8 {
-    4
 }
 
 /// Top-level UTF-8 JSON header located at byte offset `0x40` of a `.dnam` or `.dnam-ckpt` container.
@@ -175,44 +177,52 @@ pub struct DnamJsonHeader {
     /// Container kind: `"dnam"` or `"dnam-ckpt"`.
     #[serde(default = "default_container_kind")]
     pub container_kind: String,
-    /// Architecture identifier (`"DNAM_TriPhysics"`).
+    /// Target engine architecture tag (`"DNAM_TORA"`).
     #[serde(default = "default_architecture")]
     pub architecture: String,
-    /// Native training sample rate in Hz (typically `48000`).
+    /// Sampling rate at which the neural model was trained (`48000`).
     #[serde(default = "default_sample_rate")]
     pub sample_rate_train_hz: u32,
-    /// Essential model identity, calibration, provenance, and split-payload signatures.
+    /// Essential model identity, calibration, dataset provenance, and cryptographic signatures.
     pub metadata: ModelMetadata,
-    /// Open dictionary for storefront/host/user metadata (excluded from `immutable_header_sha256`).
+    /// Open dictionary for arbitrary application/user-defined metadata.
     #[serde(default)]
     pub user_metadata: BTreeMap<String, serde_json::Value>,
-    /// Audio I/O topology, latency, and tail time configuration.
-    #[serde(default)]
+    /// Audio I/O topology, PDC latency, estimated tail time, capabilities, and auto-unity leveling.
     pub io_config: IoConfig,
-    /// Slimmable tier configurations (`lite`, `full`, `ultra`).
+    /// Slimmable tier profiles (`lite`, `full`, `pro`, `ultra`).
     pub slimmable_tiers: SlimmableTiersConfig,
-    /// Parametric `range` and `switch` control definitions (`0..=16` controls).
+    /// Human-readable definitions of all exposed macro controls ($P \in [0, 16]$).
     #[serde(default)]
     pub controls_schema: Vec<ControlSchemaDef>,
-    /// Built-in parametric control snapshots (excluded from `immutable_header_sha256`).
+    /// Creator factory presets ($K \in [0, 64]$).
     #[serde(default)]
     pub presets: Vec<PresetDef>,
-    /// Control-bus hyperparameters.
+    /// Control-Bus parameter definitions.
     #[serde(default)]
     pub control_bus: ControlBusConfig,
-    /// Core 1 Hybrid Dilated-Conv + `PolyADAA` + `SelectiveRgLru` architecture parameters.
+    /// Stage 0 8-Port Matrix Router configuration.
     #[serde(default)]
-    pub core1_hybrid_ssm: Core1Config,
-    /// Core 2 Diffusive Modulated Unitary FDN (`M-UFDN`) parameters.
+    pub stage0_router: RouterConfig,
+    /// Stage I Pre-Dynamics and Tone Shaping configuration.
     #[serde(default)]
-    pub core2_mufdn: Core2Config,
-    /// 64-byte aligned tensor directory mapping named slices in `Arena 0..2`.
+    pub stage1_pre: Stage1PreFxConfig,
+    /// Stage II Commuted Cascade configuration.
+    #[serde(default)]
+    pub stage2_cascade: Stage2CascadeConfig,
+    /// Stage III Cabinet Early FIR + Orthonormal Kautz Modal Bank configuration.
+    #[serde(default)]
+    pub stage3_cabinet: Stage3CabinetKautzConfig,
+    /// Stage IV Spatial Tank configuration.
+    #[serde(default)]
+    pub stage4_tank: Stage4SpatialTankConfig,
+    /// Tensor directory mapping symbolic tensor names to byte slices in `Arena 0..3`.
     #[serde(default)]
     pub tensor_directory: BTreeMap<String, TensorSliceEntry>,
-    /// `.dnam-ckpt` only: per-stem provenance, extracted physics, and `Arena 3` `uplo='U'` records.
+    /// Optional `.dnam-ckpt` multi-stem registry mapping stem IDs to Stem Record slice offsets.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stems_registry: Option<Vec<StemRegistryEntry>>,
-    /// `.dnam-ckpt` only: 3-phase control clamp audit report and actionable prescriptions.
+    /// Optional `.dnam-ckpt` 3-phase clamp audit report.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub audit_report: Option<AuditReport>,
 }
@@ -247,520 +257,13 @@ pub struct ModelMetadata {
     pub signatures: Option<ModelSignatures>,
 }
 
-const fn default_true() -> bool {
-    true
-}
-
-const fn default_blend_one() -> f32 {
-    1.0
-}
-
-/// Host dry/wet blend capability mode (`IoConfig::capabilities.blend_mode`).
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum BlendMode {
-    /// No separate host parallel dry/wet blend control should be exposed.
-    #[default]
-    None,
-    /// Host/UI should expose a parallel Dry/Wet `Blend` knob driving `DnamEngine`'s `mix_dry_gain` / `mix_wet_gain`.
-    HostParallel,
-    /// Dry/Wet `Blend` or `Mix` is already modeled as a parametric control in `controls_schema`.
-    ModeledControl,
-}
-
-/// Model-level physical capabilities (`IoConfig::capabilities`, covered by `immutable_header_sha256`).
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct ModelCapabilities {
-    /// Dry/Wet parallel blend configuration (`"none"`, `"host_parallel"`, or `"modeled_control"`).
-    #[serde(default)]
-    pub blend_mode: BlendMode,
-    /// Default wet blend ratio $b \in [0.0, 1.0]$ when `blend_mode == "host_parallel"` (`1.0` = 100% wet).
-    #[serde(default = "default_blend_one")]
-    pub default_blend: f32,
-    /// `true` if the modeled hardware inverts signal polarity (`-1`) relative to the dry input.
-    /// When `true`, `DnamEngine::configure_host_mix_and_leveling` inverts `wet_g` (`wet_g *= -1.0`)
-    /// so `0%` blend matches bypass polarity and `50%` blend sums constructively without phase cancellation.
-    #[serde(default)]
-    pub wet_polarity_inverted: bool,
-    /// `true` if spillover bypass (`DnamEngine::set_bypass(true, true)`) is supported.
-    #[serde(default)]
-    pub supports_trails: bool,
-    /// `true` if one or more controls in `controls_schema` carry `DelayTimeMs`, `GrainSizeMs`, or `LfoRateHz` calibration for MIDI tempo sync.
-    #[serde(default)]
-    pub tempo_sync_capable: bool,
-    /// `true` if unitary spectral freeze (`DnamEngine::set_freeze(true)` or `FreezeLatch` control) is supported.
-    #[serde(default)]
-    pub supports_freeze: bool,
-    /// `true` if engaging spectral freeze also mutes the live dry/Core 1 signal path (stutter/hold replacement);
-    /// `false` (default) allows "Sound-on-Sound" playing over the frozen Core 2 pad.
-    #[serde(default)]
-    pub freeze_mutes_dry: bool,
-}
-
-impl Default for ModelCapabilities {
-    fn default() -> Self {
-        Self {
-            blend_mode: BlendMode::None,
-            default_blend: 1.0,
-            wet_polarity_inverted: false,
-            supports_trails: false,
-            tempo_sync_capable: false,
-            supports_freeze: false,
-            freeze_mutes_dry: false,
-        }
-    }
-}
-
-/// Loudness measurement metric used for auto-unity leveling (`LevelingConfig::leveling_metric`).
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum LevelingMetric {
-    /// Gated unweighted broadband RMS in dBFS (`"rms_dbfs"`, default for pedal-to-pedal `Vrms` gain staging).
-    #[default]
-    RmsDbfs,
-    /// Gated ITU-R BS.1770-4 K-weighted LUFS (`"k_weighted_lufs"`, optional for full-rig + cab models).
-    KWeightedLufs,
-}
-
-/// Auto-unity gain leveling calibration anchored at the default control settings (`controls_schema[*].default`, $\mathbf{u} = \mathbf{0}$).
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct LevelingConfig {
-    /// Whether auto-unity leveling is enabled by default for this model.
-    #[serde(default = "default_true")]
-    pub auto_unity_enabled: bool,
-    /// Loudness metric used to compute `unity_gain_offset_db` (`"rms_dbfs"` default or `"k_weighted_lufs"`).
-    #[serde(default)]
-    pub leveling_metric: LevelingMetric,
-    /// Measured dry excitation reference level in dB (`dBFS` RMS or `LUFS`).
-    #[serde(default = "default_input_ref_dbfs", alias = "dry_reference_db")]
-    pub reference_input_level_db: f32,
-    /// Measured model wet output level in dB at the default control settings ($\mathbf{u} = \mathbf{0}$).
-    #[serde(default = "default_input_ref_dbfs", alias = "default_controls_wet_db")]
-    pub measured_default_output_level_db: f32,
-    /// Gain offset in dB required to match unity at default control settings (`reference_input_level_db - measured_default_output_level_db`).
-    #[serde(default)]
-    pub unity_gain_offset_db: f32,
-    /// Creator-configured target gain offset in dB relative to unity (`0.0` = exact unity; e.g. `+3.0` for a boost).
-    #[serde(default)]
-    pub target_gain_db: f32,
-    /// Total calibrated output trim in dB (`unity_gain_offset_db + target_gain_db` when `auto_unity_enabled`, else `target_gain_db`).
-    #[serde(default)]
-    pub calibrated_trim_db: f32,
-}
-
-impl Default for LevelingConfig {
-    fn default() -> Self {
-        Self {
-            auto_unity_enabled: true,
-            leveling_metric: LevelingMetric::RmsDbfs,
-            reference_input_level_db: default_input_ref_dbfs(),
-            measured_default_output_level_db: default_input_ref_dbfs(),
-            unity_gain_offset_db: 0.0,
-            target_gain_db: 0.0,
-            calibrated_trim_db: 0.0,
-        }
-    }
-}
-
-/// Audio I/O topology, host PDC / tail configuration, model capabilities, and auto-unity leveling.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct IoConfig {
-    /// Number of input channels (`1` or `2`).
-    #[serde(default = "default_inputs")]
-    pub inputs: u8,
-    /// Output topology mode (`"stereo"` or `"mono"`).
-    #[serde(default = "default_output_mode")]
-    pub output_mode: String,
-    /// Algorithmic lookahead latency in samples (always `0` for DNAM).
-    #[serde(default)]
-    pub latency_samples: u32,
-    /// Estimated $T_{60}$ reverb/delay tail time in milliseconds for DAW sleep management.
-    #[serde(default)]
-    pub tail_time_ms: f32,
-    /// Model-level capabilities (parallel blend, polarity inversion, trails, tempo sync).
-    #[serde(default)]
-    pub capabilities: ModelCapabilities,
-    /// Auto-unity leveling calibration anchored at default control settings ($\mathbf{u} = \mathbf{0}$).
-    #[serde(default)]
-    pub leveling: LevelingConfig,
-}
-
-impl Default for IoConfig {
-    fn default() -> Self {
-        Self {
-            inputs: 2,
-            output_mode: default_output_mode(),
-            latency_samples: 0,
-            tail_time_ms: 0.0,
-            capabilities: ModelCapabilities::default(),
-            leveling: LevelingConfig::default(),
-        }
-    }
-}
-
-fn default_pro_tier_profile() -> TierProfile {
-    TierProfile {
-        channels: 12,
-        fdn_lines: 8,
-        early_taps: 8,
-        head_svd_rank: 4,
-        loudness_lufs: -20.5,
-        output_trim_db: 0.0,
-        validation_esr_db: -48.0,
-        arena_end_byte_offset: 36_224,
-        prefix_crc32c: 0,
-    }
-}
-
-/// Slimmable tier profiles (`lite`, `full`, `pro`, `ultra`).
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct SlimmableTiersConfig {
-    /// `Lite` ($C=4$, $M=4$, $D_h=4$, `10,752 B`) tier profile.
-    pub lite: TierProfile,
-    /// `Full` ($C=8$, $M=8$, $D_h=4$, `22,336 B`) tier profile.
-    pub full: TierProfile,
-    /// `Pro` ($C=12$, $M=8$, $D_h=4$, `36,224 B`) tier profile.
-    #[serde(default = "default_pro_tier_profile")]
-    pub pro: TierProfile,
-    /// `Ultra` ($C=16$, $M=16$, $D_h=8$, `64,000 B`) tier profile.
-    pub ultra: TierProfile,
-}
-
-/// Metadata and prefix checksum for an individual slimmable tier.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct TierProfile {
-    /// Active Core 1 channels ($C \in \{4, 8, 12, 16\}$).
-    pub channels: u8,
-    /// Active Core 2 FDN delay lines ($M \in \{0, 4, 8, 16\}$).
-    pub fdn_lines: u8,
-    /// Active early-reflection taps ($M_{\text{early}} \in \{0, 4, 8, 16\}$).
-    #[serde(default)]
-    pub early_taps: u8,
-    /// SVD output head rank ($D_h \in \{4, 8\}$).
-    #[serde(default = "default_head_svd_rank")]
-    pub head_svd_rank: u8,
-    /// Integrated loudness in LUFS (`-20.5` target).
-    #[serde(default = "default_input_ref_dbfs")]
-    pub loudness_lufs: f32,
-    /// Linear output loudness trim in dB (`0.0` default).
-    #[serde(default)]
-    pub output_trim_db: f32,
-    /// Validation Error-to-Signal Ratio (ESR) in dB.
-    #[serde(default)]
-    pub validation_esr_db: f32,
-    /// End byte offset of this tier's cumulative prefix relative to `arena_offset_start`.
-    pub arena_end_byte_offset: u32,
-    /// Castagnoli `CRC32C` over `arena[0 .. arena_end_byte_offset]`.
-    pub prefix_crc32c: u32,
-}
-
-const fn default_decimation() -> u16 {
-    16
-}
-const fn default_envelopes() -> u8 {
-    3
-}
-const fn default_lfos() -> u8 {
-    2
-}
-const fn default_lfo_harmonics() -> u8 {
-    4
-}
-const fn default_fm_rank() -> u8 {
-    4
-}
-const fn default_trust_radius() -> f32 {
-    2.5
-}
-
-/// Control-Bus configuration (`control_bus`).
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct ControlBusConfig {
-    /// Control-bus decimation stride at $f_{s,\text{train}}$ (`16` at $48\text{ kHz}$ $\to 3\text{ kHz}$).
-    #[serde(default = "default_decimation")]
-    pub decimation: u16,
-    /// Number of envelope follower bands (`3`).
-    #[serde(default = "default_envelopes")]
-    pub envelopes: u8,
-    /// Number of LFO oscillators (`2`).
-    #[serde(default = "default_lfos")]
-    pub lfo_oscillators: u8,
-    /// Number of Chebyshev harmonics per LFO (`4`).
-    #[serde(default = "default_lfo_harmonics")]
-    pub lfo_harmonics: u8,
-    /// Factorization Machine (FM) interaction rank ($R = 4$).
-    #[serde(default = "default_fm_rank")]
-    pub fm_interaction_rank: u8,
-    /// Trust-region soft-clip radius $M_h$ (`CL-15`, default `2.5`).
-    #[serde(default = "default_trust_radius")]
-    pub head_trust_region_radius: f32,
-}
-
-impl Default for ControlBusConfig {
-    fn default() -> Self {
-        Self {
-            decimation: 16,
-            envelopes: 3,
-            lfo_oscillators: 2,
-            lfo_harmonics: 4,
-            fm_interaction_rank: 4,
-            head_trust_region_radius: 2.5,
-        }
-    }
-}
-
-const fn default_blocks() -> u8 {
-    4
-}
-const fn default_conv_kernel() -> u8 {
-    6
-}
-const fn default_dilations() -> [u16; 4] {
-    [1, 3, 7, 19]
-}
-fn default_adaa_mode() -> String {
-    "1x_bspline_algebraic".to_string()
-}
-const fn default_ac_pole() -> f32 {
-    0.9993
-}
-fn default_weight_layout() -> String {
-    "tier_delta_exec_order_soa_align64".to_string()
-}
-
-/// Core 1 Hybrid SSM configuration (`core1_hybrid_ssm`).
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct Core1Config {
-    /// Number of interleaved Core 1 blocks (`4`).
-    #[serde(default = "default_blocks")]
-    pub blocks: u8,
-    /// Causal dilated convolution kernel width ($K = 6$).
-    #[serde(default = "default_conv_kernel")]
-    pub conv_kernel: u8,
-    /// Block dilation schedule (`[1, 3, 7, 19]`).
-    #[serde(default = "default_dilations")]
-    pub dilations: [u16; 4],
-    /// Anti-aliasing mode (`"1x_bspline_algebraic"`).
-    #[serde(default = "default_adaa_mode")]
-    pub adaa_mode: String,
-    /// $5\text{ Hz}$ AC-coupling pole at $f_{s,\text{train}}$ (`0.9993`).
-    #[serde(default = "default_ac_pole")]
-    pub ac_coupling_pole: f32,
-    /// Memory layout tag (`"tier_delta_exec_order_soa_align64"`).
-    #[serde(default = "default_weight_layout")]
-    pub weight_layout: String,
-}
-
-impl Default for Core1Config {
-    fn default() -> Self {
-        Self {
-            blocks: 4,
-            conv_kernel: 6,
-            dilations: [1, 3, 7, 19],
-            adaa_mode: default_adaa_mode(),
-            ac_coupling_pole: 0.9993,
-            weight_layout: default_weight_layout(),
-        }
-    }
-}
-
-fn default_delay_storage() -> String {
-    "fp16".to_string()
-}
-fn default_interp() -> String {
-    "cubic_lagrange_4tap".to_string()
-}
-const fn default_tzf_tap() -> f32 {
-    64.0
-}
-const fn default_switch_xfade() -> u16 {
-    128
-}
-const fn default_allpass_delays() -> [u16; 16] {
-    [
-        19, 31, 47, 73, 103, 139, 179, 223, 29, 53, 83, 113, 151, 191, 233, 251,
-    ]
-}
-
-fn deserialize_allpass_delays<'de, D>(deserializer: D) -> Result<[u16; 16], D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    let v = Vec::<u16>::deserialize(deserializer)?;
-    let mut out = default_allpass_delays();
-    if v.len() == 8 || v.len() == 16 {
-        for (i, &val) in v.iter().enumerate() {
-            out[i] = val;
-        }
-        Ok(out)
-    } else {
-        Err(serde::de::Error::custom(
-            "allpass_delays_samples must contain 8 or 16 u16 elements",
-        ))
-    }
-}
-
-const fn default_dc_pole() -> f32 {
-    0.995
-}
-const fn default_loop_ceiling() -> f32 {
-    0.985
-}
-
-/// Core 2 Diffusive Modulated Unitary FDN configuration (`core2_mufdn`).
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct Core2Config {
-    /// Whether Core 2 is active (`CORE2_ACTIVE` bit 7).
-    #[serde(default)]
-    pub active: bool,
-    /// Delay buffer storage format (`"fp16"`).
-    #[serde(default = "default_delay_storage")]
-    pub delay_storage: String,
-    /// $\log_2(N_{\text{ring}})$ per FDN delay line (`0` when inactive, `10..=15` when active).
-    #[serde(default)]
-    pub ring_buffer_pow2_log2: u8,
-    /// Fractional delay interpolation kernel (`"cubic_lagrange_4tap"`).
-    #[serde(default = "default_interp")]
-    pub interp: String,
-    /// Through-Zero Flanging (TZF) dry reference tap in samples (`64.0` at $48\text{ kHz}$).
-    #[serde(default = "default_tzf_tap")]
-    pub tzf_reference_tap_samples: f32,
-    /// Raised-cosine switch crossfade window in samples (`128` at $48\text{ kHz}$).
-    #[serde(default = "default_switch_xfade")]
-    pub switch_xfade_samples: u16,
-    /// Coprime Schroeder all-pass delay lengths in samples (`16` lines across `Lite`/`Full`/`Pro`/`Ultra`).
-    #[serde(
-        default = "default_allpass_delays",
-        deserialize_with = "deserialize_allpass_delays"
-    )]
-    pub allpass_delays_samples: [u16; 16],
-    /// In-loop $5\text{ Hz}$ DC blocker pole (`0.995` at $48\text{ kHz}$).
-    #[serde(default = "default_dc_pole")]
-    pub dc_blocker_pole: f32,
-    /// Global loop ceiling (`0.985`).
-    #[serde(default = "default_loop_ceiling")]
-    pub loop_ceiling: f32,
-}
-
-impl Default for Core2Config {
-    fn default() -> Self {
-        Self {
-            active: false,
-            delay_storage: default_delay_storage(),
-            ring_buffer_pow2_log2: 0,
-            interp: default_interp(),
-            tzf_reference_tap_samples: 64.0,
-            switch_xfade_samples: 128,
-            allpass_delays_samples: default_allpass_delays(),
-            dc_blocker_pole: 0.995,
-            loop_ceiling: 0.985,
-        }
-    }
-}
-
-/// Tensor directory entry describing a 64-byte aligned slice in `Arena 0..3`.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct TensorSliceEntry {
-    /// Arena index (`0` = Lite, `1` = Full Delta, `2` = Ultra Delta, `3` = `.dnam-ckpt` Gram stats).
-    pub arena: u8,
-    /// Data type (`"f32"` or `"f64"`).
-    pub dtype: String,
-    /// Optional packing tag (`"uplo_upper_col_major_tier_ordered"` for `Arena 3` Gram matrices).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub packing: Option<String>,
-    /// Optional feature dimension $N \in \{64, 128, 192\}$ for `uplo='U'` packed Gram matrices.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub feature_dim: Option<u32>,
-    /// Optional packed element count $\frac{N(N+1)}{2}$.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub packed_len: Option<u32>,
-    /// Tensor dimensions (for standard dense tensors).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub shape: Option<Vec<usize>>,
-    /// 64-byte aligned byte offset relative to `arena_offset_start`.
-    pub byte_offset: u32,
-    /// 64-byte aligned byte length.
-    pub byte_length: u32,
-}
-
-/// `.dnam-ckpt` per-stem registry record (`stems_registry[*]`).
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct StemRegistryEntry {
-    /// Unique stem identifier (e.g., `"stem_00_noon"`).
-    pub stem_id: String,
-    /// Control settings captured for this stem.
-    pub controls_meta: BTreeMap<String, serde_json::Value>,
-    /// Platform-agnostic IEEE-754 PCM SHA-256 provenance digests.
-    pub provenance: StemProvenance,
-    /// Castagnoli `CRC32C` over this stem's $151,296\text{ B}$ `Arena 3` record (`G_audio + C_audio`).
-    pub stem_arena3_crc32c: u32,
-    /// Open dictionary for stem-specific user metadata.
-    #[serde(default)]
-    pub user_metadata: BTreeMap<String, serde_json::Value>,
-    /// Extracted Stage-1 physical anchors (delays, LFO frequencies, decay gains).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub extracted_physics: Option<ExtractedPhysics>,
-    /// `Arena 3` slice descriptor for $\operatorname{pack}_{\text{U}}(\mathbf{G}_{\text{audio}}^{(s)})$ (`148,224 B`).
-    pub g_audio_uplo_u_f64: TensorSliceEntry,
-    /// `Arena 3` slice descriptor for tier-ordered $\mathbf{C}_{\text{audio}}^{(s)}$ (`3,072 B`).
-    pub c_audio_tier_f64: TensorSliceEntry,
-}
-
-/// Platform-agnostic IEEE-754 PCM SHA-256 provenance for a training stem.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
-pub struct StemProvenance {
-    /// SHA-256 hex digest of raw little-endian `f32` DI input frames.
-    pub input_pcm_sha256: String,
-    /// SHA-256 hex digest of raw little-endian `f32` target output frames.
-    pub target_pcm_sha256: String,
-    /// Number of stereo/mono frames in the stem.
-    pub num_frames: u64,
-}
-
-/// Extracted Stage-1 physical system-identification anchors for a stem.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
-pub struct ExtractedPhysics {
-    /// Extracted FDN delay times in milliseconds.
-    #[serde(default)]
-    pub delays_ms: Vec<f32>,
-    /// Extracted LFO frequencies in Hz.
-    #[serde(default)]
-    pub lfo_freqs_hz: Vec<f32>,
-    /// Extracted per-line linear feedback decay gains.
-    #[serde(default)]
-    pub decay_gains_lin: Vec<f32>,
-    /// Extracted grain window length in milliseconds (`0.0` when un-windowed).
-    #[serde(default)]
-    pub detected_grain_size_ms: f32,
-    /// Extracted dominant pitch-shift interval in semitones (`0.0` when un-pitched).
-    #[serde(default)]
-    pub detected_pitch_shift_semitones: f32,
-}
-
-/// `.dnam-ckpt` 3-phase control clamp audit report and actionable stem prescriptions.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
-pub struct AuditReport {
-    /// Phase-1 dataset coverage clamps (`"CLAMP-RANGE"`, `"CLAMP-SWITCH"`, `"CLAMP-STABILITY"`).
-    #[serde(default)]
-    pub phase1_clamps: Vec<String>,
-    /// Phase-2 interior rail saturation warnings.
-    #[serde(default)]
-    pub phase2_rail_warnings: Vec<String>,
-    /// Phase-3 post-fit dynamic stability & head gain clamps (`"CLAMP-DYNAMIC"`, `"CLAMP-HEAD-GAIN"`).
-    #[serde(default)]
-    pub phase3_clamps: Vec<String>,
-    /// Human-readable actionable stem prescriptions to lift active clamps.
-    #[serde(default)]
-    pub prescriptions: Vec<String>,
-}
-
 impl DnamJsonHeader {
     /// Constructs a canonical reference [`DnamJsonHeader`] (used by tests and container builders).
-    pub fn default_reference(core2_active: bool) -> Self {
+    pub fn default_reference() -> Self {
         Self {
             version: "1.0.0".to_string(),
             container_kind: "dnam".to_string(),
-            architecture: "DNAM_TriPhysics".to_string(),
+            architecture: "DNAM_TORA".to_string(),
             sample_rate_train_hz: 48_000,
             metadata: ModelMetadata {
                 name: "Reference DNAM Model".to_string(),
@@ -777,9 +280,11 @@ impl DnamJsonHeader {
             io_config: IoConfig::default(),
             slimmable_tiers: SlimmableTiersConfig {
                 lite: TierProfile {
+                    feature_bus_dim: 64,
                     channels: 4,
-                    fdn_lines: if core2_active { 4 } else { 0 },
-                    early_taps: 4,
+                    early_fir_taps: 16,
+                    kautz_modes: 4,
+                    tank_lines: 4,
                     head_svd_rank: 4,
                     loudness_lufs: -20.5,
                     output_trim_db: 0.0,
@@ -788,9 +293,11 @@ impl DnamJsonHeader {
                     prefix_crc32c: 0,
                 },
                 full: TierProfile {
+                    feature_bus_dim: 128,
                     channels: 8,
-                    fdn_lines: if core2_active { 8 } else { 0 },
-                    early_taps: 8,
+                    early_fir_taps: 32,
+                    kautz_modes: 8,
+                    tank_lines: 8,
                     head_svd_rank: 4,
                     loudness_lufs: -20.5,
                     output_trim_db: 0.0,
@@ -799,9 +306,11 @@ impl DnamJsonHeader {
                     prefix_crc32c: 0,
                 },
                 pro: TierProfile {
+                    feature_bus_dim: 192,
                     channels: 12,
-                    fdn_lines: if core2_active { 8 } else { 0 },
-                    early_taps: 8,
+                    early_fir_taps: 48,
+                    kautz_modes: 16,
+                    tank_lines: 8,
                     head_svd_rank: 4,
                     loudness_lufs: -20.5,
                     output_trim_db: 0.0,
@@ -810,9 +319,11 @@ impl DnamJsonHeader {
                     prefix_crc32c: 0,
                 },
                 ultra: TierProfile {
+                    feature_bus_dim: 256,
                     channels: 16,
-                    fdn_lines: if core2_active { 16 } else { 0 },
-                    early_taps: 16,
+                    early_fir_taps: 64,
+                    kautz_modes: 32,
+                    tank_lines: 16,
                     head_svd_rank: 8,
                     loudness_lufs: -20.5,
                     output_trim_db: 0.0,
@@ -824,12 +335,11 @@ impl DnamJsonHeader {
             controls_schema: Vec::new(),
             presets: Vec::new(),
             control_bus: ControlBusConfig::default(),
-            core1_hybrid_ssm: Core1Config::default(),
-            core2_mufdn: Core2Config {
-                active: core2_active,
-                ring_buffer_pow2_log2: if core2_active { 10 } else { 0 },
-                ..Default::default()
-            },
+            stage0_router: RouterConfig::default(),
+            stage1_pre: Stage1PreFxConfig::default(),
+            stage2_cascade: Stage2CascadeConfig::default(),
+            stage3_cabinet: Stage3CabinetKautzConfig::default(),
+            stage4_tank: Stage4SpatialTankConfig::default(),
             tensor_directory: BTreeMap::new(),
             stems_registry: None,
             audit_report: None,
@@ -846,17 +356,20 @@ impl DnamJsonHeader {
     /// Validates all structural, alignment, and safety invariants of the JSON header.
     pub fn validate(&self) -> Result<(), DnamError> {
         let _ = self.schema_version()?;
-        if self.container_kind != "dnam" && self.container_kind != "dnam-ckpt" {
+        if self.container_kind != "dnam"
+            && self.container_kind != "dnam-ckpt"
+            && self.container_kind != "preview"
+        {
             return Err(DnamError::SchemaValidationError(
-                "container_kind must be 'dnam' or 'dnam-ckpt'".to_string(),
+                "container_kind must be 'dnam', 'dnam-ckpt', or 'preview'".to_string(),
             ));
         }
         if self.sample_rate_train_hz < 44_100 || self.sample_rate_train_hz > 96_000 {
             return Err(DnamError::InvalidSampleRate(self.sample_rate_train_hz));
         }
-        if self.controls_schema.len() > MAX_CONTROLS {
+        if self.controls_schema.len() > u8::MAX as usize {
             return Err(DnamError::SchemaValidationError(
-                "controls_schema exceeds maximum of 16 controls".to_string(),
+                "controls_schema exceeds u8::MAX (255) controls in binary preamble".to_string(),
             ));
         }
         for entry in self.tensor_directory.values() {
@@ -877,17 +390,16 @@ impl DnamJsonHeader {
         Ok(())
     }
 
-    /// Compiles `controls_schema` into the 16-slot binary [`ControlClampDescriptor`] table
-    /// (`1,024 B = 16 × 64 B` cache lines) used at $3\text{ kHz}$ with zero string parsing and zero `FDIV`.
-    pub fn compile_clamp_descriptors(
-        &self,
-    ) -> Result<[ControlClampDescriptor; MAX_CONTROLS], DnamError> {
-        if self.controls_schema.len() > MAX_CONTROLS {
+    /// Compiles `controls_schema` ($P \in [0, 255]$) into a vector of 64-byte binary
+    /// [`ControlClampDescriptor`] records (`CL 0` of each 128-byte `ControlChannelRecord[p]`)
+    /// used at $3\text{ kHz}$ with zero string parsing and zero `FDIV`.
+    pub fn compile_clamp_descriptors(&self) -> Result<Vec<ControlClampDescriptor>, DnamError> {
+        if self.controls_schema.len() > u8::MAX as usize {
             return Err(DnamError::SchemaValidationError(
-                "controls_schema exceeds MAX_CONTROLS (16)".to_string(),
+                "controls_schema exceeds u8::MAX (255) controls in binary preamble".to_string(),
             ));
         }
-        let mut table = [ControlClampDescriptor::empty(); MAX_CONTROLS];
+        let mut table = alloc::vec![ControlClampDescriptor::empty(); self.controls_schema.len()];
 
         for (p, ctrl) in self.controls_schema.iter().enumerate() {
             match ctrl.kind {
@@ -912,7 +424,7 @@ impl DnamJsonHeader {
                         )
                     })? as f32;
                     let degree = ctrl.lobatto_degree.unwrap_or(2).min(3);
-                    let mut anchors = [0.0_f32; 4];
+                    let mut anchors = [0.0_f32; 3];
                     if let Some(ref nodes) = ctrl.anchor_nodes_norm {
                         for (i, &val) in nodes.iter().take(3).enumerate() {
                             anchors[i] = val.clamp(-1.0, 1.0);
@@ -934,7 +446,6 @@ impl DnamJsonHeader {
                                 switch_ctrl_idx: sw_idx,
                                 switch_opt_idx: opt_idx,
                                 rule_op: 1,
-                                _pad: 0,
                                 bound_val: max_val,
                             };
                             rule_idx += 1;
@@ -948,7 +459,6 @@ impl DnamJsonHeader {
                                 switch_ctrl_idx: sw_idx,
                                 switch_opt_idx: opt_idx,
                                 rule_op: 2,
-                                _pad: 0,
                                 bound_val: min_val,
                             };
                             rule_idx += 1;
@@ -965,6 +475,7 @@ impl DnamJsonHeader {
                         scale_norm,
                         offset_norm,
                         anchor_nodes_norm: anchors,
+                        _reserved: 0,
                         cond_rules,
                     };
                 }
@@ -1001,7 +512,8 @@ impl DnamJsonHeader {
                         safe_max_base: (decl_opts.len() - 1) as f32,
                         scale_norm: 1.0,
                         offset_norm: 0.0,
-                        anchor_nodes_norm: [0.0; 4],
+                        anchor_nodes_norm: [0.0; 3],
+                        _reserved: 0,
                         cond_rules: [ConditionalClampRule::empty(); 3],
                     };
                 }
@@ -1011,7 +523,7 @@ impl DnamJsonHeader {
         Ok(table)
     }
 
-    fn resolve_switch_condition(&self, cond_key: &str) -> Option<(u8, u8)> {
+    fn resolve_switch_condition(&self, cond_key: &str) -> Option<(u16, u8)> {
         let (sw_id, opt_id) = cond_key.split_once('=')?;
         for (idx, ctrl) in self.controls_schema.iter().enumerate() {
             if ctrl.id == sw_id
@@ -1019,7 +531,7 @@ impl DnamJsonHeader {
                 && let Some(ref opts) = ctrl.declared_options
                 && let Some(opt_idx) = opts.iter().position(|o| o == opt_id)
             {
-                return Some((idx as u8, opt_idx as u8));
+                return Some((idx as u16, opt_idx as u8));
             }
         }
         None
@@ -1059,12 +571,15 @@ mod tests {
             },
             "io_config": {},
             "control_bus": {},
-            "core1_hybrid_ssm": {},
-            "core2_mufdn": {},
+            "stage0_router": {},
+            "stage1_pre": {},
+            "stage2_cascade": {},
+            "stage3_cabinet": {},
+            "stage4_tank": {},
             "slimmable_tiers": {
-                "lite": { "channels": 4, "fdn_lines": 4, "arena_end_byte_offset": 10752, "prefix_crc32c": 0 },
-                "full": { "channels": 8, "fdn_lines": 8, "arena_end_byte_offset": 22336, "prefix_crc32c": 0 },
-                "ultra": { "channels": 12, "fdn_lines": 8, "arena_end_byte_offset": 36224, "prefix_crc32c": 0 }
+                "lite": { "channels": 4, "tank_lines": 4, "arena_end_byte_offset": 10752, "prefix_crc32c": 0 },
+                "full": { "channels": 8, "tank_lines": 8, "arena_end_byte_offset": 22336, "prefix_crc32c": 0 },
+                "ultra": { "channels": 12, "tank_lines": 8, "arena_end_byte_offset": 36224, "prefix_crc32c": 0 }
             },
             "controls_schema": [
                 {
@@ -1089,14 +604,14 @@ mod tests {
         let mut h: DnamJsonHeader = serde_json::from_str(minimal_json).unwrap();
         assert_eq!(h.version, "1.0.0");
         assert_eq!(h.container_kind, "dnam");
-        assert_eq!(h.architecture, "DNAM_TriPhysics");
+        assert_eq!(h.architecture, "DNAM_TORA");
         assert_eq!(h.sample_rate_train_hz, 48_000);
         assert_eq!(h.metadata.input_reference_dbfs, -20.5);
         assert_eq!(h.io_config.inputs, 2);
         assert_eq!(h.slimmable_tiers.lite.head_svd_rank, 4);
-        assert_eq!(h.control_bus.decimation, 16);
-        assert_eq!(h.core1_hybrid_ssm.blocks, 4);
-        assert_eq!(h.core2_mufdn.dc_blocker_pole, 0.995);
+        assert_eq!(h.control_bus.envelopes, 4);
+        assert_eq!(h.stage2_cascade.num_stages, 3);
+        assert_eq!(h.stage4_tank.dc_blocker_pole, 0.995);
         assert!(h.validate().is_ok());
 
         let compiled = h.compile_clamp_descriptors().unwrap();
@@ -1107,6 +622,8 @@ mod tests {
         // Validation error branches
         h.container_kind = "invalid".to_string();
         assert!(h.validate().is_err());
+        h.container_kind = "preview".to_string();
+        assert!(h.validate().is_ok());
         h.container_kind = "dnam".to_string();
 
         h.sample_rate_train_hz = 10_000;
@@ -1167,7 +684,8 @@ mod tests {
         h.controls_schema[0].declared_options = Some(vec![]);
         assert!(h.validate().is_err());
 
-        h.controls_schema = vec![h.controls_schema[0].clone(); 17];
+        h.controls_schema[0].declared_options = Some(vec!["off".to_string(), "on".to_string()]);
+        h.controls_schema = vec![h.controls_schema[0].clone(); 256];
         assert!(h.validate().is_err());
         assert!(h.compile_clamp_descriptors().is_err());
 
@@ -1180,5 +698,10 @@ mod tests {
             LevelingMetric::RmsDbfs
         );
         assert!(h.io_config.leveling.auto_unity_enabled);
+
+        assert!(SchemaVersion::parse("a.0.0").is_err());
+        assert!(SchemaVersion::parse("1.b.0").is_err());
+        assert!(SchemaVersion::parse("1.0.c").is_err());
+        assert_eq!(SchemaVersion::V1_0_0.as_semver_string(), "1.0.0");
     }
 }

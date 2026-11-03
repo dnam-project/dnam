@@ -6,12 +6,12 @@ use crate::schema::DnamError;
 use crate::types::Tier;
 
 use super::{
-    CONTAINER_VERSION_MAJOR, CONTAINER_VERSION_MINOR, DNAM_MAGIC, DNCK_MAGIC, FLAG_CORE2_ACTIVE,
-    FLAG_ENCRYPTED_ARENA, FLAG_HAS_CALIB_STATS, FLAG_HAS_FULL_DELTA, FLAG_HAS_PRO_DELTA,
-    FLAG_HAS_SIGNATURES, FLAG_HAS_ULTRA_DELTA, FLAG_LFO_ENV_ACTIVE, FLAG_STEREO_OUT,
+    CONTAINER_VERSION_MAJOR, CONTAINER_VERSION_MINOR, DNAM_MAGIC, DNCK_MAGIC, FLAG_ENCRYPTED_ARENA,
+    FLAG_HAS_CALIB_STATS, FLAG_HAS_FULL_DELTA, FLAG_HAS_PRO_DELTA, FLAG_HAS_SIGNATURES,
+    FLAG_HAS_ULTRA_DELTA, FLAG_STEREO_OUT,
 };
 
-/// Fixed 64-byte binary preamble (`#[repr(C, align(64))]`, `<4s3H2B4I4H4IH2BfI`) at byte offset `0x0000`.
+/// Fixed 64-byte binary preamble (`#[repr(C, align(64))]`, `<4s4H4I4H4IH2BfI`) at byte offset `0x0000`.
 #[repr(C, align(64))]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DnamPreamble {
@@ -23,10 +23,8 @@ pub struct DnamPreamble {
     pub version_minor: u16,
     /// Bitmask of `FLAG_*` constants.
     pub flags: u16,
-    /// Total user controls $P \in [0, 16]$.
-    pub num_controls: u8,
-    /// $\log_2(N_{\text{ring}})$ for Core 2 (`0` when `CORE2_ACTIVE == 0`, `8..=15` when active).
-    pub ring_buffer_pow2_log2: u8,
+    /// Total user controls $P \in [0, 65535]$ (`ControlChannelRecord[0..P]` count).
+    pub num_controls: u16,
     /// Reference training sample rate in Hz (`48000`).
     pub sample_rate_train_hz: u32,
     /// Unpadded UTF-8 byte length of the JSON header starting at `0x40`.
@@ -53,10 +51,8 @@ pub struct DnamPreamble {
     pub arena_crc32c_ultra: u32,
     /// Number of stem records in `Arena 4` (`0` for `.dnam`, $\ge 1$ for `.dnam-ckpt`).
     pub num_ckpt_stems: u16,
-    /// Control-bus decimation stride $K_{\text{ctrl}}$ at $f_{s,\text{train}}$ (`16`).
-    pub control_decimation: u8,
-    /// Active SVD principal control subspace rank $D_h \in [0, 8]$.
-    pub head_svd_rank: u8,
+    /// Reserved 16-bit alignment gap (`0x36..0x38`, must be `0`).
+    pub _reserved: u16,
     /// Estimated $T_{60}$ decay tail time in milliseconds for DAW sleep management.
     pub tail_time_ms: f32,
     /// Castagnoli `CRC32C` over `bytes[0..tensor_arena_offset]` with `bytes[0x3C..0x40]` zeroed.
@@ -88,8 +84,7 @@ impl DnamPreamble {
             });
         }
         let flags = u16::from_le_bytes([bytes[8], bytes[9]]);
-        let num_controls = bytes[10];
-        let ring_buffer_pow2_log2 = bytes[11];
+        let num_controls = u16::from_le_bytes([bytes[10], bytes[11]]);
         let sample_rate_train_hz = u32::from_le_bytes([bytes[12], bytes[13], bytes[14], bytes[15]]);
         let json_header_byte_len = u32::from_le_bytes([bytes[16], bytes[17], bytes[18], bytes[19]]);
         let tensor_arena_offset = u32::from_le_bytes([bytes[20], bytes[21], bytes[22], bytes[23]]);
@@ -104,8 +99,7 @@ impl DnamPreamble {
         let arena_crc32c_pro = u32::from_le_bytes([bytes[44], bytes[45], bytes[46], bytes[47]]);
         let arena_crc32c_ultra = u32::from_le_bytes([bytes[48], bytes[49], bytes[50], bytes[51]]);
         let num_ckpt_stems = u16::from_le_bytes([bytes[52], bytes[53]]);
-        let control_decimation = bytes[54];
-        let head_svd_rank = bytes[55];
+        let _reserved = u16::from_le_bytes([bytes[54], bytes[55]]);
         let tail_time_ms = f32::from_le_bytes([bytes[56], bytes[57], bytes[58], bytes[59]]);
         let header_crc32c = u32::from_le_bytes([bytes[60], bytes[61], bytes[62], bytes[63]]);
 
@@ -124,7 +118,6 @@ impl DnamPreamble {
             version_minor,
             flags,
             num_controls,
-            ring_buffer_pow2_log2,
             sample_rate_train_hz,
             json_header_byte_len,
             tensor_arena_offset,
@@ -138,8 +131,7 @@ impl DnamPreamble {
             arena_crc32c_pro,
             arena_crc32c_ultra,
             num_ckpt_stems,
-            control_decimation,
-            head_svd_rank,
+            _reserved,
             tail_time_ms,
             header_crc32c,
         })
@@ -152,8 +144,7 @@ impl DnamPreamble {
         out[4..6].copy_from_slice(&self.version_major.to_le_bytes());
         out[6..8].copy_from_slice(&self.version_minor.to_le_bytes());
         out[8..10].copy_from_slice(&self.flags.to_le_bytes());
-        out[10] = self.num_controls;
-        out[11] = self.ring_buffer_pow2_log2;
+        out[10..12].copy_from_slice(&self.num_controls.to_le_bytes());
         out[12..16].copy_from_slice(&self.sample_rate_train_hz.to_le_bytes());
         out[16..20].copy_from_slice(&self.json_header_byte_len.to_le_bytes());
         out[20..24].copy_from_slice(&self.tensor_arena_offset.to_le_bytes());
@@ -167,8 +158,7 @@ impl DnamPreamble {
         out[44..48].copy_from_slice(&self.arena_crc32c_pro.to_le_bytes());
         out[48..52].copy_from_slice(&self.arena_crc32c_ultra.to_le_bytes());
         out[52..54].copy_from_slice(&self.num_ckpt_stems.to_le_bytes());
-        out[54] = self.control_decimation;
-        out[55] = self.head_svd_rank;
+        out[54..56].copy_from_slice(&self._reserved.to_le_bytes());
         out[56..60].copy_from_slice(&self.tail_time_ms.to_le_bytes());
         out[60..64].copy_from_slice(&self.header_crc32c.to_le_bytes());
         out
@@ -234,18 +224,6 @@ impl DnamPreamble {
         }
     }
 
-    /// Returns `true` if `CORE2_ACTIVE` (`bit 7`) is set.
-    #[inline]
-    pub const fn is_core2_active(&self) -> bool {
-        (self.flags & FLAG_CORE2_ACTIVE) != 0
-    }
-
-    /// Returns `true` if `LFO_ENV_ACTIVE` (`bit 8`) is set.
-    #[inline]
-    pub const fn is_lfo_env_active(&self) -> bool {
-        (self.flags & FLAG_LFO_ENV_ACTIVE) != 0
-    }
-
     /// Returns `true` if `STEREO_OUT` (`bit 9`) is set.
     #[inline]
     pub const fn is_stereo_out(&self) -> bool {
@@ -287,5 +265,17 @@ mod tests {
         bad_preamble[4..6].copy_from_slice(&1_u16.to_le_bytes());
         bad_preamble[20..24].copy_from_slice(&65_u32.to_le_bytes());
         assert!(DnamPreamble::from_bytes(&bad_preamble).is_err());
+
+        bad_preamble[20..24].copy_from_slice(&4096_u32.to_le_bytes());
+        bad_preamble[24..28].copy_from_slice(&64000_u32.to_le_bytes());
+        let mut p = DnamPreamble::from_bytes(&bad_preamble).unwrap();
+        p.arena_crc32c_lite = 11;
+        p.arena_crc32c_full = 22;
+        p.arena_crc32c_pro = 33;
+        p.arena_crc32c_ultra = 44;
+        assert_eq!(p.crc32c_for_tier(Tier::Lite), 11);
+        assert_eq!(p.crc32c_for_tier(Tier::Full), 22);
+        assert_eq!(p.crc32c_for_tier(Tier::Pro), 33);
+        assert_eq!(p.crc32c_for_tier(Tier::Ultra), 44);
     }
 }
