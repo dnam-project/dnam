@@ -247,35 +247,195 @@ impl MultiDrivePolyAdaaChannel {
     /// (`ref[dsp.op-n.polyadaa.clamp]`, `ref[dsp.op-n.polyadaa.midpoint]`, `ref[dsp.op-n.polyadaa.rail-crossing]`, `ref[dsp.op-n.polyadaa.bspline-ac]`).
     /// Direct callers must hold a [`crate::FtzDazGuard`] for the enclosing batch.
     #[inline(always)]
+    fn crosses_rail(u_prev: f32, u_curr: f32) -> bool {
+        let lo = u_prev.min(u_curr);
+        let hi = u_prev.max(u_curr);
+        (lo < -1.0 && hi > -1.0) || (lo < 1.0 && hi > 1.0)
+    }
+
+    #[inline(always)]
     pub fn step(&mut self, x: f32, beta: f32, delta: f32, alpha: f32, r_ac: f32) -> [f32; 4] {
         let mut out = [0.0; 4];
         let one_minus_rac = 1.0 - r_ac;
+        let x_scaled = (2.0 / 3.0) * x;
 
-        for (i, &drive) in MULTI_DRIVE_SCALES.iter().enumerate() {
-            let u_raw = (2.0 / 3.0) * drive * x;
-            let u_prev_raw = self.u_prev[i];
-            let a_curr = if (-1.0..=1.0).contains(&u_prev_raw) && (-1.0..=1.0).contains(&u_raw) {
-                poly_adaa_algebraic_eval(u_prev_raw, u_raw, beta, delta)
-            } else {
-                let (odd, even, _) =
-                    eval_saturated_polyadaa_rail_crossing_f64(u_prev_raw as f64, u_raw as f64);
-                ((beta as f64) * odd + (delta as f64) * even) as f32
-            };
-
-            // B-spline blend: 0.875 * A[n] + 0.125 * A[n-1]
+        let u_raw_arr = [
+            MULTI_DRIVE_SCALES[0] * x_scaled,
+            MULTI_DRIVE_SCALES[1] * x_scaled,
+            MULTI_DRIVE_SCALES[2] * x_scaled,
+            MULTI_DRIVE_SCALES[3] * x_scaled,
+        ];
+        let mut a_arr = [0.0f32; 4];
+        for i in 0..4 {
+            let u_p = self.u_prev[i].clamp(-1.0, 1.0);
+            let u_c = u_raw_arr[i].clamp(-1.0, 1.0);
+            a_arr[i] = poly_adaa_algebraic_eval(u_p, u_c, beta, delta);
+        }
+        if Self::crosses_rail(self.u_prev[3], u_raw_arr[3])
+            || u_raw_arr[2].abs() > 1.0
+            || self.u_prev[2].abs() > 1.0
+        {
+            for i in 0..4 {
+                if Self::crosses_rail(self.u_prev[i], u_raw_arr[i]) {
+                    let (odd, even, _) = eval_saturated_polyadaa_rail_crossing_f64(
+                        self.u_prev[i] as f64,
+                        u_raw_arr[i] as f64,
+                    );
+                    a_arr[i] = ((beta as f64) * odd + (delta as f64) * even) as f32;
+                }
+            }
+        }
+        for i in 0..4 {
+            let a_curr = a_arr[i];
             let y_nl = 0.875 * a_curr + 0.125 * self.a_prev[i];
-
-            // 5 Hz AC coupling: m_dc[n] = r_ac * m_dc[n-1] + (1 - r_ac) * y_nl
             let next_m_dc = r_ac * self.m_dc[i] + one_minus_rac * y_nl;
-
-            // Linear separation: alpha * x + (y_nl - m_dc)
             out[i] = alpha * x + (y_nl - next_m_dc);
-
-            self.u_prev[i] = flush_recursive_state_f32(u_raw);
+            self.u_prev[i] = flush_recursive_state_f32(u_raw_arr[i]);
             self.a_prev[i] = flush_recursive_state_f32(a_curr);
             self.m_dc[i] = flush_recursive_state_f32(next_m_dc);
         }
         out
+    }
+
+    /// Steps only drive lanes `1` (`1.0x`) and `2` (`4.0x`) for Stage II Sub-stage 2.2 (`V1B` Driver),
+    /// returning `(out_lane1, out_lane2)`.
+    /// Direct callers must hold a [`crate::FtzDazGuard`] for the enclosing batch.
+    #[inline(always)]
+    pub fn step_lanes_1_2(
+        &mut self,
+        x: f32,
+        beta: f32,
+        delta: f32,
+        alpha: f32,
+        r_ac: f32,
+    ) -> (f32, f32) {
+        let one_minus_rac = 1.0 - r_ac;
+        let x_scaled = (2.0 / 3.0) * x;
+        let u1_raw = x_scaled;
+        let u2_raw = 4.0 * x_scaled;
+
+        let p1 = self.u_prev[1];
+        let p2 = self.u_prev[2];
+        let u1_p = p1.clamp(-1.0, 1.0);
+        let u1_c = u1_raw.clamp(-1.0, 1.0);
+        let u2_p = p2.clamp(-1.0, 1.0);
+        let u2_c = u2_raw.clamp(-1.0, 1.0);
+
+        let mut a1 = poly_adaa_algebraic_eval(u1_p, u1_c, beta, delta);
+        let mut a2 = poly_adaa_algebraic_eval(u2_p, u2_c, beta, delta);
+        if Self::crosses_rail(p2, u2_raw) || u1_raw.abs() > 1.0 || p1.abs() > 1.0 {
+            if Self::crosses_rail(p1, u1_raw) {
+                let (odd, even, _) =
+                    eval_saturated_polyadaa_rail_crossing_f64(p1 as f64, u1_raw as f64);
+                a1 = ((beta as f64) * odd + (delta as f64) * even) as f32;
+            }
+            if Self::crosses_rail(p2, u2_raw) {
+                let (odd, even, _) =
+                    eval_saturated_polyadaa_rail_crossing_f64(p2 as f64, u2_raw as f64);
+                a2 = ((beta as f64) * odd + (delta as f64) * even) as f32;
+            }
+        }
+        let y1_nl = 0.875 * a1 + 0.125 * self.a_prev[1];
+        let next_m1_dc = r_ac * self.m_dc[1] + one_minus_rac * y1_nl;
+        let out1 = alpha * x + (y1_nl - next_m1_dc);
+        self.u_prev[1] = flush_recursive_state_f32(u1_raw);
+        self.a_prev[1] = flush_recursive_state_f32(a1);
+        self.m_dc[1] = flush_recursive_state_f32(next_m1_dc);
+
+        let y2_nl = 0.875 * a2 + 0.125 * self.a_prev[2];
+        let next_m2_dc = r_ac * self.m_dc[2] + one_minus_rac * y2_nl;
+        let out2 = alpha * x + (y2_nl - next_m2_dc);
+        self.u_prev[2] = flush_recursive_state_f32(u2_raw);
+        self.a_prev[2] = flush_recursive_state_f32(a2);
+        self.m_dc[2] = flush_recursive_state_f32(next_m2_dc);
+
+        (out1, out2)
+    }
+
+    /// Steps drive lanes `1` (`1.0x`) and `2` (`4.0x`) for a stereo `(left, right)` pair simultaneously
+    /// across a single 4-lane vectorizable loop (`[l_1x, l_4x, r_1x, r_4x]`), returning `(l1, l2, r1, r2)`.
+    /// Direct callers must hold a [`crate::FtzDazGuard`] for the enclosing batch.
+    #[allow(clippy::too_many_arguments)]
+    #[inline(always)]
+    pub fn step_stereo_lanes_1_2(
+        left: &mut Self,
+        right: &mut Self,
+        x_l: f32,
+        x_r: f32,
+        beta: f32,
+        delta: f32,
+        alpha: f32,
+        r_ac: f32,
+    ) -> (f32, f32, f32, f32) {
+        let one_minus_rac = 1.0 - r_ac;
+        let xl_s = (2.0 / 3.0) * x_l;
+        let xr_s = (2.0 / 3.0) * x_r;
+
+        let u_prev_4 = [
+            left.u_prev[1],
+            left.u_prev[2],
+            right.u_prev[1],
+            right.u_prev[2],
+        ];
+        let u_raw_4 = [xl_s, 4.0 * xl_s, xr_s, 4.0 * xr_s];
+        let a_prev_4 = [
+            left.a_prev[1],
+            left.a_prev[2],
+            right.a_prev[1],
+            right.a_prev[2],
+        ];
+        let m_prev_4 = [left.m_dc[1], left.m_dc[2], right.m_dc[1], right.m_dc[2]];
+        let alpha_x_4 = [alpha * x_l, alpha * x_l, alpha * x_r, alpha * x_r];
+
+        let mut a_4 = [0.0f32; 4];
+        for i in 0..4 {
+            let u_p = u_prev_4[i].clamp(-1.0, 1.0);
+            let u_c = u_raw_4[i].clamp(-1.0, 1.0);
+            a_4[i] = poly_adaa_algebraic_eval(u_p, u_c, beta, delta);
+        }
+        if Self::crosses_rail(u_prev_4[1], u_raw_4[1])
+            || Self::crosses_rail(u_prev_4[3], u_raw_4[3])
+            || u_raw_4[0].abs() > 1.0
+            || u_prev_4[0].abs() > 1.0
+            || u_raw_4[2].abs() > 1.0
+            || u_prev_4[2].abs() > 1.0
+        {
+            for i in 0..4 {
+                if Self::crosses_rail(u_prev_4[i], u_raw_4[i]) {
+                    let (odd, even, _) = eval_saturated_polyadaa_rail_crossing_f64(
+                        u_prev_4[i] as f64,
+                        u_raw_4[i] as f64,
+                    );
+                    a_4[i] = ((beta as f64) * odd + (delta as f64) * even) as f32;
+                }
+            }
+        }
+
+        let mut out_4 = [0.0f32; 4];
+        let mut next_m_4 = [0.0f32; 4];
+        for i in 0..4 {
+            let y_nl = 0.875 * a_4[i] + 0.125 * a_prev_4[i];
+            let next_m = r_ac * m_prev_4[i] + one_minus_rac * y_nl;
+            out_4[i] = alpha_x_4[i] + (y_nl - next_m);
+            next_m_4[i] = next_m;
+        }
+
+        left.u_prev[1] = flush_recursive_state_f32(u_raw_4[0]);
+        left.u_prev[2] = flush_recursive_state_f32(u_raw_4[1]);
+        right.u_prev[1] = flush_recursive_state_f32(u_raw_4[2]);
+        right.u_prev[2] = flush_recursive_state_f32(u_raw_4[3]);
+
+        left.a_prev[1] = flush_recursive_state_f32(a_4[0]);
+        left.a_prev[2] = flush_recursive_state_f32(a_4[1]);
+        right.a_prev[1] = flush_recursive_state_f32(a_4[2]);
+        right.a_prev[2] = flush_recursive_state_f32(a_4[3]);
+
+        left.m_dc[1] = flush_recursive_state_f32(next_m_4[0]);
+        left.m_dc[2] = flush_recursive_state_f32(next_m_4[1]);
+        right.m_dc[1] = flush_recursive_state_f32(next_m_4[2]);
+        right.m_dc[2] = flush_recursive_state_f32(next_m_4[3]);
+
+        (out_4[0], out_4[1], out_4[2], out_4[3])
     }
 }
 
@@ -387,6 +547,26 @@ pub fn eval_saturated_polyadaa_rail_crossing_f64(raw_prev: f64, raw_curr: f64) -
         (inside * even) * inv,
         true,
     )
+}
+
+/// Evaluates the odd degree-7 interval-average `PolyADAA` basis polynomial $A_{\text{odd},3}$ in `f32`
+/// for the cubed-envelope $C^2$ wavefolder on clamped endpoints $u_0, u_1 \in [-1, 1]$ (`ref[dsp.op-n.wavefolder.cubic-c2]`).
+#[inline(always)]
+pub fn eval_adaa_cubic_c2_wavefolder_odd_f32(u_prev: f32, u_curr: f32) -> f32 {
+    let u0 = u_prev.clamp(-1.0, 1.0);
+    let u1 = u_curr.clamp(-1.0, 1.0);
+    let m = 0.5 * (u1 + u0);
+    let d = 0.5 * (u1 - u0);
+    let m2 = m * m;
+    let d2 = d * d;
+    let m4 = m2 * m2;
+    let d4 = d2 * d2;
+    let m6 = m4 * m2;
+    let d6 = d4 * d2;
+    m * (1.0 - 3.0 * (m2 + d2) + 3.0 * m4 + 10.0 * m2 * d2 + 3.0 * d4
+        - m6
+        - 7.0 * (m4 * d2 + m2 * d4)
+        - d6)
 }
 
 /// Evaluates the division-free degree-7/8 interval-average `PolyADAA` basis polynomials

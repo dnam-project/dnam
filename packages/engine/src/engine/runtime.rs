@@ -230,8 +230,14 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
         self.stage_pipeline.stage1.op_t_pre.xfade_active = false;
         self.stage_pipeline.stage1.op_t_pre.xfade_idx = 0;
         self.stage_pipeline.stage4.current_psi = self.stage_pipeline.stage4.target_psi;
+        let (c_psi, s_psi) = crate::operators::op_m::algebraic_unit_rotor_op_m(
+            self.stage_pipeline.stage4.current_psi,
+        );
+        self.stage_pipeline.stage4.cos_psi = c_psi;
+        self.stage_pipeline.stage4.sin_psi = s_psi;
         self.ctrl_sub_counter = 0;
         self.ctrl_energy_accum = 0.0;
+        self.cached_head_tiers = 0;
         Ok(())
     }
 

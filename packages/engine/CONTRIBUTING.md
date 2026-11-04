@@ -71,6 +71,11 @@ moon run engine:coverage
 
 # 4. Run real-time throughput benchmarks
 moon run engine:bench
+
+# 5. Profile Criterion benchmarks with hotpath-rs (--profile profiling)
+HOTPATH_LIMIT=0 HOTPATH_CRITERION_ITERATIONS=500 \
+  cargo bench -p dnam-engine --profile profiling --bench pipeline --features hotpath-alloc \
+  -- --test --exact "process_block_128/ARM64 NEON/ultra"
 ```
 
 Coverage is a floor, not a bug-free guarantee. Independently challenge the

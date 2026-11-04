@@ -7,7 +7,6 @@
 
 use std::hint::black_box;
 
-use criterion::{Criterion, criterion_group, criterion_main};
 use dnam_engine::FtzDazGuard;
 use dnam_engine::math::DefaultMathBackend;
 use dnam_engine::math::spec_math::{Q0_192Phase, contractive_rotor_f32};
@@ -16,6 +15,7 @@ use dnam_engine::operators::{
     OpTDelayLine, PartitionedSchroederDiffuserBank, QuadratureHysteresis2D, SubHarmonicTracker,
     SymplecticModal4Lane, ZohBitcrusher, c2_wavefolder,
 };
+use hotpath::criterion::{Criterion, criterion_group, criterion_main};
 
 fn bench_op_t_kernels(c: &mut Criterion) {
     let mut group = c.benchmark_group("op_t_transport");

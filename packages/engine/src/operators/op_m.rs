@@ -15,7 +15,11 @@ use crate::schema::cold_pow_f64;
 pub fn algebraic_unit_rotor_op_m(theta: f32) -> (f32, f32) {
     const PI: f32 = core::f32::consts::PI;
     const TAU: f32 = core::f32::consts::TAU;
-    let wrapped = ((theta + PI).rem_euclid(TAU) - PI).clamp(-3.141_592_5, 3.141_592_5);
+    let wrapped = if (-3.141_592_5..=3.141_592_5).contains(&theta) {
+        theta
+    } else {
+        ((theta + PI).rem_euclid(TAU) - PI).clamp(-3.141_592_5, 3.141_592_5)
+    };
     crate::math::contractive_rotor_f32(wrapped).unwrap_or((1.0, 0.0))
 }
 
@@ -434,11 +438,57 @@ impl<const POLES: usize> KautzModalBank<POLES> {
 }
 
 impl KautzModalBank<4> {
-    /// Steps the 4-pole Kautz modal bank using `B::Vec4` SIMD operations (`0 FDIV`, `0 FSQRT`),
-    /// returning the 4 per-lane gauge-invariant modal outputs `2 * (c_re * s_re - c_im * s_im)`.
+    /// Steps a stereo pair (`self` = Left, `right` = Right) of 4-pole Kautz modal banks sharing
+    /// identical poles and residues (`lambda_re`, `lambda_im`, `b_gamma`, `c_re`, `c_im`) using
+    /// `B::Vec4` SIMD operations (`0 FDIV`, `0 FSQRT`), loading the 5 coefficient vectors once.
     /// Direct callers must hold a [`crate::FtzDazGuard`] for the enclosing batch.
     #[inline(always)]
-    pub fn step_4lane_simd<B: crate::math::MathBackend>(&mut self, x: f32) -> [f32; 4] {
+    pub fn step_4lane_stereo_simd_vec<B: crate::math::MathBackend>(
+        &mut self,
+        right: &mut Self,
+        x_l: f32,
+        x_r: f32,
+    ) -> (B::Vec4, B::Vec4) {
+        use crate::math::SimdVec4;
+        let l_re = B::Vec4::from_array(self.lambda_re);
+        let l_im = B::Vec4::from_array(self.lambda_im);
+        let b_g = B::Vec4::from_array(self.b_gamma);
+        let c_r = B::Vec4::from_array(self.c_re);
+        let c_i = B::Vec4::from_array(self.c_im);
+        let two = B::Vec4::splat(2.0);
+
+        let prev_re_l = B::Vec4::from_array(self.s_re);
+        let prev_im_l = B::Vec4::from_array(self.s_im);
+        let prev_re_r = B::Vec4::from_array(right.s_re);
+        let prev_im_r = B::Vec4::from_array(right.s_im);
+
+        let next_re_l = l_re
+            .mul(prev_re_l)
+            .sub(l_im.mul(prev_im_l))
+            .fma(b_g, B::Vec4::splat(x_l));
+        let next_im_l = l_im.mul(prev_re_l).add(l_re.mul(prev_im_l));
+
+        let next_re_r = l_re
+            .mul(prev_re_r)
+            .sub(l_im.mul(prev_im_r))
+            .fma(b_g, B::Vec4::splat(x_r));
+        let next_im_r = l_im.mul(prev_re_r).add(l_re.mul(prev_im_r));
+
+        self.s_re = flush_recursive_state_vec4(next_re_l).to_array();
+        self.s_im = flush_recursive_state_vec4(next_im_l).to_array();
+        right.s_re = flush_recursive_state_vec4(next_re_r).to_array();
+        right.s_im = flush_recursive_state_vec4(next_im_r).to_array();
+
+        let out_l = c_r.mul(next_re_l).sub(c_i.mul(next_im_l)).mul(two);
+        let out_r = c_r.mul(next_re_r).sub(c_i.mul(next_im_r)).mul(two);
+        (out_l, out_r)
+    }
+
+    /// Steps the 4-pole Kautz modal bank using `B::Vec4` SIMD operations (`0 FDIV`, `0 FSQRT`),
+    /// returning the `B::Vec4` per-lane gauge-invariant modal outputs `2 * (c_re * s_re - c_im * s_im)`.
+    /// Direct callers must hold a [`crate::FtzDazGuard`] for the enclosing batch.
+    #[inline(always)]
+    pub fn step_4lane_simd_vec<B: crate::math::MathBackend>(&mut self, x: f32) -> B::Vec4 {
         use crate::math::SimdVec4;
         let prev_re = B::Vec4::from_array(self.s_re);
         let prev_im = B::Vec4::from_array(self.s_im);
@@ -455,11 +505,18 @@ impl KautzModalBank<4> {
         self.s_re = flush_recursive_state_vec4(next_re).to_array();
         self.s_im = flush_recursive_state_vec4(next_im).to_array();
 
-        let out = c_r
-            .mul(next_re)
+        c_r.mul(next_re)
             .sub(c_i.mul(next_im))
-            .mul(B::Vec4::splat(2.0));
-        out.to_array()
+            .mul(B::Vec4::splat(2.0))
+    }
+
+    /// Steps the 4-pole Kautz modal bank using `B::Vec4` SIMD operations (`0 FDIV`, `0 FSQRT`),
+    /// returning the 4 per-lane gauge-invariant modal outputs `2 * (c_re * s_re - c_im * s_im)`.
+    /// Direct callers must hold a [`crate::FtzDazGuard`] for the enclosing batch.
+    #[inline(always)]
+    pub fn step_4lane_simd<B: crate::math::MathBackend>(&mut self, x: f32) -> [f32; 4] {
+        use crate::math::SimdVec4;
+        self.step_4lane_simd_vec::<B>(x).to_array()
     }
 }
 

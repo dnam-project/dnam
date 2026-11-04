@@ -7,6 +7,12 @@
       "skillPath": "skills/debug-task/SKILL.md",
       "computedHash": "74f2fd3e55a7788c6f69cca3d3457113651d7b295afe6f36c839017edb6ab3a7"
     },
+    "hotpath-rs": {
+      "source": "hotpath-rs/hotpath",
+      "sourceType": "github",
+      "skillPath": "skills/hotpath-rs/SKILL.md",
+      "computedHash": "996d25c6a00ce9b3605f31eabc2763c4ac7c697e9ffc37bf4c8908f5047e1c84"
+    },
     "migrate-radix-to-base": {
       "source": "shadcn/ui",
       "sourceType": "github",

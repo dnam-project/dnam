@@ -7,7 +7,6 @@
 use std::collections::BTreeMap;
 use std::hint::black_box;
 
-use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 use dnam_engine::container::{
     ARENA_OFFSET_FULL_END, ARENA_OFFSET_LITE_END, ARENA_OFFSET_PRO_END, ARENA_OFFSET_ULTRA_END,
     DnamContainerView, ZohRescaledParams, build_dnam_container,
@@ -26,6 +25,7 @@ use dnam_engine::schema::{
 };
 use dnam_engine::stages::topology::validate_tensor_directory_slice;
 use dnam_engine::{DnamEngine, Tier};
+use hotpath::criterion::{Criterion, Throughput, criterion_group, criterion_main};
 
 fn make_bench_container() -> AlignedBuffer<CacheLine64> {
     let mut header = DnamJsonHeader {

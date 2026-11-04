@@ -2,10 +2,7 @@
 //!
 //! Canonical Reference: `docs/specs/dsp/router_and_stages_topology.md` (`ref[dsp.stage4.spatial-tank]`, `ref[dsp.stage4.dc-blocker]`, `ref[dsp.stage4.loop-saturator]`, `ref[dsp.stage4.quiet-feedback-knee]`).
 
-use crate::math::{
-    flush_recursive_state_f32,
-    fp16::{f32_to_fp16, fp16_to_f32},
-};
+use crate::math::{DefaultMathBackend, MathBackend, flush_recursive_state_f32};
 use crate::operators::op_m::algebraic_unit_rotor_op_m;
 use crate::operators::op_t::BallisticDuckingVca;
 
@@ -77,9 +74,12 @@ pub struct Stage4SpatialTank {
     pub dc_blockers: [TankDcBlocker; TANK_LITE_LINES],
     /// 1-pole ballistic ducking VCA.
     pub ducking_vca: BallisticDuckingVca,
+    /// Cached Givens rotation cosine and sine at `current_psi`.
+    pub cos_psi: f32,
+    pub sin_psi: f32,
     /// Unitary freeze mode flag.
     pub freeze: bool,
-    pub _pad: [u8; 15],
+    pub _pad: [u8; 7],
 }
 
 impl Default for Stage4SpatialTank {
@@ -100,8 +100,10 @@ impl Stage4SpatialTank {
             sigma_knee: 1.0,
             dc_blockers: [TankDcBlocker::new(); TANK_LITE_LINES],
             ducking_vca: BallisticDuckingVca::new(),
+            cos_psi: core::f32::consts::FRAC_1_SQRT_2,
+            sin_psi: core::f32::consts::FRAC_1_SQRT_2,
             freeze: false,
-            _pad: [0; 15],
+            _pad: [0; 7],
         }
     }
 
@@ -112,6 +114,9 @@ impl Stage4SpatialTank {
         }
         self.write_ptr = 0;
         self.current_psi = self.target_psi;
+        let (c, s) = algebraic_unit_rotor_op_m(self.current_psi);
+        self.cos_psi = c;
+        self.sin_psi = s;
         self.ducking_vca.reset();
     }
 
@@ -141,81 +146,170 @@ impl Stage4SpatialTank {
     /// with `v_ceil = 0.985` and outer bit-level ceiling `0x3F7C28F5` so $S'(0) \equiv 1.000000$ and $|S(u)| \le 0.985$ unconditionally.
     #[inline(always)]
     pub fn coercive_saturate(&self, x: f32) -> f32 {
-        let v_ceil = f32::from_bits(super::topology::STAGE4_MAX_V_CEIL_BITS);
-        let knee_u = self.eval_quiet_feedback_knee(x, self.sigma_knee.max(1e-3), 0.15);
-        super::topology::eval_stage4_loop_saturator(knee_u, v_ceil).unwrap_or(0.0)
+        let inv_sigma = if (self.sigma_knee - 1.0).abs() <= 1e-6 {
+            1.0_f64
+        } else {
+            1.0_f64 / (self.sigma_knee.max(1e-3) as f64)
+        };
+        let knee_u = super::topology::eval_stage4_blended_feedback_knee_fast(
+            x,
+            self.g_loop
+                .min(f32::from_bits(super::topology::STAGE4_MAX_G_LIN_BITS)),
+            inv_sigma,
+            0.15,
+        );
+        super::topology::eval_stage4_loop_saturator_fast(knee_u)
     }
 
-    /// Evaluates Stage IV for stereo input (in_l, in_r).
-    ///
-    /// Returns stereo wet reverberant output (wet_l, wet_r).
-    /// Direct callers must hold a [`crate::FtzDazGuard`] for the enclosing batch.
+    /// Evaluates `coercive_saturate` across all 4 tank delay lines in parallel (`0 FDIV`, `0 FSQRT`).
+    /// Uses a 4-lane vectorizable `f32` minimax seed `24/17 - (8/17)*d` + 3 Newton steps when
+    /// `d = 1 + (u/sigma)^2 <= 2.0` (`< 1 ULP` of `f32`), falling back to 6-step `f64` when `d > 2.0`.
     #[inline(always)]
-    pub fn step_stereo(&mut self, in_l: f32, in_r: f32) -> (f32, f32) {
-        // Update Givens rotation angle with slew limit
-        let d_psi = (self.target_psi - self.current_psi).clamp(-0.05, 0.05);
-        let next_psi = self.current_psi + d_psi;
-        self.current_psi = flush_recursive_state_f32(next_psi);
-        let (cos_psi, sin_psi) = algebraic_unit_rotor_op_m(next_psi);
+    fn coercive_saturate_4ch(&self, x: [f32; TANK_LITE_LINES]) -> [f32; TANK_LITE_LINES] {
+        const V_CEIL: f32 = f32::from_bits(super::topology::STAGE4_MAX_V_CEIL_BITS);
+        const TWO_OVER_3V: f32 = (2.0_f64 / (3.0_f64 * (V_CEIL as f64))) as f32;
+        const SEED_A: f32 = 24.0 / 17.0;
+        const SEED_B: f32 = 8.0 / 17.0;
 
-        // 1. Read delayed samples from the 4 lines
-        let mut reads = [0.0f32; TANK_LITE_LINES];
+        let g = self
+            .g_loop
+            .min(f32::from_bits(super::topology::STAGE4_MAX_G_LIN_BITS));
+        let inv_sigma = if (self.sigma_knee - 1.0).abs() <= 1e-6 {
+            1.0_f32
+        } else {
+            1.0_f32 / self.sigma_knee.max(1e-3)
+        };
+
+        let r0 = x[0] * inv_sigma;
+        let r1 = x[1] * inv_sigma;
+        let r2 = x[2] * inv_sigma;
+        let r3 = x[3] * inv_sigma;
+
+        let d0 = 1.0 + r0 * r0;
+        let d1 = 1.0 + r1 * r1;
+        let d2 = 1.0 + r2 * r2;
+        let d3 = 1.0 + r3 * r3;
+
+        if d0 <= 2.0 && d1 <= 2.0 && d2 <= 2.0 && d3 <= 2.0 {
+            let d = [d0, d1, d2, d3];
+            let mut out = [0.0f32; 4];
+            for i in 0..4 {
+                let di = d[i];
+                let mut inv = SEED_A - SEED_B * di;
+                inv *= 2.0 - di * inv;
+                inv *= 2.0 - di * inv;
+                inv *= 2.0 - di * inv;
+                let knee_u = (g * x[i]) * (0.85 + 0.15 * inv);
+                let v = (knee_u * TWO_OVER_3V).clamp(-1.0, 1.0);
+                let prod = V_CEIL * v;
+                let half_sq = (0.5 * v) * v;
+                out[i] = (prod * (1.5 - half_sq)).clamp(-V_CEIL, V_CEIL);
+            }
+            return out;
+        }
+
+        [
+            self.coercive_saturate(x[0]),
+            self.coercive_saturate(x[1]),
+            self.coercive_saturate(x[2]),
+            self.coercive_saturate(x[3]),
+        ]
+    }
+
+    #[inline(always)]
+    fn step_givens_slew(&mut self) -> (f32, f32) {
+        let diff_psi = self.target_psi - self.current_psi;
+        if diff_psi.abs() > 1e-7 {
+            let d_psi = diff_psi.clamp(-0.05, 0.05);
+            let next_psi = flush_recursive_state_f32(self.current_psi + d_psi);
+            self.current_psi = next_psi;
+            let (c, s) = algebraic_unit_rotor_op_m(next_psi);
+            self.cos_psi = c;
+            self.sin_psi = s;
+            (c, s)
+        } else {
+            (self.cos_psi, self.sin_psi)
+        }
+    }
+
+    #[inline(always)]
+    fn step_reads_and_saturate(&mut self) -> ([f32; TANK_LITE_LINES], [f32; TANK_LITE_LINES]) {
+        let mut raw_fp16 = [0u16; TANK_LITE_LINES];
         for l in 0..TANK_LITE_LINES {
             let d_len = self.delay_lengths[l].clamp(1, TANK_LINE_CAPACITY - 1);
             let r_ptr = (self.write_ptr + TANK_LINE_CAPACITY - d_len) & TANK_LINE_MASK;
-            reads[l] = fp16_to_f32(self.lines[l][r_ptr]);
+            raw_fp16[l] = self.lines[l][r_ptr];
         }
+        let reads = DefaultMathBackend::fp16x4_to_f32x4(&raw_fp16);
 
-        // 2. 5 Hz DC blocker + Blended Quiet-Feedback Knee + Coercive-Saturating Lyapunov loop law
-        // (`ref[dsp.stage4.dc-blocker]`, `ref[dsp.stage4.quiet-feedback-knee]`, `ref[dsp.stage4.loop-saturator]`, `ref[dsp.stage4.captured-freeze]`).
-        // When `freeze` is active, bypass DC-blocker damping in the recirculating loop to preserve held energy,
-        // while still applying the DC blocker to the non-recirculating wet readout.
-        let mut loop_sig = [0.0f32; TANK_LITE_LINES];
-        let mut readout_sig = [0.0f32; TANK_LITE_LINES];
-        for l in 0..TANK_LITE_LINES {
-            let dc_clean = self.dc_blockers[l].step(reads[l]);
-            readout_sig[l] = dc_clean;
-            loop_sig[l] = if self.freeze {
-                reads[l]
-            } else {
-                self.coercive_saturate(dc_clean)
-            };
-        }
+        let readout_sig = [
+            self.dc_blockers[0].step(reads[0]),
+            self.dc_blockers[1].step(reads[1]),
+            self.dc_blockers[2].step(reads[2]),
+            self.dc_blockers[3].step(reads[3]),
+        ];
+        let loop_sig = if self.freeze {
+            reads
+        } else {
+            self.coercive_saturate_4ch(readout_sig)
+        };
+        (readout_sig, loop_sig)
+    }
 
-        // 3. Lossless Givens stereo rotation on pairs (0,1) and (2,3)
+    #[inline(always)]
+    fn step_mix_write_duck(
+        &mut self,
+        cos_psi: f32,
+        sin_psi: f32,
+        readout_sig: [f32; TANK_LITE_LINES],
+        loop_sig: [f32; TANK_LITE_LINES],
+        in_l: f32,
+        in_r: f32,
+    ) -> (f32, f32) {
         let mut mixed = [0.0f32; TANK_LITE_LINES];
         mixed[0] = cos_psi * loop_sig[0] - sin_psi * loop_sig[1];
         mixed[1] = sin_psi * loop_sig[0] + cos_psi * loop_sig[1];
         mixed[2] = cos_psi * loop_sig[2] - sin_psi * loop_sig[3];
         mixed[3] = sin_psi * loop_sig[2] + cos_psi * loop_sig[3];
 
-        // 4. Householder reflection: H_4 = I - 0.5 * 1 * 1^T
         let sum = mixed[0] + mixed[1] + mixed[2] + mixed[3];
         let sub = 0.5 * sum;
         for l in 0..TANK_LITE_LINES {
             mixed[l] -= sub;
         }
 
-        // 5. Inject inputs into lines (freeze mutes input injection)
         let inj_l = if self.freeze { 0.0 } else { in_l };
         let inj_r = if self.freeze { 0.0 } else { in_r };
 
-        let write_val0 = mixed[0] + inj_l;
-        let write_val1 = mixed[1] + inj_r;
-        let write_val2 = mixed[2] + inj_l;
-        let write_val3 = mixed[3] + inj_r;
-
-        self.lines[0][self.write_ptr] = f32_to_fp16(write_val0);
-        self.lines[1][self.write_ptr] = f32_to_fp16(write_val1);
-        self.lines[2][self.write_ptr] = f32_to_fp16(write_val2);
-        self.lines[3][self.write_ptr] = f32_to_fp16(write_val3);
+        let write_vals = [
+            mixed[0] + inj_l,
+            mixed[1] + inj_r,
+            mixed[2] + inj_l,
+            mixed[3] + inj_r,
+        ];
+        let packed_fp16 = DefaultMathBackend::f32x4_to_fp16x4(&write_vals);
+        self.lines[0][self.write_ptr] = packed_fp16[0];
+        self.lines[1][self.write_ptr] = packed_fp16[1];
+        self.lines[2][self.write_ptr] = packed_fp16[2];
+        self.lines[3][self.write_ptr] = packed_fp16[3];
 
         self.write_ptr = (self.write_ptr + 1) & TANK_LINE_MASK;
 
-        // 6. Direct stereo tap mix + stereo-linked sidechain ducking VCA
         let wet_l = 0.5 * (readout_sig[0] + readout_sig[2]);
         let wet_r = 0.5 * (readout_sig[1] + readout_sig[3]);
         self.ducking_vca.step_stereo(in_l, in_r, wet_l, wet_r)
+    }
+
+    /// Evaluates Stage IV for stereo input (in_l, in_r).
+    ///
+    /// Returns stereo wet reverberant output (wet_l, wet_r).
+    /// Direct callers must hold a [`crate::FtzDazGuard`] for the enclosing batch.
+    #[cfg_attr(feature = "hotpath", hotpath::measure)]
+    #[inline(always)]
+    pub fn step_stereo(&mut self, in_l: f32, in_r: f32) -> (f32, f32) {
+        let (cos_psi, sin_psi) = self.step_givens_slew();
+        let (readout_sig, loop_sig) = self.step_reads_and_saturate();
+        self.step_mix_write_duck(cos_psi, sin_psi, readout_sig, loop_sig, in_l, in_r)
     }
 }
 

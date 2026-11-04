@@ -426,6 +426,7 @@ impl<B: MathBackend> ControlBus<B> {
 
     /// Executes one $3\text{ kHz}$ Control-Bus tick (`0 FDIV`, `0 FSQRT`, `0` heap allocations).
     /// Direct callers must hold a [`crate::FtzDazGuard`] for the enclosing batch.
+    #[cfg_attr(feature = "hotpath", hotpath::measure)]
     #[inline]
     pub fn tick_3khz(&mut self, audio_abs_energy: f32, arena_bytes: &[u8]) -> bool {
         for b in 0..3 {
@@ -438,10 +439,22 @@ impl<B: MathBackend> ControlBus<B> {
         self.env_states[3] = (self.env_states[2] - self.env_states[0]).max(0.0);
         for j in 0..2 {
             let angle_bits = self.lfo_angle_bits[j];
-            let (c_next, s_next) = if (angle_bits & 0x7fff_ffff) != 0
-                && self.lfo_phases_q192[j]
-                    .step_angle_bits(angle_bits)
-                    .is_some()
+            if (angle_bits & 0x7fff_ffff) == 0 {
+                let c_hold = self.lfo_phasors[j][0];
+                let two_x = 2.0 * c_hold;
+                let t2 = two_x * c_hold - 1.0;
+                let t3 = two_x * t2 - c_hold;
+                let t4 = two_x * t3 - t2;
+                let base = j * 4;
+                self.lfo_harmonics[base] = c_hold;
+                self.lfo_harmonics[base + 1] = t2;
+                self.lfo_harmonics[base + 2] = t3;
+                self.lfo_harmonics[base + 3] = t4;
+                continue;
+            }
+            let (c_next, s_next) = if self.lfo_phases_q192[j]
+                .step_angle_bits(angle_bits)
+                .is_some()
             {
                 self.lfo_phases_q192[j].to_phasor()
             } else {

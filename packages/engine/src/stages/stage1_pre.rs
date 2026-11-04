@@ -136,6 +136,7 @@ impl Stage1PreDynamics {
 
     /// Evaluates Stage I for stereo frame `(in_l, in_r)` with partitioned Left/Right state isolation.
     /// Direct callers must hold a [`crate::FtzDazGuard`] for the enclosing batch.
+    #[cfg_attr(feature = "hotpath", hotpath::measure)]
     #[inline(always)]
     pub fn step_stereo(&mut self, in_l: f32, in_r: f32) -> (f32, f32) {
         match self.topology_mode & 0x03 {

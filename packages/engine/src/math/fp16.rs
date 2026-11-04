@@ -4,6 +4,9 @@
 #[inline(always)]
 pub fn f32_to_fp16(val: f32) -> u16 {
     let bits = val.to_bits();
+    if (bits & 0x7FFF_FFFF) == 0 {
+        return ((bits >> 16) & 0x8000) as u16;
+    }
     let sign = ((bits >> 16) & 0x8000) as u16;
     let exp = ((bits >> 23) & 0xFF) as i32;
     let mant = bits & 0x007F_FFFF;
@@ -39,6 +42,9 @@ pub fn f32_to_fp16(val: f32) -> u16 {
 /// Branchless IEEE-754 `fp16` (`u16`) to `f32` conversion.
 #[inline(always)]
 pub fn fp16_to_f32(bits: u16) -> f32 {
+    if (bits & 0x7FFF) == 0 {
+        return f32::from_bits(((bits & 0x8000) as u32) << 16);
+    }
     let sign = ((bits & 0x8000) as u32) << 16;
     let exp = ((bits >> 10) & 0x1F) as u32;
     let mant = (bits & 0x03FF) as u32;
@@ -47,14 +53,10 @@ pub fn fp16_to_f32(bits: u16) -> f32 {
         if mant == 0 {
             return f32::from_bits(sign);
         }
-        // Subnormal fp16
-        let mut m = mant;
-        let mut e = 127u32 - 14;
-        while (m & 0x0400) == 0 {
-            m <<= 1;
-            e -= 1;
-        }
-        m &= 0x03FF;
+        // Subnormal fp16: normalize via hardware CLZ (`leading_zeros`)
+        let shift = mant.leading_zeros() - 21;
+        let m = (mant << shift) & 0x03FF;
+        let e = 127u32 - 14 - shift;
         return f32::from_bits(sign | (e << 23) | (m << 13));
     }
     if exp == 31 {

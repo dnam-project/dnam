@@ -51,13 +51,13 @@ Measured via `cargo bench -p dnam-engine --bench realtime_wcet` (`2,666.67 µs` 
 
 | Tier & Subsystem Profile | Backend | Latency / Frame | `×` Real-Time | Single-Core CPU | Modulated `P50` Block | Modulated `P99.9` Block | `Max` / `2,666.67 µs` Budget |
 | :--- | :--- | ---: | ---: | ---: | ---: | ---: | ---: |
-| **`Lite` (`C = 4`, `64-D` Bus)** | `ARM64 NEON` | **`1,046.80 ns`** | **`19.9x`** | **`5.02%`** | `131.92 µs` | `226.88 µs` | **`9.35%`** |
-| **`Full` (`C = 8`, `128-D` Bus)** | `ARM64 NEON` | **`1,777.15 ns`** | **`11.7x`** | **`8.53%`** | `231.71 µs` | `738.62 µs` | **`28.01%`** |
-| **`Pro` (`C = 12`, `192-D` Bus)** | `ARM64 NEON` | **`2,534.45 ns`** | **`8.2x`** | **`12.17%`** | `328.50 µs` | `448.12 µs` | **`19.10%`** |
-| **`Ultra` (`C = 16`, `256-D` Bus)** | `ARM64 NEON` | **`5,459.15 ns`** | **`3.8x`** | **`26.20%`** | `710.46 µs` | `858.92 µs` | **`32.42%`** |
-| **`Ultra` (`C = 16`, `4×` Offline Bounce)** | `ARM64 NEON` | **`21,916.38 ns`** | **`1.0x`** | **`105.20%`** | — | — | — |
-| **`Full` (`C = 8`, ARM SME)** | `ARM SME` | **`1,766.33 ns`** | **`11.8x`** | **`8.48%`** | — | — | — |
-| **`Full` (`C = 8`, Scalar Baseline)** | `Scalar` | **`1,811.65 ns`** | **`11.5x`** | **`8.70%`** | — | — | — |
+| **`Lite` (`C = 4`, `64-D` Bus)** | `ARM64 NEON` | **`161.12 ns`** | **`129.3x`** | **`0.77%`** | `27.54 µs` | `73.88 µs` | **`3.12%`** |
+| **`Full` (`C = 8`, `128-D` Bus)** | `ARM64 NEON` | **`176.39 ns`** | **`118.1x`** | **`0.85%`** | `34.67 µs` | `83.29 µs` | **`3.33%`** |
+| **`Pro` (`C = 12`, `192-D` Bus)** | `ARM64 NEON` | **`180.56 ns`** | **`115.4x`** | **`0.87%`** | `41.33 µs` | `100.25 µs` | **`3.99%`** |
+| **`Ultra` (`C = 16`, `256-D` Bus)** | `ARM64 NEON` | **`199.28 ns`** | **`104.5x`** | **`0.96%`** | `64.12 µs` | `114.17 µs` | **`5.31%`** |
+| **`Ultra` (`C = 16`, `4×` Offline Bounce)** | `ARM64 NEON` | **`780.00 ns`** | **`26.7x`** | **`3.74%`** | — | — | — |
+| **`Full` (`C = 8`, ARM SME)** | `ARM SME` | **`175.52 ns`** | **`118.7x`** | **`0.84%`** | — | — | — |
+| **`Full` (`C = 8`, Scalar Baseline)** | `Scalar` | **`192.12 ns`** | **`108.4x`** | **`0.92%`** | — | — | — |
 
 ---
 
@@ -111,6 +111,12 @@ cargo bench -p dnam-engine --bench pipeline
 cargo bench -p dnam-engine --bench operators
 cargo bench -p dnam-engine --bench stages_and_control
 cargo bench -p dnam-engine --bench container_and_provenance
+
+# Profiling with hotpath-rs (--profile profiling)
+HOTPATH_LIMIT=0 HOTPATH_CRITERION_ITERATIONS=500 \
+  cargo bench -p dnam-engine --profile profiling --bench pipeline --features hotpath-alloc \
+  -- --test --exact "process_block_128/ARM64 NEON/ultra"
+cargo bench -p dnam-engine --profile profiling --bench realtime_wcet --features hotpath-alloc
 
 # Runnable Examples
 cargo run -p dnam-engine --example realtime_audio_block

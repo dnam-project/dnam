@@ -110,21 +110,27 @@ pub fn f32_to_fp16_with_telemetry(x: f32, flags: &mut u32) -> u16 {
 /// Widens an IEEE-754 `f32` bit pattern (including subnormals) directly to `f64`
 /// without executing hardware `f32` instructions subject to FTZ/DAZ (`ref[dsp.ctrl.op-n.trust-clip]`).
 /// Returns `None` if `bits` encodes `±Inf` or `NaN`.
-#[inline]
+#[inline(always)]
 pub const fn widen_f32_bits(bits: u32) -> Option<f64> {
-    let sign = ((bits & 0x8000_0000) as u64) << 32;
     let exponent = (bits >> 23) & 0xff;
+    if exponent != 0 && exponent != 0xff {
+        let sign = ((bits & 0x8000_0000) as u64) << 32;
+        let frac = (bits & 0x007f_ffff) as u64;
+        return Some(f64::from_bits(
+            sign | (((exponent + 896) as u64) << 52) | (frac << 29),
+        ));
+    }
+    let sign = ((bits & 0x8000_0000) as u64) << 32;
     let fraction = bits & 0x007f_ffff;
     let wide_bits = match (exponent, fraction) {
         (0xff, _) => return None,
         (0, 0) => sign,
-        (0, frac) => {
+        (_, frac) => {
             let leading = 31 - frac.leading_zeros();
             let exponent64 = (leading + 874) as u64;
             let fraction64 = ((frac - (1 << leading)) as u64) << (52 - leading);
             sign | (exponent64 << 52) | fraction64
         }
-        (exp, frac) => sign | (((exp + 896) as u64) << 52) | ((frac as u64) << 29),
     };
     Some(f64::from_bits(wide_bits))
 }

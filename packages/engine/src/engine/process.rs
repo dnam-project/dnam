@@ -30,6 +30,99 @@ fn read_vec4_le<B: MathBackend>(bytes: &[u8], off: usize) -> B::Vec4 {
 }
 
 impl<'a, B: MathBackend> DnamEngine<'a, B> {
+    /// Collapses the `3 kHz` SVD Kronecker Output Head weights (`ref[dsp.head.mid-side-factorization]`)
+    /// and pre-folds `CASCADE_W_BASES` and cross-tier shared feature groups (`g = 8..15`) for `active_tiers`.
+    #[cfg_attr(feature = "hotpath", hotpath::measure)]
+    #[inline]
+    pub(crate) fn refresh_collapsed_head_weights(&mut self, active_tiers: usize) {
+        const CASCADE_W_BASES: [usize; 4] = [1_024, 11_264, 22_336, 36_224];
+        const HEAD_BASES: [usize; 4] = [4_928, 18_048, 31_936, 57_600];
+
+        let arena = self.arena_storage.as_bytes();
+        let z_h = self.control_bus.z_head;
+        let z_u = self.control_bus.z_head_ultra;
+        let z_vecs = [
+            B::Vec4::splat(z_h[0]),
+            B::Vec4::splat(z_h[1]),
+            B::Vec4::splat(z_h[2]),
+            B::Vec4::splat(z_h[3]),
+        ];
+        let zu_vecs = [
+            B::Vec4::splat(z_u[0]),
+            B::Vec4::splat(z_u[1]),
+            B::Vec4::splat(z_u[2]),
+            B::Vec4::splat(z_u[3]),
+        ];
+        let one_vec = B::Vec4::splat(1.0);
+        let mut shared_wl = [B::Vec4::zero(); 7];
+        let mut shared_wr = [B::Vec4::zero(); 7];
+
+        for t in 0..active_tiers {
+            let cw_base = CASCADE_W_BASES[t];
+            let w_c = [
+                read_vec4_le::<B>(arena, cw_base).add(one_vec),
+                read_vec4_le::<B>(arena, cw_base + 16).add(one_vec),
+                read_vec4_le::<B>(arena, cw_base + 32).add(one_vec),
+                read_vec4_le::<B>(arena, cw_base + 48).add(one_vec),
+            ];
+
+            let h_base = HEAD_BASES[t];
+            let u_base = 49_408 + t * 2048;
+            for g in 0..15 {
+                let g_off_l = g * 16;
+                let g_off_r = 256 + g * 16;
+                let mut wl = read_vec4_le::<B>(arena, h_base + g_off_l);
+                let mut wr = read_vec4_le::<B>(arena, h_base + g_off_r);
+                for k in 0..4 {
+                    let mode_off = h_base + (k + 1) * 512;
+                    wl = wl.fma(z_vecs[k], read_vec4_le::<B>(arena, mode_off + g_off_l));
+                    wr = wr.fma(z_vecs[k], read_vec4_le::<B>(arena, mode_off + g_off_r));
+                }
+                if active_tiers >= 4 {
+                    for k in 0..4 {
+                        let u_mode_off = u_base + k * 512;
+                        wl = wl.fma(zu_vecs[k], read_vec4_le::<B>(arena, u_mode_off + g_off_l));
+                        wr = wr.fma(zu_vecs[k], read_vec4_le::<B>(arena, u_mode_off + g_off_r));
+                    }
+                }
+                if g < 8 {
+                    self.collapsed_kautz_wl[t][g] = wl;
+                    self.collapsed_kautz_wr[t][g] = wr;
+                } else if g < 12 {
+                    let scale = w_c[g - 8];
+                    shared_wl[g - 8] = shared_wl[g - 8].fma(wl, scale);
+                    shared_wr[g - 8] = shared_wr[g - 8].fma(wr, scale);
+                } else {
+                    shared_wl[g - 8] = shared_wl[g - 8].add(wl);
+                    shared_wr[g - 8] = shared_wr[g - 8].add(wr);
+                }
+            }
+        }
+        self.collapsed_shared_wl = shared_wl;
+        self.collapsed_shared_wr = shared_wr;
+
+        let mut b_head_l = 0.0_f32;
+        let mut b_head_r = 0.0_f32;
+        if active_tiers >= 1 && arena.len() >= 9_064 {
+            b_head_l = read_f32_le(arena, 9_024);
+            b_head_r = read_f32_le(arena, 9_028);
+            for k in 0..4 {
+                b_head_l += z_h[k] * read_f32_le(arena, 9_024 + ((k + 1) * 2) * 4);
+                b_head_r += z_h[k] * read_f32_le(arena, 9_024 + ((k + 1) * 2 + 1) * 4);
+            }
+            if active_tiers >= 4 && arena.len() >= 63_456 {
+                for k in 0..4 {
+                    b_head_l += z_u[k] * read_f32_le(arena, 63_424 + (k * 2) * 4);
+                    b_head_r += z_u[k] * read_f32_le(arena, 63_424 + (k * 2 + 1) * 4);
+                }
+            }
+        }
+        self.collapsed_b_head = [b_head_l, b_head_r];
+        self.cached_z_head = z_h;
+        self.cached_z_head_ultra = z_u;
+        self.cached_head_tiers = active_tiers;
+    }
+
     /// Applies $3\text{ kHz}$ `ControlBus` state-space modulations (`W_ctrl`) to Stage I and Stage IV.
     #[inline(always)]
     pub(crate) fn apply_tank_modulations(&mut self) {
@@ -56,6 +149,7 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
     /// Direct callers must hold a [`FtzDazGuard`] for the enclosing batch. This
     /// method does not perform block-level preview accounting, tempo advancement,
     /// or offline oversampling; use the block APIs when those behaviors are needed.
+    #[cfg_attr(feature = "hotpath", hotpath::measure)]
     #[inline(always)]
     pub fn step_frame_tora(&mut self, in_l: f32, in_r: f32, mono_only: bool) -> [f32; 2] {
         let in_l = crate::math::sanitize_input_sample(
@@ -115,33 +209,21 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
             &mut self.current_stage_params,
             &self.stage_ramp_deltas,
         );
-        let stage_laws = crate::stages::eval_stage_modulation_laws(
-            &self.current_stage_params,
-            [
-                self.stage_pipeline.stage0.s_matrix[0][0],
-                self.stage_pipeline.stage0.s_matrix[1][1],
-            ],
-            self.zoh.tau_ref_samples_host,
-            1020.0,
-            149.0,
-            255.0,
-            self.stage_pipeline.stage4.g_loop,
-            0.5,
-            self.stereo_width,
-        );
 
         // Stage 0: 8-Port Matrix Router
-        let (_send_l, _send_r, down_l, down_r, clean_sub_l, clean_sub_r) = self
+        let (down_l, down_r, clean_sub_l, clean_sub_r) = self
             .stage_pipeline
             .stage0
-            .route_frame(eff_in_l, eff_in_r, 0.0, 0.0);
+            .route_frame_no_return(eff_in_l, eff_in_r);
 
         // Stage I: Pre-Dynamics
         let (s1_l, s1_r) = self.stage_pipeline.stage1.step_stereo(down_l, down_r);
 
         // Stage II: Commuted Cascade (Tone Basis + Non-linear PolyADAA)
-        let drive_gain = (stage_laws[5] + 0.25 * self.control_bus.ctrl_basis_4[0]).clamp(0.25, 4.0);
-        let sag_depth = (stage_laws[8] + 0.1 * self.control_bus.ctrl_basis_4[1]).clamp(0.0, 0.8);
+        let stage_law_5 = (1.0 + 0.25 * self.current_stage_params[5]).clamp(0.25, 4.0);
+        let stage_law_8 = (0.2 + 0.1 * self.current_stage_params[8]).clamp(0.0, 0.8);
+        let drive_gain = (stage_law_5 + 0.25 * self.control_bus.ctrl_basis_4[0]).clamp(0.25, 4.0);
+        let sag_depth = (stage_law_8 + 0.1 * self.control_bus.ctrl_basis_4[1]).clamp(0.0, 0.8);
         let (basis_l, basis_r) = self
             .stage_pipeline
             .stage2
@@ -151,139 +233,77 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
 
         // Stage III: Cabinet Modals (Early FIR + Stereo Kautz Modal Bank driven by 16-sample-delayed tap + Clean Sub crossover)
         let fir_taps = self.stage_pipeline.fir_taps;
-        let (s3_fir_l, s2_delayed_16_l) =
-            self.stage_pipeline
-                .stage3
-                .step_with_delayed_tap(s2_l, clean_sub_l, &fir_taps);
-        let (s3_fir_r, s2_delayed_16_r) =
-            self.stage_pipeline
-                .stage3_r
-                .step_with_delayed_tap(s2_r, clean_sub_r, &fir_taps);
+        let (s3_fir_l, s2_delayed_16_l) = self
+            .stage_pipeline
+            .stage3
+            .step_fir_only_with_delayed_tap(s2_l, clean_sub_l, &fir_taps);
+        let (s3_fir_r, s2_delayed_16_r) = self
+            .stage_pipeline
+            .stage3_r
+            .step_fir_only_with_delayed_tap(s2_r, clean_sub_r, &fir_taps);
 
-        let arena = self.arena_storage.as_bytes();
+        let arena_len = self.arena_storage.as_bytes().len();
         let active_tiers =
-            (self.effective_tier() as usize + 1).min(max_tiers_for_arena_len(arena.len()));
+            (self.effective_tier() as usize + 1).min(max_tiers_for_arena_len(arena_len));
 
-        let mut kautz_vecs_l = [[B::Vec4::zero(); 4]; 4];
-        let mut kautz_vecs_r = [[B::Vec4::zero(); 4]; 4];
-        let mut kautz_sum_l = 0.0_f32;
-        let mut kautz_sum_r = 0.0_f32;
+        if self.cached_head_tiers != active_tiers
+            || self.cached_z_head != self.control_bus.z_head
+            || self.cached_z_head_ultra != self.control_bus.z_head_ultra
+        {
+            self.refresh_collapsed_head_weights(active_tiers);
+        }
+
+        let mut head_acc_l = B::Vec4::zero();
+        let mut head_acc_r = B::Vec4::zero();
+        let mut kautz_acc_l = B::Vec4::zero();
+        let mut kautz_acc_r = B::Vec4::zero();
         for t in 0..active_tiers {
+            let kwl = &self.collapsed_kautz_wl[t];
+            let kwr = &self.collapsed_kautz_wr[t];
+            let tiers_l = &mut self.stage_pipeline.kautz_tiers_l[t];
+            let tiers_r = &mut self.stage_pipeline.kautz_tiers_r[t];
             for blk in 0..4 {
-                let kl =
-                    self.stage_pipeline.kautz_tiers_l[t][blk].step_4lane_simd::<B>(s2_delayed_16_l);
-                let kr =
-                    self.stage_pipeline.kautz_tiers_r[t][blk].step_4lane_simd::<B>(s2_delayed_16_r);
-                let vl = B::Vec4::from_array(kl);
-                let vr = B::Vec4::from_array(kr);
-                kautz_sum_l += vl.horizontal_sum();
-                kautz_sum_r += vr.horizontal_sum();
-                kautz_vecs_l[t][blk] = vl;
-                kautz_vecs_r[t][blk] = vr;
+                let (vl, vr) = tiers_l[blk].step_4lane_stereo_simd_vec::<B>(
+                    &mut tiers_r[blk],
+                    s2_delayed_16_l,
+                    s2_delayed_16_r,
+                );
+                kautz_acc_l = kautz_acc_l.add(vl);
+                kautz_acc_r = kautz_acc_r.add(vr);
+                head_acc_l = head_acc_l.fma(kwl[blk], vl).fma(kwl[4 + blk], vr);
+                if !mono_only {
+                    head_acc_r = head_acc_r.fma(kwr[blk], vl).fma(kwr[4 + blk], vr);
+                }
             }
         }
-        let s3_l = s3_fir_l + 0.125 * kautz_sum_l;
-        let s3_r = s3_fir_r + 0.125 * kautz_sum_r;
+        let s3_l = s3_fir_l + 0.125 * kautz_acc_l.horizontal_sum();
+        let s3_r = s3_fir_r + 0.125 * kautz_acc_r.horizontal_sum();
 
         // Stage IV: Unitary Spatial Tank (Givens+Householder + Diffusers + DC Blocker + Ducking)
         let (tank_l, tank_r) = self.stage_pipeline.stage4.step_stereo(s3_l, s3_r);
 
-        // Multi-Tier 64-D / 256-D Feature Bus & SVD-Collapsed Kronecker Output Head
-        let mut head_acc_l = B::Vec4::zero();
-        let mut head_acc_r = B::Vec4::zero();
-        let z_h = self.control_bus.z_head;
-        let z_u = self.control_bus.z_head_ultra;
-        let z_vecs = [
-            B::Vec4::splat(z_h[0]),
-            B::Vec4::splat(z_h[1]),
-            B::Vec4::splat(z_h[2]),
-            B::Vec4::splat(z_h[3]),
+        // Multi-Tier 64-D / 256-D Feature Bus & 3 kHz SVD-Collapsed Kronecker Output Head (`ref[dsp.head.mid-side-factorization]`)
+        let shared_phi: [B::Vec4; 7] = [
+            B::Vec4::from_array([basis_l[0], basis_l[1], basis_l[2], basis_l[3]]),
+            B::Vec4::from_array([basis_l[4], basis_l[5], basis_l[6], basis_l[7]]),
+            B::Vec4::from_array([basis_r[0], basis_r[1], basis_r[2], basis_r[3]]),
+            B::Vec4::from_array([basis_r[4], basis_r[5], basis_r[6], basis_r[7]]),
+            B::Vec4::from_array([s1_l, s1_r, s3_fir_l, s3_fir_r]),
+            B::Vec4::from_array([tank_l, tank_r, clean_sub_l, clean_sub_r]),
+            B::Vec4::from_array([s2_l, s2_r, s3_l, s3_r]),
         ];
-        let zu_vecs = [
-            B::Vec4::splat(z_u[0]),
-            B::Vec4::splat(z_u[1]),
-            B::Vec4::splat(z_u[2]),
-            B::Vec4::splat(z_u[3]),
-        ];
-
-        const CASCADE_W_BASES: [usize; 4] = [1_024, 11_264, 22_336, 36_224];
-        const HEAD_BASES: [usize; 4] = [4_928, 18_048, 31_936, 57_600];
-
-        let b_l0 = B::Vec4::from_array([basis_l[0], basis_l[1], basis_l[2], basis_l[3]]);
-        let b_l1 = B::Vec4::from_array([basis_l[4], basis_l[5], basis_l[6], basis_l[7]]);
-        let b_r0 = B::Vec4::from_array([basis_r[0], basis_r[1], basis_r[2], basis_r[3]]);
-        let b_r1 = B::Vec4::from_array([basis_r[4], basis_r[5], basis_r[6], basis_r[7]]);
-        let stage_vec12 = B::Vec4::from_array([s1_l, s1_r, s3_fir_l, s3_fir_r]);
-        let stage_vec13 = B::Vec4::from_array([tank_l, tank_r, clean_sub_l, clean_sub_r]);
-        let stage_vec14 = B::Vec4::from_array([s2_l, s2_r, s3_l, s3_r]);
-        let stage_vec15 = B::Vec4::zero();
-
-        for t in 0..active_tiers {
-            let cw_base = CASCADE_W_BASES[t];
-            let w_c0 = read_vec4_le::<B>(arena, cw_base);
-            let w_c1 = read_vec4_le::<B>(arena, cw_base + 16);
-            let w_c2 = read_vec4_le::<B>(arena, cw_base + 32);
-            let w_c3 = read_vec4_le::<B>(arena, cw_base + 48);
-
-            let phi_t: [B::Vec4; 16] = [
-                kautz_vecs_l[t][0],
-                kautz_vecs_l[t][1],
-                kautz_vecs_l[t][2],
-                kautz_vecs_l[t][3],
-                kautz_vecs_r[t][0],
-                kautz_vecs_r[t][1],
-                kautz_vecs_r[t][2],
-                kautz_vecs_r[t][3],
-                b_l0.fma(w_c0, b_l0),
-                b_l1.fma(w_c1, b_l1),
-                b_r0.fma(w_c2, b_r0),
-                b_r1.fma(w_c3, b_r1),
-                stage_vec12,
-                stage_vec13,
-                stage_vec14,
-                stage_vec15,
-            ];
-
-            let h_base = HEAD_BASES[t];
-            let u_base = 49_408 + t * 2048;
-            for (g, &phi_g) in phi_t.iter().enumerate() {
-                let g_off_l = g * 16;
-                let g_off_r = 256 + g * 16;
-                let mut wl = read_vec4_le::<B>(arena, h_base + g_off_l);
-                let mut wr = read_vec4_le::<B>(arena, h_base + g_off_r);
-                for k in 0..4 {
-                    let mode_off = h_base + (k + 1) * 512;
-                    wl = wl.fma(z_vecs[k], read_vec4_le::<B>(arena, mode_off + g_off_l));
-                    wr = wr.fma(z_vecs[k], read_vec4_le::<B>(arena, mode_off + g_off_r));
-                }
-                if active_tiers >= 4 {
-                    for k in 0..4 {
-                        let u_mode_off = u_base + k * 512;
-                        wl = wl.fma(zu_vecs[k], read_vec4_le::<B>(arena, u_mode_off + g_off_l));
-                        wr = wr.fma(zu_vecs[k], read_vec4_le::<B>(arena, u_mode_off + g_off_r));
-                    }
-                }
-                head_acc_l = head_acc_l.fma(wl, phi_g);
-                head_acc_r = head_acc_r.fma(wr, phi_g);
+        if mono_only {
+            for (g, &phi_g) in shared_phi.iter().enumerate() {
+                head_acc_l = head_acc_l.fma(self.collapsed_shared_wl[g], phi_g);
+            }
+        } else {
+            for (g, &phi_g) in shared_phi.iter().enumerate() {
+                head_acc_l = head_acc_l.fma(self.collapsed_shared_wl[g], phi_g);
+                head_acc_r = head_acc_r.fma(self.collapsed_shared_wr[g], phi_g);
             }
         }
 
-        let mut b_head_l = 0.0_f32;
-        let mut b_head_r = 0.0_f32;
-        if active_tiers >= 1 {
-            b_head_l = read_f32_le(arena, 9_024);
-            b_head_r = read_f32_le(arena, 9_028);
-            for k in 0..4 {
-                b_head_l += z_h[k] * read_f32_le(arena, 9_024 + ((k + 1) * 2) * 4);
-                b_head_r += z_h[k] * read_f32_le(arena, 9_024 + ((k + 1) * 2 + 1) * 4);
-            }
-            if active_tiers >= 4 {
-                for k in 0..4 {
-                    b_head_l += z_u[k] * read_f32_le(arena, 63_424 + (k * 2) * 4);
-                    b_head_r += z_u[k] * read_f32_le(arena, 63_424 + (k * 2 + 1) * 4);
-                }
-            }
-        }
+        let [b_head_l, b_head_r] = self.collapsed_b_head;
 
         let mut wet_l = s3_l + tank_l + head_acc_l.horizontal_sum() + b_head_l;
         let mut wet_r = s3_r + tank_r + head_acc_r.horizontal_sum() + b_head_r;
@@ -338,6 +358,7 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
     }
 
     /// Processes a stereo audio block (`Stereo -> Stereo`).
+    #[cfg_attr(feature = "hotpath", hotpath::measure)]
     pub fn process_block(
         &mut self,
         left_in: &[f32],

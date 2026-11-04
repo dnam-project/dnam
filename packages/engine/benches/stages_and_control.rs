@@ -8,7 +8,6 @@
 use std::collections::BTreeMap;
 use std::hint::black_box;
 
-use criterion::{Criterion, criterion_group, criterion_main};
 use dnam_engine::container::{
     ARENA_OFFSET_FULL_END, ARENA_OFFSET_LITE_END, ARENA_OFFSET_PRO_END, ARENA_OFFSET_ULTRA_END,
     DnamContainerView, build_dnam_container,
@@ -30,6 +29,7 @@ use dnam_engine::stages::topology::{
     eval_stage4_loop_saturator,
 };
 use dnam_engine::{DnamEngine, FtzDazGuard, Tier};
+use hotpath::criterion::{Criterion, criterion_group, criterion_main};
 
 fn make_bench_container() -> AlignedBuffer<CacheLine64> {
     let mut cond_min = BTreeMap::new();
@@ -210,6 +210,59 @@ fn bench_stages_and_tank(c: &mut Criterion) {
     group.bench_function("tora_step_frame_full", |b| {
         let _audio = FtzDazGuard::new();
         b.iter(|| black_box(engine.step_frame_tora(black_box(0.15), black_box(-0.15), false)));
+    });
+
+    group.bench_function("stage0_route_frame_no_return", |b| {
+        let _audio = FtzDazGuard::new();
+        b.iter(|| {
+            black_box(
+                engine
+                    .stage_pipeline
+                    .stage0
+                    .route_frame_no_return(black_box(0.15), black_box(-0.15)),
+            )
+        });
+    });
+
+    group.bench_function("stage1_pre_dynamics_stereo", |b| {
+        let _audio = FtzDazGuard::new();
+        b.iter(|| {
+            black_box(
+                engine
+                    .stage_pipeline
+                    .stage1
+                    .step_stereo(black_box(0.15), black_box(-0.15)),
+            )
+        });
+    });
+
+    group.bench_function("stage2_commuted_cascade_stereo", |b| {
+        let _audio = FtzDazGuard::new();
+        b.iter(|| {
+            black_box(engine.stage_pipeline.stage2.step_frame(
+                black_box(0.15),
+                black_box(-0.15),
+                black_box(1.0),
+                black_box(0.2),
+            ))
+        });
+    });
+
+    let fir_taps = engine.stage_pipeline.fir_taps;
+    group.bench_function("stage3_early_fir_stereo", |b| {
+        let _audio = FtzDazGuard::new();
+        b.iter(|| {
+            let l = engine.stage_pipeline.stage3.step_fir_only_with_delayed_tap(
+                black_box(0.15),
+                black_box(0.02),
+                &fir_taps,
+            );
+            let r = engine
+                .stage_pipeline
+                .stage3_r
+                .step_fir_only_with_delayed_tap(black_box(-0.15), black_box(-0.02), &fir_taps);
+            black_box((l, r))
+        });
     });
 
     group.bench_function("stage4_spatial_tank_stereo", |b| {

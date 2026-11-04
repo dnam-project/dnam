@@ -173,12 +173,15 @@ impl<const CAPACITY: usize> OpTDelayLine<CAPACITY> {
         let mu = d_clamped - (d_int as f32);
 
         let p_0 = (self.write_ptr + CAPACITY - d_int) & Self::MASK;
+        let s_0 = fp16_to_f32(self.ring[p_0]);
+        if mu == 0.0 {
+            return s_0;
+        }
         let p_m1 = (p_0 + 1) & Self::MASK;
         let p_1 = (p_0 + CAPACITY - 1) & Self::MASK;
         let p_2 = (p_0 + CAPACITY - 2) & Self::MASK;
 
         let s_m1 = fp16_to_f32(self.ring[p_m1]);
-        let s_0 = fp16_to_f32(self.ring[p_0]);
         let s_1 = fp16_to_f32(self.ring[p_1]);
         let s_2 = fp16_to_f32(self.ring[p_2]);
 
@@ -234,18 +237,22 @@ impl<const CAPACITY: usize> OpTDelayLine<CAPACITY> {
         let w_ptr = self.write_ptr & Self::HALF_MASK;
 
         let p_0 = (w_ptr + Self::HALF_CAPACITY - d_int) & Self::HALF_MASK;
+        let r_off = Self::HALF_CAPACITY;
+        let l_0 = fp16_to_f32(self.ring[p_0]);
+        let r_0 = fp16_to_f32(self.ring[r_off + p_0]);
+        if mu == 0.0 {
+            return (l_0, r_0);
+        }
+
         let p_m1 = (p_0 + 1) & Self::HALF_MASK;
         let p_1 = (p_0 + Self::HALF_CAPACITY - 1) & Self::HALF_MASK;
         let p_2 = (p_0 + Self::HALF_CAPACITY - 2) & Self::HALF_MASK;
 
         let l_m1 = fp16_to_f32(self.ring[p_m1]);
-        let l_0 = fp16_to_f32(self.ring[p_0]);
         let l_1 = fp16_to_f32(self.ring[p_1]);
         let l_2 = fp16_to_f32(self.ring[p_2]);
 
-        let r_off = Self::HALF_CAPACITY;
         let r_m1 = fp16_to_f32(self.ring[r_off + p_m1]);
-        let r_0 = fp16_to_f32(self.ring[r_off + p_0]);
         let r_1 = fp16_to_f32(self.ring[r_off + p_1]);
         let r_2 = fp16_to_f32(self.ring[r_off + p_2]);
 

@@ -337,6 +337,7 @@ fn bench_wcet_tail_latency<B: MathBackend>(container: &[u8], tier: Tier, label: 
     );
 }
 
+#[cfg_attr(feature = "hotpath", hotpath::main(percentiles = [50, 95, 99], limit = 0))]
 fn main() {
     let container_full = make_bench_container();
 

@@ -5,7 +5,7 @@
 use crate::math::flush_recursive_state_f32;
 use crate::operators::op_n::{
     MultiDrivePolyAdaaChannel, QuadratureHysteresis2D, c2_wavefolder,
-    eval_adaa_cubic_c2_wavefolder_f64,
+    eval_adaa_cubic_c2_wavefolder_odd_f32,
 };
 
 /// State RAM footprint for Stage II Lite: strictly 288 B.
@@ -201,6 +201,7 @@ impl Stage2CommutedCascade {
     ///
     /// Returns stereo tone basis channels: `([f32; 8], [f32; 8])`.
     /// Direct callers must hold a [`crate::FtzDazGuard`] for the enclosing batch.
+    #[cfg_attr(feature = "hotpath", hotpath::measure)]
     #[inline(always)]
     pub fn step_frame(
         &mut self,
@@ -217,37 +218,43 @@ impl Stage2CommutedCascade {
         let sig_v1a_r = v1a_out_r[1];
 
         // 2. Sub-stage 2.2: Driver V1B + degree-7/8 ADAA C2 wavefolding (`ref[dsp.op-n.wavefolder.cubic-c2]`)
-        let (wf_l_f64, _) =
-            eval_adaa_cubic_c2_wavefolder_f64(self.prev_v1a_l as f64, sig_v1a_l as f64);
-        let (wf_r_f64, _) =
-            eval_adaa_cubic_c2_wavefolder_f64(self.prev_v1a_r as f64, sig_v1a_r as f64);
+        let wf_adaa_l = eval_adaa_cubic_c2_wavefolder_odd_f32(self.prev_v1a_l, sig_v1a_l);
+        let wf_adaa_r = eval_adaa_cubic_c2_wavefolder_odd_f32(self.prev_v1a_r, sig_v1a_r);
         self.prev_v1a_l = flush_recursive_state_f32(sig_v1a_l);
         self.prev_v1a_r = flush_recursive_state_f32(sig_v1a_r);
         let (wf_inst_l, _) = c2_wavefolder(sig_v1a_l);
         let (wf_inst_r, _) = c2_wavefolder(sig_v1a_r);
-        let wf_l = 0.5 * (wf_l_f64 as f32) + 0.5 * wf_inst_l;
-        let wf_r = 0.5 * (wf_r_f64 as f32) + 0.5 * wf_inst_r;
+        let wf_l = 0.5 * wf_adaa_l + 0.5 * wf_inst_l;
+        let wf_r = 0.5 * wf_adaa_r + 0.5 * wf_inst_r;
         let v1b_in_l = 0.7 * sig_v1a_l + 0.3 * wf_l;
         let v1b_in_r = 0.7 * sig_v1a_r + 0.3 * wf_r;
 
-        let v1b_out_l = self.v1b_left.step(v1b_in_l, 1.0, 0.2, 0.5, r_ac);
-        let v1b_out_r = self.v1b_right.step(v1b_in_r, 1.0, 0.2, 0.5, r_ac);
+        let (v1b_l1, v1b_l2, v1b_r1, v1b_r2) = MultiDrivePolyAdaaChannel::step_stereo_lanes_1_2(
+            &mut self.v1b_left,
+            &mut self.v1b_right,
+            v1b_in_l,
+            v1b_in_r,
+            1.0,
+            0.2,
+            0.5,
+            r_ac,
+        );
 
         // 3. Sub-stage 2.3: Power amp dynamic sag & magnetic hysteresis
-        let pwr = 0.5 * (v1b_out_l[2].abs() + v1b_out_r[2].abs());
+        let pwr = 0.5 * (v1b_l2.abs() + v1b_r2.abs());
         let next_sag = self.r_sag * self.sag_envelope + (1.0 - self.r_sag) * pwr;
         self.sag_envelope = flush_recursive_state_f32(next_sag);
         let sag_compression = (1.0 - sag_depth * next_sag).max(0.2);
 
         let h_l = self
             .hyst_left
-            .step_with_rate(v1b_out_l[1], v1b_out_l[2], self.hyst_diff_scale);
+            .step_with_rate(v1b_l1, v1b_l2, self.hyst_diff_scale);
         let h_r = self
             .hyst_right
-            .step_with_rate(v1b_out_r[1], v1b_out_r[2], self.hyst_diff_scale);
+            .step_with_rate(v1b_r1, v1b_r2, self.hyst_diff_scale);
 
-        let pwr_l = (v1b_out_l[1] + 0.1 * h_l) * sag_compression;
-        let pwr_r = (v1b_out_r[1] + 0.1 * h_r) * sag_compression;
+        let pwr_l = (v1b_l1 + 0.1 * h_l) * sag_compression;
+        let pwr_r = (v1b_r1 + 0.1 * h_r) * sag_compression;
 
         // 4. Tone basis filters [Direct, LPF_80, LPF_400, HPF_1200]
         let tone_l = self.tone_basis_l.step(pwr_l);

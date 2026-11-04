@@ -271,6 +271,18 @@ impl Stage0Router {
 
         (send_l, send_r, down_l, down_r, clean_sub_l, clean_sub_r)
     }
+
+    /// Fast-path stereo routing when external FX returns `(ret_l, ret_r)` are unconnected (`0.0`),
+    /// returning `(down_l, down_r, clean_sub_l, clean_sub_r)`.
+    #[cfg_attr(feature = "hotpath", hotpath::measure)]
+    #[inline(always)]
+    pub fn route_frame_no_return(&mut self, inst_l: f32, inst_r: f32) -> (f32, f32, f32, f32) {
+        let down_l = self.s_matrix[2][0] * inst_l + self.s_matrix[2][1] * inst_r;
+        let down_r = self.s_matrix[3][0] * inst_l + self.s_matrix[3][1] * inst_r;
+        let clean_sub_l = self.sub_crossover_l.step(inst_l);
+        let clean_sub_r = self.sub_crossover_r.step(inst_r);
+        (down_l, down_r, clean_sub_l, clean_sub_r)
+    }
 }
 
 #[cfg(test)]

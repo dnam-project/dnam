@@ -374,12 +374,44 @@ pub fn eval_stage4_loop_saturator(u: f32, v_ceil: f32) -> Option<f32> {
     if !u.is_finite() || !v_ceil.is_finite() || !(v_ceil > 0.0 && v_ceil <= max_ceil) {
         return None;
     }
-    let two_over_3v = (2.0_f64 / (3.0_f64 * (v_ceil as f64))) as f32;
+    let two_over_3v = if v_ceil.to_bits() == STAGE4_MAX_V_CEIL_BITS {
+        (2.0_f64 / (3.0_f64 * (f32::from_bits(STAGE4_MAX_V_CEIL_BITS) as f64))) as f32
+    } else {
+        (2.0_f64 / (3.0_f64 * (v_ceil as f64))) as f32
+    };
     let v = (u * two_over_3v).clamp(-1.0, 1.0);
     let prod = v_ceil * v;
     let half_sq = (0.5 * v) * v;
     let raw = prod * (1.5 - half_sq);
     Some(raw.clamp(-v_ceil, v_ceil))
+}
+
+/// Fast hot-path Stage IV loop saturator at the canonical `STAGE4_MAX_V_CEIL_BITS` ceiling (`0 FDIV`).
+#[inline(always)]
+pub fn eval_stage4_loop_saturator_fast(u: f32) -> f32 {
+    const V_CEIL: f32 = f32::from_bits(STAGE4_MAX_V_CEIL_BITS);
+    const TWO_OVER_3V: f32 = (2.0_f64 / (3.0_f64 * (V_CEIL as f64))) as f32;
+    let v = (u * TWO_OVER_3V).clamp(-1.0, 1.0);
+    let prod = V_CEIL * v;
+    let half_sq = (0.5 * v) * v;
+    (prod * (1.5 - half_sq)).clamp(-V_CEIL, V_CEIL)
+}
+
+/// Fast hot-path Stage IV blended quiet-feedback knee with cold-prepared `inv_sigma = 1.0 / sigma` (`0 FDIV`).
+#[inline(always)]
+pub fn eval_stage4_blended_feedback_knee_fast(
+    u: f32,
+    g_lin: f32,
+    inv_sigma: f64,
+    alpha: f64,
+) -> f32 {
+    let u64_val = u as f64;
+    let g64 = g_lin as f64;
+    let ratio = u64_val.abs() * inv_sigma;
+    let denom = 1.0 + ratio * ratio;
+    let inv_denom = newton6_reciprocal_f64(denom);
+    let factor = (1.0 - alpha) + alpha * inv_denom;
+    ((g64 * u64_val) * factor) as f32
 }
 
 /// Evaluates the Stage IV blended quiet-feedback knee $K(u) = g_{\text{lin}} u ((1 - \alpha) + \alpha / (1 + (u/\sigma)^2))$

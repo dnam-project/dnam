@@ -39,6 +39,41 @@ impl Stage3CabinetModals {
         self.kautz_bank.reset();
     }
 
+    /// Evaluates the 16-tap Early FIR + parallel `clean_sub` feed (without stepping the internal
+    /// Lite Kautz bank when external tier-local Kautz banks are used), returning `(fir_plus_sub, x_delayed_16)`.
+    /// Direct callers must hold a [`crate::FtzDazGuard`] for the enclosing batch.
+    #[cfg_attr(feature = "hotpath", hotpath::measure)]
+    #[inline(always)]
+    pub fn step_fir_only_with_delayed_tap(
+        &mut self,
+        x: f32,
+        clean_sub: f32,
+        fir_taps: &[f32; 16],
+    ) -> (f32, f32) {
+        let ptr = self.fir_write_ptr & 0x0F;
+        let x_delayed_16 = self.fir_history[ptr];
+        self.fir_history[ptr] = x;
+        self.fir_write_ptr = (ptr + 1) & 0x0F;
+
+        let mut acc0 = 0.0f32;
+        let mut acc1 = 0.0f32;
+        let mut acc2 = 0.0f32;
+        let mut acc3 = 0.0f32;
+        for blk in 0..4 {
+            let i = blk * 4;
+            let idx0 = (ptr + 16 - i) & 0x0F;
+            let idx1 = (ptr + 15 - i) & 0x0F;
+            let idx2 = (ptr + 14 - i) & 0x0F;
+            let idx3 = (ptr + 13 - i) & 0x0F;
+            acc0 += self.fir_history[idx0] * fir_taps[i];
+            acc1 += self.fir_history[idx1] * fir_taps[i + 1];
+            acc2 += self.fir_history[idx2] * fir_taps[i + 2];
+            acc3 += self.fir_history[idx3] * fir_taps[i + 3];
+        }
+        let early_fir = (acc0 + acc1) + (acc2 + acc3);
+        (early_fir + clean_sub, x_delayed_16)
+    }
+
     /// Evaluates Stage III for input `x` and parallel `clean_sub` feed, returning `(stage3_out, x_delayed_16)`
     /// so external Kautz modal tiers can be driven by the 16-sample-delayed onset tap $x[n - 16]$ (`ref[dsp.stage3.cabinet-bank]`).
     /// Direct callers must hold a [`crate::FtzDazGuard`] for the enclosing batch.
@@ -49,23 +84,9 @@ impl Stage3CabinetModals {
         clean_sub: f32,
         fir_taps: &[f32; 16],
     ) -> (f32, f32) {
-        let x_delayed_16 = self.fir_history[self.fir_write_ptr];
-        // 1. Write to FIR history
-        self.fir_history[self.fir_write_ptr] = x;
-        self.fir_write_ptr = (self.fir_write_ptr + 1) & 0x0F;
-
-        // 2. 16-tap Early FIR dot product
-        let mut early_fir = 0.0f32;
-        for i in 0..16 {
-            let idx = (self.fir_write_ptr + 16 - 1 - i) & 0x0F;
-            early_fir += self.fir_history[idx] * fir_taps[i];
-        }
-
-        // 3. Orthonormal Kautz Modal tail driven by delayed tap x[n - 16]
+        let (fir_sub, x_delayed_16) = self.step_fir_only_with_delayed_tap(x, clean_sub, fir_taps);
         let tail = self.kautz_bank.step(x_delayed_16);
-
-        // 4. Sum Early FIR + Kautz tail + parallel clean sub crossover
-        (early_fir + tail + clean_sub, x_delayed_16)
+        (fir_sub + tail, x_delayed_16)
     }
 
     /// Evaluates Stage III for input `x` and parallel `clean_sub` feed.
