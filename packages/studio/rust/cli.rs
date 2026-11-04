@@ -17,7 +17,7 @@ use crate::error::StudioResult;
 #[command(
     name = "dnam",
     version,
-    about = "Dynamic Neural Audio Modeler (DNAM / Tri-Physics) CLI & Desktop Studio"
+    about = "Dynamic Neural Audio Modeler (DNAM) CLI & Desktop Studio"
 )]
 pub struct DnamCli {
     /// Workspace root directory containing `dnam.toml` (defaults to current directory).

@@ -1,4 +1,11 @@
-"""Independent Gram-precision examples; these are not accelerator backend tests."""
+"""Independent Gram-precision examples; these are not accelerator backend tests.
+
+verify[train.gram.wide192]
+verify[train.gram.radix256]
+verify[train.gram.exponent-aware]
+verify[train.gram.group-merge]
+verify[train.gram.accuracy-contract]
+"""
 
 from __future__ import annotations
 

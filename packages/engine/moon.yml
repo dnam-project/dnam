@@ -40,6 +40,7 @@ tasks:
       - "src/**/*"
       - "tests/**/*"
       - "benches/**/*"
+      - "examples/**/*"
       - "/Cargo.toml"
     tags:
       - "quality"
@@ -60,6 +61,7 @@ tasks:
       - "src/**/*"
       - "tests/**/*"
       - "benches/**/*"
+      - "examples/**/*"
       - "/Cargo.toml"
       - "/Cargo.lock"
     options:
@@ -80,6 +82,7 @@ tasks:
       - "src/**/*"
       - "tests/**/*"
       - "benches/**/*"
+      - "examples/**/*"
       - "/Cargo.toml"
       - "/Cargo.lock"
     options:

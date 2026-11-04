@@ -13,7 +13,25 @@ pub mod ckpt;
 pub mod preamble;
 pub mod strip;
 pub mod view;
+pub mod wire;
 pub mod zoh;
+
+pub use wire::{
+    Cp1DecodedRecord, DEFAULT_MAX_MUTABLE_CAPACITY, DMU1_HEADER_SIZE, DMUE_FOOTER_SIZE,
+    DeclaredDelayHistory, StructuredConditionalBound, StructuredConditionalCurve,
+    SwitchControlSpec, V2_DIRECTORY_SIZE, V2_HEADER_OFFSET, V2_PREAMBLE_SIZE, V2ContainerLayout,
+    align64_u64, append_dmue_mutable_suffix, build_dmu1_mutable_frame,
+    build_dnck_writer_manifest_message, build_v2_open_dnam_container, compute_dnck_bundle_prefixes,
+    compute_v2_open_retained_prefix_sha256, cp1_contributor_record_bytes,
+    decode_cp1_contributor_stream, encode_domain_field, eval_ui_midpoint_power_skew,
+    export_runtime_dnam_from_ckpt, is_valid_jcs_unicode_text, parse_and_validate_dmu1_frame,
+    parse_canonical_reference_samples, parse_strict_json_object_bytes,
+    parse_structured_conditional_bounds, parse_structured_conditional_curves,
+    project_immutable_header_value, resolve_conditional_safe_interval,
+    select_conditional_calibration_curve, serialize_jcs_value, strip_v2_open_dnam_container,
+    validate_canonical_jcs_header_bytes, validate_delay_histories, validate_mutable_json_schema,
+    validate_stage3_tier_slices, validate_v2_dnck_checkpoint, validate_v2_open_dnam_layout,
+};
 
 #[cfg(feature = "crypto")]
 pub use crate::provenance::seal_dnam_container;

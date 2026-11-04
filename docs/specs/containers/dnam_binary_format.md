@@ -13,6 +13,7 @@ requirements:
   - REQ-8.8
 adrs:
   - ADR-0009
+  - ADR-0011
 ---
 
 # `.dnam` Hybrid Binary Container & `< 50 ns` Zero-Copy Hardware Loader
@@ -168,6 +169,22 @@ Each `reference_samples` entry is canonical ASCII decimal text parsed as a nonze
 `r[container.dnam.load-validation]`
 
 Loaders validate all tensor offsets, 64-byte alignments, shapes, finite coefficients, and signature commitments before exposing zero-copy tensor views, and initialize recursive stages to their resting DC equilibrium states ([`../dsp/op_n_commuted_cascade.md` §3.4](../dsp/op_n_commuted_cascade.md#34-boundary-conditions-resting-dc-equilibrium--pop-free-startup)).
+
+`r[container.dnam.tensor-directory]` **Canonical 64B-Aligned Tier Arena Slice Directory (`ADR-0011`):**
+Every slice declared in `tensor_directory` has a 64-byte-aligned `byte_offset` relative to `tier_start` (`byte_offset % 64 == 0`), a `byte_length` within its owning tier's prefix boundary `original_tier_ends[t] - tier_start`, and uses the canonical per-tier slice identifiers below:
+
+| Slice Identifier | Owning Tier Arena | Element Shape & Layout | Aligned Size |
+| :--- | :---: | :--- | :---: |
+| `stage0_router` | `Arena 0` (`Lite`) | `S_router[4, 4]` (`S_ret->send == 0`) + alignment/crossover metadata (`16 x f32`) | `64 B` (`1 CL`) |
+| `stage1_pre_{lite,full,pro,ultra}` | `Arena 0..3` | `Op-M[Pre]` 4-lane complex poles + `Op-T[Pre]` / `Op-N[Pre]` base scalars (`32 x f32`) | `128 B` (`2 CL`) |
+| `stage2_commuted_{lite,full,pro,ultra}` | `Arena 0..3` | Commuted `W_k^(s)` base + `D_s` latent mode weights (`16 x f32` per tier block) | `64 B` (`1 CL`) |
+| `stage3_early_fir_{lite,full,pro,ultra}` | `Arena 0..3` | `16` Left `f32` taps + `16` Right `f32` taps (`32 x f32`, `ref[container.dnam.stage3-slices]`) | `128 B` (`2 CL`) |
+| `stage3_kautz_modals_{lite,full,pro,ultra}` | `Arena 0..3` | `1 / 1 / 2 / 4` blocks of 8-vector SoA Kautz poles (`ref[container.dnam.stage3-slices]`) | `128..512 B` |
+| `stage4_tank_{lite,full,pro,ultra}` | `Arena 0..3` | Per-group delay lengths, `a_diff`, `g_lin`, `V_ceil`, `sigma_knee` & Householder `v` (`16 x f32`/group) | `64..128 B` |
+| `head_kronecker_{lite,full,pro,ultra}` | `Arena 0..3` | Mid/Side Kronecker weights `W_head[1 + D_h, 2, 64]` + bias `b_head[1 + D_h, 2]` | `2,560..4,608 B` |
+| `control_projection_lite` / `_ultra_delta` | `Arena 0` / `Arena 3` | Concatenated `CP1` contributor stream (`ref[container.dnam.cp1-profile]`, padded to `64 B`) | `64 B * ceil(...)` |
+| `control_interaction_lite` / `_ultra_delta` | `Arena 0` / `Arena 3` | `[4, 8]` base (`128 B`) / `[3, 4, 8]` Ultra delta (`384 B`) FM matrices (`0 B` if `< 2` controls) | `0 / 128 / 384 B` |
+| `control_dispatch_lite` / `_ultra_delta` | `Arena 0` / `Arena 3` | `W_ctrl^base[16, 16]` (`1,024 B`) / `W_ctrl,Delta^Ultra[4, 16]` (`256 B`) | `1,024 / 256 B` |
 
 ---
 

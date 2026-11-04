@@ -86,6 +86,184 @@ impl<'a> DnamContainerView<'a> {
         is_enclave_sealed_wrapper: bool,
         max_supported_tier: Tier,
     ) -> Result<Self, DnamError> {
+        if bytes.len() >= 8
+            && &bytes[0..4] == b"DNAM"
+            && u16::from_le_bytes([bytes[4], bytes[5]]) == 2
+            && u16::from_le_bytes([bytes[6], bytes[7]]) == 0
+        {
+            let layout = super::wire::validate_v2_open_dnam_layout(bytes)?;
+            let json_slice =
+                &bytes[layout.header_extent.0..layout.header_extent.0 + layout.header_extent.1];
+            if let Ok(raw_val) = serde_json::from_slice::<serde_json::Value>(json_slice)
+                && raw_val
+                    .get("metadata")
+                    .and_then(|m| m.get("container_kind"))
+                    .and_then(|v| v.as_str())
+                    .is_some_and(|k| k != "runtime")
+            {
+                return Err(DnamError::PreviewContainerRejected);
+            }
+            let header: DnamJsonHeader = serde_json::from_slice(json_slice)
+                .map_err(|e| DnamError::InvalidJsonHeader(e.to_string()))?;
+            header.validate()?;
+            let auth_slice =
+                &bytes[layout.auth_extent.0..layout.auth_extent.0 + layout.auth_extent.1];
+            let verification_status = if auth_slice.len() >= 8
+                && &auth_slice[0..8] == b"DAU1\0\0\0\0"
+            {
+                let env = crate::provenance::Dau1Envelope::from_bytes(auth_slice)?;
+                if env.auth_kind != layout.auth_kind || env.creator_max_tier != layout.maximum_tier
+                {
+                    return Err(DnamError::CryptoVerificationFailed(
+                        "DAU1 auth_kind or creator_max_tier mismatch with preamble",
+                    ));
+                }
+                let shared_slice =
+                    &bytes[layout.shared_extent.0..layout.shared_extent.0 + layout.shared_extent.1];
+                let shared_framing = crate::provenance::build_plaintext_shared_v1(
+                    &bytes[0..64],
+                    &bytes[64..192],
+                    shared_slice,
+                );
+                let hdr_sha = crate::provenance::sha256_digest(json_slice);
+                let mut tier_slices_vec = Vec::with_capacity((layout.retained_tier as usize) + 1);
+                let mut prev_t = layout.tier_start;
+                for t_idx in 0..=(layout.retained_tier as usize) {
+                    let end_t = layout.tier_ends[t_idx];
+                    tier_slices_vec.push(&bytes[prev_t..end_t]);
+                    prev_t = end_t;
+                }
+                let prefixes = crate::provenance::compute_plaintext_prefixes_v1(
+                    b"DNAM-MASTER-PREFIX-V1",
+                    &hdr_sha,
+                    &shared_framing,
+                    &tier_slices_vec,
+                )?;
+                for (t_idx, pfx) in prefixes.iter().enumerate() {
+                    if env.master_prefixes.get(t_idx) != Some(pfx) {
+                        return Err(DnamError::CryptoVerificationFailed(
+                            "DAU1 master tier prefix digest mismatch",
+                        ));
+                    }
+                }
+                let creator_manifest = crate::provenance::build_creator_manifest_v1(
+                    &env.creator_pubkey,
+                    &hdr_sha,
+                    &env.master_prefixes,
+                )?;
+                crypto.ed25519_verify(
+                    &env.creator_pubkey,
+                    &creator_manifest,
+                    &env.creator_signature,
+                )?;
+                if env.auth_kind == 1 {
+                    let m_pub =
+                        env.marketplace_pubkey
+                            .ok_or(DnamError::CryptoVerificationFailed(
+                                "missing DAU1 marketplace_pubkey",
+                            ))?;
+                    let b_max = env
+                        .buyer_max_tier
+                        .ok_or(DnamError::CryptoVerificationFailed(
+                            "missing DAU1 buyer_max_tier",
+                        ))?;
+                    let m_sig =
+                        env.marketplace_signature
+                            .ok_or(DnamError::CryptoVerificationFailed(
+                                "missing DAU1 marketplace_signature",
+                            ))?;
+                    let buyer_prefixes = crate::provenance::compute_plaintext_prefixes_v1(
+                        b"DNAM-BUYER-PREFIX-V1",
+                        &hdr_sha,
+                        &shared_framing,
+                        &tier_slices_vec,
+                    )?;
+                    for (t_idx, bpfx) in buyer_prefixes.iter().enumerate() {
+                        if env.buyer_prefixes.get(t_idx) != Some(bpfx) {
+                            return Err(DnamError::CryptoVerificationFailed(
+                                "DAU1 buyer tier prefix digest mismatch",
+                            ));
+                        }
+                    }
+                    let creator_signed_sha =
+                        crate::provenance::compute_creator_signed_manifest_sha256(
+                            &creator_manifest,
+                            &env.creator_signature,
+                        );
+                    let buyer_receipt = crate::provenance::build_buyer_receipt_v1(
+                        &m_pub,
+                        &creator_signed_sha,
+                        &hdr_sha,
+                        b_max,
+                        &env.buyer_prefixes,
+                        None,
+                        &[],
+                    )?;
+                    crypto.ed25519_verify(&m_pub, &buyer_receipt, &m_sig)?;
+                    VerificationStatus::MarketplaceVerified {
+                        signer_id: header.metadata.author.clone().unwrap_or_default(),
+                        marketplace_id: alloc::string::String::from("dnam-marketplace"),
+                        license_id: alloc::string::String::from("dau1"),
+                        license_tier: Tier::from_u8(b_max).as_str().to_string(),
+                    }
+                } else {
+                    VerificationStatus::CreatorVerified {
+                        signer_id: header.metadata.author.clone().unwrap_or_default(),
+                        pubkey_ed25519: env.creator_pubkey,
+                    }
+                }
+            } else {
+                VerificationStatus::Unsigned
+            };
+            let retained_tier = Tier::from_u8(layout.retained_tier).min(max_supported_tier);
+            let tier_end = layout.tier_ends[retained_tier as usize];
+            let arena_slice = &bytes[layout.tier_start..tier_end];
+            let mut flags = super::FLAG_HAS_LITE | super::FLAG_STEREO_OUT;
+            if retained_tier >= Tier::Full {
+                flags |= FLAG_HAS_FULL_DELTA;
+            }
+            if retained_tier >= Tier::Pro {
+                flags |= FLAG_HAS_PRO_DELTA;
+            }
+            if retained_tier >= Tier::Ultra {
+                flags |= FLAG_HAS_ULTRA_DELTA;
+            }
+            let preamble = DnamPreamble {
+                magic: DNAM_MAGIC,
+                version_major: 2,
+                version_minor: 0,
+                flags,
+                num_controls: header.controls_schema.len() as u16,
+                sample_rate_train_hz: layout.sample_rate_train_hz,
+                json_header_byte_len: layout.header_extent.1 as u32,
+                tensor_arena_offset: layout.tier_start as u32,
+                tensor_arena_byte_len: arena_slice.len() as u32,
+                arena_lite_end_cl: ((layout.tier_ends[0] - layout.tier_start) / 64) as u16,
+                arena_full_end_cl: ((layout.tier_ends[1].saturating_sub(layout.tier_start)) / 64)
+                    as u16,
+                arena_pro_end_cl: ((layout.tier_ends[2].saturating_sub(layout.tier_start)) / 64)
+                    as u16,
+                arena_ultra_end_cl: ((layout.tier_ends[3].saturating_sub(layout.tier_start)) / 64)
+                    as u16,
+                arena_crc32c_lite: 0,
+                arena_crc32c_full: 0,
+                arena_crc32c_pro: 0,
+                arena_crc32c_ultra: 0,
+                num_ckpt_stems: 0,
+                _reserved: 0,
+                tail_time_ms: 0.0,
+                header_crc32c: 0,
+            };
+            return Ok(Self {
+                preamble,
+                header,
+                verification_status,
+                protection_profile: DnamProtectionProfile::Open,
+                control_records: Vec::new(),
+                arena_storage: ArenaStorage::from_slice_or_copy(arena_slice),
+            });
+        }
+
         let mut preamble = DnamPreamble::from_bytes(bytes)?;
         let arena_off = preamble.tensor_arena_offset as usize;
         let full_arena_len = preamble.tensor_arena_byte_len as usize;
@@ -119,6 +297,15 @@ impl<'a> DnamContainerView<'a> {
 
         // 2. Parse UTF-8 JSON header at 0x40..0x40 + json_header_byte_len via #![no_std] serde + alloc
         let json_slice = &bytes[64..64 + json_len];
+        if let Ok(raw_val) = serde_json::from_slice::<serde_json::Value>(json_slice)
+            && raw_val
+                .get("metadata")
+                .and_then(|m| m.get("container_kind"))
+                .and_then(|v| v.as_str())
+                .is_some_and(|k| k != "runtime")
+        {
+            return Err(DnamError::PreviewContainerRejected);
+        }
         let header: DnamJsonHeader = serde_json::from_slice(json_slice)
             .map_err(|e| DnamError::InvalidJsonHeader(e.to_string()))?;
         header.validate()?;

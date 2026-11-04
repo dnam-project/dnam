@@ -495,12 +495,14 @@ impl NativeDnamEngine {
         dict.set_item("active_tier", snap.active_tier)?;
         dict.set_item("backend", backend_kind_str(self.inner.backend_kind()))?;
         dict.set_item("sample_rate_hz", self.sample_rate_hz)?;
-        dict.set_item("core2_active", snap.core2_active != 0)?;
+        dict.set_item("core2_active", snap.tank_active != 0)?;
+        dict.set_item("tank_active", snap.tank_active != 0)?;
         dict.set_item("lfo_env_active", snap.lfo_env_active != 0)?;
         dict.set_item("stereo_out", snap.stereo_out != 0)?;
         dict.set_item("active_clamp_mask", snap.active_clamp_mask)?;
         dict.set_item("control_decimation_host", snap.control_decimation_host)?;
-        dict.set_item("max_adaa_drive", snap.max_adaa_drive)?;
+        dict.set_item("max_adaa_drive", snap.max_op_n_drive)?;
+        dict.set_item("max_op_n_drive", snap.max_op_n_drive)?;
         dict.set_item("max_pole_radius", snap.max_pole_radius)?;
         dict.set_item("max_effective_loop_gain", snap.max_effective_loop_gain)?;
         dict.set_item("tail_time_ms", snap.tail_time_ms)?;

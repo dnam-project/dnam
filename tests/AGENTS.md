@@ -11,5 +11,6 @@ Top-level guardrail suite (`moon check tests`) enforcing [`project_and_documenta
 | `test_no_inline_latex_math_in_markdown_tables` | `ref[repo.docs.markdown-table-math]` | Zero raw `$` inline math outside backticks in Markdown table rows. |
 | `test_valid_github_latex_math_across_docs` | `ref[repo.docs.github-latex-and-mermaid]` | Valid GitHub MathJax LaTeX math and semicolon-free Mermaid `sequenceDiagram` blocks. |
 | `test_relative_markdown_links_resolve` | `ref[repo.docs.relative-links-and-anchors]` | Every relative Markdown link and `#section-anchor` fragment resolves on disk. |
-| `test_spec_rule_identifiers_adr_structure_and_no_spec_text_parsing` | `ref[repo.docs.spec-rules-and-adrs]` | Unique `r[...]` rules, resolved `ref[...]`/`verify[...]`, MADR `docs/adr/NNNN-*.md`, `docs/templates/`, and no spec-text parsing in tests. |
+| `test_spec_rule_identifiers_adr_structure_and_no_spec_text_parsing` | `ref[repo.docs.spec-rules-and-adrs]` | Unique `r[...]` rules, resolved `ref[...]`/`verify[...]`, MADR `docs/adr/NNNN-*.md`, `docs/templates/`, no `mod.rs`, and no spec-text parsing in tests. |
+| `test_engine_spec_scope_manifest` | `ref[repo.docs.spec-rules-and-adrs]` | Validates [`packages/engine/spec_scope.toml`](../packages/engine/spec_scope.toml) and 100% `verify[...]` coverage of all engine-scoped rules in `packages/engine/`. |
 | `test_spec_rules_verified_in_tests` | `ref[repo.docs.spec-rules-and-adrs]` | Reports all `r[...]` rules in `docs/specs/` not yet cited via `verify[...]` in test files. |

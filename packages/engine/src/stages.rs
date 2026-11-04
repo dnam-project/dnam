@@ -11,7 +11,20 @@ pub mod stage1_pre;
 pub mod stage2_cascade;
 pub mod stage3_cabinet;
 pub mod stage4_tank;
+pub mod topology;
 pub mod weights;
+
+pub use topology::{
+    BALLISTIC_ENVELOPE_BANK_TAUS_SEC, GAIN_BOUNDED_FIRST_TAP_64_BITS, ParallelAlignmentMode,
+    STAGE4_MAX_G_LIN_BITS, STAGE4_MAX_V_CEIL_BITS, TptLr4Crossover, WdwDryTapMode,
+    eval_bounce_6point_lagrange_tap, eval_live_first_tap_difference,
+    eval_min_latency_4tap_alignment, eval_stage_modulation_laws, eval_stage4_blended_feedback_knee,
+    eval_stage4_loop_saturator, eval_stereo_linked_aux_detector, eval_wdw_routing_outputs,
+    pack_stage3_modal_block_features, prepare_ballistic_band_alphas,
+    prepare_bounce_6point_lagrange_tap, prepare_kaiser_sinc_alignment_weights,
+    prepare_live_first_tap_difference_coeffs, stage3_feature_bus_slot_ranges,
+    validate_tensor_directory_slice,
+};
 
 pub use head::{HEAD_RAM_BYTES, MidSideKroneckerHead};
 pub use router::{BezoutCleanCrossover, ROUTER_STATE_RAM_BYTES, ReturnAligner, Stage0Router};
@@ -197,6 +210,11 @@ impl StagePipeline {
         self.stage0.return_aligner_r.set_delay(align_delay);
         self.stage0.sub_crossover_l.reconfigure_sample_rate(zoh);
         self.stage0.sub_crossover_r.reconfigure_sample_rate(zoh);
+        self.stage0.tpt_crossover_l =
+            TptLr4Crossover::new_at_rate(200.0, zoh.sample_rate_host_hz as f64);
+        self.stage0.tpt_crossover_r =
+            TptLr4Crossover::new_at_rate(200.0, zoh.sample_rate_host_hz as f64);
+        self.stage1.op_t_pre.xfade_len = zoh.switch_xfade_samples_host as usize;
         self.stage1
             .op_t_pre
             .set_target_delay(zoh.tau_ref_samples_host, true);

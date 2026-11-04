@@ -7,7 +7,7 @@ test.describe("DNAM Desktop Studio End-to-End (Playwright E2E)", () => {
   }) => {
     await page.goto("/");
 
-    await expect(page).toHaveTitle("DNAM Studio — Tri-Physics Neural Audio Modeler");
+    await expect(page).toHaveTitle("DNAM Studio — Dynamic Neural Audio Modeler");
     await expect(page.getByRole("heading", { name: "DNAM Desktop Studio" })).toBeVisible();
 
     // Verify Tailwind CSS v4 @source compilation across @dnam-project/ui and @dnam-project/studio

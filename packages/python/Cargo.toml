@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Zero-copy PyO3 + NumPy FFI bindings for the DNAM (Tri-Physics) Rust SIMD Engine"
+description = "Zero-copy PyO3 + NumPy FFI bindings for the DNAM Rust SIMD Engine"
 publish = false
 
 [lib]

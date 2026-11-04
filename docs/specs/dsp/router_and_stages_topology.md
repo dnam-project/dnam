@@ -18,6 +18,7 @@ requirements:
 adrs:
   - ADR-0002
   - ADR-0006
+  - ADR-0011
 ---
 
 # Stage 0 Router, Canonical Stages Topology & 256-D Mid/Side Head
@@ -211,13 +212,25 @@ Audio-rate ballistic envelope smoothing prepares $\alpha_{\mathrm{att}} = 1 - \e
 | **`Op-M[Pre]` (Modal, Hilbert & Bistable)** | `4` complex pole channels/tier + `H1` analytic pairs + `T1` DC blocker/tracker states ([`op_m_modal_kautz.md` §2–§3](op_m_modal_kautz.md#2-family-2-hilbert-ssb-lattice--carrier-modulation)) | • **`M-1`:** 6-section `H1` all-pass pair + carrier rotor for SSB/ring mod (Family 2).<br/>• **`M-2`:** `T1` sub-harmonic tracker routed to `Lite` slots `4..11` (Family 1).<br/>• **`M-3`:** High-`Q` auto-wah and resonant phaser sweeps. |
 | **`Op-N[Pre]` (Waveshaping, Dynamics & ZOH)** | `C_tier` ballistic envelope & fixed-hertz ZOH quantizer states ([`op_n_commuted_cascade.md` §2.3](op_n_commuted_cascade.md#23-family-5-precomputed-reciprocal-zoh-sample-rate-reducer--bitcrusher)) | • Hysteretic gate / auto-swell / compressor VCA (Family 4).<br/>• Fixed-hertz ZOH reducer + nearest-step bitcrusher (`0 FDIV`, Family 5).<br/>• Pre-drive boost and soft-clipping `PolyADAA`. |
 
+For stereo downstream feed $(x_{0,L}[n], x_{0,R}[n])$ from Stage 0, the 2-bit serial permutation `sel = topology_selector & 0x03` executes with partitioned Left/Right state isolation:
+- `sel = 0`: $\mathbf{x}_{\text{s1}}[n] = \mathcal{T}_{\text{pre}}\big(\mathcal{M}_{\text{pre}}\big(\mathcal{N}_{\text{pre}}(\mathbf{x}_0[n])\big)\big)$ (`Drive -> Filter -> Mod`)
+- `sel = 1`: $\mathbf{x}_{\text{s1}}[n] = \mathcal{T}_{\text{pre}}\big(\mathcal{N}_{\text{pre}}\big(\mathcal{M}_{\text{pre}}(\mathbf{x}_0[n])\big)\big)$ (`Wah -> Overdrive -> Mod`)
+- `sel = 2`: $\mathbf{x}_{\text{s1}}[n] = \mathcal{M}_{\text{pre}}\big(\mathcal{N}_{\text{pre}}\big(\mathcal{T}_{\text{pre}}(\mathbf{x}_0[n])\big)\big)$ (`Mod -> Drive -> Filter`)
+- `sel = 3`: $\mathbf{x}_{\text{s1}}[n] = \mathcal{N}_{\text{pre}}\big(\mathcal{M}_{\text{pre}}\big(\mathcal{T}_{\text{pre}}(\mathbf{x}_0[n])\big)\big)$ (`Mod -> Filter -> Drive`)
+
+In parallel, the `T1` tracker branch (`5 Hz` passband-normalized DC blocker $\to$ 12-allpass `H1` analytic pair $\to$ rising-edge $f_0/2, f_0/4$ dividers and half-angle sheet tracker; [`op_m_modal_kautz.md` §3](op_m_modal_kautz.md#3-family-1-sub-harmonic-synthesizers-bistable-dividers--pll-tracking)) processes $(x_{0,L}[n], x_{0,R}[n])$ on every sample and writes the 8 features `[L-cos, L-sin, L-half-sq, L-quarter-sq, R-cos, R-sin, R-half-sq, R-quarter-sq]` directly into `Lite` feature-bus slots `4..11` (§7).
+
 ---
 
 ## 4. Stage II: 3-Stage LTI-Commuted Nonlinear Cascade
 
 `r[dsp.stage2.commuted-cascade]`
 
-Stage II models the 3-stage amplifier cascade (`V1A Preamp + Tone Stack` $\to$ `V1B Driver + C² Wavefolder` $\to$ `Push-Pull Power Amp + Sag + Hysteresis`) via the Exact LTI Commutativity Theorem (`Theorem 1`), evaluating the multi-drive $d_{\text{bank}} = [0.25\times, 1.0\times, 4.0\times, 16.0\times]$ `PolyADAA` bank and folding $\mathbf{z}_{\text{stage}}$ into $\mathbf{W}_k^{(s)}(\mathbf{z}_{\text{stage}})$ at `3 kHz` ([`op_n_commuted_cascade.md` §3–§4](op_n_commuted_cascade.md#3-exact-lti-basis-commutativity-theorem-theorem-1)).
+Stage II models the 3-stage amplifier cascade (`V1A Preamp + Tone Stack` $\to$ `V1B Driver + C² Wavefolder` $\to$ `Push-Pull Power Amp + Sag + Hysteresis`) via the Exact LTI Commutativity Theorem (`Theorem 1`), evaluating the multi-drive $d_{\text{bank}} = [0.25\times, 1.0\times, 4.0\times, 16.0\times]$ `PolyADAA` bank and folding $\mathbf{z}_{\text{stage}}$ into $\mathbf{W}_k^{(s)}(\mathbf{z}_{\text{stage}})$ at `3 kHz` ([`op_n_commuted_cascade.md` §3–§4](op_n_commuted_cascade.md#3-exact-lti-basis-commutativity-theorem-theorem-1)):
+
+1. **Sub-Stage 2.1 (`V1A` Preamp):** For stereo Stage I output $(x_{\text{s1},L}[n], x_{\text{s1},R}[n])$ and micro-ramped preamp drive $g_{\text{v1a}}[n]$, evaluate the 4-drive unclamped rail-crossing `PolyADAA` bank $\mathbf{u}_{\text{v1a},c}[n] \in \mathbb{R}^4$ ($c \in \lbrace L, R \rbrace$) and extract primary driver feed $v_{\text{v1a},c}[n] = u_{\text{v1a},c,1}[n]$.
+2. **Sub-Stage 2.2 (`V1B` Driver & Degree-7/8 ADAA $C^2$ Wavefolder):** Evaluate the interval-average cubed-envelope $C^2$ wavefolder $A_{\text{odd},3,c}[n]$ on $(v_{\text{v1a},c}[n-1], v_{\text{v1a},c}[n])$ and instantaneous $w_{\text{odd},3}(v_{\text{v1a},c}[n])$, form $x_{\text{v1b},c}[n] = 0.7 v_{\text{v1a},c}[n] + 0.15(A_{\text{odd},3,c}[n] + w_{\text{odd},3}(v_{\text{v1a},c}[n]))$, and step the second 4-drive `PolyADAA` bank $\mathbf{u}_{\text{v1b},c}[n] \in \mathbb{R}^4$.
+3. **Sub-Stage 2.3 (Power Amp, Supply Sag & 2D Quadrature Hysteresis):** Update the 1-pole B+ supply sag envelope $e_{\text{sag}}[n] = R_{\text{sag}} e_{\text{sag}}[n-1] + (1 - R_{\text{sag}}) \cdot \frac{1}{2}(|u_{\text{v1b},L,2}[n]| + |u_{\text{v1b},R,2}[n]|)$, form sag compression $c_{\text{sag}}[n] = \max(0.2, 1 - \alpha_{\text{sag}}[n] e_{\text{sag}}[n])$, evaluate 2D quadrature hysteresis $h_{\text{hyst},c}[n]$ on $(u_{\text{v1b},c,1}[n], u_{\text{v1b},c,2}[n])$, and step the 4-filter tone basis $\boldsymbol{\tau}_c[n] = [\text{Direct}, \text{LPF}_{80}, \text{LPF}_{400}, \text{HPF}_{1200}]^\top$ on $(u_{\text{v1b},c,1}[n] + 0.1 h_{\text{hyst},c}[n]) c_{\text{sag}}[n]$. Emit primary Stage II output $x_{\text{s2},c}[n] = \tau_{c,0}[n]$ into Stage III and pack $[\boldsymbol{\tau}_c[n], \mathbf{u}_{\text{v1a},c}[n]] \in \mathbb{R}^8$ into the feature bus (§7).
 
 ---
 
@@ -308,6 +321,28 @@ STAGE-I-T1-FEATURES
   9 | R-sin
  10 | R-half-square
  11 | R-quarter-square
+```
+
+Within each tier block, the remaining `"Other-stage slots"` (`12..61` in `Lite`, `68..125` in `Full`, `136..189` in `Pro`, and `208..253` in `Ultra`) follow the deterministic producer layout (`ADR-0011`):
+
+```text
+CANONICAL-256D-FEATURE-BUS-MAP
+Lite (0..63):
+  0..3    (4):  Stage III Kautz Modal Block 0 [y_0L+y_2L, y_1L+y_3L, y_0R+y_2R, y_1R+y_3R]
+  4..11   (8):  Stage I T1 Sub-Harmonic Tracker [L-cos, L-sin, L-f/2, L-f/4, R-cos, R-sin, R-f/2, R-f/4]
+  12..19  (8):  Stage I Pre-FX Stereo [op_t_l, op_t_r, op_m_re_l, op_m_im_l, op_m_re_r, op_m_im_r, ssb_l, ssb_r]
+  20..35 (16):  Stage II Sub-Stage 2.1 Tone Basis L/R (8) + V1A 4-Drive PolyADAA L/R (8)
+  36..51 (16):  Stage II Sub-Stage 2.2 V1B 4-Drive PolyADAA L/R (8) + Wavefolder/Power/Sag/Hyst L/R (8)
+  52..59  (8):  Stage IV Spatial Tank 4-Line Readouts (4) + Ducked Wet L/R (2) + Stage I/II Direct L/R (2)
+  60..61  (2):  Stage 0 200 Hz TPT LR4 Clean Sub [clean_sub_l, clean_sub_r]
+  62..63  (2):  Stage III Early FIR Segment 0 (taps 0..15) [fir_0_l, fir_0_r]
+
+Full (64..127), Pro (128..191) & Ultra (192..255):
+  64..67   (4) / 128..135  (8) / 192..207 (16): Stage III Kautz Modal Blocks 1 / 2..3 / 4..7
+  68..83  (16) / 136..151 (16) / 208..223 (16): Stage I Channel Group 1 / 2 / 3 Stereo Features
+  84..115 (32) / 152..183 (32) / 224..245 (22): Stage II Channel Group 1 / 2 / 3 Commuted Basis Features
+ 116..125 (10) / 184..189  (6) / 246..253  (8): Stage IV Delta Tank Lines (4..7 in Full, 8..15 in Ultra) & Cross-Terms
+ 126..127  (2) / 190..191  (2) / 254..255  (2): Stage III Early FIR Segments 1 / 2 / 3 (taps 16..31 / 32..47 / 48..63)
 ```
 
 `r[dsp.head.tier-equivalence]` **Effective-Tier Equivalence:** For identical external inputs, control values, initial active-tier state, and backend, a container stripped to tier `T` produces bit-identical Stage II feeds, L/R FIR histories, and retained FIR-segment features to the unstripped container running at effective tier `T` (with all tier `> T` weights and `Ultra` control extensions gated off).

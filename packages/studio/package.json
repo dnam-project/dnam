@@ -1,7 +1,7 @@
 {
   "name": "@dnam-project/studio",
   "version": "0.1.0",
-  "description": "Unified Rust/Node dnam CLI and Tauri v2 Desktop Studio for Dynamic Neural Audio Modeler (DNAM / Tri-Physics)",
+  "description": "Unified Rust/Node dnam CLI and Tauri v2 Desktop Studio for Dynamic Neural Audio Modeler (DNAM)",
   "type": "module",
   "license": "LicenseRef-DNAM-1.0.0",
   "repository": {

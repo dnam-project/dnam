@@ -60,6 +60,8 @@ pub enum DnamError {
     InvalidSampleRate(u32),
     /// Requested control index or option is out of bounds.
     InvalidControlIndex(usize),
+    /// Storefront `.dnam-prev` (`container_kind == "preview"`) container rejected by a DAW or hardware host (`ref[sec.preview.containment]`).
+    PreviewContainerRejected,
 }
 
 impl fmt::Display for DnamError {
@@ -120,6 +122,12 @@ impl fmt::Display for DnamError {
             Self::InvalidControlIndex(idx) => {
                 write!(f, "invalid control index: {idx}")
             }
+            Self::PreviewContainerRejected => {
+                write!(
+                    f,
+                    "storefront preview container (container_kind == 'preview') rejected by DAW/hardware host"
+                )
+            }
         }
     }
 }
@@ -162,6 +170,31 @@ pub fn cold_sqrt_f64(x: f64) -> f64 {
     cold_exp_f64(0.5 * cold_ln_f64(x))
 }
 
+/// Returns `Err(DnamError::SchemaValidationError(msg.into()))` when `cond` is `true`.
+#[inline]
+pub(crate) fn reject_if(cond: bool, msg: &str) -> Result<(), DnamError> {
+    if cond {
+        Err(DnamError::SchemaValidationError(String::from(msg)))
+    } else {
+        Ok(())
+    }
+}
+
+/// Extension trait converting `Option<T>` into `Result<T, DnamError>` without per-site closures.
+pub(crate) trait SchemaOptionExt<T> {
+    fn or_schema_err(self, msg: &str) -> Result<T, DnamError>;
+}
+
+impl<T> SchemaOptionExt<T> for Option<T> {
+    #[inline]
+    fn or_schema_err(self, msg: &str) -> Result<T, DnamError> {
+        match self {
+            Some(v) => Ok(v),
+            None => Err(DnamError::SchemaValidationError(String::from(msg))),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -195,10 +228,15 @@ mod tests {
             DnamError::EncryptedArenaRequiresDeviceKey,
             DnamError::InvalidSampleRate(12_000),
             DnamError::InvalidControlIndex(99),
+            DnamError::PreviewContainerRejected,
         ];
         for err in &errors {
             assert!(!err.to_string().is_empty());
         }
+        assert!(reject_if(false, "ok").is_ok());
+        assert!(reject_if(true, "bad").is_err());
+        assert_eq!(Some(7u32).or_schema_err("none"), Ok(7u32));
+        assert!(None::<u32>.or_schema_err("none").is_err());
 
         assert_eq!(cold_ln_f64(0.0), f64::NEG_INFINITY);
         assert_eq!(cold_exp_f64(800.0), f64::INFINITY);

@@ -43,7 +43,7 @@ pub struct ControlBusConfig {
     /// Dimension of the unified modulation bus ($D = 16$).
     #[serde(default = "default_modulation_bus_dim")]
     pub modulation_bus_dim: u8,
-    /// Trust-region soft-clip radius $M_h$ (`CL-15`, default `2.5`).
+    /// Trust-region soft-clip radius $M_h$ (`ref[dsp.ctrl.op-n.trust-clip]`, default `2.5`).
     #[serde(default = "default_trust_radius")]
     pub head_trust_region_radius: f32,
 }

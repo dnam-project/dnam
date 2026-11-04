@@ -13,6 +13,7 @@ requirements:
   - REQ-6.2
 adrs:
   - ADR-0007
+  - ADR-0011
 ---
 
 # Self-Similar 3 kHz Dual-Rate Control Plane & Parametric Control Bus
@@ -196,6 +197,14 @@ $$\boldsymbol{\theta}_{\text{stage}}^{\text{Lite..Pro}}[k+1] = \mathbf{W}_{\text
 | `θ_12, θ_13` | Stage IV Spatial Tank | Master delay length `τ_tank`, loop feedback gain `g_loop` |
 | `θ_14` | Stage IV Diffuser | In-buffer Schroeder all-pass diffusion coefficient `a_diff` |
 | `θ_15` | Output Head | Master stereo width factor `α_width` |
+
+`r[dsp.ctrl.dispatch.stage-laws]` **Closed-Form Per-Sample Stage Modulation Laws (`ADR-0011`):**
+Each micro-ramped parameter $\theta_i[n]$ (`§3.2`) combines with its base stage parameter and clamps into its certified stability interval (`0 FDIV`, `0 FSQRT`):
+- **Stage 0 Sends ($\theta_0, \theta_1$):** $g_{\text{send},L}[n] = \mathrm{clamp}(g_{\text{send},L,0} + \theta_0[n], 0.0, 2.0)$, $g_{\text{send},R}[n] = \mathrm{clamp}(g_{\text{send},R,0} + \theta_1[n], 0.0, 2.0)$.
+- **Stage I Pre-FX ($\theta_2, \theta_3, \theta_4$):** $\tau_{\text{pre}}[n] = \mathrm{clamp}(\tau_{\text{pre},0} + \theta_2[n], 4.0, D_{\text{eff},\text{pre}})$, $p_{\text{st}}[n] = \mathrm{clamp}(p_{\text{st},0} + 24.0 \cdot \theta_3[n], -24.0, 24.0)$ (evaluated via `ref[dsp.ctrl.math.pitch-profile]`), and $g_{\text{pre}}[n] = \mathrm{clamp}(g_{\text{pre},0} + \theta_4[n], 0.0, 16.0)$.
+- **Stage II Cascade ($\theta_5, \theta_6, \theta_7, \theta_8$):** $g_{\text{v1a}}[n] = \mathrm{clamp}(1.0 + 0.25 \theta_5[n], 0.25, 4.0)$, $\beta_{\text{tone}}[n] = \mathrm{clamp}(0.5 + \theta_6[n], 0.0, 1.0)$, $g_{\text{pwr}}[n] = \mathrm{clamp}(1.0 + 0.25 \theta_7[n], 0.25, 4.0)$, and $\alpha_{\text{sag}}[n] = \mathrm{clamp}(0.2 + 0.1 \theta_8[n], 0.0, 0.8)$.
+- **Stage III Cabinet ($\theta_9, \theta_{10}, \theta_{11}$):** $\Delta\theta_{\text{kautz}}[n] = \mathrm{clamp}(\theta_9[n], -\pi/4, \pi/4)$, $g_{\text{kautz}}[n] = \mathrm{clamp}(0.5 + \theta_{10}[n], 0.0, 1.0)$ (`ref[dsp.op-m.stage3.radial-gate]`), and $g_{\text{fir}}[n] = \mathrm{clamp}(1.0 + \theta_{11}[n], 0.0, 2.0)$.
+- **Stage IV Tank & Head ($\theta_{12}, \theta_{13}, \theta_{14}, \theta_{15}$):** $\tau_{\text{tank},m}[n] = \mathrm{clamp}(\tau_{\text{tank},m,0} + \theta_{12}[n], 4.0, D_{\text{eff},\text{tank},m})$, $g_{\text{lin}}[n] = \mathrm{clamp}(g_{\text{lin},0} + \theta_{13}[n], 0.0, \mathtt{0x3F7FBE76})$, $a_{\text{diff}}[n] = \mathrm{clamp}(a_{\text{diff},0} + \theta_{14}[n], -0.75, 0.75)$, and $\alpha_{\text{width}}[n] = \mathrm{clamp}(\alpha_{\text{width},0} + \theta_{15}[n], 0.0, 2.0)$.
 
 ### 3.2 Division-Free Linear Micro-Ramping (`0.0625f32` at $48\text{ kHz}$, $\alpha_{\text{ramp}} = 1 / K_{\text{ctrl}}$ under ZOH)
 

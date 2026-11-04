@@ -113,7 +113,7 @@ pub trait MathBackend: Copy + Clone + Send + Sync + 'static {
     /// Enum identifier for this backend.
     const KIND: BackendKind;
 
-    /// Evaluates the exact division-free algebraic `PolyADAA` kernel across 4 channels (CL-01).
+    /// Evaluates the exact division-free algebraic `PolyADAA` kernel across 4 channels (`ref[dsp.op-n.polyadaa.midpoint]`).
     #[inline(always)]
     fn poly_adaa_algebraic_4ch(
         u_prev: Self::Vec4,
@@ -170,7 +170,7 @@ pub trait MathBackend: Copy + Clone + Send + Sync + 'static {
         default_ops::conv6_taps_4groups::<Self>(bias, w_tiles, h_taps)
     }
 
-    /// Evaluates the 4-tap Cubic Lagrange basis weights across 4 lanes (CL-06).
+    /// Evaluates the 4-tap Cubic Lagrange basis weights across 4 lanes (`ref[dsp.op-t.reader.catmull-rom]`).
     #[inline(always)]
     fn cubic_lagrange_weights_4ch(
         vmu: Self::Vec4,
@@ -206,7 +206,7 @@ pub trait MathBackend: Copy + Clone + Send + Sync + 'static {
         crc32c_slice(0, data)
     }
 
-    /// Evaluates the division-free algebraic unit-circle phasor (cos(theta), sin(theta)) (CL-03).
+    /// Evaluates the division-free algebraic unit-circle phasor (cos(theta), sin(theta)) (`ref[dsp.op-m.rotor.contractive]`).
     #[inline(always)]
     fn fast_unit_phasor(theta_rad: f32) -> (f32, f32) {
         algebraic_unit_rotor(theta_rad)

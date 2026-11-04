@@ -10,7 +10,11 @@
 //! Run with:
 //!   `cargo run -p dnam-engine --example marketplace_provenance`
 
-use dnam_engine::container::ARENA_OFFSET_ULTRA_END;
+use dnam_engine::container::{ARENA_OFFSET_ULTRA_END, DnamPreamble};
+use dnam_engine::provenance::security::{
+    WatermarkSeedScope, derive_watermark_seed_hmac_sha256, evaluate_anticlone_revocation_policy,
+    extract_stage3_tier_fingerprint_component,
+};
 use dnam_engine::provenance::{
     apply_isometric_gauge_watermark, apply_tardos_watermark_7680, extract_structural_hash_224d,
     generate_tardos_code_7680, score_tardos_watermark_7680, structural_cosine_similarity,
@@ -78,4 +82,38 @@ fn main() {
             buyer_id, score
         );
     }
+
+    // 6. License-scoped HMAC-SHA256 watermark seed derivation & Stage III tier-local fingerprint
+    let wm_key = [0x5A_u8; 32];
+    let scope = WatermarkSeedScope {
+        marketplace_pubkey: [0x11; 32],
+        watermark_key_id: [0x22; 16],
+        creator_signed_manifest_sha256: [0x33; 32],
+        model_id: [0x44; 16],
+        watermark_profile_sha256: [0x55; 32],
+        owning_tier: 1,
+    };
+    let buyer_seed =
+        derive_watermark_seed_hmac_sha256(&wm_key, &scope, Some((&[0xAA; 16], &[0xBB; 16])))
+            .expect("valid buyer seed");
+    let stage3_fp = extract_stage3_tier_fingerprint_component(
+        &master_arena[128..256],
+        &master_arena[256..512],
+        8,
+    )
+    .expect("valid Stage III tier-local fingerprint");
+    println!(
+        "Derived Buyer HMAC-SHA256 Seed[0..4]: {:02x?} | Stage III Fingerprint Dims: {}",
+        &buyer_seed[..4],
+        stage3_fp.len(),
+    );
+
+    // 7. Verify 3-stage anti-cloning gate policy & `.dnam-prev` (`DNPR`) rejection (`PreviewContainerRejected`)
+    let gate_action = evaluate_anticlone_revocation_policy(true, true, false);
+    let mut dnpr_bytes = [0u8; 64];
+    dnpr_bytes[0..4].copy_from_slice(b"DNPR");
+    let preview_err = DnamPreamble::from_bytes(&dnpr_bytes).unwrap_err();
+    println!(
+        "Anti-clone gate action (no device evidence): {gate_action:?} | Preview container guard: {preview_err}"
+    );
 }

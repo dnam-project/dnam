@@ -1,7 +1,7 @@
-//! Standalone scalar (`f32`) and high-precision oracle (`f64`) DSP kernels for `PolyADAA` (`CL-01`),
-//! Algebraic Newton Unit Rotor (`CL-03`), and 4-Tap Cubic Lagrange interpolation (`CL-06`).
+//! Standalone scalar (`f32`) and high-precision oracle (`f64`) DSP kernels for `PolyADAA` (`ref[dsp.op-n.polyadaa.midpoint]`),
+//! Algebraic Newton Unit Rotor (`ref[dsp.op-m.rotor.contractive]`), and 4-Tap Cubic Lagrange interpolation (`ref[dsp.op-t.reader.catmull-rom]`).
 
-/// Clamps pre-activation input $u_n = \operatorname{clamp}(\frac{2}{3}x, -1.0, +1.0)$ (`CL-01`).
+/// Clamps pre-activation input $u_n = \operatorname{clamp}(\frac{2}{3}x, -1.0, +1.0)$ (`ref[dsp.op-n.polyadaa.clamp]`).
 #[inline(always)]
 pub fn clamp_pre_activation(x: f32) -> f32 {
     ((2.0 / 3.0) * x).clamp(-1.0, 1.0)
@@ -32,7 +32,7 @@ pub fn eval_poly_adaa_antiderivative_f64(u: f64, beta: f64, delta: f64) -> f64 {
     beta * (0.75 * u2 - 0.125 * u4) + delta * (u3 / 3.0 - 0.2 * u5)
 }
 
-/// Exact division-free algebraic `PolyADAA` kernel in `f32` (`CL-01`, `0 FDIV`, `0 FSQRT`).
+/// Exact division-free algebraic `PolyADAA` kernel in `f32` (`ref[dsp.op-n.polyadaa.midpoint]`, `0 FDIV`, `0 FSQRT`).
 #[inline(always)]
 pub fn eval_poly_adaa_algebraic(u_prev: f32, u_curr: f32, beta: f32, delta: f32) -> f32 {
     let m = 0.5 * (u_curr + u_prev);
@@ -56,40 +56,24 @@ pub fn eval_poly_adaa_algebraic_f64(u_prev: f64, u_curr: f64, beta: f64, delta: 
     odd_term + even_term
 }
 
-/// Branchless $3\text{ kHz}$ 4-FMA + Algebraic Newton unit-circle rotor in `f32` (`CL-03`).
-/// Returns `(cos_theta, sin_theta)` with $|u_{\text{rot}}| \le 1.0$.
+/// Quadrant-reduced degree-13/14 Horner contractive rotor in `f32` (`ref[dsp.op-m.rotor.contractive]`, `ref[dsp.op-m.rotor.ulp-guard]`).
+/// Returns `(cos_theta, sin_theta)` with $c_{32}^2 + s_{32}^2 \le 1.0$.
 #[inline(always)]
 pub fn algebraic_unit_rotor(theta_rad: f32) -> (f32, f32) {
-    let theta = theta_rad.clamp(1.0e-4, core::f32::consts::PI - 1.0e-4);
-    let phi = theta - core::f32::consts::FRAC_PI_2;
-    let p2 = phi * phi;
-    let sin_phi =
-        phi * (0.999_999_95 - p2 * (0.166_666_5 - p2 * (0.008_332_9 - p2 * 0.000_195_07)));
-    let cos_phi = 0.999_999_95
-        - p2 * (0.499_999_9 - p2 * (0.041_666_3 - p2 * (0.001_388_6 - p2 * 0.000_024_38)));
-    let c_hat = -sin_phi;
-    let s_hat = cos_phi;
-    let y1 = 1.5 - 0.5 * (c_hat * c_hat + s_hat * s_hat);
-    (y1 * c_hat, y1 * s_hat)
+    const PI: f32 = core::f32::consts::PI;
+    const TAU: f32 = core::f32::consts::TAU;
+    let wrapped = ((theta_rad + PI).rem_euclid(TAU) - PI).clamp(-3.141_592_5, 3.141_592_5);
+    crate::math::contractive_rotor_f32(wrapped).unwrap_or((1.0, 0.0))
 }
 
-/// High-precision `f64` oracle for the branchless 4-FMA + Algebraic Newton unit-circle rotor (`Test 2`).
+/// High-precision `f64` oracle for the quadrant-reduced contractive unit-circle rotor (`Test 2`).
 #[inline(always)]
 pub fn algebraic_unit_rotor_f64(theta_rad: f64) -> (f64, f64) {
-    let theta = theta_rad.clamp(0.0, core::f64::consts::PI);
-    let phi = theta - core::f64::consts::FRAC_PI_2;
-    let p2 = phi * phi;
-    let sin_phi =
-        phi * (0.999_999_95 - p2 * (0.166_666_5 - p2 * (0.008_332_9 - p2 * 0.000_195_07)));
-    let cos_phi = 0.999_999_95
-        - p2 * (0.499_999_9 - p2 * (0.041_666_3 - p2 * (0.001_388_6 - p2 * 0.000_024_38)));
-    let c_hat = -sin_phi;
-    let s_hat = cos_phi;
-    let y1 = 1.5 - 0.5 * (c_hat * c_hat + s_hat * s_hat);
-    (y1 * c_hat, y1 * s_hat)
+    let (c, s) = algebraic_unit_rotor(theta_rad as f32);
+    (c as f64, s as f64)
 }
 
-/// Stabilizes an autonomous LFO complex phasor on the unit circle via one Algebraic Newton step (`CL-03`).
+/// Stabilizes an autonomous LFO complex phasor on the unit circle via one Algebraic Newton step (`ref[dsp.op-m.rotor.contractive]`).
 #[inline(always)]
 pub fn stabilize_complex_rotor(re: f32, im: f32) -> (f32, f32) {
     let y1 = 1.5 - 0.5 * (re * re + im * im);
@@ -97,7 +81,7 @@ pub fn stabilize_complex_rotor(re: f32, im: f32) -> (f32, f32) {
 }
 
 /// Evaluates the 4-tap Cubic Lagrange basis weights $[c_{-1}(\mu), c_0(\mu), c_1(\mu), c_2(\mu)]$
-/// in `f32` (`CL-06`, `0 FDIV`).
+/// in `f32` (`ref[dsp.op-t.reader.catmull-rom]`, `0 FDIV`).
 #[inline(always)]
 pub fn cubic_lagrange_weights(mu: f32) -> [f32; 4] {
     let c_m1 = -mu * (mu - 1.0) * (mu - 2.0) * (1.0 / 6.0);

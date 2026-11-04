@@ -1,6 +1,6 @@
-//! High-precision `f64` reference DSP kernels for the $3\text{ kHz}$ Parametric Control Bus (`CL-13`..`CL-16`).
+//! High-precision `f64` reference DSP kernels for the $3\text{ kHz}$ Parametric Control Bus (`ref[dsp.ctrl.basis.lobatto]`, `ref[dsp.ctrl.accum.anova-fm]`, `ref[dsp.ctrl.op-n.trust-clip]`).
 
-/// Reference `f64` Node-Anchored Newton/Lobatto basis evaluation (`CL-13`):
+/// Reference `f64` Node-Anchored Newton/Lobatto basis evaluation (`ref[dsp.ctrl.basis.lobatto]`):
 /// $$\psi_1(u) = u - u_1, \quad \psi_2(u) = (u - u_1)(u - u_2), \quad \psi_3(u) = (u - u_1)(u - u_2)(u - u_3)$$
 #[inline]
 pub fn eval_newton_lobatto_basis_f64(u: f64, anchors: [f64; 3], degree: usize) -> [f64; 3] {
@@ -22,7 +22,7 @@ pub fn eval_newton_lobatto_basis_f64(u: f64, anchors: [f64; 3], degree: usize) -
     [p1, p2, p3]
 }
 
-/// Reference `f64` Rank-4 Factorization Machine interaction evaluation (`CL-14`):
+/// Reference `f64` Rank-4 Factorization Machine interaction evaluation (`ref[dsp.ctrl.accum.anova-fm]`):
 /// $$\Delta\theta_{\text{FM}}(\mathbf{x}) = \frac{1}{2} \sum_{r=1}^R \left[\left(\sum_{i=1}^D v_{i,r} x_i\right)^2 - \sum_{i=1}^D v_{i,r}^2 x_i^2\right]$$
 pub fn eval_rank4_fm_interaction_f64(features: &[f64], v_factors: &[[f64; 4]]) -> [f64; 4] {
     let mut sum_vx = [0.0_f64; 4];
@@ -43,7 +43,7 @@ pub fn eval_rank4_fm_interaction_f64(features: &[f64], v_factors: &[[f64; 4]]) -
     out
 }
 
-/// Reference `f64` 4-Harmonic Chebyshev LFO polynomial evaluation ($T_1..T_4(\cos\phi)$, `CL-16`).
+/// Reference `f64` 4-Harmonic Chebyshev LFO polynomial evaluation ($T_1..T_4(\cos\phi)$, `ref[dsp.op-n.ctrl.chebyshev-lfo]`).
 #[inline]
 pub fn eval_chebyshev_lfo_4harm_f64(cos_phi: f64) -> [f64; 4] {
     let t1 = cos_phi;
@@ -54,7 +54,7 @@ pub fn eval_chebyshev_lfo_4harm_f64(cos_phi: f64) -> [f64; 4] {
     [t1, t2, t3, t4]
 }
 
-/// Reference `f64` cubic trust-region soft-clipper (`CL-15`):
+/// Reference `f64` cubic trust-region soft-clipper (`ref[dsp.ctrl.op-n.trust-clip]`):
 /// $$z_{\text{safe}} = M_h \cdot S_3(z / M_h), \qquad S_3(v) = \operatorname{clamp}(v, -1, 1)\big(1.5 - 0.5\operatorname{clamp}(v, -1, 1)^2\big)$$
 #[inline]
 pub fn eval_trust_region_softclip_f64(z: f64, mh: f64) -> f64 {

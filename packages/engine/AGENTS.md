@@ -17,5 +17,6 @@
 
 ## 2. Guides & Verification
 
-1. [`CONTRIBUTING.md`](CONTRIBUTING.md) — Crate layout, `#[forbid(unsafe_code)]` isolation, submodule invariants, zero-allocation rules, and `moon check engine` verification commands.
-2. [`README.md`](README.md) — Public Rust API, I/O topologies, and embedded scratch usage.
+1. [`spec_scope.toml`](spec_scope.toml) — Engine rule scope manifest (`205` rules).
+2. [`CONTRIBUTING.md`](CONTRIBUTING.md) — Crate layout, `#[forbid(unsafe_code)]` isolation, and verification commands.
+3. [`README.md`](README.md) — Public Rust API, I/O topologies, and embedded scratch usage.

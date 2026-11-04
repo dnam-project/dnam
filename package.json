@@ -7,7 +7,7 @@
   "engines": {
     "node": ">=24.0.0"
   },
-  "description": "Dynamic Neural Audio Modeler (DNAM / Tri-Physics) Monorepo Workspace",
+  "description": "Dynamic Neural Audio Modeler (DNAM) Monorepo Workspace",
   "license": "LicenseRef-DNAM-1.0.0",
   "repository": {
     "type": "git",

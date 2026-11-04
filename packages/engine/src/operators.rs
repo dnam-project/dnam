@@ -15,18 +15,32 @@ pub mod op_t;
 pub mod reference;
 
 pub use op_m::{
-    HilbertSsbLattice10th, KautzModalBank, SubHarmonicTracker, SymplecticModal4Lane,
-    algebraic_unit_rotor_cl03, fast_rsqrt_nr2,
+    HILBERT_H1_ANCHORS_15, HilbertH1Lattice6Sec, HilbertSsbLattice10th, KautzModalBank,
+    SubHarmonicTracker, SymplecticModal4Lane, T1DcBlocker, T1SubHarmonicTracker,
+    algebraic_unit_rotor_op_m, compute_t1_dc_blocker_coeffs_bits,
+    convert_stage3_kautz_pole_for_rate, encode_hilbert_h1_anchor_table_780b,
+    eval_stage3_sweep_contraction, eval_tracker_half_angle_pair, fast_rsqrt_nr2,
+    init_log_octave_poles_h2, interpolate_hilbert_h1_between_anchors_bits,
+    interpolate_hilbert_h1_profile_bits, normalize_tracker_phasor_exponent_split,
+    tracker_crosses_branch_cut, validate_and_eval_stage3_radial_gate,
 };
 pub use op_n::{
-    MULTI_DRIVE_SCALES, MultiDrivePolyAdaaChannel, QuadratureHysteresis2D, ZohBitcrusher,
-    c2_wavefolder, eval_chebyshev_4harm, eval_lobatto_basis_3node, poly_adaa_algebraic_eval,
+    FixedHzBitcrusher, MULTI_DRIVE_SCALES, MultiDrivePolyAdaaChannel, QuadratureHysteresis2D,
+    ZohBitcrusher, c2_wavefolder, eval_adaa_cubic_c2_wavefolder_f64, eval_chebyshev_4harm,
+    eval_commuted_vs_uncommuted_lti_cascade_f64, eval_lobatto_basis_3node,
+    eval_saturated_polyadaa_rail_crossing_f64, eval_stage2_stereo_coupling_16d,
+    fold_stage2_latent_weights, hertz_phase_parameters, hertz_phase_step, poly_adaa_algebraic_eval,
+    quantize_bitcrusher_nearest_ties_pos_inf, rescale_bitcrusher_phase_u128,
     trust_region_softclip_4d,
 };
 pub use op_t::{
-    BallisticDuckingVca, OP_T_FULL_RING_CAPACITY, OP_T_LITE_RING_CAPACITY,
-    OP_T_ULTRA_RING_CAPACITY, OpTDelayLine, SCHROEDER_COPRIME_DELAYS, catmull_rom_hermite_cubic,
-    hermite_hann_partition_of_unity, raised_cosine_barberpole_3phase,
+    BallisticDuckingVca, FP16_DECAY_GAIN_BITS, OP_T_FULL_RING_CAPACITY, OP_T_LITE_RING_CAPACITY,
+    OP_T_ULTRA_RING_CAPACITY, OpTBlockMaxTreeGuard, OpTDelayLine, PartitionedSchroederDiffuserBank,
+    SCHROEDER_COPRIME_DELAYS, admit_op_t_memory_budget, bounded_q32_reader_position,
+    bspline_barberpole_3phase, catmull_rom_hermite_cubic, convert_schroeder_delay_for_rate,
+    directed_fp16_decay_write_bits, eval_m2_pitch_grain_delays, hermite_hann_partition_of_unity,
+    op_t_branchless_next_write, op_t_branchless_wrap_index, op_t_fractional_history_capacity,
+    q32_decode_reader_position, raised_cosine_barberpole_3phase,
 };
 pub use reference::{
     catmull_rom_hermite_f64, cubic_lagrange_weights_f64, eval_chebyshev_lfo_4harm_f64,

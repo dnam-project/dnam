@@ -1,23 +1,14 @@
-"""32-bit-only on-device exact split-precision Gram accumulation (`ExactGramAccumulator`)
-and unified batched host-CPU `float64` small dense solver (`HostDenseSolver`).
+"""32-bit-device split-precision Gram accumulation and batched host `float64` solves.
 
-Architecture:
-1. **On-Device (`ExactGramAccumulator`):**
-   - Uses only `float32`, `int32`, and `bfloat16` tensors on the accelerator (`MPS`, `TPU`,
-     `CUDA`, `ROCm`, or `CPU`).
-   - Computes exact per-column power-of-two ceiling scales via IEEE-754 `int32` exponent-bit
-     masking (`pow2_ceil_fp32`, avoiding `torch.frexp` and inexact `torch.exp2` on MPS).
-   - Splits each sub-block (`<= 16,384` rows) into $S = 3$ 8-bit integer-valued slices
-     ($|q| \\le 2^8$), stored compactly in `bfloat16` (exact for integers up to $2^8$).
-   - Evaluates slice inner products in chunks of $K = 128$ rows after upcasting `.to(float32)`
-     so every chunk sum ($\\le 128 \\times 256^2 = 2^{23}$) is bit-exact in `float32`.
-   - Accumulates chunk products in `int32` across up to 128 chunks (`16,384` rows, $\\le 2^{30}$)
-     and folds them into a 3-limb `float32` error-free expansion `(hi, mid, lo)` (`72` bits of
-     significand) via Knuth `two_sum` / `quick_two_sum`.
-2. **On-Host (`HostDenseSolver`):**
-   - Transfers all `(hi, mid, lo)` Gram and RHS expansions from a pass to the host in a single
-     batched transfer, recombines them losslessly into `float64`, and solves ridge Cholesky
-     systems (with `lstsq` fallback + `SolverEvent` telemetry) and `eigh` subspace projections.
+`ExactGramAccumulator` is the current API name, not a general exactness
+guarantee. Its three fixed slices can discard small values within a column,
+its scale and integer arithmetic can underflow or overflow, and scalar weights
+are narrowed to `float32`. Recombining three limbs into `float64` can also
+round. The accumulator does not yet meet the weighted Gram accuracy contract
+in `docs/training/four_stage_pipeline.md` section 3.1.
+
+`HostDenseSolver` performs batched ridge Cholesky systems, `lstsq` fallback
+with `SolverEvent` telemetry, and `eigh` subspace projections on the host.
 """
 
 from __future__ import annotations
@@ -36,8 +27,9 @@ from dnam_trainer.events import SolverEvent, TrainingObserver
 
 
 def pow2_ceil_fp32(v: Tensor) -> Tensor:
-    """Computes the exact IEEE-754 power-of-two ceiling $\\ge \\max(|v|, 10^{-30})$ in `float32`
-    using `int32` exponent-bit masking (`0` `frexp` / `exp2` calls).
+    """Computes a power-of-two ceiling $\\ge \\max(|v|, 10^{-30})$ via `int32` bit masking.
+
+    The result is exact for finite inputs whose ceiling is representable in `float32`.
     """
     vc = v.to(dtype=torch.float32).abs().clamp_min(1.0e-30).contiguous()
     bits = vc.view(torch.int32)
@@ -61,7 +53,7 @@ def argmax_i32(x: Tensor, dim: int | None = -1) -> Tensor:
 
 
 def two_sum(a: Tensor, b: Tensor) -> tuple[Tensor, Tensor]:
-    """Knuth's error-free transformation `s + e == a + b` in `float32`."""
+    """Knuth's transformation; exactness requires suitable rounding and range."""
     s = a + b
     v = s - a
     e = (a - (s - v)) + (b - v)
@@ -84,7 +76,7 @@ def _split_veltkamp_f32(a: Tensor) -> tuple[Tensor, Tensor]:
 
 
 def two_prod(a: Tensor, b: Tensor) -> tuple[Tensor, Tensor]:
-    """Dekker's error-free product `p + err == a * b` in `float32`."""
+    """Dekker's product split; exactness requires suitable rounding and range."""
     p = a * b
     a_hi, a_lo = _split_veltkamp_f32(a)
     b_hi, b_lo = _split_veltkamp_f32(b)
@@ -113,7 +105,7 @@ def td_add(
     d_hi: Tensor,
     d_lo: Tensor,
 ) -> tuple[Tensor, Tensor, Tensor]:
-    """Adds `(d_hi, d_lo)` into a 3-limb `float32` expansion `(hi, mid, lo)` (72-bit)."""
+    """Adds `(d_hi, d_lo)` into a 3-limb `float32` expansion `(hi, mid, lo)`."""
     s1, e1 = two_sum(hi, d_hi)
     s2, e2 = two_sum(mid, e1)
     s3, e3 = two_sum(s2, d_lo)
@@ -136,8 +128,9 @@ def split_f64_to_f32_trilimb(
     arr_f64: NDArray[np.float64],
     device: torch.device | str = "cpu",
 ) -> tuple[Tensor, Tensor, Tensor]:
-    """Losslessly splits a host `float64` NumPy array into three `float32` tensors `(hi, mid, lo)`
-    on `device` (preserving all 53 mantissa bits of `float64`).
+    """Splits a host `float64` array into three `float32` tensors `(hi, mid, lo)`.
+
+    Values outside the representable range of the expansion need not round-trip.
     """
     a64 = np.ascontiguousarray(arr_f64, dtype=np.float64)
     hi_np = a64.astype(np.float32)
@@ -197,9 +190,9 @@ def recombine_f32_pair_to_f64(hi: Tensor, lo: Tensor) -> NDArray[np.float64]:
 
 
 def _extract_3slices_bf16(x_sub: Tensor) -> tuple[Tensor, Tensor]:
-    """Splits `(R_sub, C)` `float32` tensor into 3 8-bit signed integer slices (`|s_p| <= 128`,
-    covering all 24 IEEE-754 `float32` mantissa bits) stored in `(R_sub, 3 * C)` `bfloat16`,
-    returning `(s_cat_bf16, col_scale_1xc)`.
+    """Splits columns into three signed integer slices and a shared power-of-two scale.
+
+    The fixed slices can discard values far below a column's subblock maximum.
     """
     sc = pow2_ceil_fp32(x_sub.abs().amax(dim=0, keepdim=True)) * 2.0
     rem = x_sub / sc
@@ -242,7 +235,7 @@ _RHS_PAIRS_DESC: tuple[tuple[int, int, float], ...] = (
 
 
 class ExactGramAccumulator:
-    """On-device 32-bit Ozaki-style split-precision accumulator for `G = X^T X` and `C = X^T Y`."""
+    """Current split-precision accumulator for `G = X^T X` and `C = X^T Y`; not generally exact."""
 
     def __init__(
         self,

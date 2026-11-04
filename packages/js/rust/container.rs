@@ -9,7 +9,7 @@ use dnam_engine::container::{
     build_dnam_container, crc32c_compute, pack_uplo_u_f64, strip_container_to_tier,
     unpack_uplo_u_f64, update_header_in_place, uplo_u_packed_len,
 };
-use dnam_engine::control::{ControlClampDescriptor, MAX_CONTROLS};
+use dnam_engine::control::ControlClampDescriptor;
 use dnam_engine::provenance::{RustCryptoProvider, decode_hex_array};
 use dnam_engine::schema::{
     ControlKind, ControlSchemaDef, ControlUiHints, DnamJsonHeader, DnamProtectionProfile, PresetDef,
@@ -21,7 +21,7 @@ use crate::format_tagged_dnam_error;
 /// avoiding per-call JSON header parsing.
 #[derive(Debug, Clone)]
 pub struct ControlSpaceCore {
-    descriptors: [ControlClampDescriptor; MAX_CONTROLS],
+    descriptors: Vec<ControlClampDescriptor>,
     num_controls: usize,
 }
 
@@ -32,7 +32,7 @@ impl ControlSpaceCore {
         let descriptors = header
             .compile_clamp_descriptors()
             .map_err(|e| format_tagged_dnam_error(&e))?;
-        let num_controls = header.controls_schema.len().min(MAX_CONTROLS);
+        let num_controls = descriptors.len();
         Ok(Self {
             descriptors,
             num_controls,
@@ -45,7 +45,7 @@ impl ControlSpaceCore {
     }
 
     /// Evaluates 3-Phase control clamping directly into caller-provided slices (`0` heap allocations).
-    /// Returns a 16-bit bitmask where bit `p` is `1` if control `p` was clamped.
+    /// Returns a 32-bit bitmask where bit `p` (`p < 32`) is `1` if control `p` was clamped.
     #[inline]
     pub fn clamp_into(
         &self,
@@ -54,7 +54,7 @@ impl ControlSpaceCore {
         norm_out: &mut [f32],
     ) -> u32 {
         let n = self.num_controls.min(clamped_out.len()).min(norm_out.len());
-        let mut active_switches = [0_u8; MAX_CONTROLS];
+        let mut active_switches = [0_u8; 256];
         let mut was_clamped_mask = 0_u32;
 
         // Pass 1: Switch controls first so conditional range rules see active switch states
@@ -66,11 +66,11 @@ impl ControlSpaceCore {
                     .copied()
                     .unwrap_or(desc.default_val);
                 let (clamped, norm, was_clamped) =
-                    desc.clamp_and_normalize(raw_v, &active_switches);
+                    desc.clamp_and_normalize(raw_v, &active_switches[..n]);
                 active_switches[p] = (clamped + 0.5) as u8;
                 clamped_out[p] = clamped;
                 norm_out[p] = norm;
-                if was_clamped {
+                if was_clamped && p < 32 {
                     was_clamped_mask |= 1_u32 << p;
                 }
             }
@@ -84,10 +84,10 @@ impl ControlSpaceCore {
                     .copied()
                     .unwrap_or(desc.default_val);
                 let (clamped, norm, was_clamped) =
-                    desc.clamp_and_normalize(raw_v, &active_switches);
+                    desc.clamp_and_normalize(raw_v, &active_switches[..n]);
                 clamped_out[p] = clamped;
                 norm_out[p] = norm;
-                if was_clamped {
+                if was_clamped && p < 32 {
                     was_clamped_mask |= 1_u32 << p;
                 }
             }

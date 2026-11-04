@@ -294,6 +294,8 @@ pub struct DnamTelemetrySnapshot {
     pub lfo_harmonics: [f32; 8],
     /// Current clamped physical control values across the leading 16 C-ABI telemetry slots.
     pub clamped_controls: [f32; TELEMETRY_CONTROL_SLOTS],
+    /// Accumulated finite-precision overflow/saturation flags (`ref[arch.fp.range-saturation]`).
+    pub overflow_or_saturation_flags: u32,
 }
 
 #[cfg(test)]
@@ -723,9 +725,9 @@ mod tests {
             use crate::engine::DnamEngine;
 
             let mut engine = DnamEngine::<B>::new_empty(Tier::Lite);
-            for expired in [false, true] {
+            for bypassed in [false, true] {
                 for entry in 0..4 {
-                    engine.preview_guard.is_expired = expired;
+                    engine.set_bypass(bypassed, false);
                     engine.ctrl_sub_counter = 0;
                     engine.ctrl_energy_accum = 0.0;
                     let input = [std::hint::black_box(f32::MAX), std::hint::black_box(0.1)];
@@ -766,13 +768,12 @@ mod tests {
         let requested = ((read_fp_control() | 0x1f80) & !(0x8040 | (0b11 << 13))) | (0b01 << 13);
         let _restore = RestoreFpControl(read_fp_control());
         let mut engine = DnamEngine::<ScalarBackend>::new_empty(Tier::Lite);
-        engine.set_bypass(true, false);
         let input = [0.25_f32, -0.5];
         let mut left = [0.0; 2];
         let mut right = [0.0; 2];
 
-        for expired in [false, true] {
-            engine.preview_guard.is_expired = expired;
+        for bypassed in [false, true] {
+            engine.set_bypass(bypassed, false);
             write_fp_control(requested);
             let host = read_fp_control();
             engine.process_block(&input, &input, &mut left, &mut right);

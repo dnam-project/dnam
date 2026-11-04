@@ -55,7 +55,7 @@ def _parse_backend(backend: str | BackendKind) -> BackendKind:
 
 
 class DnamEngine:
-    """Real-time and offline stereo neural audio modeler (`Tri-Physics`) processor."""
+    """Real-time and offline stereo neural audio modeler processor."""
 
     def __init__(
         self,

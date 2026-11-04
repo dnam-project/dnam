@@ -58,6 +58,16 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
     /// or offline oversampling; use the block APIs when those behaviors are needed.
     #[inline(always)]
     pub fn step_frame_tora(&mut self, in_l: f32, in_r: f32, mono_only: bool) -> [f32; 2] {
+        let in_l = crate::math::sanitize_input_sample(
+            in_l,
+            crate::math::CERTIFIED_INPUT_ENVELOPE_MIN_F32,
+            &mut self.saturation_flags,
+        );
+        let in_r = crate::math::sanitize_input_sample(
+            in_r,
+            crate::math::CERTIFIED_INPUT_ENVELOPE_MIN_F32,
+            &mut self.saturation_flags,
+        );
         if self.bypassed && !self.trails_enabled {
             return if mono_only {
                 [in_l, in_l]
@@ -91,11 +101,34 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
             self.ctrl_energy_accum = 0.0;
             let arena = self.arena_storage.as_bytes();
             let _changed = self.control_bus.tick_3khz(avg_energy, arena);
+            self.stage_ramp_deltas = crate::control::ControlBus::<B>::compute_micro_ramp_deltas(
+                &self.current_stage_params,
+                &self.control_bus.stage_targets,
+                self.zoh.alpha_ramp_host,
+            );
             if self.control_bus.tank_mod_dirty {
                 self.apply_tank_modulations();
                 self.control_bus.tank_mod_dirty = false;
             }
         }
+        crate::control::ControlBus::<B>::step_micro_ramp(
+            &mut self.current_stage_params,
+            &self.stage_ramp_deltas,
+        );
+        let stage_laws = crate::stages::eval_stage_modulation_laws(
+            &self.current_stage_params,
+            [
+                self.stage_pipeline.stage0.s_matrix[0][0],
+                self.stage_pipeline.stage0.s_matrix[1][1],
+            ],
+            self.zoh.tau_ref_samples_host,
+            1020.0,
+            149.0,
+            255.0,
+            self.stage_pipeline.stage4.g_loop,
+            0.5,
+            self.stereo_width,
+        );
 
         // Stage 0: 8-Port Matrix Router
         let (_send_l, _send_r, down_l, down_r, clean_sub_l, clean_sub_r) = self
@@ -107,8 +140,8 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
         let (s1_l, s1_r) = self.stage_pipeline.stage1.step_stereo(down_l, down_r);
 
         // Stage II: Commuted Cascade (Tone Basis + Non-linear PolyADAA)
-        let drive_gain = (1.0 + 0.25 * self.control_bus.ctrl_basis_4[0]).clamp(0.25, 4.0);
-        let sag_depth = (0.2 + 0.1 * self.control_bus.ctrl_basis_4[1]).clamp(0.0, 0.8);
+        let drive_gain = (stage_laws[5] + 0.25 * self.control_bus.ctrl_basis_4[0]).clamp(0.25, 4.0);
+        let sag_depth = (stage_laws[8] + 0.1 * self.control_bus.ctrl_basis_4[1]).clamp(0.0, 0.8);
         let (basis_l, basis_r) = self
             .stage_pipeline
             .stage2
@@ -116,16 +149,16 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
         let s2_l = basis_l[0];
         let s2_r = basis_r[0];
 
-        // Stage III: Cabinet Modals (Early FIR + Stereo Kautz Modal Bank + Clean Sub crossover)
+        // Stage III: Cabinet Modals (Early FIR + Stereo Kautz Modal Bank driven by 16-sample-delayed tap + Clean Sub crossover)
         let fir_taps = self.stage_pipeline.fir_taps;
-        let s3_fir_l = self
-            .stage_pipeline
-            .stage3
-            .step(s2_l, clean_sub_l, &fir_taps);
-        let s3_fir_r = self
-            .stage_pipeline
-            .stage3_r
-            .step(s2_r, clean_sub_r, &fir_taps);
+        let (s3_fir_l, s2_delayed_16_l) =
+            self.stage_pipeline
+                .stage3
+                .step_with_delayed_tap(s2_l, clean_sub_l, &fir_taps);
+        let (s3_fir_r, s2_delayed_16_r) =
+            self.stage_pipeline
+                .stage3_r
+                .step_with_delayed_tap(s2_r, clean_sub_r, &fir_taps);
 
         let arena = self.arena_storage.as_bytes();
         let active_tiers =
@@ -137,8 +170,10 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
         let mut kautz_sum_r = 0.0_f32;
         for t in 0..active_tiers {
             for blk in 0..4 {
-                let kl = self.stage_pipeline.kautz_tiers_l[t][blk].step_4lane_simd::<B>(s2_l);
-                let kr = self.stage_pipeline.kautz_tiers_r[t][blk].step_4lane_simd::<B>(s2_r);
+                let kl =
+                    self.stage_pipeline.kautz_tiers_l[t][blk].step_4lane_simd::<B>(s2_delayed_16_l);
+                let kr =
+                    self.stage_pipeline.kautz_tiers_r[t][blk].step_4lane_simd::<B>(s2_delayed_16_r);
                 let vl = B::Vec4::from_array(kl);
                 let vr = B::Vec4::from_array(kr);
                 kautz_sum_l += vl.horizontal_sum();
@@ -275,11 +310,17 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
         let dry_l = in_l;
         let dry_r = in_r;
 
-        let out_l = eff_dry_g * dry_l + eff_wet_g * wet_l;
+        let out_l = crate::math::sanitize_output_sample(
+            eff_dry_g * dry_l + eff_wet_g * wet_l,
+            &mut self.saturation_flags,
+        );
         let out_r = if mono_only {
             out_l
         } else {
-            eff_dry_g * dry_r + eff_wet_g * wet_r
+            crate::math::sanitize_output_sample(
+                eff_dry_g * dry_r + eff_wet_g * wet_r,
+                &mut self.saturation_flags,
+            )
         };
 
         [out_l, out_r]
@@ -311,11 +352,6 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
             .min(left_out.len())
             .min(right_out.len());
         self.tempo_state.advance_frames(num_frames);
-        if !self.preview_guard.advance_block(num_frames) {
-            left_out[..num_frames].fill(0.0);
-            right_out[..num_frames].fill(0.0);
-            return;
-        }
 
         if self.offline_bounce {
             for i in 0..num_frames {
@@ -342,11 +378,6 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
         let _ftz = FtzDazGuard::new();
         let num_frames = mono_in.len().min(left_out.len()).min(right_out.len());
         self.tempo_state.advance_frames(num_frames);
-        if !self.preview_guard.advance_block(num_frames) {
-            left_out[..num_frames].fill(0.0);
-            right_out[..num_frames].fill(0.0);
-            return;
-        }
 
         if self.offline_bounce {
             for i in 0..num_frames {
@@ -370,10 +401,6 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
         let _ftz = FtzDazGuard::new();
         let num_frames = mono_in.len().min(mono_out.len());
         self.tempo_state.advance_frames(num_frames);
-        if !self.preview_guard.advance_block(num_frames) {
-            mono_out[..num_frames].fill(0.0);
-            return;
-        }
 
         if self.offline_bounce {
             for i in 0..num_frames {
@@ -395,11 +422,6 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
         let _ftz = FtzDazGuard::new();
         let num_frames = left_io.len().min(right_io.len());
         self.tempo_state.advance_frames(num_frames);
-        if !self.preview_guard.advance_block(num_frames) {
-            left_io[..num_frames].fill(0.0);
-            right_io[..num_frames].fill(0.0);
-            return;
-        }
 
         if self.offline_bounce {
             for i in 0..num_frames {
@@ -430,6 +452,7 @@ mod tests {
     #[test]
     fn test_process_modes_and_in_place() {
         let mut header = DnamJsonHeader::default_reference();
+        header.io_config.capabilities.supports_freeze = true;
         let arena = vec![0u8; ARENA_OFFSET_ULTRA_END as usize];
         let container = build_dnam_container(&mut header, &arena, &arena, false).unwrap();
 
@@ -477,21 +500,5 @@ mod tests {
         engine.freeze_mutes_dry = true;
         engine.process_block(&l, &r, &mut l_out, &mut r_out);
         assert!(l_out[0].is_finite());
-
-        // Expired preview guard mutes all process variants
-        engine.preview_guard.is_expired = true;
-        engine.process_block(&l, &r, &mut l_out, &mut r_out);
-        assert_eq!(l_out, [0.0f32; 16]);
-        l_out = [1.0f32; 16];
-        r_out = [1.0f32; 16];
-        engine.process_mono_to_stereo(&l, &mut l_out, &mut r_out);
-        assert_eq!(l_out, [0.0f32; 16]);
-        l_out = [1.0f32; 16];
-        engine.process_mono(&l, &mut l_out);
-        assert_eq!(l_out, [0.0f32; 16]);
-        let mut l_ip = [1.0f32; 16];
-        let mut r_ip = [1.0f32; 16];
-        engine.process_block_in_place(&mut l_ip, &mut r_ip);
-        assert_eq!(l_ip, [0.0f32; 16]);
     }
 }

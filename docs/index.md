@@ -121,6 +121,7 @@ flowchart TD
 | **[`adr/0008-per-stem-kronecker-statistics-and-wide-gram.md`](adr/0008-per-stem-kronecker-statistics-and-wide-gram.md)** | `Accepted` | Why pre-summed Kronecker matrices fail on stem additions; `uplo='U'` `Arena 4` slices and 192-bit wide-significand Gram contraction. |
 | **[`adr/0009-jcs-prefix-signing-hpke-and-preview-containment.md`](adr/0009-jcs-prefix-signing-hpke-and-preview-containment.md)** | `Accepted` | RFC 8785 JCS header digest, `DMU1`/`DME1` mutable suffix, RFC 9180 HPKE low-order key rejection, offline auth, and `.dnam-prev`. |
 | **[`adr/0010-rust-reference-spec-rules-and-madr-decisions.md`](adr/0010-rust-reference-spec-rules-and-madr-decisions.md)** | `Accepted` | Three-layer `requirements`/`specs`/`adr` hierarchy, Rust Reference `r[...]` / `ref[...]` / `verify[...]` rules, MADR conventions, and documentation guardrails. |
+| **[`adr/0011-end-to-end-stage-wiring-and-arena-slice-topology.md`](adr/0011-end-to-end-stage-wiring-and-arena-slice-topology.md)** | `Accepted` | End-to-end stage wiring, 256-D feature bus slot map (`0..255`), closed-form `theta_0..theta_15` stage modulation laws, and 64B-aligned `tensor_directory` slice schema. |
 | **[`templates/requirement_template.md`](templates/requirement_template.md)** · **[`spec_template.md`](templates/spec_template.md)** · **[`adr_template.md`](templates/adr_template.md)** | `Templates` | Canonical authoring templates for `REQ-X.Y` requirements, `r[...]` normative specifications, and MADR `NNNN-*.md` records. |
 
 ---

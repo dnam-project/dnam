@@ -116,6 +116,28 @@ impl TempoSyncState {
         fold_octave: bool,
         out: &mut [(usize, f32)],
     ) -> usize {
+        let mut clamp_mask = 0u16;
+        Self::resolve_sync_updates_with_clamp_mask_into(
+            header,
+            bpm,
+            subdivision_override,
+            fold_octave,
+            out,
+            &mut clamp_mask,
+        )
+    }
+
+    /// Zero-allocation helper that writes `(ctrl_idx, physical_value)` tempo updates into `out`
+    /// and sets bits in `clamp_mask` for any control whose target was clamped to its reachable bound
+    /// (`ref[dsp.ctrl.range.f32-rank-bounds]`, `ref[dsp.tempo.physical-inversion]`).
+    pub fn resolve_sync_updates_with_clamp_mask_into(
+        header: &DnamJsonHeader,
+        bpm: f32,
+        subdivision_override: Option<TempoSubdivision>,
+        fold_octave: bool,
+        out: &mut [(usize, f32)],
+        clamp_mask: &mut u16,
+    ) -> usize {
         let mut count = 0;
         for (ctrl_idx, ctrl_def) in header.controls_schema.iter().enumerate() {
             let Some(ref cal) = ctrl_def.calibration else {
@@ -124,6 +146,9 @@ impl TempoSyncState {
             let Some(res) = cal.resolve_tempo_sync(bpm, subdivision_override, fold_octave) else {
                 continue;
             };
+            if res.was_clamped && ctrl_idx < 16 {
+                *clamp_mask |= 1u16 << ctrl_idx;
+            }
             if let Some((sw_id, opt_label)) = res.switch_selection
                 && let Some((sw_idx, sw_def)) = header
                     .controls_schema

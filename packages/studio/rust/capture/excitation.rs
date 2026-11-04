@@ -14,7 +14,7 @@ pub const ALIGNMENT_SETTLE_SILENCE_SEC: f32 = 0.10;
 /// Total duration of the leading alignment header (`0.45s`).
 pub const ALIGNMENT_HEADER_TOTAL_SEC: f32 =
     ALIGNMENT_PULSE_DURATION_SEC + ALIGNMENT_SETTLE_SILENCE_SEC;
-/// Duration of the baseline trailing silent window for delay/reverb tail decay and noise-floor estimation (`3.00s`).
+/// Duration of the baseline silent-input window for delay/reverb tail observation (`3.00s`).
 pub const TRAILING_NOISE_WINDOW_SEC: f32 = 3.00;
 /// Maximum additional live recording tail duration in seconds when a long reverb/delay tail (`> 10s`) is still decaying (`15.00s`).
 pub const MAX_DYNAMIC_TAIL_EXTRA_SEC: f32 = 15.00;
@@ -23,7 +23,7 @@ pub const DEFAULT_HARDWARE_EXCITATION_SEC: usize = 30;
 /// Canonical duration in seconds for Step-1/Step-2 hardware calibration probes (`6.0s` = `288,000` samples @ `48 kHz`).
 pub const DEFAULT_HARDWARE_PROBE_SEC: usize = 6;
 
-/// Probed target device system-identification profile used to synthesize an optimal dry excitation.
+/// Probed target device system-identification profile used to parameterize the dry excitation.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TargetExcitationProfile {
     /// Measured nonlinear soft-knee onset amplitude in linear full-scale `[0.01, 0.95]`.
@@ -36,7 +36,7 @@ pub struct TargetExcitationProfile {
     pub estimated_max_delay_ms: f32,
     /// Estimated reverb/delay tail $T_{60}$ decay time in milliseconds.
     pub estimated_tail_t60_ms: f32,
-    /// Detected LFO modulation rate in Hz (`0.0` if time-invariant).
+    /// Estimated LFO modulation rate in Hz (`0.0` when the detector accepts no peak).
     pub detected_lfo_hz: f32,
     /// Dominant resonant peak frequency in Hz.
     pub dominant_resonance_hz: f32,
@@ -366,8 +366,8 @@ pub fn analyze_probe_for_excitation(
 ///    alignment burst and settling silence ([`synth_alignment_pulses`]).
 /// 2. **Core 5-Section Excitation Body (`0.55s – 27.00s`, `26.45s`):**
 ///    - **Section 1 (`0..20%`, `~5.29s`):** Dual-regime logarithmic sine sweeps (`20 Hz -> 20 kHz`)
-///      comprising a clean/Zone-A sweep (`knee -> sat`, `0..45%`), an inter-sweep settling gap
-///      (`45..52%`), and a hot/Zone-B sweep (`sat -> 0.98`, `52..100%`).
+///      comprising a clean/Zone-A swell (`knee -> sat -> knee`, `0..45%`), an inter-sweep gap
+///      (`45..52%`), and a hot/Zone-B swell (`sat -> 0.98 -> sat`, `52..100%`).
 ///    - **Section 2 (`20..48%`, `~7.41s`):** 12-step multi-register ballistic attack/release &
 ///      staccato re-trigger ladder (`-42 dBFS -> 0.98`, `~617 ms/step`) across low/mid/high
 ///      registers (`41.2 Hz E1 .. 659.3 Hz E5`) with simultaneous sub/mid/high crossover anchors
@@ -376,15 +376,14 @@ pub fn analyze_probe_for_excitation(
 ///    - **Section 3 (`48..70%`, `~5.82s`):** 16-burst polyphonic dyad/triad saturation and
 ///      intermodulation matrix (`sat -> 0.98`) spanning octaves, fifths, fourths, major/minor thirds,
 ///      and tritones across `41.2 Hz .. 784 Hz`.
-///    - **Section 4 (`70..88%`, `~4.76s`):** Strictly constant-envelope harmonic + multitone sustain
-///      (`0..48%`, $\dot{e}_{\text{in}}[n] \equiv 0$, isolating autonomous `0.25–10 Hz` LFOs from
-///      envelope followers) followed by a dual-regime multitone/CCIF dynamic hysteresis swell
-///      (`48..100%`, `-48 dBFS -> knee -> 0.98 -> knee -> -48 dBFS`).
+///    - **Section 4 (`70..88%`, `~4.76s`):** Constant-gain harmonic + multitone signal
+///      (`0..48%`), followed by a dual-regime multitone/CCIF dynamic hysteresis swell. The
+///      multitone's input envelope varies; this interval does not establish autonomous LFO
+///      isolation or a full `0.25 Hz` cycle.
 ///    - **Section 5 (`88..100%`, `~3.17s`):** Broadband high-crest harmonic cluster (`0..60%`,
-///      `sat -> 0.98`) + isolated full-scale (`0.98`) chord/transient tail probe (`60..68%`) +
-///      pre-tail decay silence (`68..100%`, `~1.02s`).
-/// 3. **Trailing Decay & Silent Noise-Floor Window (`27.00s – 30.00s`, `3.00s`):** Baseline
-///    uninterrupted decay window (`~4.02s` total after the Section 5B impulse); if a stem's wet
+///      `sat -> 0.98`) + an `80ms` windowed chord burst starting at `62%` + pre-tail silence.
+/// 3. **Trailing Decay Window (`27.00s – 30.00s`, `3.00s`):** Baseline
+///    input silence (`~4.126s` total after the chord burst); if a stem's wet
 ///    reverb/delay return is still ringing above the noise floor at `30.0s`, live hardware capture
 ///    (`cpal_play_and_record`) automatically continues recording up to [`MAX_DYNAMIC_TAIL_EXTRA_SEC`]
 ///    without inflating the dry `input.wav` file on disk.
@@ -637,7 +636,7 @@ pub fn generate_excitation_signal_with_profile(
         }
     }
 
-    // Section 4 (70..88%): Constant-envelope autonomous LFO sustain (0..48%) + Dual-regime multitone/CCIF swell (48..100%)
+    // Section 4 (70..88%): Constant-gain multitone (0..48%) + dual-regime multitone/CCIF swell (48..100%)
     let n4 = s4_end.saturating_sub(s3_end);
     if n4 > 0 {
         let lfo_sus_end = (n4 * 48) / 100;
@@ -666,7 +665,7 @@ pub fn generate_excitation_signal_with_profile(
             max_mt = max_mt.max(sum_t.abs());
         }
 
-        // Part 4A: Strictly constant-amplitude harmonic + multitone sustain for autonomous LFO identification
+        // Part 4A: Constant scalar gain; the summed signal's envelope can vary.
         let const_env = (0.55 * (knee + sat)).clamp(0.25, 0.85);
         for (j, &mt_raw) in multitone.iter().enumerate().take(lfo_sus_end) {
             let t4 = (j as f32) / fs;
@@ -708,7 +707,7 @@ pub fn generate_excitation_signal_with_profile(
         }
     }
 
-    // Section 5 (88..100%): Broadband high-crest cluster (0..60%) + Isolated chord/impulse tail probe (60..68%) + Pre-tail decay gap (68..100%)
+    // Section 5 (88..100%): Broadband high-crest cluster, chord burst, and pre-tail silence.
     let n5 = n_body.saturating_sub(s4_end);
     if n5 > 0 {
         let cluster_end = (n5 * 60) / 100;
@@ -876,10 +875,8 @@ mod tests {
         assert_eq!(DEFAULT_HARDWARE_PROBE_SEC, 6);
         assert!((TRAILING_NOISE_WINDOW_SEC - 3.00).abs() < 1e-6);
 
-        // 2. Universal 5-section excitation body must simultaneously deliver full-scale saturation drive
-        // (peak >= 0.97, RMS >= -13.5 dBFS, >= 5% samples >= -6 dBFS, >= 1.5% samples >= -3 dBFS),
-        // sub-threshold / release-probe envelope ballistics coverage ([-54 dBFS, -24 dBFS]),
-        // constant-envelope LFO sustain, and an uninterrupted trailing decay window.
+        // 2. Aggregate body-level thresholds and trailing dry silence. These counts do not
+        // establish device saturation, envelope ballistics, or LFO identifiability.
         let n = (sr as usize) * 10;
         let sig = generate_excitation_signal_with_profile(sr, n, None);
         let body_start = (0.55 * (sr as f32)) as usize;
@@ -905,7 +902,7 @@ mod tests {
 
         assert!(
             body_peak >= 0.97,
-            "Expected full-scale Zone-B peak >= 0.97, got {body_peak}"
+            "Expected body peak >= 0.97, got {body_peak}"
         );
         assert!(
             body_rms_dbfs >= -13.5,

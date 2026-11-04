@@ -353,6 +353,15 @@ impl DnamJsonHeader {
         Ok(ver)
     }
 
+    /// Rejects storefront `.dnam-prev` (`container_kind == "preview"`) containers when loaded on a
+    /// DAW or hardware host (`ref[sec.preview.containment]`).
+    pub fn ensure_not_preview_for_daw_host(&self) -> Result<(), DnamError> {
+        if self.container_kind == "preview" {
+            return Err(DnamError::PreviewContainerRejected);
+        }
+        Ok(())
+    }
+
     /// Validates all structural, alignment, and safety invariants of the JSON header.
     pub fn validate(&self) -> Result<(), DnamError> {
         let _ = self.schema_version()?;

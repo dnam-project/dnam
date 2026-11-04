@@ -1,6 +1,6 @@
 //! Unified 128-Byte `ControlChannelRecord[0..P]` Table & O(1) 64-Byte Latent Accumulator.
 //!
-//! Canonical Reference: `docs/dsp/parametric_control_bus.md` §5 (`CL-12`–`CL-17`).
+//! Canonical Reference: `docs/specs/dsp/parametric_control_bus.md` (`ref[dsp.ctrl.accum.cp1-scaling]`, `ref[dsp.ctrl.accum.anova-fm]`).
 
 use core::mem::{align_of, size_of};
 

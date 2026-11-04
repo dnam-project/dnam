@@ -1,4 +1,11 @@
-"""Capture-schedule and ideal multitone examples, not Studio integration tests."""
+"""Capture-schedule and ideal multitone examples, not Studio integration tests.
+
+verify[train.capture.excitation.universal-30s]
+verify[train.capture.excitation.live-tail]
+verify[train.capture.excitation.user-stems]
+verify[train.capture.planner.schedule]
+verify[train.capture.planner.freeze-transition]
+"""
 
 from __future__ import annotations
 

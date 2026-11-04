@@ -1,4 +1,13 @@
-"""Exact-arithmetic examples for bounded bESR noise-floor decisions."""
+"""Exact-arithmetic examples for bounded bESR noise-floor decisions.
+
+verify[qual.besr.noise-subtracted]
+verify[qual.besr.uncertain-floor]
+verify[qual.besr.noise-qualified]
+verify[qual.besr.zero-denominator]
+verify[qual.eval.quiet-vs-muted]
+verify[qual.eval.thermal-hiss]
+verify[qual.eval.jitter-floor]
+"""
 
 from __future__ import annotations
 

@@ -4,12 +4,11 @@ use dnam_engine::control::{
     eval_chebyshev_lfo_4harm_f64, eval_newton_lobatto_basis_f64, eval_rank4_fm_interaction_f64,
     eval_trust_region_softclip_f64,
 };
-use dnam_engine::core1::{poly_adaa_algebraic_f64, selective_rglru_step_f64};
-use dnam_engine::core2::{
-    cubic_lagrange_weights_f64, givens_householder_mix_8ch_f64, mufdn_coercive_step_f64,
-    mufdn_slice_f64,
-};
 use dnam_engine::math::algebraic_unit_rotor;
+use dnam_engine::operators::reference::{
+    cubic_lagrange_weights_f64, givens_householder_mix_8ch_f64, op_m_modal_step_f64,
+    op_t_coercive_step_f64, op_t_tank_slice_f64, poly_adaa_algebraic_f64,
+};
 
 /// Division-free algebraic `PolyADAA` segment average (`CL-01`).
 #[inline]
@@ -95,7 +94,7 @@ pub fn selective_rglru_step_core(
     mut z_re: f64,
     mut z_im: f64,
 ) -> [f64; 3] {
-    let y = selective_rglru_step_f64(
+    let y = op_m_modal_step_f64(
         x,
         r_low,
         dr_span,
@@ -137,7 +136,7 @@ pub fn selective_rglru_scan_core(
         z_im = 0.0;
     }
     for (&x, y) in inp.iter().zip(out.iter_mut()) {
-        *y = selective_rglru_step_f64(
+        *y = op_m_modal_step_f64(
             x,
             r_low,
             dr_span,
@@ -207,7 +206,7 @@ pub fn mufdn_coercive_step_core(
     mut dc_x_prev: f64,
     mut dc_y_prev: f64,
 ) -> [f64; 3] {
-    let s_next = mufdn_coercive_step_f64(
+    let s_next = op_t_coercive_step_f64(
         u_in,
         g_lin,
         sigma_knee,
@@ -233,7 +232,7 @@ pub fn mufdn_slice_core(
     if inp.len() != out.len() {
         return Err("[DNAM-VALIDATION] input and output must have identical length".to_string());
     }
-    mufdn_slice_f64(inp, out, delay_samples, g_lin, sigma_knee, v_ceil, r_dc);
+    op_t_tank_slice_f64(inp, out, g_lin, sigma_knee, v_ceil, r_dc);
     Ok(())
 }
 

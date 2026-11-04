@@ -4,12 +4,11 @@ use dnam_engine::control::{
     eval_chebyshev_lfo_4harm_f64, eval_newton_lobatto_basis_f64, eval_rank4_fm_interaction_f64,
     eval_trust_region_softclip_f64,
 };
-use dnam_engine::core1::{poly_adaa_algebraic_f64, selective_rglru_step_f64};
-use dnam_engine::core2::{
-    cubic_lagrange_weights_f64, givens_householder_mix_8ch_f64, mufdn_coercive_step_f64,
-    mufdn_slice_f64,
-};
 use dnam_engine::math::algebraic_unit_rotor;
+use dnam_engine::operators::reference::{
+    cubic_lagrange_weights_f64, givens_householder_mix_8ch_f64, op_m_modal_step_f64,
+    op_t_coercive_step_f64, op_t_tank_slice_f64, poly_adaa_algebraic_f64,
+};
 use numpy::{PyReadonlyArray1, PyReadwriteArray1, PyReadwriteArray2, PyUntypedArrayMethods};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
@@ -108,7 +107,7 @@ pub fn native_selective_rglru_step(
     mut z_re: f64,
     mut z_im: f64,
 ) -> (f64, f64, f64) {
-    let y = selective_rglru_step_f64(
+    let y = op_m_modal_step_f64(
         x,
         r_low,
         dr_span,
@@ -160,7 +159,7 @@ pub fn native_selective_rglru_scan<'py>(
         z_im = 0.0;
     }
     for (&x, y) in inp.iter().zip(out.iter_mut()) {
-        *y = selective_rglru_step_f64(
+        *y = op_m_modal_step_f64(
             x,
             r_low,
             dr_span,
@@ -206,7 +205,7 @@ pub fn native_mufdn_coercive_step(
     mut dc_x_prev: f64,
     mut dc_y_prev: f64,
 ) -> (f64, f64, f64) {
-    let s_next = mufdn_coercive_step_f64(
+    let s_next = op_t_coercive_step_f64(
         u_in,
         g_lin,
         sigma_knee,
@@ -224,7 +223,7 @@ pub fn native_mufdn_coercive_step(
 pub fn native_mufdn_slice<'py>(
     input: PyReadonlyArray1<'py, f64>,
     mut output: PyReadwriteArray1<'py, f64>,
-    delay_samples: usize,
+    _delay_samples: usize,
     g_lin: f64,
     sigma_knee: f64,
     v_ceil: f64,
@@ -241,7 +240,7 @@ pub fn native_mufdn_slice<'py>(
     let out = output
         .as_slice_mut()
         .map_err(|_| PyValueError::new_err("[DNAM-VALIDATION] output must be contiguous"))?;
-    mufdn_slice_f64(inp, out, delay_samples, g_lin, sigma_knee, v_ceil, r_dc);
+    op_t_tank_slice_f64(inp, out, g_lin, sigma_knee, v_ceil, r_dc);
     Ok(())
 }
 

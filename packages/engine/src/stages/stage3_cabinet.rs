@@ -39,10 +39,17 @@ impl Stage3CabinetModals {
         self.kautz_bank.reset();
     }
 
-    /// Evaluates Stage III for input `x` and parallel `clean_sub` feed.
+    /// Evaluates Stage III for input `x` and parallel `clean_sub` feed, returning `(stage3_out, x_delayed_16)`
+    /// so external Kautz modal tiers can be driven by the 16-sample-delayed onset tap $x[n - 16]$ (`ref[dsp.stage3.cabinet-bank]`).
     /// Direct callers must hold a [`crate::FtzDazGuard`] for the enclosing batch.
     #[inline(always)]
-    pub fn step(&mut self, x: f32, clean_sub: f32, fir_taps: &[f32; 16]) -> f32 {
+    pub fn step_with_delayed_tap(
+        &mut self,
+        x: f32,
+        clean_sub: f32,
+        fir_taps: &[f32; 16],
+    ) -> (f32, f32) {
+        let x_delayed_16 = self.fir_history[self.fir_write_ptr];
         // 1. Write to FIR history
         self.fir_history[self.fir_write_ptr] = x;
         self.fir_write_ptr = (self.fir_write_ptr + 1) & 0x0F;
@@ -54,11 +61,18 @@ impl Stage3CabinetModals {
             early_fir += self.fir_history[idx] * fir_taps[i];
         }
 
-        // 3. Orthonormal Kautz Modal tail
-        let tail = self.kautz_bank.step(x);
+        // 3. Orthonormal Kautz Modal tail driven by delayed tap x[n - 16]
+        let tail = self.kautz_bank.step(x_delayed_16);
 
         // 4. Sum Early FIR + Kautz tail + parallel clean sub crossover
-        early_fir + tail + clean_sub
+        (early_fir + tail + clean_sub, x_delayed_16)
+    }
+
+    /// Evaluates Stage III for input `x` and parallel `clean_sub` feed.
+    /// Direct callers must hold a [`crate::FtzDazGuard`] for the enclosing batch.
+    #[inline(always)]
+    pub fn step(&mut self, x: f32, clean_sub: f32, fir_taps: &[f32; 16]) -> f32 {
+        self.step_with_delayed_tap(x, clean_sub, fir_taps).0
     }
 }
 

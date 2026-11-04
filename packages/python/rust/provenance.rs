@@ -1,10 +1,10 @@
 //! Provenance, RFC 8785 JCS SHA-256, `Ed25519` signing messages, `ChaCha20` 64B cache-line
-//! arena encryption, Dual-Mechanism Buyer Watermarking (`Test 8H`), and 160-D structural hash FFI.
+//! arena encryption, Dual-Mechanism Buyer Watermarking (`Test 8H`), and 224-D structural hash FFI.
 
 use dnam_engine::container::{seal_dnam_container, unseal_dnam_container};
 use dnam_engine::provenance::{
-    RGLRU_TOTAL_CHANNELS, RustCryptoProvider, STRUCTURAL_HASH_DIM, STRUCTURAL_HASH_TIER_DIM,
-    TARDOS_CONV_WEIGHTS, apply_isometric_gauge_watermark, apply_tardos_watermark_7680,
+    KAUTZ_TOTAL_CHANNELS, RustCryptoProvider, STRUCTURAL_HASH_DIM, STRUCTURAL_HASH_TIER_DIM,
+    TARDOS_CASCADE_WEIGHTS, apply_isometric_gauge_watermark, apply_tardos_watermark_7680,
     build_creator_signing_message, build_marketplace_receipt_signing_message,
     chacha20_xor_arena_blocks, compute_immutable_header_sha256, decode_hex_array, encode_hex,
     extract_structural_hash_224d, generate_tardos_code_7680, score_tardos_watermark_7680,
@@ -91,7 +91,7 @@ pub fn native_chacha20_xor_arena<'py>(
     Ok(PyBytes::new(py, &buf))
 }
 
-/// Applies Mechanism A (64-channel RG-LRU reciprocal scaling + SO(4) SVD head rotation) to `arena_bytes`.
+/// Applies Mechanism A (64-channel modal/Kautz reciprocal scaling + SO(4) SVD head rotation) to `arena_bytes`.
 #[pyfunction]
 pub fn native_apply_isometric_gauge_watermark<'py>(
     py: Python<'py>,
@@ -99,9 +99,9 @@ pub fn native_apply_isometric_gauge_watermark<'py>(
     kappa_64: PyReadonlyArray1<'py, f32>,
     q_buyer_flat_16: PyReadonlyArray1<'py, f32>,
 ) -> PyResult<Bound<'py, PyBytes>> {
-    if kappa_64.len() != RGLRU_TOTAL_CHANNELS {
+    if kappa_64.len() != KAUTZ_TOTAL_CHANNELS {
         return Err(PyValueError::new_err(format!(
-            "[DNAM-VALIDATION] kappa_64 must have {RGLRU_TOTAL_CHANNELS} elements, got {}",
+            "[DNAM-VALIDATION] kappa_64 must have {KAUTZ_TOTAL_CHANNELS} elements, got {}",
             kappa_64.len()
         )));
     }
@@ -118,7 +118,7 @@ pub fn native_apply_isometric_gauge_watermark<'py>(
         .as_slice()
         .map_err(|_| PyValueError::new_err("[DNAM-VALIDATION] q_buyer_4x4 must be contiguous"))?;
 
-    let mut kappa_arr = [1.0_f32; RGLRU_TOTAL_CHANNELS];
+    let mut kappa_arr = [1.0_f32; KAUTZ_TOTAL_CHANNELS];
     kappa_arr.copy_from_slice(k_slice);
     let mut q_arr = [[0.0_f32; 4]; 4];
     for r in 0..4 {
@@ -156,16 +156,16 @@ pub fn native_apply_tardos_watermark<'py>(
     code_7680: PyReadonlyArray1<'py, f32>,
     epsilon: f32,
 ) -> PyResult<Bound<'py, PyBytes>> {
-    if code_7680.len() != TARDOS_CONV_WEIGHTS {
+    if code_7680.len() != TARDOS_CASCADE_WEIGHTS {
         return Err(PyValueError::new_err(format!(
-            "[DNAM-VALIDATION] Tardos code must have {TARDOS_CONV_WEIGHTS} elements, got {}",
+            "[DNAM-VALIDATION] Tardos code must have {TARDOS_CASCADE_WEIGHTS} elements, got {}",
             code_7680.len()
         )));
     }
     let c_slice = code_7680
         .as_slice()
         .map_err(|_| PyValueError::new_err("[DNAM-VALIDATION] code_7680 must be contiguous"))?;
-    let mut code_arr = [1.0_f32; TARDOS_CONV_WEIGHTS];
+    let mut code_arr = [1.0_f32; TARDOS_CASCADE_WEIGHTS];
     code_arr.copy_from_slice(c_slice);
 
     let mut buf = arena_bytes.to_vec();
@@ -180,16 +180,16 @@ pub fn native_score_tardos_watermark<'py>(
     suspect_arena: &[u8],
     code_7680: PyReadonlyArray1<'py, f32>,
 ) -> PyResult<f64> {
-    if code_7680.len() != TARDOS_CONV_WEIGHTS {
+    if code_7680.len() != TARDOS_CASCADE_WEIGHTS {
         return Err(PyValueError::new_err(format!(
-            "[DNAM-VALIDATION] Tardos code must have {TARDOS_CONV_WEIGHTS} elements, got {}",
+            "[DNAM-VALIDATION] Tardos code must have {TARDOS_CASCADE_WEIGHTS} elements, got {}",
             code_7680.len()
         )));
     }
     let c_slice = code_7680
         .as_slice()
         .map_err(|_| PyValueError::new_err("[DNAM-VALIDATION] code_7680 must be contiguous"))?;
-    let mut code_arr = [1.0_f32; TARDOS_CONV_WEIGHTS];
+    let mut code_arr = [1.0_f32; TARDOS_CASCADE_WEIGHTS];
     code_arr.copy_from_slice(c_slice);
 
     score_tardos_watermark_7680(master_arena, suspect_arena, &code_arr).map_err(dnam_err_to_py)

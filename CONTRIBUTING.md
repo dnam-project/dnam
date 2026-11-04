@@ -105,9 +105,10 @@ moon check tests
    - Every pole radius ($r_c \le 0.9995$), FDN loop gain ($g_{\text{lin},m} \le 0.9990$), all-pass diffusion coefficient ($|a_{\text{diff},m}| \le 0.75$), fractional delay ($\tau_m \ge 4.0$), and control range must obey the bounds in [`docs/specs/training/control_space_audit.md`](docs/specs/training/control_space_audit.md).
 4. **Fail-Fast Validation:**
    - Never silently substitute default controls, sample rates, or tensor shapes when loading `.dnam` or `.dnam-ckpt` containers; return or raise explicit, typed diagnostic errors (`DnamError`).
-5. **Test-Driven Bug Fixes (TDD), Coverage (≥ 95%) & Performance Benchmarks:**
+5. **Property-Based Testing (`proptest!` / `hypothesis`), TDD, Coverage (≥ 95%) & Benchmarks:**
+   - **Mandatory `proptest!` / `hypothesis` Usage:** Use `proptest!` in Rust unit (`#[cfg(test)]` inside `src/**`) and integration (`tests/*`) test suites—and `hypothesis` in Python test suites—wherever possible to verify algebraic identities, ULP/rounding bounds, state stability, wire-format roundtrips, and cross-tier equivalence over arbitrary input domains rather than relying solely on fixed hand-picked examples.
    - Write a failing unit or property-based regression test before fixing a bug.
-   - Unit and reference tests must cite canonical `r[...]` spec rules and must **never** read or parse Markdown text blocks from `docs/` (only [`tests/test_guardrails.py`](tests/test_guardrails.py) reads `docs/` to verify references and registries).
+   - Unit, property, and integration tests must cite canonical `r[...]` spec rules via `verify[...]` and must **never** read or parse Markdown text blocks from `docs/` (only [`tests/test_guardrails.py`](tests/test_guardrails.py) reads `docs/` to verify references and registries).
    - Maintain ≥ 95% test coverage in both Rust (`cargo llvm-cov`) and Python (`pytest --cov`) and verify zero performance regressions with `cargo bench` and `pytest-benchmark`.
 
 ---

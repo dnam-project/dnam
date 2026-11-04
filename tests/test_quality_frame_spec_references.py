@@ -1,4 +1,14 @@
-"""Deterministic frame-grid examples for the segmental quality contract."""
+"""Deterministic frame-grid examples for the segmental quality contract.
+
+verify[qual.eval.metric-scope]
+verify[qual.besr.per-output]
+verify[qual.besr.finite-timeline]
+verify[qual.besr.joint-intervals]
+verify[qual.companion.suite]
+verify[qual.companion.mr-stft]
+verify[qual.companion.seg-esr]
+verify[qual.tiers.benchmark-matrix]
+"""
 
 from __future__ import annotations
 

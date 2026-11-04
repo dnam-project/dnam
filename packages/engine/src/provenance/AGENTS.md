@@ -1,11 +1,12 @@
 # `src/provenance` — Marketplace Signatures, Hardware Enclaves & Traitor Tracing
 
-Routes the current signature, encryption, watermark, and fingerprint code. Consult the security specifications for selected contracts and outstanding implementation gaps.
+Implements cryptographic provenance, hardware enclave DRM, and forensic watermarking (`#[forbid(unsafe_code)]`).
 
 ## 1. Submodule Map
 
 | File | Responsibility | Canonical Spec (SSOT) |
 | :--- | :--- | :--- |
+| [`security.rs`](security.rs) | `DAU1` envelope, prefix commitments, `OemDeviceCertificate`, RFC 9180 HPKE, `DME1`, watermark seeds & `.dnam-prev` containment | [`provenance_and_enclave_drm.md`](../../../../docs/specs/security/provenance_and_enclave_drm.md), [`watermarking_and_marketplace.md`](../../../../docs/specs/security/watermarking_and_marketplace.md) |
 | [`provider.rs`](provider.rs) | `CryptoProvider` trait, `OpenArenaCryptoProvider`, `RustCryptoProvider`, `VerificationStatus` | [`provenance_and_enclave_drm.md`](../../../../docs/specs/security/provenance_and_enclave_drm.md) |
 | [`verify.rs`](verify.rs) | Current header serialization and `verify_container_provenance` | [`provenance_and_enclave_drm.md`](../../../../docs/specs/security/provenance_and_enclave_drm.md) |
 | [`seal.rs`](seal.rs) | `.dnam-seal` (`DNSL`) outer envelope encryption, unsealing, and OEM device certificates | [`provenance_and_enclave_drm.md`](../../../../docs/specs/security/provenance_and_enclave_drm.md) |

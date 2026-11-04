@@ -1,4 +1,9 @@
-"""Exact boundary examples for the selected LTAS frequency partition."""
+"""Exact boundary examples for the selected LTAS frequency partition.
+
+verify[qual.besr.bezout-crossover]
+verify[qual.besr.filter-response]
+verify[qual.companion.ltas]
+"""
 
 from __future__ import annotations
 

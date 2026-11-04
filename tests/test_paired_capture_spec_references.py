@@ -1,4 +1,10 @@
-"""Repeated-input modulation references, not Studio or hardware tests."""
+"""Repeated-input modulation references, not Studio or hardware tests.
+
+verify[train.capture.invariants]
+verify[train.capture.calib.loopback]
+verify[train.capture.calib.clean-pad]
+verify[train.capture.alignment.multi-regime]
+"""
 
 from __future__ import annotations
 

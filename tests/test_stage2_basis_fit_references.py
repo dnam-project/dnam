@@ -1,4 +1,8 @@
-"""Synthetic Stage II basis comparisons, not device or engine certification."""
+"""Synthetic Stage II basis comparisons, not device or engine certification.
+
+verify[train.pipeline.sweep1-stage2]
+verify[dsp.op-n.bitcrusher.surrogate]
+"""
 
 from __future__ import annotations
 

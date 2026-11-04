@@ -5,8 +5,24 @@
 
 pub mod bus;
 pub mod descriptor;
+pub mod plane;
 pub mod record;
 pub mod reference;
+
+pub use plane::{
+    BoundedPerProducerIngress, CANONICAL_SUBDIVISION_RATIOS, ClockTrackerState, ControlEventStamp,
+    EXACT_SQUARE_WORDS, EXACT_SUM_WORDS, ExactIntFactorAccumulator, ExactMagnitude,
+    FDN_COPRIME_BASE_PRIMES, IngressDelivery, MAX_EXACT_CONTRIBUTORS, OrderedClockPulseTracker,
+    SignedExactInt, TempoPhysicalInversionResult, TransportJumpPolicy,
+    advance_q64_beat_accumulator, audit_phase1_clamp_range, audit_phase1_clamp_switch,
+    blend_disjoint_interval_paths, clamp_head_spectral_gain_linear, control_stride_for_rate,
+    control_tick_ratio, eval_3node_calibration_f64, eval_clamped_micro_ramp_block,
+    eval_event_rate_aware_tracker, eval_q32_subdivision_phase, eval_tier_stage_dispatch,
+    format_audit_prescription_report, host_frame_q64_increment, invert_tempo_physical_calibration,
+    is_late_for_first_boundary, reconstruct_vst3_normalized_curve, retime_control_window,
+    smooth_relock_q32_tick, subdivision_q32_to_phasor, subframe_4x_q64_offset,
+    verify_coprime_fdn_pair, verify_dynamic_stability_excursion,
+};
 
 pub use bus::ControlBus;
 pub use descriptor::{ConditionalClampRule, ControlClampDescriptor};

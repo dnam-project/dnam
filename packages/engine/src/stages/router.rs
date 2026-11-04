@@ -1,6 +1,6 @@
 //! Stage 0: 8-Port Matrix Router, Lower-Block Triangular DAG Routing & Sub Crossover.
 //!
-//! Canonical Reference: `docs/dsp/router_and_stages_topology.md` (`CL-10`, `REQ-7.4`).
+//! Canonical Reference: `docs/specs/dsp/router_and_stages_topology.md` (`ref[dsp.router.return-to-send-isolation]`, `REQ-7.4`).
 
 use crate::math::flush_recursive_state_f32;
 use crate::operators::op_t::catmull_rom_hermite_cubic;
@@ -153,7 +153,7 @@ impl ReturnAligner {
 #[derive(Clone, Debug)]
 pub struct Stage0Router {
     /// Scattering matrix S_router (4x4): [inst_l, inst_r, ret_l, ret_r] -> [send_l, send_r, down_l, down_r].
-    /// Invariant (CL-10): S_ret->send == 0 (S[0][2] == S[0][3] == S[1][2] == S[1][3] == 0.0).
+    /// Invariant (`ref[dsp.router.return-to-send-isolation]`): S_ret->send == 0 (S[0][2] == S[0][3] == S[1][2] == S[1][3] == 0.0).
     pub s_matrix: [[f32; 4]; 4],
     /// Dual return aligners for Left and Right external loop returns.
     pub return_aligner_l: ReturnAligner,
@@ -161,10 +161,15 @@ pub struct Stage0Router {
     /// Dual Bezout parallel clean sub crossovers (< 200 Hz).
     pub sub_crossover_l: BezoutCleanCrossover,
     pub sub_crossover_r: BezoutCleanCrossover,
+    /// Dual TPT Linkwitz-Riley 4th-order (`200 Hz`) crossovers (`ref[dsp.router.lr4-crossover]`).
+    pub tpt_crossover_l: super::topology::TptLr4Crossover,
+    pub tpt_crossover_r: super::topology::TptLr4Crossover,
+    /// WDW dry tap routing mode (`PreSpatialCore` vs `DirectDry`, `ref[dsp.router.wdw-contract]`).
+    pub wdw_tap_mode: super::topology::WdwDryTapMode,
     /// WDW mode: whether Port Out 3 outputs dedicated dry center feed.
     pub wdw_mode: bool,
     /// Padding to strictly match 1,536 B footprint.
-    pub _pad: [u8; 167],
+    pub _pad: [u8; 64],
 }
 
 const _: () = assert!(core::mem::size_of::<Stage0Router>() <= ROUTER_STATE_RAM_BYTES);
@@ -188,8 +193,11 @@ impl Stage0Router {
             return_aligner_r: ReturnAligner::new(),
             sub_crossover_l: BezoutCleanCrossover::new(),
             sub_crossover_r: BezoutCleanCrossover::new(),
+            tpt_crossover_l: super::topology::TptLr4Crossover::new_48khz(),
+            tpt_crossover_r: super::topology::TptLr4Crossover::new_48khz(),
+            wdw_tap_mode: super::topology::WdwDryTapMode::PreSpatialCore,
             wdw_mode: false,
-            _pad: [0; 167],
+            _pad: [0; 64],
         }
     }
 
@@ -198,13 +206,15 @@ impl Stage0Router {
         self.return_aligner_r.reset();
         self.sub_crossover_l.reset();
         self.sub_crossover_r.reset();
+        self.tpt_crossover_l.reset();
+        self.tpt_crossover_r.reset();
     }
 
-    /// Sets scattering matrix coefficients with strict enforcement of CL-10 DAG constraint:
+    /// Sets scattering matrix coefficients with strict enforcement of `ref[dsp.router.return-to-send-isolation]` DAG constraint:
     /// `S_ret->send == 0`.
     pub fn set_scattering_matrix(&mut self, s: [[f32; 4]; 4]) {
         self.s_matrix = s;
-        // Enforce CL-10 acyclic DAG isolation
+        // Enforce acyclic DAG return-to-send isolation
         self.s_matrix[0][2] = 0.0;
         self.s_matrix[0][3] = 0.0;
         self.s_matrix[1][2] = 0.0;
@@ -241,7 +251,7 @@ impl Stage0Router {
         let ret_l_aligned = self.return_aligner_l.step(ret_l);
         let ret_r_aligned = self.return_aligner_r.step(ret_r);
 
-        // 2. Scattering matrix evaluation (CL-10: S_ret->send == 0)
+        // 2. Scattering matrix evaluation (ref[dsp.router.return-to-send-isolation]: S_ret->send == 0)
         let send_l = self.s_matrix[0][0] * inst_l + self.s_matrix[0][1] * inst_r;
         let send_r = self.s_matrix[1][0] * inst_l + self.s_matrix[1][1] * inst_r;
 
@@ -383,7 +393,7 @@ mod tests {
 
     proptest! {
         #[test]
-        fn prop_ms_roundtrip_and_cl10_dag_isolation(
+        fn prop_ms_roundtrip_and_dag_isolation(
             in_l in -10.0_f32..10.0_f32,
             in_r in -10.0_f32..10.0_f32,
             ret_l in -10.0_f32..10.0_f32,
@@ -396,7 +406,7 @@ mod tests {
             prop_assert!((recon_l - in_l).abs() < 1e-5);
             prop_assert!((recon_r - in_r).abs() < 1e-5);
 
-            // CL-10: send_l and send_r must be strictly independent of ret_l and ret_r
+            // ref[dsp.router.return-to-send-isolation]: send_l and send_r must be strictly independent of ret_l and ret_r
             let mut r1 = Stage0Router::default();
             let mut r2 = Stage0Router::default();
             let s_mat = [

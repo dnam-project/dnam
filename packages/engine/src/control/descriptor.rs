@@ -160,7 +160,7 @@ impl ControlClampDescriptor {
     }
 
     /// Evaluates division-free clamping (`[CLAMP-RANGE]`, `[CLAMP-SWITCH]`, `[CLAMP-STABILITY]`,
-    /// `[CLAMP-DYNAMIC]`) and normalization (`CL-12`) in `< 5 ns` with `0 FDIV`.
+    /// `[CLAMP-DYNAMIC]`) and normalization (`ref[dsp.ctrl.range.normalize-clamp]`) in `< 5 ns` with `0 FDIV`.
     ///
     /// Returns `(clamped_physical_val, normalized_u_in_minus1_to_1, was_clamped)`.
     #[inline(always)]
@@ -212,7 +212,7 @@ impl ControlClampDescriptor {
         (clamped, u_norm, was_clamped)
     }
 
-    /// Evaluates the Node-Anchored Newton/Lobatto polynomial basis (`CL-13`) at $u_p \in [-1, +1]$.
+    /// Evaluates the Node-Anchored Newton/Lobatto polynomial basis (`ref[dsp.ctrl.basis.lobatto]`) at $u_p \in [-1, +1]$.
     #[inline(always)]
     pub fn eval_lobatto_basis(&self, u_p: f32) -> [f32; 3] {
         if self.ctrl_kind != 0 || self.lobatto_degree == 0 {

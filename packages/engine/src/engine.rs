@@ -1,7 +1,6 @@
 //! Primary generic real-time DNAM inference engine (`DnamEngine<'a, B>`).
 
 pub mod oversampler;
-pub mod preview_guard;
 pub mod process;
 pub mod runtime;
 pub mod tempo;
@@ -21,7 +20,6 @@ use crate::stages::StagePipeline;
 use crate::types::{DnamTelemetrySnapshot, Tier};
 
 pub use oversampler::{OFFLINE_BOUNCE_PDC_SAMPLES, Oversampler4xState};
-pub use preview_guard::PreviewGuard;
 pub use tempo::TempoSyncState;
 
 /// Zero-allocation real-time DNAM inference engine parameterized over a
@@ -39,7 +37,6 @@ pub struct DnamEngine<'a, B: MathBackend = DefaultMathBackend> {
     pub(crate) offline_bounce: bool,
     pub(crate) maximize_tier_on_bounce: bool,
     pub(crate) oversampler: Oversampler4xState,
-    pub(crate) preview_guard: PreviewGuard,
     pub(crate) tempo_state: TempoSyncState,
     pub(crate) zoh: ZohRescaledParams,
     pub(crate) ctrl_sub_counter: usize,
@@ -48,6 +45,9 @@ pub struct DnamEngine<'a, B: MathBackend = DefaultMathBackend> {
     pub(crate) trails_enabled: bool,
     pub(crate) freeze_mutes_dry: bool,
     pub(crate) stereo_width: f32,
+    pub(crate) current_stage_params: [f32; 16],
+    pub(crate) stage_ramp_deltas: [f32; 16],
+    pub saturation_flags: u32,
     pub control_bus: ControlBus<B>,
     pub stage_pipeline: StagePipeline,
     pub mix_dry_gain: f32,
@@ -103,7 +103,6 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
             offline_bounce: false,
             maximize_tier_on_bounce: true,
             oversampler: Oversampler4xState::new(),
-            preview_guard: PreviewGuard::new(),
             tempo_state: TempoSyncState::new(),
             zoh,
             ctrl_sub_counter: 0,
@@ -112,6 +111,9 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
             trails_enabled: false,
             freeze_mutes_dry: false,
             stereo_width: 1.0,
+            current_stage_params: [0.0; 16],
+            stage_ramp_deltas: [0.0; 16],
+            saturation_flags: 0,
             control_bus: ControlBus::new(),
             stage_pipeline: StagePipeline::new(),
             mix_dry_gain: 0.0,
@@ -412,14 +414,31 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
         }
     }
 
+    /// Returns whether this model supports captured hardware freeze (`supports_freeze == true` or
+    /// a `FreezeLatch`-calibrated control in `controls_schema`, `ref[dsp.stage4.captured-freeze]`).
+    #[inline]
+    pub fn supports_freeze(&self) -> bool {
+        match self.header {
+            Some(ref hdr) => {
+                hdr.io_config.capabilities.supports_freeze
+                    || hdr.controls_schema.iter().any(|c| {
+                        c.calibration
+                            .as_ref()
+                            .is_some_and(|cal| cal.role == ControlCalibrationRole::FreezeLatch)
+                    })
+            }
+            None => true,
+        }
+    }
+
     #[inline]
     pub fn set_freeze(&mut self, freeze: bool) {
-        self.stage_pipeline.stage4.freeze = freeze;
+        self.stage_pipeline.stage4.freeze = freeze && self.supports_freeze();
     }
 
     #[inline]
     pub fn set_freeze_amount(&mut self, alpha: f32) {
-        self.stage_pipeline.stage4.freeze = alpha > 0.5;
+        self.stage_pipeline.stage4.freeze = (alpha > 0.5) && self.supports_freeze();
     }
 
     #[inline]
@@ -490,16 +509,19 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
             return 0;
         };
         let mut updates = [(0usize, 0.0f32); 512];
-        let count = TempoSyncState::resolve_sync_updates_into(
+        let mut tempo_clamp_mask = 0u16;
+        let count = TempoSyncState::resolve_sync_updates_with_clamp_mask_into(
             hdr,
             self.tempo_state.current_bpm,
             subdivision_override,
             fold_octave,
             &mut updates,
+            &mut tempo_clamp_mask,
         );
         for &(idx, val) in &updates[..count] {
             self.set_control_immediate(idx, val);
         }
+        self.control_bus.active_clamp_mask |= tempo_clamp_mask;
         count
     }
 
@@ -525,39 +547,64 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
                 preset_id
             )));
         };
-        let mut updates = [(0usize, 0.0f32); 256];
-        let mut count = 0;
-        // First pass: apply switch controls so conditional range bounds are active before range controls
-        for pass in 0..2 {
-            for (id, val) in &preset.controls {
-                if let Some((idx, def)) = hdr
-                    .controls_schema
-                    .iter()
-                    .enumerate()
-                    .find(|(_, c)| &c.id == id)
+        // Restore signed defaults for any controls omitted by a partial preset (`ref[dsp.ctrl.switch.conditional-batch]`)
+        let mut default_restores = [(0usize, 0.0f32, false); 256];
+        let mut restore_count = 0;
+        for (idx, def) in hdr.controls_schema.iter().enumerate() {
+            if !preset.controls.contains_key(&def.id) && restore_count < default_restores.len() {
+                let is_switch = def.kind == crate::schema::ControlKind::Switch;
+                let def_val = self
+                    .control_bus
+                    .descriptors
+                    .get(idx)
+                    .map(|d| d.default_val)
+                    .unwrap_or(0.0);
+                default_restores[restore_count] = (idx, def_val, is_switch);
+                restore_count += 1;
+            }
+        }
+        let mut switch_updates = [(0usize, 0.0f32); 256];
+        let mut switch_count = 0;
+        let mut range_updates = [(0usize, 0.0f32); 256];
+        let mut range_count = 0;
+        for (id, val) in &preset.controls {
+            if let Some((idx, def)) = hdr
+                .controls_schema
+                .iter()
+                .enumerate()
+                .find(|(_, c)| &c.id == id)
+            {
+                let is_switch = def.kind == crate::schema::ControlKind::Switch;
+                if let Some(f) = val.as_f64() {
+                    if is_switch && switch_count < switch_updates.len() {
+                        switch_updates[switch_count] = (idx, f as f32);
+                        switch_count += 1;
+                    } else if !is_switch && range_count < range_updates.len() {
+                        range_updates[range_count] = (idx, f as f32);
+                        range_count += 1;
+                    }
+                } else if let Some(s) = val.as_str()
+                    && let Some(ref opts) = def.declared_options
+                    && let Some(opt_idx) = opts.iter().position(|o| o == s)
+                    && switch_count < switch_updates.len()
                 {
-                    let is_switch = def.kind == crate::schema::ControlKind::Switch;
-                    if (pass == 0 && !is_switch) || (pass == 1 && is_switch) {
-                        continue;
-                    }
-                    if let Some(f) = val.as_f64() {
-                        if count < updates.len() {
-                            updates[count] = (idx, f as f32);
-                            count += 1;
-                        }
-                    } else if let Some(s) = val.as_str()
-                        && let Some(ref opts) = def.declared_options
-                        && let Some(opt_idx) = opts.iter().position(|o| o == s)
-                        && count < updates.len()
-                    {
-                        updates[count] = (idx, opt_idx as f32);
-                        count += 1;
-                    }
+                    switch_updates[switch_count] = (idx, opt_idx as f32);
+                    switch_count += 1;
                 }
             }
         }
-        for &(idx, val) in &updates[..count] {
+        for &(idx, val, is_sw) in &default_restores[..restore_count] {
+            if is_sw {
+                self.set_control_immediate(idx, val);
+            } else {
+                self.set_control_value(idx, val);
+            }
+        }
+        for &(idx, val) in &switch_updates[..switch_count] {
             self.set_control_immediate(idx, val);
+        }
+        for &(idx, val) in &range_updates[..range_count] {
+            self.set_control_value(idx, val);
         }
         Ok(())
     }
@@ -578,6 +625,7 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
             env_states: self.control_bus.env_states,
             lfo_harmonics: self.control_bus.lfo_harmonics,
             clamped_controls: self.control_bus.telemetry_clamped_controls(),
+            overflow_or_saturation_flags: self.saturation_flags,
         }
     }
 }

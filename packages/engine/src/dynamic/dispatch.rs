@@ -441,6 +441,19 @@ mod tests {
     fn test_dynamic_dnam_engine_all_variants() {
         let mut header = DnamJsonHeader::default_reference();
         let arena = alloc::vec![0u8; ARENA_OFFSET_ULTRA_END as usize];
+        // Verify unmodeled freeze (`supports_freeze == false`) is ignored
+        let no_freeze_container = build_dnam_container(&mut header, &arena, &arena, false).unwrap();
+        let mut no_freeze_eng = DynamicDnamEngine::from_bytes_with_backend(
+            &no_freeze_container,
+            Tier::Lite,
+            48_000,
+            BackendKind::Scalar,
+        )
+        .unwrap();
+        no_freeze_eng.set_freeze(true);
+        assert!(!no_freeze_eng.is_frozen());
+
+        header.io_config.capabilities.supports_freeze = true;
         let container = build_dnam_container(&mut header, &arena, &arena, false).unwrap();
 
         let kinds = [

@@ -40,8 +40,6 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
         self.offline_bounce = false;
         self.maximize_tier_on_bounce = true;
         self.oversampler.reset();
-        self.preview_guard
-            .configure(view.protection_profile, sample_rate_hz);
         self.tempo_state.sample_rate_hz = sample_rate_hz;
         self.zoh = zoh;
         self.ctrl_sub_counter = 0;
@@ -224,8 +222,6 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
         }
 
         self.oversampler.reset();
-        self.preview_guard
-            .configure(self.protection_profile, sample_rate_hz);
         self.tempo_state.sample_rate_hz = sample_rate_hz;
         self.stage_pipeline.stage1.op_t_pre.current_delay =
             self.stage_pipeline.stage1.op_t_pre.target_delay;
@@ -371,8 +367,9 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
         self.stage_pipeline.stage1.op_t_pre.xfade_idx = 0;
         self.stage_pipeline.stage4.current_psi = self.stage_pipeline.stage4.target_psi;
         self.oversampler.reset();
-        self.preview_guard.reset();
         self.tempo_state.reset();
+        self.current_stage_params = self.control_bus.stage_targets;
+        self.stage_ramp_deltas = [0.0; 16];
         self.ctrl_sub_counter = 0;
         self.ctrl_energy_accum = 0.0;
     }

@@ -20,6 +20,13 @@ pub fn strip_container_to_tier(
     container_bytes: &[u8],
     max_tier: Tier,
 ) -> Result<Vec<u8>, DnamError> {
+    if container_bytes.len() >= 8
+        && &container_bytes[0..4] == b"DNAM"
+        && u16::from_le_bytes([container_bytes[4], container_bytes[5]]) == 2
+        && u16::from_le_bytes([container_bytes[6], container_bytes[7]]) == 0
+    {
+        return super::wire::strip_v2_open_dnam_container(container_bytes, max_tier as u8);
+    }
     let mut preamble = DnamPreamble::from_bytes(container_bytes)?;
     if preamble.magic != DNAM_MAGIC {
         return Err(DnamError::SchemaValidationError(

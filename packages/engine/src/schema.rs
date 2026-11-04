@@ -22,6 +22,7 @@ pub use controls::{
     PresetDef, TempoSubdivision, TempoSyncResolution,
 };
 pub use error::{DnamError, cold_exp_f64, cold_ln_f64, cold_pow_f64, cold_sqrt_f64};
+pub(crate) use error::{SchemaOptionExt, reject_if};
 pub use header::{
     AuditReport, BlendMode, ControlBusConfig, DnamJsonHeader, ExtractedPhysics, IoConfig,
     LevelingConfig, LevelingMetric, ModelCapabilities, ModelMetadata, RouterConfig, SchemaVersion,

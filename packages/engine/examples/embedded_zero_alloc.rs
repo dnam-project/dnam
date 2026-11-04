@@ -167,4 +167,12 @@ fn main() {
         "[Hot-Swap Model B @ 96 kHz] Processed 64 in-place stereo samples | Out L[63] = {:.6}",
         left_io[63]
     );
+
+    // Pattern 3: Enable 4x Offline Bounce oversampling with zero allocations
+    hot_swap_engine.set_offline_bounce(true);
+    hot_swap_engine.process_block_in_place(&mut left_io, &mut right_io);
+    println!(
+        "[4x Offline Bounce @ 96 kHz] Processed 64 in-place stereo samples | Out L[63] = {:.6}",
+        left_io[63]
+    );
 }

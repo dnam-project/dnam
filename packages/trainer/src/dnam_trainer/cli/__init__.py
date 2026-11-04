@@ -24,7 +24,7 @@ from dnam_trainer.schema import AcceleratorDevice, PrecisionPolicy, TopologyMode
 app = cyclopts.App(
     name="dnam-train",
     help=(
-        "Dynamic Neural Audio Modeler (DNAM / Tri-Physics) — "
+        "Dynamic Neural Audio Modeler (DNAM) — "
         "Headless 4-Stage PyTorch Trainer & `.dnam-ckpt` Kronecker Worker."
     ),
 )

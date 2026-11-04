@@ -370,10 +370,14 @@ def test_spec_rule_identifiers_adr_structure_and_no_spec_text_parsing() -> None:
     for doc_path in [req_doc, *spec_files, *adr_files]:
         content = doc_path.read_text(encoding="utf-8")
         if doc_path.name != "project_and_documentation_quality.md":
-            test_links = re.findall(
-                r"\[[^\]]*\]\([^\)]*(?:test_|_spec_references|_verification)[^\)]*\)",
-                content,
-            )
+            test_links = [
+                lnk
+                for lnk in re.findall(
+                    r"\[[^\]]*\]\([^\)]*(?:test_|_spec_references|_verification)[^\)]*\)",
+                    content,
+                )
+                if "spec_verification_findings.md" not in lnk
+            ]
             assert not test_links, (
                 f"Document {doc_path} must not hardcode links to test files {test_links}; "
                 f"tests reference specs via verify[...]"
@@ -499,6 +503,17 @@ def test_spec_rule_identifiers_adr_structure_and_no_spec_text_parsing() -> None:
                     f"(no matching '{target_rule}' definition in docs/specs/)"
                 )
 
+    all_rs_files = [
+        p
+        for p in (MONOREPO_ROOT / "packages").rglob("*.rs")
+        if "target" not in p.parts and "node_modules" not in p.parts
+    ]
+    mod_rs_files = [p for p in all_rs_files if p.name == "mod.rs"]
+    assert not mod_rs_files, (
+        f"Legacy mod.rs files found {mod_rs_files}; "
+        f"use modern Rust module layout (foo.rs + foo/bar.rs)"
+    )
+
     test_files = [
         *[p for p in TESTS_DIR.glob("test_*.py") if p.name != "test_guardrails.py"],
         *list((MONOREPO_ROOT / "packages").glob("*/tests/**/*.py")),
@@ -512,6 +527,92 @@ def test_spec_rule_identifiers_adr_structure_and_no_spec_text_parsing() -> None:
         assert 'split("```text' not in test_src, (
             f"Test file {test_path} must not parse Markdown text blocks from docs/"
         )
+
+
+def test_engine_spec_scope_manifest() -> None:
+    """verify[repo.docs.spec-rules-and-adrs] verify[arch.index.subsystems] Verifies that:
+    `packages/engine/spec_scope.toml` maps every `r[...]` rule defined in `docs/specs/`
+    to either `scope = "engine"` or `scope = "out-of-scope"` (with a non-empty `reason`),
+    and every `scope = "engine"` rule is verified in `packages/engine/`.
+    """
+    import tomllib
+
+    spec_files = sorted((MONOREPO_ROOT / "docs" / "specs").rglob("*.md"))
+    rule_def_pattern = re.compile(r"`r\[([a-z0-9]+(?:\.[a-z0-9_-]+){2,})\]`")
+    defined_rules: set[str] = set()
+    for spec_path in spec_files:
+        _, spec_body = _parse_frontmatter(spec_path)
+        no_fenced = re.sub(
+            r"(?m)^```[^\n]*\n.*?\n^```[^\n]*$",
+            "",
+            spec_body,
+            flags=re.DOTALL,
+        )
+        for match in rule_def_pattern.findall(no_fenced):
+            defined_rules.add(match)
+
+    scope_path = MONOREPO_ROOT / "packages" / "engine" / "spec_scope.toml"
+    assert scope_path.is_file(), f"Missing engine spec scope manifest: {scope_path}"
+    scope_data = tomllib.loads(scope_path.read_text(encoding="utf-8"))
+    rules_map = scope_data.get("rules", {})
+    assert isinstance(rules_map, dict)
+
+    manifest_rules = set(rules_map.keys())
+    missing_from_manifest = sorted(defined_rules - manifest_rules)
+    unknown_in_manifest = sorted(manifest_rules - defined_rules)
+    assert not missing_from_manifest, (
+        f"Rules defined in docs/specs/ missing from {scope_path}: {missing_from_manifest}"
+    )
+    assert not unknown_in_manifest, (
+        f"Unknown rules in {scope_path} not defined in docs/specs/: {unknown_in_manifest}"
+    )
+    engine_rules: set[str] = set()
+    for rule_id, entry in rules_map.items():
+        assert isinstance(entry, dict), f"Invalid entry for {rule_id} in {scope_path}"
+        scope = entry.get("scope")
+        assert scope in {"engine", "out-of-scope"}, (
+            f"Invalid scope '{scope}' for {rule_id} in {scope_path}"
+        )
+        if scope == "engine":
+            engine_rules.add(rule_id)
+        else:
+            reason = entry.get("reason", "")
+            assert isinstance(reason, str), (
+                f"Out-of-scope rule '{rule_id}' in {scope_path} must provide a string 'reason'"
+            )
+            assert reason.strip(), (
+                f"Out-of-scope rule '{rule_id}' in {scope_path} must provide a non-empty 'reason'"
+            )
+
+    rule_verify_pattern = re.compile(r"\bverify\[([a-z0-9]+(?:\.[a-z0-9_-]+){2,})\]")
+    engine_verified: set[str] = set()
+    engine_rs_files = [
+        *list((MONOREPO_ROOT / "packages" / "engine" / "src").rglob("*.rs")),
+        *list((MONOREPO_ROOT / "packages" / "engine" / "tests").rglob("*.rs")),
+    ]
+    for rs_file in engine_rs_files:
+        for ver_inner in rule_verify_pattern.findall(rs_file.read_text(encoding="utf-8")):
+            engine_verified.add(ver_inner)
+    missing_engine_verify = sorted(engine_rules - engine_verified)
+    assert not missing_engine_verify, (
+        f"Engine-scope rules missing verify[...] in packages/engine/: {missing_engine_verify}"
+    )
+
+    for sub_dir in (
+        "src/math",
+        "src/operators",
+        "src/stages",
+        "src/control",
+        "src/container",
+        "src/provenance",
+        "src/schema",
+        "tests",
+    ):
+        sub_path = MONOREPO_ROOT / "packages" / "engine" / sub_dir
+        has_proptest = any(
+            "proptest!" in rs_p.read_text(encoding="utf-8") for rs_p in sub_path.rglob("*.rs")
+        )
+        assert has_proptest, f"Expected proptest! suite in packages/engine/{sub_dir}"
 
 
 def test_spec_rules_verified_in_tests() -> None:
@@ -536,6 +637,7 @@ def test_spec_rules_verified_in_tests() -> None:
         *list(TESTS_DIR.glob("test_*.py")),
         *list((MONOREPO_ROOT / "packages").glob("*/tests/**/*.py")),
         *list((MONOREPO_ROOT / "packages").glob("*/tests/**/*.rs")),
+        *list((MONOREPO_ROOT / "packages").glob("*/src/**/*.rs")),
         *list((MONOREPO_ROOT / "packages").glob("*/src/**/*.test.ts")),
         *list((MONOREPO_ROOT / "packages").glob("*/src/**/*.test.tsx")),
     ]

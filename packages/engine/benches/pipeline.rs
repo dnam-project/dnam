@@ -1,9 +1,8 @@
-//! Criterion Statistical Benchmark Suite for `dnam-engine`.
+//! End-to-End Pipeline Criterion Benchmarks (`benches/pipeline.rs`).
 //!
-//! Run all benchmarks:
-//!   `cargo bench -p dnam-engine`
-//! Run a specific benchmark group:
-//!   `cargo bench -p dnam-engine -- process_block`
+//! Benchmarks `DnamEngine` block processing across slimmable tiers (`Lite`, `Full`, `Pro`, `Ultra`),
+//! math backends (`DefaultMathBackend`, `ScalarBackend`, `ArmSmeBackend`), I/O topologies,
+//! DAW buffer sizes (`32..512`), subnormal/denormal stress, and multi-instance track scaling.
 
 use std::collections::BTreeMap;
 use std::hint::black_box;
@@ -11,17 +10,16 @@ use std::hint::black_box;
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use dnam_engine::container::{
     ARENA_OFFSET_FULL_END, ARENA_OFFSET_LITE_END, ARENA_OFFSET_PRO_END, ARENA_OFFSET_ULTRA_END,
-    DnamContainerView, ZohRescaledParams, build_dnam_container,
+    build_dnam_container,
 };
 use dnam_engine::math::{DefaultMathBackend, MathBackend, ScalarBackend};
 use dnam_engine::memory::{AlignedBuffer, CacheLine64};
-use dnam_engine::provenance::{DefaultCryptoProvider, extract_structural_hash_224d};
 use dnam_engine::schema::{
     ControlBusConfig, ControlKind, ControlSchemaDef, ControlUiHints, DatasetProvenance,
     DnamJsonHeader, IoConfig, ModelMetadata, RouterConfig, SlimmableTiersConfig, Stage1PreFxConfig,
     Stage2CascadeConfig, Stage3CabinetKautzConfig, Stage4SpatialTankConfig, TierProfile,
 };
-use dnam_engine::{DnamEngine, FtzDazGuard, Tier};
+use dnam_engine::{DnamEngine, Tier};
 
 fn make_bench_container() -> AlignedBuffer<CacheLine64> {
     let mut header = DnamJsonHeader {
@@ -30,7 +28,7 @@ fn make_bench_container() -> AlignedBuffer<CacheLine64> {
         architecture: "DNAM_TORA".to_string(),
         sample_rate_train_hz: 48_000,
         metadata: ModelMetadata {
-            name: "Criterion Benchmark Model".to_string(),
+            name: "Pipeline Benchmark Model".to_string(),
             author: None,
             description: None,
             license: None,
@@ -135,47 +133,6 @@ fn make_bench_container() -> AlignedBuffer<CacheLine64> {
     let mut aligned = AlignedBuffer::<CacheLine64>::new_zeroed(raw.len() / 64);
     aligned.as_bytes_mut().copy_from_slice(&raw);
     aligned
-}
-
-fn bench_container_and_zoh(c: &mut Criterion) {
-    let container = make_bench_container();
-    let crypto = DefaultCryptoProvider::default();
-    let mut group = c.benchmark_group("container_and_zoh");
-    group.throughput(Throughput::Bytes(container.as_bytes().len() as u64));
-
-    group.bench_function("from_bytes_crc32c", |b| {
-        b.iter(|| {
-            let view =
-                DnamContainerView::from_bytes(black_box(container.as_bytes()), &crypto).unwrap();
-            black_box(view.preamble.header_crc32c)
-        });
-    });
-
-    group.bench_function("zoh_compute_96khz", |b| {
-        b.iter(|| {
-            let rescaled = ZohRescaledParams::compute(
-                black_box(48_000),
-                black_box(96_000),
-                0.9993,
-                0.995,
-                64.0,
-                128,
-            )
-            .unwrap();
-            black_box(rescaled.r_dc_host)
-        });
-    });
-
-    let mut engine = DnamEngine::<DefaultMathBackend>::with_max_capacity();
-    group.bench_function("hot_swap_reload_in_place", |b| {
-        b.iter(|| {
-            engine
-                .reload_model_in_place(black_box(container.as_bytes()), Tier::Full, 48_000)
-                .unwrap();
-        });
-    });
-
-    group.finish();
 }
 
 fn bench_tier_profile<B: MathBackend>(
@@ -300,50 +257,6 @@ fn bench_io_topologies_and_buffer_sizes(c: &mut Criterion) {
     buf_group.finish();
 }
 
-fn bench_isolated_subsystems(c: &mut Criterion) {
-    let container = make_bench_container();
-    let mut engine =
-        DnamEngine::<DefaultMathBackend>::from_bytes(container.as_bytes(), Tier::Full, 48_000)
-            .unwrap();
-    let crypto = DefaultCryptoProvider::default();
-    let view = DnamContainerView::from_bytes(container.as_bytes(), &crypto).unwrap();
-    let arena = view.arena_storage.as_bytes();
-
-    let mut sub_group = c.benchmark_group("isolated_subsystems");
-
-    sub_group.bench_function("tora_step_frame_full", |b| {
-        let _audio = FtzDazGuard::new();
-        b.iter(|| black_box(engine.step_frame_tora(black_box(0.15), black_box(-0.15), false)));
-    });
-
-    sub_group.bench_function("stage4_spatial_tank_stereo", |b| {
-        let _audio = FtzDazGuard::new();
-        b.iter(|| {
-            black_box(
-                engine
-                    .stage_pipeline
-                    .stage4
-                    .step_stereo(black_box(0.15), black_box(-0.15)),
-            )
-        });
-    });
-
-    sub_group.bench_function("control_bus_tick_3khz", |b| {
-        let _audio = FtzDazGuard::new();
-        b.iter(|| {
-            engine.control_bus.set_control_value(0, black_box(0.75));
-            let changed = engine.control_bus.tick_3khz(black_box(0.1), arena);
-            black_box(changed)
-        });
-    });
-
-    sub_group.bench_function("provenance_224d_structural_hash", |b| {
-        b.iter(|| black_box(extract_structural_hash_224d(black_box(arena)).unwrap()));
-    });
-
-    sub_group.finish();
-}
-
 fn bench_denormal_and_multi_instance(c: &mut Criterion) {
     let container = make_bench_container();
 
@@ -355,7 +268,7 @@ fn bench_denormal_and_multi_instance(c: &mut Criterion) {
     let mut subnormal_in_l = [0.0_f32; 128];
     let mut subnormal_in_r = [0.0_f32; 128];
     for i in 0..128 {
-        let val = f32::from_bits(1 + (i as u32)); // IEEE-754 subnormal range (~1.4e-45 .. 1.8e-43)
+        let val = f32::from_bits(1 + (i as u32));
         subnormal_in_l[i] = val;
         subnormal_in_r[i] = -val;
     }
@@ -410,10 +323,8 @@ fn bench_denormal_and_multi_instance(c: &mut Criterion) {
 
 criterion_group!(
     benches,
-    bench_container_and_zoh,
     bench_process_block_tiers_and_backends,
     bench_io_topologies_and_buffer_sizes,
-    bench_isolated_subsystems,
     bench_denormal_and_multi_instance
 );
 criterion_main!(benches);

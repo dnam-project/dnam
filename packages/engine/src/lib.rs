@@ -49,6 +49,9 @@ pub mod provenance;
 pub mod schema;
 #[forbid(unsafe_code)]
 pub mod stages;
+#[cfg(test)]
+#[forbid(unsafe_code)]
+pub(crate) mod test_support;
 pub mod types;
 
 pub use container::strip_container_to_tier;

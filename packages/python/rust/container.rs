@@ -9,7 +9,7 @@ use dnam_engine::container::{
     crc32c_compute, pack_uplo_u_f64, strip_container_to_tier, unpack_uplo_u_f64,
     update_header_in_place, uplo_u_packed_len,
 };
-use dnam_engine::control::{ControlClampDescriptor, MAX_CONTROLS};
+use dnam_engine::control::ControlClampDescriptor;
 use dnam_engine::provenance::{RustCryptoProvider, decode_hex_array};
 use dnam_engine::schema::{
     ControlKind, ControlSchemaDef, ControlUiHints, DnamJsonHeader, PresetDef,
@@ -26,7 +26,7 @@ use crate::dnam_err_to_py;
 #[pyclass(module = "dnam_engine._native", frozen)]
 #[derive(Debug, Clone)]
 pub struct NativeControlSpace {
-    descriptors: [ControlClampDescriptor; MAX_CONTROLS],
+    descriptors: Vec<ControlClampDescriptor>,
     num_controls: usize,
 }
 
@@ -37,7 +37,7 @@ impl NativeControlSpace {
         let header: DnamJsonHeader = serde_json::from_str(header_json)
             .map_err(|e| PyValueError::new_err(format!("[DNAM-VALIDATION] {e}")))?;
         let descriptors = header.compile_clamp_descriptors().map_err(dnam_err_to_py)?;
-        let num_controls = header.controls_schema.len().min(MAX_CONTROLS);
+        let num_controls = descriptors.len();
         Ok(Self {
             descriptors,
             num_controls,
@@ -48,7 +48,7 @@ impl NativeControlSpace {
     /// Returns `(clamped_numeric, normalized_u, was_clamped)`.
     pub fn clamp(&self, raw_numeric_values: Vec<f32>) -> (Vec<f32>, Vec<f32>, Vec<bool>) {
         let n = self.num_controls;
-        let mut active_switches = [0_u8; MAX_CONTROLS];
+        let mut active_switches = vec![0_u8; n];
         let mut clamped_out = vec![0.0_f32; n];
         let mut norm_out = vec![0.0_f32; n];
         let mut was_clamped_out = vec![false; n];
@@ -347,8 +347,8 @@ pub fn native_clamp_controls<'py>(
     let num_controls = header.controls_schema.len();
 
     // Pass 1: Clamp switch controls first so conditional range bounds see active switch states
-    let mut active_switches = [0_u8; MAX_CONTROLS];
-    let mut intermediate = [(0.0_f32, 0.0_f32, false); MAX_CONTROLS];
+    let mut active_switches = vec![0_u8; num_controls];
+    let mut intermediate = vec![(0.0_f32, 0.0_f32, false); num_controls];
     for p in 0..num_controls {
         let raw_v = raw_numeric_values
             .get(p)

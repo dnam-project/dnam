@@ -15,23 +15,22 @@ Consult [`AGENTS.md`](AGENTS.md) and the submodule `AGENTS.md` files for progres
 - **`src/stages/` ([`src/stages/AGENTS.md`](src/stages/AGENTS.md)):** Stage 0 8-Port Matrix Router and Stages I–IV canonical rig topology.
 - **`src/control/` ([`src/control/AGENTS.md`](src/control/AGENTS.md)):** $3\text{ kHz}$ envelopes, 4-FMA + Newton LFO rotors, Node-Anchored Lobatto HDMR, Rank-4 FM, and 3-Phase control clamping.
 - **`src/container/` ([`src/container/AGENTS.md`](src/container/AGENTS.md)):** 64-byte `.dnam` / `.dnam-ckpt` preamble, zero-copy `DnamContainerView`, Continuous-Time ZOH sample-rate rescaler ($44.1\text{–}96\text{ kHz}$), and `uplo='U'` Gram matrix packer.
-- **`src/provenance/` ([`src/provenance/AGENTS.md`](src/provenance/AGENTS.md)):** Signature, encryption, watermark, and fingerprint prototypes; see the canonical security specification for the unfinished authentication contracts.
+- **`src/provenance/` ([`src/provenance/AGENTS.md`](src/provenance/AGENTS.md)):** `DAU1` authentication envelopes, RFC 8785 JCS header digests, `Ed25519` prefix commitments, `OemDeviceCertificate` attestation, RFC 9180 HPKE & `DME1` encryption, Dual-Mechanism buyer watermarking, and `.dnam-prev` containment.
 - **`src/schema/` ([`src/schema/AGENTS.md`](src/schema/AGENTS.md)):** `#![no_std]` `serde` JSON header types, UI skew curves, and `DnamError`.
 
 ### Test, Benchmark & Example Placement
 
-- **Unit & Property Tests (`#[cfg(test)] mod tests`):** Co-locate unit tests and `proptest!` suites inside the submodule they test (e.g., `src/operators/reference.rs`, `src/math/backend.rs`).
+- **Unit & Property Tests (`#[cfg(test)] mod tests` / `mod spec_tests`):** Co-locate all module unit tests, specification verification suites (`verify[...]`), and `proptest!` suites inside the submodule they test (`src/math/spec_math.rs`, `src/container/wire.rs`, `src/provenance/security.rs`, `src/control/plane.rs`, `src/control/bus.rs`, `src/operators/{op_t,op_m,op_n,reference}.rs`, `src/stages/{topology,stage4_tank}.rs`).
+  - **Use `proptest!` Wherever Possible:** Every mathematical kernel, fixed-point accumulator, DSP operator (`Op-T`, `Op-M`, `Op-N`), stage recurrence, wire parser/serializer, and cryptographic framing helper must include `proptest!` property tests sweeping its full input domain (coupled with deterministic boundary/vector tests for exact IEEE-754 bit patterns). Keep `tests/` strictly for cross-cutting multi-subsystem integration tests (which should also use `proptest!` for end-to-end block/rate/tier sweeps).
 - **Integration Tests (`tests/`):** Keep `tests/` strictly for cross-cutting crate integration tests:
-  - [`tests/backend_parity.rs`](tests/backend_parity.rs): Backend and topology parity checks for the exercised configurations.
-  - [`tests/realtime_safety.rs`](tests/realtime_safety.rs): `TrackingAllocator` checks for the exercised real-time paths; these do not prove every path allocation-free.
-  - [`tests/tora_operators_verification.rs`](tests/tora_operators_verification.rs): Empirical operator verification (`Tests 1A–1C, 2A–2C, 3`) for Op-N (`PolyADAA`), Op-M (Kautz/Symplectic), and Op-T (Catmull-Rom).
-  - [`tests/tora_stages_and_tank_verification.rs`](tests/tora_stages_and_tank_verification.rs): Empirical verification (`Tests 4, 5`) for Stage 0 Router, Stage IV Spatial Tank Lyapunov bounds, and 256-D Mid/Side Kronecker Head.
-  - [`tests/tora_control_and_ckpt_verification.rs`](tests/tora_control_and_ckpt_verification.rs): Empirical verification (`Tests 8A, 8B, 8D, 8E, 8G`) for 3-Phase control clamping, `LatentAccumulator64B`, and `.dnam-ckpt` `uplo='U'` prefix packing.
-  - [`tests/tora_pipeline_and_zoh_verification.rs`](tests/tora_pipeline_and_zoh_verification.rs): End-to-end TORA pipeline (`Tests 8H, 8I`), ZOH multi-rate rescaling, `4x` offline bounce, and calibration roles.
+  - [`tests/backend_parity.rs`](tests/backend_parity.rs): Backend and topology parity checks across `ScalarBackend`, `NeonBackend`, and `ArmSmeBackend`.
+  - [`tests/realtime_safety.rs`](tests/realtime_safety.rs): `TrackingAllocator` checks for zero-allocation real-time audio callbacks.
+  - [`tests/tora_pipeline_and_zoh_verification.rs`](tests/tora_pipeline_and_zoh_verification.rs): End-to-end TORA pipeline (`Tests 8H, 8I`), ZOH multi-rate rescaling, `4x` offline bounce, calibration roles, and `arch.*` system architecture integration.
   - [`tests/marketplace_provenance_and_watermark.rs`](tests/marketplace_provenance_and_watermark.rs) & [`tests/marketplace_seal_and_policy.rs`](tests/marketplace_seal_and_policy.rs): End-to-end cryptographic provenance, `.dnam-seal` hardware enclave envelopes, and Dual-Mechanism buyer watermarking.
   - [`tests/ffi_integration.rs`](tests/ffi_integration.rs): C-ABI lifecycle and null-pointer safety.
-- **Benchmarks (`benches/`):** Place throughput and WCET latency benchmarks in [`benches/engine_benchmarks.rs`](benches/engine_benchmarks.rs) and [`benches/realtime_wcet.rs`](benches/realtime_wcet.rs).
-- **Examples (`examples/`):** Place runnable API demonstrations in [`examples/realtime_audio_block.rs`](examples/realtime_audio_block.rs), [`examples/embedded_zero_alloc.rs`](examples/embedded_zero_alloc.rs), and [`examples/marketplace_provenance.rs`](examples/marketplace_provenance.rs).
+  - [`tests/portable_denormal.rs`](tests/portable_denormal.rs): Portable WebAssembly (`+simd128` / `-simd128`) denormal regression probe.
+- **Benchmarks (`benches/`):** Organize Criterion throughput and WCET latency benchmarks by subsystem across [`benches/pipeline.rs`](benches/pipeline.rs), [`benches/operators.rs`](benches/operators.rs), [`benches/stages_and_control.rs`](benches/stages_and_control.rs), [`benches/container_and_provenance.rs`](benches/container_and_provenance.rs), and [`benches/realtime_wcet.rs`](benches/realtime_wcet.rs).
+- **Examples (`examples/`):** Place runnable API demonstrations in [`examples/realtime_audio_block.rs`](examples/realtime_audio_block.rs), [`examples/embedded_zero_alloc.rs`](examples/embedded_zero_alloc.rs), [`examples/marketplace_provenance.rs`](examples/marketplace_provenance.rs), [`examples/container_slimming_and_ckpt.rs`](examples/container_slimming_and_ckpt.rs), [`examples/custom_operator_chain.rs`](examples/custom_operator_chain.rs), and [`examples/c_abi_host_integration.rs`](examples/c_abi_host_integration.rs).
 
 ---
 
@@ -83,6 +82,7 @@ and platform-specific paths separately.
 
 ## 4. Pre-Commit Checklist for `packages/engine/`
 
+- [ ] Every new or modified module includes `proptest!` property-based tests (alongside exact boundary/vector tests) co-located in its source file (`#[cfg(test)]`), with `verify[...]` citations for all covered `r[...]` specification rules.
 - [ ] `moon check engine` passes all formatting, Clippy (`-D warnings`), build, and unit/`proptest`/integration tests (`tests/realtime_safety.rs` and `tests/backend_parity.rs`).
 - [ ] `moon run engine:coverage` confirms ≥ 95% coverage, including all newly added or modified functions and tier branches.
 - [ ] If any public API or FFI signature changed, `packages/python/rust/` bindings and scoped `AGENTS.md` files (`< 2,500 B`) are updated accordingly.

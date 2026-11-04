@@ -39,7 +39,19 @@ criterion.workspace = true
 proptest.workspace = true
 
 [[bench]]
-name = "engine_benchmarks"
+name = "pipeline"
+harness = false
+
+[[bench]]
+name = "operators"
+harness = false
+
+[[bench]]
+name = "stages_and_control"
+harness = false
+
+[[bench]]
+name = "container_and_provenance"
 harness = false
 
 [[bench]]

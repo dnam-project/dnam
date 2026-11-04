@@ -3,7 +3,10 @@
 //! Canonical Reference: `docs/dsp/op_n_commuted_cascade.md` §4 & `docs/dsp/router_and_stages_topology.md` §2.2.
 
 use crate::math::flush_recursive_state_f32;
-use crate::operators::op_n::{MultiDrivePolyAdaaChannel, QuadratureHysteresis2D, c2_wavefolder};
+use crate::operators::op_n::{
+    MultiDrivePolyAdaaChannel, QuadratureHysteresis2D, c2_wavefolder,
+    eval_adaa_cubic_c2_wavefolder_f64,
+};
 
 /// State RAM footprint for Stage II Lite: strictly 288 B.
 pub const STAGE2_CASCADE_RAM_BYTES: usize = 288;
@@ -45,6 +48,17 @@ impl ToneBasisFilters {
             alpha_400: Self::ALPHA_400,
             alpha_1200: Self::ALPHA_1200,
         }
+    }
+
+    /// Initializes the 4-filter tone basis (`Direct`, `LPF_80`, `LPF_400`, `HPF_1200`) to exact
+    /// resting DC equilibrium for constant input `v_rest` (`LPF y[-1] = v_rest`,
+    /// `HPF y[-1] = 0, x[-1] = v_rest`, `ref[dsp.op-n.commuted.dc-equilibrium]`).
+    pub fn init_dc_equilibrium(&mut self, v_rest: f32) {
+        let vr = flush_recursive_state_f32(v_rest);
+        self.lpf80_state = vr;
+        self.lpf400_state = vr;
+        self.hpf1200_state = 0.0;
+        self.hpf1200_x1 = vr;
     }
 
     pub fn reset(&mut self) {
@@ -111,7 +125,10 @@ pub struct Stage2CommutedCascade {
     pub r_sag: f32,
     /// ZOH-rescaled 2D quadrature hysteresis differential rate scale (`1 / rho_sr`).
     pub hyst_diff_scale: f32,
-    pub _pad: [u8; 12],
+    /// Previous V1A output for degree-7/8 ADAA `C^2` wavefolding (`ref[dsp.op-n.wavefolder.cubic-c2]`).
+    pub prev_v1a_l: f32,
+    pub prev_v1a_r: f32,
+    pub _pad: [u8; 4],
 }
 
 impl Default for Stage2CommutedCascade {
@@ -135,7 +152,9 @@ impl Stage2CommutedCascade {
             r_ac: 0.9993,
             r_sag: 0.995,
             hyst_diff_scale: 1.0,
-            _pad: [0; 12],
+            prev_v1a_l: 0.0,
+            prev_v1a_r: 0.0,
+            _pad: [0; 4],
         }
     }
 
@@ -149,6 +168,8 @@ impl Stage2CommutedCascade {
         self.tone_basis_l.reset();
         self.tone_basis_r.reset();
         self.sag_envelope = 0.0;
+        self.prev_v1a_l = 0.0;
+        self.prev_v1a_r = 0.0;
     }
 
     /// Reconfigures Stage II AC-coupling pole, sag integrator pole, hysteresis rate scale,
@@ -172,6 +193,8 @@ impl Stage2CommutedCascade {
         self.tone_basis_l.reset();
         self.tone_basis_r.reset();
         self.sag_envelope = 0.0;
+        self.prev_v1a_l = 0.0;
+        self.prev_v1a_r = 0.0;
     }
 
     /// Steps Stage II for stereo frame `(in_l, in_r)` through 2.1 Preamp -> 2.2 Driver -> 2.3 Power Amp.
@@ -193,9 +216,17 @@ impl Stage2CommutedCascade {
         let sig_v1a_l = v1a_out_l[1]; // 1.0x drive
         let sig_v1a_r = v1a_out_r[1];
 
-        // 2. Sub-stage 2.2: Driver V1B + C2 wavefolding
-        let (wf_l, _) = c2_wavefolder(sig_v1a_l);
-        let (wf_r, _) = c2_wavefolder(sig_v1a_r);
+        // 2. Sub-stage 2.2: Driver V1B + degree-7/8 ADAA C2 wavefolding (`ref[dsp.op-n.wavefolder.cubic-c2]`)
+        let (wf_l_f64, _) =
+            eval_adaa_cubic_c2_wavefolder_f64(self.prev_v1a_l as f64, sig_v1a_l as f64);
+        let (wf_r_f64, _) =
+            eval_adaa_cubic_c2_wavefolder_f64(self.prev_v1a_r as f64, sig_v1a_r as f64);
+        self.prev_v1a_l = flush_recursive_state_f32(sig_v1a_l);
+        self.prev_v1a_r = flush_recursive_state_f32(sig_v1a_r);
+        let (wf_inst_l, _) = c2_wavefolder(sig_v1a_l);
+        let (wf_inst_r, _) = c2_wavefolder(sig_v1a_r);
+        let wf_l = 0.5 * (wf_l_f64 as f32) + 0.5 * wf_inst_l;
+        let wf_r = 0.5 * (wf_r_f64 as f32) + 0.5 * wf_inst_r;
         let v1b_in_l = 0.7 * sig_v1a_l + 0.3 * wf_l;
         let v1b_in_r = 0.7 * sig_v1a_r + 0.3 * wf_r;
 

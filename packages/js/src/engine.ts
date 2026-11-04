@@ -77,7 +77,7 @@ class MemoryAudioBuffer implements AudioBufferLike {
 }
 
 /**
- * Stateful real-time DNAM ("Tri-Physics") inference engine generic over the model's
+ * Stateful real-time DNAM inference engine generic over the model's
  * parametric control map `TControls`.
  */
 export class DnamEngine<TControls extends ControlMap = ControlMap> implements Disposable {

@@ -1,0 +1,1003 @@
+# DNAM Rust Engine (`packages/engine`) — Specification Rule Scope Manifest
+#
+# Every `r[<id>]` rule defined in `docs/specs/**/*.md` MUST appear in this manifest
+# under `[rules]` with `scope = "engine"` (verified in `packages/engine/tests/*.rs`)
+# or `scope = "out-of-scope"` (with a non-empty `reason` explaining which other
+# package or suite owns verification).
+
+# ==============================================================================
+# 1. Architecture: Repository & Documentation Quality (`docs/specs/architecture/project_and_documentation_quality.md`)
+# ==============================================================================
+[rules."repo.code.type-safety-and-imports"]
+scope = "out-of-scope"
+reason = "Repository-wide Python/TypeScript static typing and import boundary guardrail verified in tests/test_guardrails.py"
+
+[rules."repo.docs.agents-md-budgets"]
+scope = "out-of-scope"
+reason = "Repository-wide AGENTS.md byte budget guardrail verified in tests/test_guardrails.py"
+
+[rules."repo.docs.requirements-layer"]
+scope = "out-of-scope"
+reason = "Repository-wide requirements registry guardrail verified in tests/test_guardrails.py"
+
+[rules."repo.docs.spec-rules-and-adrs"]
+scope = "out-of-scope"
+reason = "Repository-wide specification rule and MADR structure guardrail verified in tests/test_guardrails.py"
+
+[rules."repo.docs.markdown-table-math"]
+scope = "out-of-scope"
+reason = "Repository-wide Markdown table math guardrail verified in tests/test_guardrails.py"
+
+[rules."repo.docs.github-latex-and-mermaid"]
+scope = "out-of-scope"
+reason = "Repository-wide GitHub MathJax and Mermaid syntax guardrail verified in tests/test_guardrails.py"
+
+[rules."repo.docs.relative-links-and-anchors"]
+scope = "out-of-scope"
+reason = "Repository-wide Markdown link and anchor resolution guardrail verified in tests/test_guardrails.py"
+
+# ==============================================================================
+# 2. Architecture: Psychoacoustic Quality & Tiers (`docs/specs/architecture/psychoacoustic_quality_and_tiers.md`)
+# ==============================================================================
+[rules."qual.besr.bezout-crossover"]
+scope = "out-of-scope"
+reason = "Offline psychoacoustic bESR qualification metric owned by trainer/evaluation suite"
+
+[rules."qual.besr.filter-response"]
+scope = "out-of-scope"
+reason = "Offline psychoacoustic bESR filter-response qualification owned by trainer/evaluation suite"
+
+[rules."qual.besr.noise-subtracted"]
+scope = "out-of-scope"
+reason = "Offline noise-subtracted bESR evaluator owned by trainer/evaluation suite"
+
+[rules."qual.besr.zero-denominator"]
+scope = "out-of-scope"
+reason = "Offline bESR zero-denominator convention owned by trainer/evaluation suite"
+
+[rules."qual.besr.per-output"]
+scope = "out-of-scope"
+reason = "Offline per-output bESR qualification rule owned by trainer/evaluation suite"
+
+[rules."qual.besr.noise-qualified"]
+scope = "out-of-scope"
+reason = "Offline noise-qualified band gating owned by trainer/evaluation suite"
+
+[rules."qual.besr.finite-timeline"]
+scope = "out-of-scope"
+reason = "Offline finite-timeline segmental frame evaluation owned by trainer/evaluation suite"
+
+[rules."qual.besr.uncertain-floor"]
+scope = "out-of-scope"
+reason = "Offline conservative noise-floor interval evaluation owned by trainer/evaluation suite"
+
+[rules."qual.besr.joint-intervals"]
+scope = "out-of-scope"
+reason = "Offline joint confidence interval qualification owned by trainer/evaluation suite"
+
+[rules."qual.eval.jitter-floor"]
+scope = "out-of-scope"
+reason = "Offline hardware capture jitter floor qualification owned by trainer/evaluation suite"
+
+[rules."qual.eval.thermal-hiss"]
+scope = "out-of-scope"
+reason = "Offline analog thermal-hiss floor qualification owned by trainer/evaluation suite"
+
+[rules."qual.eval.metric-scope"]
+scope = "out-of-scope"
+reason = "Offline evaluation metric scope separation owned by trainer/evaluation suite"
+
+[rules."qual.eval.quiet-vs-muted"]
+scope = "out-of-scope"
+reason = "Offline quiet/autonomous/muted evaluation classification owned by trainer/evaluation suite"
+
+[rules."qual.companion.suite"]
+scope = "out-of-scope"
+reason = "Offline companion psychoacoustic metric suite owned by trainer/evaluation suite"
+
+[rules."qual.companion.mr-stft"]
+scope = "out-of-scope"
+reason = "Offline multi-resolution STFT companion metric owned by trainer/evaluation suite"
+
+[rules."qual.companion.ltas"]
+scope = "out-of-scope"
+reason = "Offline 33-band LTAS companion metric owned by trainer/evaluation suite"
+
+[rules."qual.companion.seg-esr"]
+scope = "out-of-scope"
+reason = "Offline duration-weighted SegESR companion metric owned by trainer/evaluation suite"
+
+[rules."qual.tiers.benchmark-matrix"]
+scope = "out-of-scope"
+reason = "Offline 4-tier psychoacoustic benchmark qualification matrix owned by trainer/evaluation suite"
+
+# ==============================================================================
+# 3. Architecture: TORA System Overview (`docs/specs/architecture/tora_architecture.md`)
+# ==============================================================================
+[rules."arch.pillars.dual-space-control"]
+scope = "engine"
+
+[rules."arch.pillars.dual-rate-plane"]
+scope = "engine"
+
+[rules."arch.pillars.cp1-projections"]
+scope = "engine"
+
+[rules."arch.lifecycle.dual-rate"]
+scope = "engine"
+
+[rules."arch.fp.callback-env"]
+scope = "engine"
+
+[rules."arch.fp.range-saturation"]
+scope = "engine"
+
+[rules."arch.operators.tri-kernel"]
+scope = "engine"
+
+[rules."arch.operators.self-similar"]
+scope = "engine"
+
+[rules."arch.simd.lane-packing"]
+scope = "engine"
+
+[rules."arch.operators.differentiability"]
+scope = "engine"
+
+[rules."arch.tiers.arena-hierarchy"]
+scope = "engine"
+
+[rules."arch.tiers.hardware-budget"]
+scope = "engine"
+
+[rules."arch.tiers.state-ram"]
+scope = "engine"
+
+[rules."arch.tiers.efficiency"]
+scope = "engine"
+
+[rules."arch.topology.signal-flow"]
+scope = "engine"
+
+[rules."arch.topology.stage0-router"]
+scope = "engine"
+
+[rules."arch.topology.auto-unity-leveling"]
+scope = "engine"
+
+[rules."arch.tiers.transition-contract"]
+scope = "engine"
+
+[rules."arch.topology.spillover-trails"]
+scope = "engine"
+
+[rules."arch.bounce.oversampling"]
+scope = "engine"
+
+[rules."arch.families.coverage"]
+scope = "engine"
+
+[rules."arch.families.f1-bistables"]
+scope = "engine"
+
+[rules."arch.families.f2-hilbert-ssb"]
+scope = "engine"
+
+[rules."arch.families.f3-pitch"]
+scope = "engine"
+
+[rules."arch.families.f4-dynamics"]
+scope = "engine"
+
+[rules."arch.families.f5-bitcrusher"]
+scope = "engine"
+
+[rules."arch.families.f6-formants"]
+scope = "engine"
+
+[rules."arch.families.f7-multi-input"]
+scope = "engine"
+
+[rules."arch.isomorphism.guarantees"]
+scope = "engine"
+
+[rules."arch.isomorphism.stage2-serialization"]
+scope = "engine"
+
+[rules."arch.isomorphism.two-sweep"]
+scope = "out-of-scope"
+reason = "Two-sweep Block-Coordinate Cholesky training solver owned by packages/trainer"
+
+[rules."arch.isomorphism.audit-wiring"]
+scope = "out-of-scope"
+reason = "Trainer fit_job Step-0 and 3-phase audit pipeline wiring owned by packages/trainer"
+
+[rules."arch.isomorphism.stereo-preservation"]
+scope = "engine"
+
+[rules."arch.isomorphism.nested-bus"]
+scope = "engine"
+
+[rules."arch.refinements.summary"]
+scope = "engine"
+
+[rules."arch.verification.matrix"]
+scope = "engine"
+
+[rules."arch.index.subsystems"]
+scope = "out-of-scope"
+reason = "Documentation subsystem navigation index verified by relative-link guardrails in tests/test_guardrails.py"
+
+# ==============================================================================
+# 4. Containers: Checkpoint & Cache Format (`docs/specs/containers/checkpoint_and_cache_format.md`)
+# ==============================================================================
+[rules."container.ckpt.bundle-framing"]
+scope = "engine"
+
+[rules."container.ckpt.dca1-signature"]
+scope = "engine"
+
+[rules."container.ckpt.export-template"]
+scope = "engine"
+
+[rules."container.ckpt.declarative-no-pickle"]
+scope = "engine"
+
+[rules."container.ckpt.uplo-u"]
+scope = "engine"
+
+[rules."container.ckpt.standalone-full"]
+scope = "out-of-scope"
+reason = "Trainer Arena 4 full Gram checkpoint writer/reader mode owned by packages/trainer"
+
+[rules."container.ckpt.prefix-delta"]
+scope = "out-of-scope"
+reason = "Trainer Arena 4 incremental prefix-delta statistics mode owned by packages/trainer"
+
+[rules."container.ckpt.objective-records"]
+scope = "out-of-scope"
+reason = "Trainer objective and loss history checkpoint records owned by packages/trainer"
+
+[rules."container.ckpt.stems-registry"]
+scope = "out-of-scope"
+reason = "Trainer/Studio stem registry checkpoint records owned by packages/trainer"
+
+[rules."container.ckpt.gram-fingerprint"]
+scope = "out-of-scope"
+reason = "Trainer Gram-input SHA-256 fingerprint record owned by packages/trainer"
+
+[rules."container.dnca.inpc"]
+scope = "out-of-scope"
+reason = "Trainer/Studio Arena 5 per-input calibration record (INPC) owned by packages/trainer"
+
+[rules."container.dnca.stmc"]
+scope = "out-of-scope"
+reason = "Trainer/Studio Arena 5 per-stem calibration record (STMC) owned by packages/trainer"
+
+[rules."container.dnca.dnce-sidecar"]
+scope = "out-of-scope"
+reason = "Local Studio/Trainer .dnce workspace sidecar cache owned by packages/trainer and packages/studio"
+
+# ==============================================================================
+# 5. Containers: DNAM Binary Format (`docs/specs/containers/dnam_binary_format.md`)
+# ==============================================================================
+[rules."container.dnam.formats"]
+scope = "engine"
+
+[rules."container.dnam.wire-framing"]
+scope = "engine"
+
+[rules."container.dnam.preamble-directory"]
+scope = "engine"
+
+[rules."container.dnam.open-layout"]
+scope = "engine"
+
+[rules."container.dnam.mutable-frame"]
+scope = "engine"
+
+[rules."container.dnam.mutable-json"]
+scope = "engine"
+
+[rules."container.dnam.tier-prefix"]
+scope = "engine"
+
+[rules."container.dnam.delay-histories"]
+scope = "engine"
+
+[rules."container.dnam.load-validation"]
+scope = "engine"
+
+[rules."container.dnam.tensor-directory"]
+scope = "engine"
+
+[rules."container.dnam.stage3-slices"]
+scope = "engine"
+
+[rules."container.dnam.cp1-profile"]
+scope = "engine"
+
+[rules."container.dnam.conditional-rules"]
+scope = "engine"
+
+[rules."container.dnam.metadata-ui-hints"]
+scope = "engine"
+
+[rules."container.dnam.sample-rate-anchor"]
+scope = "engine"
+
+[rules."container.dnam.jcs-header-schema"]
+scope = "engine"
+
+[rules."container.dnam.security-crossref"]
+scope = "engine"
+
+# ==============================================================================
+# 6. DSP: Op-M Modal & Kautz (`docs/specs/dsp/op_m_modal_kautz.md`)
+# ==============================================================================
+[rules."dsp.op-m.recurrence.symplectic"]
+scope = "engine"
+
+[rules."dsp.op-m.rotor.contractive"]
+scope = "engine"
+
+[rules."dsp.op-m.rotor.zero-hold"]
+scope = "engine"
+
+[rules."dsp.op-m.rotor.quadrant-horner"]
+scope = "engine"
+
+[rules."dsp.op-m.rotor.ulp-guard"]
+scope = "engine"
+
+[rules."dsp.op-m.rotor.q0-192-lfo"]
+scope = "engine"
+
+[rules."dsp.op-m.init.log-octave-h2"]
+scope = "engine"
+
+[rules."dsp.op-m.hilbert.lattice"]
+scope = "engine"
+
+[rules."dsp.op-m.hilbert.h1-anchors"]
+scope = "engine"
+
+[rules."dsp.op-m.hilbert.ties-to-even"]
+scope = "engine"
+
+[rules."dsp.op-m.hilbert.rate-remap"]
+scope = "engine"
+
+[rules."dsp.op-m.tracker.t1-dc-blocker"]
+scope = "engine"
+
+[rules."dsp.op-m.tracker.envelope-norm"]
+scope = "engine"
+
+[rules."dsp.op-m.tracker.toggle-sheet"]
+scope = "engine"
+
+[rules."dsp.op-m.tracker.training"]
+scope = "out-of-scope"
+reason = "Trainer differentiable sub-harmonic tracker forward/surrogate pass owned by packages/trainer"
+
+[rules."dsp.op-m.stage3.kautz-allocation"]
+scope = "engine"
+
+[rules."dsp.op-m.stage3.dual-state"]
+scope = "engine"
+
+[rules."dsp.op-m.stage3.radial-gate"]
+scope = "engine"
+
+[rules."dsp.op-m.stage3.rate-convert"]
+scope = "engine"
+
+[rules."dsp.op-m.stage3.coupled-form"]
+scope = "engine"
+
+[rules."dsp.op-m.stage3.sweep-contraction"]
+scope = "engine"
+
+[rules."dsp.op-m.stage3.pole-extraction"]
+scope = "out-of-scope"
+reason = "Offline two-step Warped Laguerre/Kautz pole-extraction solver owned by packages/trainer"
+
+[rules."dsp.op-m.ctrl.engine"]
+scope = "engine"
+
+# ==============================================================================
+# 7. DSP: Op-N Commuted Cascade (`docs/specs/dsp/op_n_commuted_cascade.md`)
+# ==============================================================================
+[rules."dsp.op-n.polyadaa.clamp"]
+scope = "engine"
+
+[rules."dsp.op-n.polyadaa.midpoint"]
+scope = "engine"
+
+[rules."dsp.op-n.polyadaa.rail-crossing"]
+scope = "engine"
+
+[rules."dsp.op-n.polyadaa.linear-residual"]
+scope = "engine"
+
+[rules."dsp.op-n.polyadaa.bspline-ac"]
+scope = "engine"
+
+[rules."dsp.op-n.polyadaa.drive-bank"]
+scope = "engine"
+
+[rules."dsp.op-n.wavefolder.cubic-c2"]
+scope = "engine"
+
+[rules."dsp.op-n.hysteresis.quadrature"]
+scope = "engine"
+
+[rules."dsp.op-n.bitcrusher.quantizer"]
+scope = "engine"
+
+[rules."dsp.op-n.bitcrusher.zoh-phase"]
+scope = "engine"
+
+[rules."dsp.op-n.bitcrusher.rate-transfer"]
+scope = "engine"
+
+[rules."dsp.op-n.bitcrusher.surrogate"]
+scope = "out-of-scope"
+reason = "Trainer STE / 4-term Fourier backward surrogate for bitcrusher owned by packages/trainer"
+
+[rules."dsp.op-n.commuted.theorem1"]
+scope = "engine"
+
+[rules."dsp.op-n.commuted.causality"]
+scope = "engine"
+
+[rules."dsp.op-n.commuted.project-then-filter"]
+scope = "engine"
+
+[rules."dsp.op-n.commuted.dc-equilibrium"]
+scope = "engine"
+
+[rules."dsp.op-n.stage2.sub-stages"]
+scope = "engine"
+
+[rules."dsp.op-n.stage2.tone-basis"]
+scope = "engine"
+
+[rules."dsp.op-n.stage2.stereo-coupling"]
+scope = "engine"
+
+[rules."dsp.op-n.stage2.latent-folding"]
+scope = "engine"
+
+[rules."dsp.op-n.ctrl.incremental-update"]
+scope = "engine"
+
+[rules."dsp.op-n.ctrl.lobatto-basis"]
+scope = "engine"
+
+[rules."dsp.op-n.ctrl.chebyshev-lfo"]
+scope = "engine"
+
+[rules."dsp.op-n.ctrl.fm-interaction"]
+scope = "engine"
+
+[rules."dsp.op-n.ctrl.trust-clip"]
+scope = "engine"
+
+# ==============================================================================
+# 8. DSP: Op-T Transport (`docs/specs/dsp/op_t_transport.md`)
+# ==============================================================================
+[rules."dsp.op-t.ring.declaration"]
+scope = "engine"
+
+[rules."dsp.op-t.ring.capacity"]
+scope = "engine"
+
+[rules."dsp.op-t.ring.admission"]
+scope = "engine"
+
+[rules."dsp.op-t.ring.branchless-wrap"]
+scope = "engine"
+
+[rules."dsp.op-t.ring.q0-32-pointer"]
+scope = "engine"
+
+[rules."dsp.op-t.ring.fp16-saturation"]
+scope = "engine"
+
+[rules."dsp.op-t.reader.catmull-rom"]
+scope = "engine"
+
+[rules."dsp.op-t.guard.bounded-history"]
+scope = "engine"
+
+[rules."dsp.op-t.guard.max-tree"]
+scope = "engine"
+
+[rules."dsp.op-t.guard.bibo-decay"]
+scope = "engine"
+
+[rules."dsp.op-t.guard.fp16-decay"]
+scope = "engine"
+
+[rules."dsp.op-t.transition.dual-mode"]
+scope = "engine"
+
+[rules."dsp.op-t.window.partition-of-unity"]
+scope = "engine"
+
+[rules."dsp.op-t.window.m1-delay"]
+scope = "engine"
+
+[rules."dsp.op-t.window.m2-pitch"]
+scope = "engine"
+
+[rules."dsp.op-t.window.m3-barberpole"]
+scope = "engine"
+
+[rules."dsp.op-t.diffuser.partition"]
+scope = "engine"
+
+[rules."dsp.op-t.diffuser.recurrence"]
+scope = "engine"
+
+[rules."dsp.op-t.ducking.vca"]
+scope = "engine"
+
+[rules."dsp.op-t.zero-fdiv"]
+scope = "engine"
+
+# ==============================================================================
+# 9. DSP: Parametric Control Bus (`docs/specs/dsp/parametric_control_bus.md`)
+# ==============================================================================
+[rules."dsp.ctrl.op-m.ballistic-lfo"]
+scope = "engine"
+
+[rules."dsp.ctrl.op-m.rate-retime"]
+scope = "engine"
+
+[rules."dsp.ctrl.op-m.timing"]
+scope = "engine"
+
+[rules."dsp.ctrl.op-m.spsc-ingress"]
+scope = "engine"
+
+[rules."dsp.ctrl.op-n.engine"]
+scope = "engine"
+
+[rules."dsp.ctrl.op-n.trust-clip"]
+scope = "engine"
+
+[rules."dsp.ctrl.range.normalize-clamp"]
+scope = "engine"
+
+[rules."dsp.ctrl.range.f32-rank-bounds"]
+scope = "engine"
+
+[rules."dsp.ctrl.basis.lobatto"]
+scope = "engine"
+
+[rules."dsp.ctrl.accum.cp1-scaling"]
+scope = "engine"
+
+[rules."dsp.ctrl.switch.option-contributors"]
+scope = "engine"
+
+[rules."dsp.ctrl.switch.conditional-batch"]
+scope = "engine"
+
+[rules."dsp.ctrl.accum.anova-fm"]
+scope = "engine"
+
+[rules."dsp.ctrl.accum.exact-int"]
+scope = "engine"
+
+[rules."dsp.ctrl.modulators.dynamic"]
+scope = "engine"
+
+[rules."dsp.ctrl.dispatch.matrix"]
+scope = "engine"
+
+[rules."dsp.ctrl.dispatch.stage-laws"]
+scope = "engine"
+
+[rules."dsp.ctrl.dispatch.micro-ramp"]
+scope = "engine"
+
+[rules."dsp.ctrl.step0.variance-gating"]
+scope = "out-of-scope"
+reason = "Offline Step-0 transport and variance-based control locking owned by packages/trainer"
+
+[rules."dsp.ctrl.math.pitch-profile"]
+scope = "engine"
+
+[rules."dsp.ctrl.math.log2-lut"]
+scope = "engine"
+
+[rules."dsp.ctrl.ledger.memory-compute"]
+scope = "engine"
+
+[rules."dsp.tempo.subdivisions"]
+scope = "engine"
+
+[rules."dsp.tempo.q64-q32-phase"]
+scope = "engine"
+
+[rules."dsp.tempo.event-tracker"]
+scope = "engine"
+
+[rules."dsp.tempo.physical-inversion"]
+scope = "engine"
+
+[rules."dsp.tempo.coprime-fdn"]
+scope = "engine"
+
+[rules."dsp.tempo.transport-jump"]
+scope = "engine"
+
+# ==============================================================================
+# 10. DSP: Router & Stages Topology (`docs/specs/dsp/router_and_stages_topology.md`)
+# ==============================================================================
+[rules."dsp.router.signal-flow"]
+scope = "engine"
+
+[rules."dsp.router.ports"]
+scope = "engine"
+
+[rules."dsp.router.wdw-contract"]
+scope = "engine"
+
+[rules."dsp.router.return-to-send-isolation"]
+scope = "engine"
+
+[rules."dsp.router.parallel-alignment"]
+scope = "engine"
+
+[rules."dsp.router.lr4-crossover"]
+scope = "engine"
+
+[rules."dsp.router.mid-side-input"]
+scope = "engine"
+
+[rules."dsp.head.mid-side-factorization"]
+scope = "engine"
+
+[rules."dsp.router.topology-dispatch"]
+scope = "engine"
+
+[rules."dsp.router.stereo-link-detector"]
+scope = "engine"
+
+[rules."dsp.router.ballistic-envelope-bank"]
+scope = "engine"
+
+[rules."dsp.stage1.pre-bus"]
+scope = "engine"
+
+[rules."dsp.stage2.commuted-cascade"]
+scope = "engine"
+
+[rules."dsp.stage3.cabinet-bank"]
+scope = "engine"
+
+[rules."dsp.stage4.spatial-tank"]
+scope = "engine"
+
+[rules."dsp.stage4.captured-freeze"]
+scope = "engine"
+
+[rules."dsp.stage4.dc-blocker"]
+scope = "engine"
+
+[rules."dsp.stage4.loop-saturator"]
+scope = "engine"
+
+[rules."dsp.stage4.quiet-feedback-knee"]
+scope = "engine"
+
+[rules."dsp.head.feature-bus-slots"]
+scope = "engine"
+
+[rules."dsp.head.tier-equivalence"]
+scope = "engine"
+
+[rules."dsp.head.lower-triangular"]
+scope = "engine"
+
+[rules."dsp.router.modulation-bus"]
+scope = "engine"
+
+[rules."dsp.zoh.op-m-poles"]
+scope = "engine"
+
+[rules."dsp.zoh.router-detector"]
+scope = "engine"
+
+[rules."dsp.zoh.stage2-op-n"]
+scope = "engine"
+
+[rules."dsp.zoh.op-t-delays"]
+scope = "engine"
+
+[rules."dsp.zoh.ctrl-stride"]
+scope = "engine"
+
+[rules."dsp.zoh.stage3-fir-onset"]
+scope = "engine"
+
+# ==============================================================================
+# 11. Security: Provenance & Enclave DRM (`docs/specs/security/provenance_and_enclave_drm.md`)
+# ==============================================================================
+[rules."sec.taxonomy.overview"]
+scope = "engine"
+
+[rules."sec.jcs.immutable-header-digest"]
+scope = "engine"
+
+[rules."sec.policy.distribution-policy"]
+scope = "engine"
+
+[rules."sec.sig.prefix-delegation"]
+scope = "engine"
+
+[rules."sec.sig.dau1-envelope"]
+scope = "engine"
+
+[rules."sec.sig.offline-auth"]
+scope = "engine"
+
+[rules."sec.drm.oem-certificate"]
+scope = "engine"
+
+[rules."sec.drm.trustzone-flow"]
+scope = "engine"
+
+[rules."sec.drm.hpke-record-encryption"]
+scope = "engine"
+
+[rules."sec.drm.dnsl-public-framing"]
+scope = "engine"
+
+[rules."sec.drm.protected-inner-framing"]
+scope = "engine"
+
+[rules."sec.drm.dme1-mutable-suffix"]
+scope = "engine"
+
+[rules."sec.drm.protection-profiles"]
+scope = "engine"
+
+# ==============================================================================
+# 12. Security: Watermarking & Marketplace (`docs/specs/security/watermarking_and_marketplace.md`)
+# ==============================================================================
+[rules."sec.watermark.reciprocal-gauge"]
+scope = "engine"
+
+[rules."sec.watermark.orthogonal-gauge"]
+scope = "engine"
+
+[rules."sec.watermark.tardos-code"]
+scope = "engine"
+
+[rules."sec.watermark.seed-derivation"]
+scope = "engine"
+
+[rules."sec.anticlone.three-stage-gate"]
+scope = "engine"
+
+[rules."sec.anticlone.stage3-fingerprint"]
+scope = "engine"
+
+[rules."sec.preview.containment"]
+scope = "engine"
+
+[rules."sec.preview.royalty-splits"]
+scope = "engine"
+
+[rules."sec.preview.storefront-metadata"]
+scope = "engine"
+
+[rules."sec.edge.data-model"]
+scope = "engine"
+
+# ==============================================================================
+# 13. Training: Capture & Alignment (`docs/specs/training/capture_and_alignment.md`)
+# ==============================================================================
+[rules."train.capture.invariants"]
+scope = "out-of-scope"
+reason = "Studio/Trainer hardware capture invariants owned by packages/studio and packages/trainer"
+
+[rules."train.capture.calib.loopback"]
+scope = "out-of-scope"
+reason = "Studio loopback latency calibration owned by packages/studio"
+
+[rules."train.capture.calib.clean-pad"]
+scope = "out-of-scope"
+reason = "Studio clean-pad level calibration owned by packages/studio"
+
+[rules."train.capture.planner.schedule"]
+scope = "out-of-scope"
+reason = "Studio/Trainer capture schedule planner owned by packages/studio and packages/trainer"
+
+[rules."train.capture.planner.freeze-transition"]
+scope = "out-of-scope"
+reason = "Studio/Trainer freeze-transition capture planner owned by packages/studio and packages/trainer"
+
+[rules."train.capture.excitation.universal-30s"]
+scope = "out-of-scope"
+reason = "Studio 30s 5-section universal hardware excitation owned by packages/studio"
+
+[rules."train.capture.excitation.live-tail"]
+scope = "out-of-scope"
+reason = "Studio live energy-gated tail recording owned by packages/studio"
+
+[rules."train.capture.excitation.user-stems"]
+scope = "out-of-scope"
+reason = "Studio/Trainer user stem validation owned by packages/studio and packages/trainer"
+
+[rules."train.capture.alignment.multi-regime"]
+scope = "out-of-scope"
+reason = "Trainer/Studio multi-regime sub-sample capture alignment owned by packages/trainer and packages/studio"
+
+# ==============================================================================
+# 14. Training: Control Space Audit (`docs/specs/training/control_space_audit.md`)
+# ==============================================================================
+[rules."train.audit.phase1.clamp-range"]
+scope = "engine"
+
+[rules."train.audit.phase1.clamp-switch"]
+scope = "engine"
+
+[rules."train.audit.phase1.clamp-stability"]
+scope = "engine"
+
+[rules."train.audit.phase2.corner-barrier"]
+scope = "out-of-scope"
+reason = "Trainer Phase-2 optimizer step stop-gradient corner barrier loss owned by packages/trainer"
+
+[rules."train.audit.phase2.clamp-rail"]
+scope = "out-of-scope"
+reason = "Trainer Phase-2 2048-sample periodic PolyADAA rail occupancy auditor owned by packages/trainer"
+
+[rules."train.audit.phase3.clamp-dynamic"]
+scope = "engine"
+
+[rules."train.audit.phase3.clamp-head-gain"]
+scope = "engine"
+
+[rules."train.audit.phase3.numeric-envelope"]
+scope = "engine"
+
+[rules."train.audit.report.prescription"]
+scope = "engine"
+
+# ==============================================================================
+# 15. Training: Four-Stage Pipeline (`docs/specs/training/four_stage_pipeline.md`)
+# ==============================================================================
+[rules."train.pipeline.topology"]
+scope = "out-of-scope"
+reason = "Trainer four-stage pipeline orchestration owned by packages/trainer"
+
+[rules."train.pipeline.sweep1"]
+scope = "out-of-scope"
+reason = "Trainer Sweep-1 sequential stage fitting owned by packages/trainer"
+
+[rules."train.pipeline.sweep1-step0"]
+scope = "out-of-scope"
+reason = "Trainer Sweep-1 Step-0 system identification owned by packages/trainer"
+
+[rules."train.pipeline.sweep1-stage3"]
+scope = "out-of-scope"
+reason = "Trainer Sweep-1 Stage III cabinet fitting owned by packages/trainer"
+
+[rules."train.pipeline.sweep1-stage2"]
+scope = "out-of-scope"
+reason = "Trainer Sweep-1 Stage II cascade fitting owned by packages/trainer"
+
+[rules."train.pipeline.sweep1-stage4"]
+scope = "out-of-scope"
+reason = "Trainer Sweep-1 Stage IV tank fitting owned by packages/trainer"
+
+[rules."train.pipeline.sweep1-freeze"]
+scope = "out-of-scope"
+reason = "Trainer Sweep-1 upstream parameter freezing owned by packages/trainer"
+
+[rules."train.pipeline.sweep2"]
+scope = "out-of-scope"
+reason = "Trainer Sweep-2 joint Kronecker head fitting owned by packages/trainer"
+
+[rules."train.pipeline.sweep2-stats"]
+scope = "out-of-scope"
+reason = "Trainer Sweep-2 sufficient-statistic accumulation owned by packages/trainer"
+
+[rules."train.pipeline.sweep2-solve"]
+scope = "out-of-scope"
+reason = "Trainer Sweep-2 Cholesky normal-equation solver owned by packages/trainer"
+
+[rules."train.pipeline.sweep2-certify"]
+scope = "out-of-scope"
+reason = "Trainer Sweep-2 post-polish certification owned by packages/trainer"
+
+[rules."train.gram.device-32bit"]
+scope = "out-of-scope"
+reason = "Trainer 32-bit accelerator streaming Gram accumulation owned by packages/trainer"
+
+[rules."train.gram.window-streaming"]
+scope = "out-of-scope"
+reason = "Trainer windowed streaming Gram accumulation owned by packages/trainer"
+
+[rules."train.gram.accuracy-contract"]
+scope = "out-of-scope"
+reason = "Trainer Gram contraction accuracy contract owned by packages/trainer"
+
+[rules."train.gram.exponent-aware"]
+scope = "out-of-scope"
+reason = "Trainer exponent-aware Gram accumulation owned by packages/trainer"
+
+[rules."train.gram.radix256"]
+scope = "out-of-scope"
+reason = "Trainer radix-256 accelerator Gram accumulation owned by packages/trainer"
+
+[rules."train.gram.wide192"]
+scope = "out-of-scope"
+reason = "Trainer 192-bit wide integer Gram accumulation owned by packages/trainer"
+
+[rules."train.gram.group-merge"]
+scope = "out-of-scope"
+reason = "Trainer Gram group-merge reduction owned by packages/trainer"
+
+[rules."train.pipeline.isomorphism-parity"]
+scope = "out-of-scope"
+reason = "Trainer-to-engine isomorphism parity test in training pipeline owned by packages/trainer"
+
+[rules."train.pipeline.dual-execution-matrix"]
+scope = "out-of-scope"
+reason = "Trainer accelerator/host dual-execution matrix owned by packages/trainer"
+
+[rules."train.pipeline.dispatch-solve"]
+scope = "out-of-scope"
+reason = "Trainer control-dispatch normal-equation solver owned by packages/trainer"
+
+# ==============================================================================
+# 16. Training: Iterative Resume & Caching (`docs/specs/training/iterative_resume_and_caching.md`)
+# ==============================================================================
+[rules."train.resume.kronecker-reassembly"]
+scope = "out-of-scope"
+reason = "Trainer Kronecker Gram reassembly on stem resume owned by packages/trainer"
+
+[rules."train.resume.constant-factor-records"]
+scope = "out-of-scope"
+reason = "Trainer constant-factor stem statistics records owned by packages/trainer"
+
+[rules."train.resume.time-varying-records"]
+scope = "out-of-scope"
+reason = "Trainer time-varying stem statistics records owned by packages/trainer"
+
+[rules."train.resume.two-tier-execution"]
+scope = "out-of-scope"
+reason = "Trainer two-tier resume execution owned by packages/trainer"
+
+[rules."train.resume.dependency-digests"]
+scope = "out-of-scope"
+reason = "Trainer stem dependency digest invalidation owned by packages/trainer"
+
+[rules."train.resume.old-stem-nonregression"]
+scope = "out-of-scope"
+reason = "Trainer old-stem non-regression verification owned by packages/trainer"
+
+[rules."train.resume.windowed-refresh"]
+scope = "out-of-scope"
+reason = "Trainer <32 MiB windowed Gram refresh owned by packages/trainer"
+
+[rules."train.cache.arena5-dnca"]
+scope = "out-of-scope"
+reason = "Trainer Arena 5 DNCA calibration cache management owned by packages/trainer"
+
+[rules."train.cache.workspace-sidecar"]
+scope = "out-of-scope"
+reason = "Studio/Trainer workspace sidecar cache owned by packages/studio and packages/trainer"
+
+[rules."train.cloud.job-protocol"]
+scope = "out-of-scope"
+reason = "Cloud training job protocol owned by packages/trainer and packages/studio"

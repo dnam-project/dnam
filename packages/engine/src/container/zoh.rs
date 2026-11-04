@@ -128,7 +128,7 @@ impl ZohRescaledParams {
     }
 
     /// Rescales an Op-M modal pole radius $r_c$, angle $\theta_{0,c}$, and $\mathcal{H}_2$-norm
-    /// input normalizer $b_{\gamma,c}$ under ZOH (`CL-03`, `CL-04`).
+    /// input normalizer $b_{\gamma,c}$ under ZOH (`ref[dsp.zoh.op-m-poles]`).
     ///
     /// Per canonical TORA specification, pole radii are clamped to `[0.25, 0.9995]` *prior* to
     /// exponentiation by $\rho_{\text{sr}}$ so that physical decay time $T_{60}$ is 100% invariant
@@ -192,7 +192,7 @@ impl ZohRescaledParams {
         self.rho_sr as f32
     }
 
-    /// Rescales an Op-T base delay $\tau_{0,m}^{\text{samples}}$ and integer Schroeder all-pass delay $D_{\text{ap},m}$ (`CL-06`, `CL-08`).
+    /// Rescales an Op-T base delay $\tau_{0,m}^{\text{samples}}$ and integer Schroeder all-pass delay $D_{\text{ap},m}$ (`ref[dsp.zoh.op-t-delays]`).
     #[inline]
     pub fn rescale_op_t_delays(&self, tau0_samples_train: f32, d_ap_train: f32) -> (f32, usize) {
         if (self.rho_sr - 1.0).abs() < 1e-12 {

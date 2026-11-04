@@ -1,5 +1,5 @@
 //! Multi-platform SIMD & hardware math abstraction (`SimdVec4` & `MathBackend`) plus
-//! division-free algebraic DSP primitives (`CL-01..03`, `CL-06`).
+//! division-free algebraic DSP primitives (`ref[dsp.op-n.polyadaa.midpoint]`, `ref[dsp.op-m.rotor.contractive]`, `ref[dsp.op-t.reader.catmull-rom]`).
 //!
 //! All real-time audio ($48\text{ kHz}$) and control-bus ($3\text{ kHz}$) kernels execute with
 //! **zero `FSQRT`, zero `FDIV`, and zero `libm` transcendental calls**.
@@ -18,6 +18,8 @@ pub mod init_math;
 pub mod kernels;
 #[forbid(unsafe_code)]
 pub mod scalar;
+#[forbid(unsafe_code)]
+pub mod spec_math;
 
 #[cfg(target_arch = "aarch64")]
 pub mod neon;
@@ -49,6 +51,21 @@ pub use kernels::{
     stabilize_complex_rotor,
 };
 pub use scalar::{ScalarBackend, ScalarVec4};
+pub use spec_math::{
+    CERTIFIED_INPUT_ENVELOPE_MIN_F32, FP16_MAX_FINITE_F32, INV_TAU_256_LE, InvalidFloatInput,
+    LOG2_MANTISSA_LUT_129_BITS, Log2EnvelopeDecomp, MAX_ROTOR_ANGLE_F32_BITS,
+    PITCH_LN2_OVER_12_F64_BITS, Q0_192Phase, SAFETY_CEILING_F32, contractive_rotor_f32,
+    contractive_rotor_f32_bits, decompose_positive_f32_bits, eval_monotone_log2_f32_bits,
+    eval_pitch_profile_f32, f32_bits_at_rank, f32_coordinate_count, f32_nearest_admissible_bits,
+    f32_rank_boundary_for_f64, f32_rank_intersection, f32_rank_of_bits, f32_to_fp16_with_telemetry,
+    f32_unbiased_exponent, lookup_log2_mantissa_f32, newton6_reciprocal_f64, next_up_pos_f64,
+    normalize_declared_range_bits, project_rotor_components_ulp_guard,
+    q0_192_phase_increment_from_f32_bits, q32_phase_to_phasor, round_f64_to_f32_bits,
+    sanitize_input_sample, sanitize_internal_sample, sanitize_output_sample, saturation_flags,
+    step_lfo_phasor_zero_hold, trust_clip_fast_candidate, trust_clip_outward_4d,
+    trust_clip_outward_8d, trust_clip_outward_checked_bits, trust_clip_reference_bisection_bits,
+    upper_product_f64, upper_sum_squares_f64, widen_f32_bits,
+};
 
 #[cfg(target_arch = "aarch64")]
 pub use neon::{NeonBackend, NeonVec4};

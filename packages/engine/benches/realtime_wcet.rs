@@ -16,13 +16,21 @@ use dnam_engine::math::{DefaultMathBackend, MathBackend, ScalarBackend};
 use dnam_engine::memory::{AlignedBuffer, CacheLine64};
 use dnam_engine::provenance::DefaultCryptoProvider;
 use dnam_engine::schema::{
-    ControlBusConfig, ControlKind, ControlSchemaDef, ControlUiHints, DatasetProvenance,
-    DnamJsonHeader, IoConfig, ModelMetadata, RouterConfig, SlimmableTiersConfig, Stage1PreFxConfig,
-    Stage2CascadeConfig, Stage3CabinetKautzConfig, Stage4SpatialTankConfig, TierProfile,
+    ControlBusConfig, ControlCalibration, ControlCalibrationRole, ControlKind, ControlSchemaDef,
+    ControlUiHints, DatasetProvenance, DnamJsonHeader, IoConfig, ModelMetadata, PresetDef,
+    RouterConfig, SlimmableTiersConfig, Stage1PreFxConfig, Stage2CascadeConfig,
+    Stage3CabinetKautzConfig, Stage4SpatialTankConfig, TempoSubdivision, TierProfile,
 };
 use dnam_engine::{DnamEngine, Tier};
 
 fn make_bench_container() -> AlignedBuffer<CacheLine64> {
+    let mut cond_min = BTreeMap::new();
+    cond_min.insert("mode=a".to_string(), 0.0);
+    cond_min.insert("mode=b".to_string(), 0.6);
+    let mut cond_max = BTreeMap::new();
+    cond_max.insert("mode=a".to_string(), 0.4);
+    cond_max.insert("mode=b".to_string(), 1.0);
+
     let mut header = DnamJsonHeader {
         version: "1.0.0".to_string(),
         container_kind: "dnam".to_string(),
@@ -100,19 +108,24 @@ fn make_bench_container() -> AlignedBuffer<CacheLine64> {
                 id: "gain".to_string(),
                 name: "Gain".to_string(),
                 kind: ControlKind::Range,
-                unit: Some("%".to_string()),
+                unit: Some("ms".to_string()),
                 lobatto_degree: Some(2),
                 anchor_nodes_norm: Some(vec![0.0, -1.0, 1.0]),
                 declared_range: Some([0.0, 1.0]),
                 safe_clamped_range: Some([0.0, 1.0]),
-                default: serde_json::json!(0.5),
-                conditional_min: BTreeMap::new(),
-                conditional_max: BTreeMap::new(),
+                default: serde_json::json!(0.2),
+                conditional_min: cond_min,
+                conditional_max: cond_max,
                 declared_options: None,
                 active_options: None,
                 clamp_warning: None,
                 ui_hints: ControlUiHints::default(),
-                calibration: None,
+                calibration: Some(ControlCalibration {
+                    role: ControlCalibrationRole::DelayTimeMs,
+                    lobatto_physical_anchors: Some([50.0, 300.0, 800.0]),
+                    conditional_physical_anchors: BTreeMap::new(),
+                    tempo_sync_default_subdivision: Some(TempoSubdivision::EighthDotted),
+                }),
                 user_metadata: BTreeMap::new(),
             },
             ControlSchemaDef {
@@ -135,7 +148,28 @@ fn make_bench_container() -> AlignedBuffer<CacheLine64> {
                 user_metadata: BTreeMap::new(),
             },
         ],
-        presets: Vec::new(),
+        presets: vec![
+            PresetDef {
+                id: "preset_a".to_string(),
+                name: "Preset A".to_string(),
+                description: None,
+                controls: BTreeMap::from([
+                    ("mode".to_string(), serde_json::json!("a")),
+                    ("gain".to_string(), serde_json::json!(0.2)),
+                ]),
+                user_metadata: BTreeMap::new(),
+            },
+            PresetDef {
+                id: "preset_b_disjoint".to_string(),
+                name: "Preset B Disjoint".to_string(),
+                description: None,
+                controls: BTreeMap::from([
+                    ("mode".to_string(), serde_json::json!("b")),
+                    ("gain".to_string(), serde_json::json!(0.8)),
+                ]),
+                user_metadata: BTreeMap::new(),
+            },
+        ],
         control_bus: ControlBusConfig::default(),
         stage0_router: RouterConfig::default(),
         stage1_pre: Stage1PreFxConfig::default(),
@@ -261,10 +295,23 @@ fn bench_wcet_tail_latency<B: MathBackend>(container: &[u8], tier: Tier, label: 
     }
 
     for b_idx in 0..num_blocks {
-        let knob_gain = ((b_idx as f32) * 0.013).sin().mul_add(0.5, 0.5);
-        let switch_pos = ((b_idx / 125) % 3) as f32;
-        engine.set_control_value(0, black_box(knob_gain));
-        engine.set_control_value(1, black_box(switch_pos));
+        if b_idx % 250 == 0 {
+            let preset_id = if (b_idx / 250) % 2 == 0 {
+                "preset_a"
+            } else {
+                "preset_b_disjoint"
+            };
+            engine.apply_preset(black_box(preset_id)).unwrap();
+        } else if b_idx % 125 == 0 {
+            let _ = engine.sync_tempo(
+                black_box(120.0 + ((b_idx as f32) * 0.05)),
+                black_box(Some(TempoSubdivision::EighthDotted)),
+                black_box(true),
+            );
+        } else {
+            let knob_gain = ((b_idx as f32) * 0.013).sin().mul_add(0.15, 0.20);
+            engine.set_control_value(0, black_box(knob_gain));
+        }
 
         let t0 = Instant::now();
         engine.process_block(

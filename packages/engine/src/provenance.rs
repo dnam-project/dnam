@@ -19,9 +19,30 @@ mod chacha20;
 pub mod fingerprint;
 mod provider;
 pub mod seal;
+pub mod security;
 mod sha256;
 mod verify;
 pub(crate) mod watermark;
+
+pub use security::{
+    AnticloneGateAction, Dau1Envelope, HPKE_SUITE_X25519_SHA256_CHACHA20POLY1305,
+    MAX_RECORD_CIPHERTEXT_BYTES, MAX_RECORD_PLAINTEXT_BYTES, WatermarkSeedScope,
+    build_buyer_receipt_v1, build_creator_manifest_v1, build_dme1_header,
+    build_hpke_slot_binding_v1, build_mutable_content_aad_v1, build_mutable_hpke_binding_v1,
+    build_oem_cert_v2_signing_message, build_outer_manifest_v1, build_plaintext_shared_v1,
+    build_prewrap_plan_v1, build_record_aad_v1, build_record_nonce_v1,
+    build_watermark_seed_message_v1, compute_ciphertext_prefixes_v1,
+    compute_creator_signed_manifest_sha256, compute_encrypted_structural_metadata_sha256,
+    compute_license_policy_sha256, compute_logical_metadata_sha256, compute_mutable_wrap_sha256,
+    compute_outer_public_metadata_sha256, compute_plaintext_prefixes_v1,
+    compute_preview_single_control_window, compute_record_context_sha256,
+    compute_watermark_profile_sha256, compute_wrap_plan_sha256, derive_watermark_seed_hmac_sha256,
+    encode_hpke_slot_vector, encode_prefix_list, encode_recipient_key_ids, encode_record_directory,
+    evaluate_anticlone_revocation_policy, extract_stage3_tier_fingerprint_component,
+    extract_storefront_metadata, hmac_sha256, parse_dme1_decrypted_plaintext,
+    parse_hpke_slot_vector, parse_prefix_list, parse_recipient_key_ids, parse_record_directory,
+    validate_license_tier_and_royalty_splits, validate_preview_single_switch_options,
+};
 
 pub use chacha20::{chacha20_block_64b, chacha20_xor_arena_blocks};
 #[cfg(feature = "crypto")]
