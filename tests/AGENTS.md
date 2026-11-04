@@ -1,13 +1,15 @@
 # DNAM Monorepo Guardrail Test Suite (`tests/`)
 
-Top-level project-scoped guardrail suite (`moon check tests`) enforcing progressive disclosure (`AGENTS.md`), specification registries (`CL-01`–`CL-20` & `REQ-1.1`–`REQ-8.8`), GitHub MathJax/Mermaid syntax, and Markdown link integrity (`G-02`–`G-05`, `G-08`).
+Top-level guardrail suite (`moon check tests`) enforcing [`project_and_documentation_quality.md`](../docs/specs/architecture/project_and_documentation_quality.md) (`r[repo.*]`) and [`system_goals_and_requirements.md`](../docs/requirements/system_goals_and_requirements.md) (`REQ-1.1`–`REQ-8.8`).
 
-## 1. Guardrail Test Routing Map
+## 1. Guardrail Test Routing Map ([`test_guardrails.py`](test_guardrails.py))
 
-| File & Test Function | Guardrail ID | Enforced Invariant & Canonical Spec |
-| :--- | :---: | :--- |
-| [`test_guardrails.py`](test_guardrails.py) :: `test_progressive_disclosure_agents_md_byte_limits` | **`G-02`** | Root [`AGENTS.md`](../AGENTS.md) `< 5,000 B` and scoped `packages/**/AGENTS.md` + `tests/AGENTS.md` `< 2,500 B` ([`CONTRIBUTING.md` §5.1](../CONTRIBUTING.md#51-two-tier-agentsmd-hierarchy--byte-budgets)). |
-| [`test_guardrails.py`](test_guardrails.py) :: `test_clamp_and_requirement_registries_documented` | **`G-03`** | `CL-01`–`CL-20` in [`clamp_and_audit_registry.md`](../docs/training/clamp_and_audit_registry.md), `REQ-1.1`–`REQ-8.8` (40 requirements) in [`system_goals_and_requirements.md`](../docs/overview/system_goals_and_requirements.md), and [`docs/CONTRIBUTING.md`](../docs/CONTRIBUTING.md). |
-| [`test_guardrails.py`](test_guardrails.py) :: `test_no_inline_latex_math_in_markdown_tables` | **`G-04`** | Zero raw `$` inline math delimiters outside backticks inside Markdown table rows ([`docs/CONTRIBUTING.md` §4.2](../docs/CONTRIBUTING.md#42-zero-inline-latex-math-in-markdown-tables-g-04)). |
-| [`test_guardrails.py`](test_guardrails.py) :: `test_valid_github_latex_math_across_docs` | **`G-05`** | Valid GitHub CommonMark + MathJax LaTeX math and semicolon-free Mermaid `sequenceDiagram` blocks ([`docs/CONTRIBUTING.md` §4.1–§4.3](../docs/CONTRIBUTING.md#41-mermaid-diagrams-g-05)). |
-| [`test_guardrails.py`](test_guardrails.py) :: `test_relative_markdown_links_resolve` | **`G-08`** | Every relative Markdown file link and `#section-anchor` fragment resolves on disk ([`docs/CONTRIBUTING.md` §4.4](../docs/CONTRIBUTING.md#44-relative-markdown-links--heading-anchors-g-08)). |
+| Test Function | Spec Rule Referenced | Enforced Invariant |
+| :--- | :--- | :--- |
+| `test_progressive_disclosure_agents_md_byte_limits` | `ref[repo.docs.agents-md-budgets]` | Root [`AGENTS.md`](../AGENTS.md) `< 5,000 B`; scoped `AGENTS.md` `< 2,500 B`. |
+| `test_requirement_registry_and_agnostic_prose` | `ref[repo.docs.requirements-layer]` | All 40 `REQ-1.1`–`REQ-8.8` rows with implementation-agnostic prose. |
+| `test_no_inline_latex_math_in_markdown_tables` | `ref[repo.docs.markdown-table-math]` | Zero raw `$` inline math outside backticks in Markdown table rows. |
+| `test_valid_github_latex_math_across_docs` | `ref[repo.docs.github-latex-and-mermaid]` | Valid GitHub MathJax LaTeX math and semicolon-free Mermaid `sequenceDiagram` blocks. |
+| `test_relative_markdown_links_resolve` | `ref[repo.docs.relative-links-and-anchors]` | Every relative Markdown link and `#section-anchor` fragment resolves on disk. |
+| `test_spec_rule_identifiers_adr_structure_and_no_spec_text_parsing` | `ref[repo.docs.spec-rules-and-adrs]` | Unique `r[...]` rules, resolved `ref[...]`/`verify[...]`, MADR `docs/adr/NNNN-*.md`, `docs/templates/`, and no spec-text parsing in tests. |
+| `test_spec_rules_verified_in_tests` | `ref[repo.docs.spec-rules-and-adrs]` | Reports all `r[...]` rules in `docs/specs/` not yet cited via `verify[...]` in test files. |

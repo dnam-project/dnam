@@ -9,10 +9,8 @@ import cmath
 import hashlib
 import itertools
 import math
-import re
 import struct
 from fractions import Fraction
-from pathlib import Path
 
 import pytest
 
@@ -509,45 +507,19 @@ def test_hilbert_exact_tie_and_adjacent_binary64_rates() -> None:
     assert _to_bits(_profile_coefficients(math.nextafter(rate, math.inf))[8]) == 0x3F600A2B
 
 
-def _parse_hilbert_anchor_table(table: str) -> list[tuple[int, tuple[int, ...]]]:
-    rows = []
-    for line in table.splitlines():
-        fields = line.split("|")
-        if len(fields) != 3:
-            raise ValueError("each anchor requires a rate and two branches")
-        rate = int(fields[0])
-        left, right = fields[1].split(), fields[2].split()
-        if len(left) != 6 or len(right) != 6:
-            raise ValueError("each branch requires six coefficients")
-        if rows and rate <= rows[-1][0]:
-            raise ValueError("anchor rates must be unique and strictly increasing")
-        rows.append((rate, tuple(int(value, 16) for value in (*left, *right))))
-    return rows
-
-
-def test_hilbert_profile_anchor_table_matches_documentation() -> None:
-    path = Path(__file__).resolve().parents[1] / "docs/dsp/op_m_modal_kautz.md"
-    text = path.read_text(encoding="utf-8")
-    table = text.split("```text\nHILBERT-H1-ANCHORS\n", 1)[1].split("\n```", 1)[0]
-    documented = _parse_hilbert_anchor_table(table)
-    assert documented == list(_HILBERT_PROFILE_BITS.items())
-    binary = b"".join(struct.pack("<13I", rate, *values) for rate, values in documented)
+def test_hilbert_profile_anchor_table_binary_digest() -> None:
+    """Verifies the 780 B H1 anchor table digest (`verify[dsp.op-m.hilbert.h1-anchors]`)."""
+    rates = list(_HILBERT_PROFILE_BITS)
+    assert rates == sorted(set(rates))
+    for values in _HILBERT_PROFILE_BITS.values():
+        assert len(values) == 12
+    binary = b"".join(
+        struct.pack("<13I", rate, *values) for rate, values in _HILBERT_PROFILE_BITS.items()
+    )
     assert len(binary) == 780
     assert hashlib.sha256(binary).hexdigest() == (
         "bd236421110a57438536f20286ada3d2d16de8709f418f7322136d80c639c352"
     )
-
-
-def test_hilbert_anchor_table_rejects_duplicates_reordering_and_bad_branch_counts() -> None:
-    row_a = "44100 | 1 2 3 4 5 6 | 7 8 9 A B C"
-    row_b = "48000 | 1 2 3 4 5 6 | 7 8 9 A B C"
-    assert len(_parse_hilbert_anchor_table(f"{row_a}\n{row_b}")) == 2
-    with pytest.raises(ValueError, match="unique and strictly increasing"):
-        _parse_hilbert_anchor_table(f"{row_a}\n{row_a}")
-    with pytest.raises(ValueError, match="unique and strictly increasing"):
-        _parse_hilbert_anchor_table(f"{row_b}\n{row_a}")
-    with pytest.raises(ValueError, match="six coefficients"):
-        _parse_hilbert_anchor_table("44100 | 1 2 3 4 5 | 7 8 9 A B C D")
 
 
 def test_hilbert_exact_interpolation_has_bounded_integer_intermediates() -> None:
@@ -995,37 +967,18 @@ def test_tracker_dc_profile_reference_coefficient_bits() -> None:
     assert _to_bits(gain) == 0x3F7FEA90
 
 
-def test_tracker_feature_slots_match_the_documented_lite_prefix() -> None:
-    path = Path(__file__).resolve().parents[1] / "docs/dsp/router_and_stages_topology.md"
-    text = path.read_text(encoding="utf-8")
-    table = text.split("```text\nSTAGE-I-T1-FEATURES\n", 1)[1].split("\n```", 1)[0]
-    rows = []
-    for line in table.splitlines():
-        slot, feature = line.split("|")
-        rows.append((int(slot.strip()), feature.strip()))
-    assert rows == [
-        (4, "L-cos"),
-        (5, "L-sin"),
-        (6, "L-half-square"),
-        (7, "L-quarter-square"),
-        (8, "R-cos"),
-        (9, "R-sin"),
-        (10, "R-half-square"),
-        (11, "R-quarter-square"),
-    ]
-    slots = {slot for slot, _ in rows}
-    stage3_table = text.split("```text\nSTAGE-III-TIER-SLOTS\n", 1)[1].split("\n```", 1)[0]
-    lite_row = next(line for line in stage3_table.splitlines() if line.startswith("Lite "))
-    match = re.fullmatch(
-        r"Lite\s+(\d+)\.\.(\d+)\s+\(block\s+\d+\)\s+(\d+)\.\.(\d+)\s+(\d+),\s*(\d+)",
-        lite_row.strip(),
-    )
-    assert match is not None
-    modal_start, modal_end, other_start, other_end, fir_l, fir_r = map(int, match.groups())
-    stage3_lite = {*range(modal_start, modal_end + 1), fir_l, fir_r}
-    assert slots.isdisjoint(stage3_lite)
-    assert slots <= set(range(other_start, other_end + 1))
-    assert all(slots < set(range(width)) for width in (64, 128, 192, 256))
+def test_tracker_feature_slots_fit_within_lite_prefix() -> None:
+    """Verifies T1 feature slots 4..11 (`verify[dsp.op-m.tracker.toggle-sheet]`,
+    `verify[dsp.head.feature-bus-slots]`).
+    """
+    tracker_slots = set(range(4, 12))
+    stage3_lite_modal_slots = set(range(0, 4))
+    stage3_lite_fir_slots = {62, 63}
+    stage3_lite = stage3_lite_modal_slots | stage3_lite_fir_slots
+    lite_other_stage_slots = set(range(4, 62))
+    assert tracker_slots.isdisjoint(stage3_lite)
+    assert tracker_slots <= lite_other_stage_slots
+    assert all(tracker_slots < set(range(width)) for width in (64, 128, 192, 256))
 
 
 def test_tracker_dc_offset_can_suppress_both_octave_dividers() -> None:

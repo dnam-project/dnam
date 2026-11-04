@@ -1,6 +1,6 @@
 //! Empirical TORA Stages 0–IV, Spatial Tank & 256-D Mid/Side Kronecker Head Verification (`Tests 4, 5`).
 //!
-//! Canonical Reference: `docs/verification/verification_and_guardrails.md` & `docs/dsp/router_and_stages_topology.md`.
+//! Canonical Reference: `docs/specs/dsp/router_and_stages_topology.md`.
 //!
 //! Verifies:
 //! - `Test 4` (`CL-08`–`CL-11`): Stage IV Spatial Tank coercive Lyapunov saturation ceiling (`<= 0.985`),

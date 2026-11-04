@@ -1,7 +1,6 @@
 //! Empirical TORA End-to-End Pipeline, ZOH Multi-Rate, `4x` Bounce, and Lifecycle Verification (`Tests 8H, 8I`).
 //!
-//! Canonical Reference: `docs/overview/tora_architecture.md`, `docs/containers/dnam_binary_format.md`,
-//! and `docs/verification/verification_and_guardrails.md`.
+//! Canonical Reference: `docs/specs/architecture/tora_architecture.md` and `docs/specs/containers/dnam_binary_format.md`.
 //!
 //! Verifies:
 //! - `Test 8H & 8I` (`CL-19`, `CL-20`): 64-byte binary framing, cache-line tier offsets

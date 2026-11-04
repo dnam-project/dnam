@@ -9,6 +9,6 @@ Implements runtime hardware backend selection (`DynamicDnamEngine<'a>`):
 
 | Component / File | Responsibility | Canonical Spec (SSOT) |
 | :--- | :--- | :--- |
-| `dispatch` | Block-level engine forwarding and tier / bounce property getters/setters | [`tora_architecture.md`](../../../../docs/overview/tora_architecture.md) |
+| `dispatch` | Block-level engine forwarding and tier / bounce property getters/setters | [`tora_architecture.md`](../../../../docs/specs/architecture/tora_architecture.md) |
 
 See [`packages/engine/CONTRIBUTING.md`](../../CONTRIBUTING.md) for embedded memory budgets and real-time execution safety.

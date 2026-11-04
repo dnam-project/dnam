@@ -1,6 +1,7 @@
 //! Empirical TORA Operator Verification Suite (`Tests 1A, 1B, 1C, 2A, 2B, 2C, 3`).
 //!
-//! Canonical Reference: `docs/verification/verification_and_guardrails.md`.
+//! Canonical Reference: `docs/specs/dsp/op_n_commuted_cascade.md`, `docs/specs/dsp/op_m_modal_kautz.md`,
+//! and `docs/specs/dsp/op_t_transport.md`.
 //!
 //! Verifies all Rust-side mathematical and numerical operator invariants for:
 //! - **Op-N (`Stage II` Commuted Cascade / `PolyADAA`):** `Test 1A` (linear passband preservation),

@@ -14,24 +14,24 @@
 
 ## 2. Core Cross-Cutting Architectural Invariants
 
-1. **Zero `FSQRT` / `FDIV` in Real-Time Loops:** Never use division, square-root, or `libm` transcendentals in $48\text{ kHz}$ or $3\text{ kHz}$ loops; use the algebraic factorizations in [`op_n_commuted_cascade.md`](docs/dsp/op_n_commuted_cascade.md) and [`op_m_modal_kautz.md`](docs/dsp/op_m_modal_kautz.md).
-2. **Unconditional BIBO, Lyapunov, $\mathcal{H}_2$ & Zero-DC Stability:** Enforce all registered stability bounds (`CL-01`–`CL-20`) in [`clamp_and_audit_registry.md`](docs/training/clamp_and_audit_registry.md).
-3. **Non-Stop 3-Phase Control Clamping:** Automatically clamp unobserved ranges, switches, and corners per [`parametric_control_bus.md`](docs/dsp/parametric_control_bus.md) without pausing training.
-4. **Fail-Fast & 64B-Aligned Containers:** Validate all `.dnam` and `.dnam-ckpt` containers, `Ed25519` signatures, and `uplo='U'` stem statistics per [`dnam_binary_format.md`](docs/containers/dnam_binary_format.md).
+1. **Zero `FSQRT` / `FDIV` in Real-Time Loops:** Never use division, square-root, or `libm` transcendentals in $48\text{ kHz}$ or $3\text{ kHz}$ loops; use the algebraic factorizations in [`op_n_commuted_cascade.md`](docs/specs/dsp/op_n_commuted_cascade.md) and [`op_m_modal_kautz.md`](docs/specs/dsp/op_m_modal_kautz.md).
+2. **Unconditional BIBO, Lyapunov, $\mathcal{H}_2$ & Zero-DC Stability:** Enforce all registered stability bounds in [`control_space_audit.md`](docs/specs/training/control_space_audit.md).
+3. **Non-Stop 3-Phase Control Clamping:** Automatically clamp unobserved ranges, switches, and corners per [`parametric_control_bus.md`](docs/specs/dsp/parametric_control_bus.md) without pausing training.
+4. **Fail-Fast & 64B-Aligned Containers:** Validate all `.dnam` and `.dnam-ckpt` containers, `Ed25519` signatures, and `uplo='U'` stem statistics per [`dnam_binary_format.md`](docs/specs/containers/dnam_binary_format.md).
 
 ## 3. Progressive Disclosure & Codebase Discovery Map
 
 | Package / Domain | Package `AGENTS.md` & Contributing | Canonical Documentation (SSOT) |
 | :--- | :--- | :--- |
-| **Monorepo & Guardrails (`tests/`)** | [`AGENTS.md`](AGENTS.md), [`tests/AGENTS.md`](tests/AGENTS.md), [`CONTRIBUTING.md`](CONTRIBUTING.md), [`docs/CONTRIBUTING.md`](docs/CONTRIBUTING.md) | [`index.md`](docs/index.md), [`tora_architecture.md`](docs/overview/tora_architecture.md), [`verification_and_guardrails.md`](docs/verification/verification_and_guardrails.md) |
-| **Rust Engine (`packages/engine/`)** | [`engine/AGENTS.md`](packages/engine/AGENTS.md), [`engine/CONTRIBUTING.md`](packages/engine/CONTRIBUTING.md) | [`tora_architecture.md`](docs/overview/tora_architecture.md), [`router_and_stages_topology.md`](docs/dsp/router_and_stages_topology.md) |
-| **Python Engine (`packages/python/`)** | [`python/AGENTS.md`](packages/python/AGENTS.md), [`python/CONTRIBUTING.md`](packages/python/CONTRIBUTING.md) | [`parametric_control_bus.md`](docs/dsp/parametric_control_bus.md), [`dnam_binary_format.md`](docs/containers/dnam_binary_format.md) |
-| **JS / WebAudio (`packages/js/`)** | [`js/AGENTS.md`](packages/js/AGENTS.md), [`js/CONTRIBUTING.md`](packages/js/CONTRIBUTING.md) | [`parametric_control_bus.md`](docs/dsp/parametric_control_bus.md), [`dnam_binary_format.md`](docs/containers/dnam_binary_format.md) |
-| **Design System (`packages/ui/`)** | [`ui/AGENTS.md`](packages/ui/AGENTS.md), [`ui/CONTRIBUTING.md`](packages/ui/CONTRIBUTING.md) | [`clamp_and_audit_registry.md`](docs/training/clamp_and_audit_registry.md), [`watermarking_and_marketplace.md`](docs/security/watermarking_and_marketplace.md) |
-| **CLI & Studio (`packages/studio/`)** | [`studio/AGENTS.md`](packages/studio/AGENTS.md), [`studio/CONTRIBUTING.md`](packages/studio/CONTRIBUTING.md) | [`capture_and_alignment.md`](docs/training/capture_and_alignment.md), [`dnam_binary_format.md`](docs/containers/dnam_binary_format.md) |
-| **Trainer (`packages/trainer/`)** | [`trainer/AGENTS.md`](packages/trainer/AGENTS.md), [`trainer/CONTRIBUTING.md`](packages/trainer/CONTRIBUTING.md) | [`four_stage_pipeline.md`](docs/training/four_stage_pipeline.md), [`clamp_and_audit_registry.md`](docs/training/clamp_and_audit_registry.md) |
+| **Monorepo & Guardrails (`tests/`)** | [`AGENTS.md`](AGENTS.md), [`tests/AGENTS.md`](tests/AGENTS.md), [`CONTRIBUTING.md`](CONTRIBUTING.md), [`docs/CONTRIBUTING.md`](docs/CONTRIBUTING.md) | [`index.md`](docs/index.md), [`tora_architecture.md`](docs/specs/architecture/tora_architecture.md), [`project_and_documentation_quality.md`](docs/specs/architecture/project_and_documentation_quality.md) |
+| **Rust Engine (`packages/engine/`)** | [`engine/AGENTS.md`](packages/engine/AGENTS.md), [`engine/CONTRIBUTING.md`](packages/engine/CONTRIBUTING.md) | [`tora_architecture.md`](docs/specs/architecture/tora_architecture.md), [`router_and_stages_topology.md`](docs/specs/dsp/router_and_stages_topology.md) |
+| **Python Engine (`packages/python/`)** | [`python/AGENTS.md`](packages/python/AGENTS.md), [`python/CONTRIBUTING.md`](packages/python/CONTRIBUTING.md) | [`parametric_control_bus.md`](docs/specs/dsp/parametric_control_bus.md), [`dnam_binary_format.md`](docs/specs/containers/dnam_binary_format.md) |
+| **JS / WebAudio (`packages/js/`)** | [`js/AGENTS.md`](packages/js/AGENTS.md), [`js/CONTRIBUTING.md`](packages/js/CONTRIBUTING.md) | [`parametric_control_bus.md`](docs/specs/dsp/parametric_control_bus.md), [`dnam_binary_format.md`](docs/specs/containers/dnam_binary_format.md) |
+| **Design System (`packages/ui/`)** | [`ui/AGENTS.md`](packages/ui/AGENTS.md), [`ui/CONTRIBUTING.md`](packages/ui/CONTRIBUTING.md) | [`control_space_audit.md`](docs/specs/training/control_space_audit.md), [`watermarking_and_marketplace.md`](docs/specs/security/watermarking_and_marketplace.md) |
+| **CLI & Studio (`packages/studio/`)** | [`studio/AGENTS.md`](packages/studio/AGENTS.md), [`studio/CONTRIBUTING.md`](packages/studio/CONTRIBUTING.md) | [`capture_and_alignment.md`](docs/specs/training/capture_and_alignment.md), [`dnam_binary_format.md`](docs/specs/containers/dnam_binary_format.md) |
+| **Trainer (`packages/trainer/`)** | [`trainer/AGENTS.md`](packages/trainer/AGENTS.md), [`trainer/CONTRIBUTING.md`](packages/trainer/CONTRIBUTING.md) | [`four_stage_pipeline.md`](docs/specs/training/four_stage_pipeline.md), [`control_space_audit.md`](docs/specs/training/control_space_audit.md) |
 
 ## 4. Maintaining `AGENTS.md` & Documentation
 
 - **Zero Duplication:** Keep `AGENTS.md` files strictly as routing maps (`< 5,000` B root, `< 2,500` B scoped).
-- **Single Source of Truth:** Document every equation, clamp (`CL-XX`), or workflow rule in its canonical `docs/` file per [`docs/CONTRIBUTING.md`](docs/CONTRIBUTING.md) and [`CONTRIBUTING.md`](CONTRIBUTING.md).
+- **Single Source of Truth:** Document every equation, stability rule (`r[...]`), or workflow rule in its canonical `docs/` file per [`docs/CONTRIBUTING.md`](docs/CONTRIBUTING.md) and [`CONTRIBUTING.md`](CONTRIBUTING.md).

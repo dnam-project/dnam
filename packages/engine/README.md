@@ -13,33 +13,33 @@ It is engineered for embedded ARMv8.2-A/ARMv9.2-A pedalboards (**Rockchip RK3582
   - Verified by the custom `#[global_allocator]` integration test ([`tests/realtime_safety.rs`](tests/realtime_safety.rs)).
 - **Zero `FSQRT`, `FDIV`, and `libm` Calls at $48\text{ kHz}$ & $3\text{ kHz}$:**
   - **Operators (`src/operators/`):**
-    - **`Op-T` (Transport & Elastic Buffer):** Catmull-Rom cubic fractional delay, branchless wrap, Schroeder diffusers (`CL-06`–`CL-08`), and dual-tap complementary Hermite-Hann grain reader ($H(\phi_A) + H(\phi_B) \equiv 1$).
-    - **`Op-M` (Modal Bank & Kautz):** 4-lane SIMD symplectic resonator, contractive rotor, `H1` Hilbert pair, `T1` sub-octave tracker, and shared-pole Kautz modal bank (`CL-03`–`CL-05`).
-    - **`Op-N` (Commuted Cascade & PolyADAA):** Algebraic `1× B-Spline PolyADAA` (`CL-01`, `CL-02`), resting DC equilibrium, `C²` wavefolder, and fixed-hertz ZOH bitcrusher.
+    - **`Op-T` (Transport & Elastic Buffer):** Catmull-Rom cubic fractional delay, branchless wrap, Schroeder diffusers, and dual-tap complementary Hermite-Hann grain reader ($H(\phi_A) + H(\phi_B) \equiv 1$).
+    - **`Op-M` (Modal Bank & Kautz):** 4-lane SIMD symplectic resonator, contractive rotor, `H1` Hilbert pair, `T1` sub-octave tracker, and shared-pole Kautz modal bank.
+    - **`Op-N` (Commuted Cascade & PolyADAA):** Algebraic `1× B-Spline PolyADAA`, resting DC equilibrium, `C²` wavefolder, and fixed-hertz ZOH bitcrusher.
   - **Stages & Matrix Router (`src/stages/`):**
-    - **Stage 0 Router:** 8-Port Matrix Router with return-to-send isolation (`CL-10`), `200 Hz` TPT LR4 crossover, parallel sub-sample alignment, WDW routing, and voltage-normalized Mid/Side encoding.
+    - **Stage 0 Router:** 8-Port Matrix Router with return-to-send isolation, `200 Hz` TPT LR4 crossover, parallel sub-sample alignment, WDW routing, and voltage-normalized Mid/Side encoding.
     - **Stage I Pre-FX Bus:** Pre-dynamics and tone shaping (`Op-T` + `Op-M` + `Op-N` with 4-bit topology selector).
     - **Stage II Amp Cascade:** 3-stage commuted nonlinear cascade (`V1A` Preamp $\to$ `V1B` Driver $\to$ Power Amp/Sag) with `[Direct, LPF_80, LPF_400, HPF_1200]` basis.
     - **Stage III Cabinet Modals:** Separate 64B-aligned L/R early FIR (`16/32/48/64` taps/ch) and shared Kautz modal (`4/8/16/32` pairs) slices.
-    - **Stage IV Spatial Tank:** Partitioned `fp16` delay/all-pass rings, Givens/Householder mixing, blended feedback knee, input/readout `5 Hz` DC conditioning, and grouped bounded-history feedback guard (`CL-08`–`CL-11`).
+    - **Stage IV Spatial Tank:** Partitioned `fp16` delay/all-pass rings, Givens/Householder mixing, blended feedback knee, input/readout `5 Hz` DC conditioning, and grouped bounded-history feedback guard.
     - **Output Head:** Unified 256-D feature bus and canonical Mid/Side Kronecker output head.
-  - **Control Bus (`src/control/`):** $3\text{ kHz}$ node-anchored Lobatto basis (`CL-13`), `CP1` tier-local projections (`8-D` Rank-4 in `Lite..Pro`, `16-D` Rank-8 in `Ultra`), exact-integer sufficient statistics, outward-checked trust-region clipping (`CL-15`), and `20–400 BPM` tempo synchronization ([`parametric_control_bus.md`](../../docs/dsp/parametric_control_bus.md)).
+  - **Control Bus (`src/control/`):** $3\text{ kHz}$ node-anchored Lobatto basis, `CP1` tier-local projections (`8-D` Rank-4 in `Lite..Pro`, `16-D` Rank-8 in `Ultra`), exact-integer sufficient statistics, outward-checked trust-region clipping, and `20–400 BPM` tempo synchronization ([`parametric_control_bus.md`](../../docs/specs/dsp/parametric_control_bus.md)).
 - **Multi-Platform Hardware SIMD (`SimdVec4` & `MathBackend`):**
   - [`ArmSmeBackend`](src/math/arm_sme.rs): ARMv9.2-A Scalable Matrix Extension (`FEAT_SME`) with runtime `sysctlbyname` detection.
   - [`NeonBackend`](src/math/neon.rs): ARM64 128-bit NEON (`vfmaq_laneq_f32` 4-accumulator outer-product tiles, hardware `FCVTL`/`FCVTN` `fp16`, hardware `__crc32cd`).
   - [`X86SimdBackend`](src/math/x86_simd.rs): x86_64 AVX2 + FMA + F16C + SSE4.2 hardware `CRC32C`.
   - [`WasmSimd128Backend`](src/math/wasm_simd128.rs): WebAssembly 128-bit SIMD (`v128`).
   - [`ScalarBackend`](src/math/scalar.rs): Portable 100% safe `#![no_std]` IEEE-754 reference backend.
-- **Sample-Rate Conversion & Offline Bounce (`CL-20`):**
-  - [`src/container/zoh.rs`](src/container/zoh.rs): Continuous-Time ZOH parameter rescaling (`44.1–96 kHz`) and `4×` polyphase offline bounce ([`router_and_stages_topology.md` §9](../../docs/dsp/router_and_stages_topology.md#9-continuous-time-zero-order-hold-zoh-sample-rate-adaptability-44196-khz--cl-20-4-bounce)).
+- **Sample-Rate Conversion & Offline Bounce:**
+  - [`src/container/zoh.rs`](src/container/zoh.rs): Continuous-Time ZOH parameter rescaling (`44.1–96 kHz`) and `4×` polyphase offline bounce ([`router_and_stages_topology.md` §9](../../docs/specs/dsp/router_and_stages_topology.md#9-continuous-time-zero-order-hold-zoh-sample-rate-adaptability-44196-khz--4-bounce)).
 - **Marketplace Provenance & Watermarking (`src/provenance/`):**
-  - RFC 8785 JCS header canonicalization, `Ed25519` prefix commitments (`DAU1`/`DAI1`/`DSA1`), RFC 9180 HPKE recipient slots, and dual-mechanism buyer watermarking ([`provenance_and_enclave_drm.md`](../../docs/security/provenance_and_enclave_drm.md), [`watermarking_and_marketplace.md`](../../docs/security/watermarking_and_marketplace.md)).
+  - RFC 8785 JCS header canonicalization, `Ed25519` prefix commitments (`DAU1`/`DAI1`/`DSA1`), RFC 9180 HPKE recipient slots, and dual-mechanism buyer watermarking ([`provenance_and_enclave_drm.md`](../../docs/specs/security/provenance_and_enclave_drm.md), [`watermarking_and_marketplace.md`](../../docs/specs/security/watermarking_and_marketplace.md)).
 
 ---
 
 ## Floating-Point Scope
 
-Block-processing APIs establish and restore the audio floating-point environment automatically. Direct per-sample engine, operator, stage, or control-tick calls require one [`FtzDazGuard`](src/types.rs) around the entire batch. The low-level `step_frame_tora` does not provide the block APIs' preview accounting, tempo advancement, or offline oversampling. See the [audio-callback policy](../../docs/overview/tora_architecture.md#floating-point-environment-at-the-audio-callback).
+Block-processing APIs establish and restore the audio floating-point environment automatically. Direct per-sample engine, operator, stage, or control-tick calls require one [`FtzDazGuard`](src/types.rs) around the entire batch. The low-level `step_frame_tora` does not provide the block APIs' preview accounting, tempo advancement, or offline oversampling. See the [audio-callback policy](../../docs/specs/architecture/tora_architecture.md#floating-point-environment-at-the-audio-callback).
 
 ---
 
@@ -49,7 +49,7 @@ The following figures were previously reported for `realtime_wcet`, but the
 revision, hardware details, and raw results are not recorded here. They are
 not evidence that the reconciled design meets its budgets. Measure the actual
 build and target using `moon run engine:bench` and the
-[verification requirements](../../docs/verification/verification_and_guardrails.md).
+[hardware budget requirements](../../docs/specs/architecture/tora_architecture.md#22-hardware--dsp-benchmark-summary).
 
 | Tier & Subsystem Profile | Backend | Latency / Frame | `×` Real-Time | Single-Core CPU | Modulated `P99.9` Block | `Max` / `2,666.67 µs` Budget |
 | :--- | :--- | ---: | ---: | ---: | ---: | ---: |

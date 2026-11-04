@@ -9,7 +9,7 @@
 - [`metrics.py`](metrics.py): Psychoacoustic metrics (`bESR`, Bezout 3-band `ESR`, `MR-STFT`, `LTAS` tilt, `SegESR`, per-stem noise floors).
 - [`selective_cascade.py`](selective_cascade.py), [`cascade_primitives.py`](cascade_primitives.py), [`cascade_orthogonal_fft.py`](cascade_orthogonal_fft.py), [`cascade_selective_stages.py`](cascade_selective_stages.py): Causal Wiener LTI + 3-stage selective tube & 4-stage orthogonal FFT cascade solvers.
 - [`surrogate_delay.py`](surrogate_delay.py): Multi-scale Gaussian derivative envelope surrogate delay readout.
-- [`kronecker_head.py`](kronecker_head.py): Partitioned SVD control projector, 3-band `bESR` Gram stats, Dual-Ridge `float64` Kronecker solver (`CL-18`), and `.dnam-ckpt` resume.
+- [`kronecker_head.py`](kronecker_head.py): Partitioned SVD control projector, 3-band `bESR` Gram stats, Dual-Ridge `float64` Kronecker solver, and `.dnam-ckpt` resume.
 - [`wav_io.py`](wav_io.py): 16/24/32-bit PCM & 32-bit IEEE-754 float WAV I/O.
 - [`arena.py`](arena.py): 64B-aligned `Arena 0..4` weight/checkpoint layout & `Ed25519` container builder.
 - [`telemetry.py`](telemetry.py): Polars + Altair `bESR` convergence Parquet & HTML reports.
@@ -17,6 +17,6 @@
 
 ## 2. Canonical Specifications & Guides
 
-1. [`four_stage_pipeline.md`](../../../../../docs/training/four_stage_pipeline.md) & [`iterative_resume_and_caching.md`](../../../../../docs/training/iterative_resume_and_caching.md)
-2. [`clamp_and_audit_registry.md`](../../../../../docs/training/clamp_and_audit_registry.md) & [`checkpoint_and_cache_format.md`](../../../../../docs/containers/checkpoint_and_cache_format.md)
+1. [`four_stage_pipeline.md`](../../../../../docs/specs/training/four_stage_pipeline.md) & [`iterative_resume_and_caching.md`](../../../../../docs/specs/training/iterative_resume_and_caching.md)
+2. [`control_space_audit.md`](../../../../../docs/specs/training/control_space_audit.md) & [`checkpoint_and_cache_format.md`](../../../../../docs/specs/containers/checkpoint_and_cache_format.md)
 3. [`packages/trainer/CONTRIBUTING.md`](../../../CONTRIBUTING.md)

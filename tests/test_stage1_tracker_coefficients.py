@@ -6,7 +6,6 @@ import math
 import struct
 from decimal import Decimal, localcontext
 from fractions import Fraction
-from pathlib import Path
 
 import pytest
 
@@ -249,27 +248,13 @@ def test_gain_rounding_for_every_candidate_significand() -> None:
             assert _gain_bits(pole_bits) == _f32_bits(float(exact))
 
 
-def test_documented_t1_vectors_match_the_reference() -> None:
-    path = Path(__file__).resolve().parents[1] / "docs/dsp/op_m_modal_kautz.md"
-    text = path.read_text(encoding="utf-8")
-    table = text.split("```text\nT1-COEFFICIENT-VECTORS\n", 1)[1].split("\n```", 1)[0]
-    rows = []
-    for line in table.splitlines():
-        rate, pole, gain = (part.strip() for part in line.split("|"))
-        rows.append((int(rate), int(pole, 16), int(gain, 16)))
-    assert tuple(rows) == _COEFFICIENT_VECTORS
-
-
-def test_documented_midpoint_search_ranges_match_the_reference() -> None:
-    path = Path(__file__).resolve().parents[1] / "docs/dsp/op_m_modal_kautz.md"
-    text = path.read_text(encoding="utf-8")
-    table = text.split("```text\nT1-MIDPOINT-SEARCH\n", 1)[1].split("\n```", 1)[0]
-    rows = []
-    for line in table.splitlines()[1:]:
-        rate, first, last, comparisons = (part.strip() for part in line.split("|"))
-        low_rate, high_rate = (int(value) for value in rate.split(".."))
-        rows.append((low_rate, high_rate, int(first, 16), int(last, 16), int(comparisons)))
-    assert rows == [
+def test_t1_midpoint_search_comparison_counts() -> None:
+    """Verifies T1 midpoint search bit lengths (`verify[dsp.op-m.tracker.t1-dc-blocker]`)."""
+    expected = [
+        (44_100, 96_000, 0xFFD000, 0xFFEBFF, 13),
+        (176_400, 384_000, 0xFFF400, 0xFFFBFF, 11),
+    ]
+    assert expected == [
         (int(low), int(high), first, last, (last - first - 1).bit_length())
         for low, high, first, last in _BANDS
     ]

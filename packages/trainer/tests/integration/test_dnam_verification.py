@@ -1,5 +1,5 @@
-"""End-to-end architectural verification suite (`Tests 6-8I`) from
-`docs/verification/verification_and_guardrails.md`."""
+"""End-to-end architectural verification suite (`Tests 6-8I`) for
+`docs/specs/training/four_stage_pipeline.md`."""
 
 from __future__ import annotations
 

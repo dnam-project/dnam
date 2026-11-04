@@ -1,7 +1,7 @@
 //! Empirical TORA Control Bus, 3-Phase Clamping, and `.dnam-ckpt` Verification (`Tests 8A, 8B, 8D, 8E, 8G`).
 //!
-//! Canonical Reference: `docs/dsp/parametric_control_bus.md`, `docs/containers/dnam_binary_format.md`,
-//! and `docs/verification/verification_and_guardrails.md`.
+//! Canonical Reference: `docs/specs/dsp/parametric_control_bus.md`, `docs/specs/containers/dnam_binary_format.md`,
+//! and `docs/specs/training/control_space_audit.md`.
 //!
 //! Verifies:
 //! - `Test 8A & 8B` (`CL-06`, `CL-07`): 3-node Lobatto physical delay interpolation accuracy and

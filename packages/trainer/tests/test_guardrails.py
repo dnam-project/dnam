@@ -1,7 +1,12 @@
-"""Trainer-package AST & numerical precision guardrails (`G-01`, `G-06`) for `packages/trainer/`.
+"""Trainer-package AST & numerical precision guardrails
+(`verify[repo.code.type-safety-and-imports]`, `verify[train.gram.device-32bit]`,
+`verify[train.gram.window-streaming]`) for `packages/trainer/`.
 
-For monorepo-wide documentation, specification, clamp registry, and progressive-disclosure
-guardrail tests (`G-02`, `G-03`, `G-04`, `G-05`, `G-08`), see `tests/test_guardrails.py`.
+For monorepo-wide documentation, specification, and progressive-disclosure
+guardrail tests (`verify[repo.docs.agents-md-budgets]`, `verify[repo.docs.requirements-layer]`,
+`verify[repo.docs.markdown-table-math]`, `verify[repo.docs.github-latex-and-mermaid]`,
+`verify[repo.docs.relative-links-and-anchors]`, `verify[repo.docs.spec-rules-and-adrs]`),
+see `tests/test_guardrails.py`.
 """
 
 from __future__ import annotations
@@ -14,8 +19,9 @@ FORBIDDEN_IMPORTS = {"scipy", "pandas", "matplotlib", "soundfile"}
 
 
 def test_zero_forbidden_imports_and_zero_type_ignore() -> None:
-    """Verifies (`G-01`) zero forbidden packages (`scipy`, `pandas`, `matplotlib`, `soundfile`)
-    and zero `# type: ignore` comments across `packages/trainer/src/` and `packages/trainer/tests/`.
+    """verify[repo.code.type-safety-and-imports] Verifies zero forbidden packages
+    (`scipy`, `pandas`, `matplotlib`, `soundfile`) and zero `# type: ignore` comments
+    across `packages/trainer/src/` and `packages/trainer/tests/`.
     """
     py_files = [
         *list((TRAINER_PKG_ROOT / "src").rglob("*.py")),
@@ -45,8 +51,9 @@ def test_zero_forbidden_imports_and_zero_type_ignore() -> None:
 
 
 def test_device_32bit_only_and_no_legacy_window_tables() -> None:
-    """Enforces (`G-06`) the 32-bit-only device compute policy and absence of hard-coded 500k
-    sample tables across `dsp/` and cascade solver modules.
+    """verify[train.gram.device-32bit] verify[train.gram.window-streaming] Enforces the
+    32-bit-only device compute policy and absence of hard-coded 500k sample tables across
+    `dsp/` and cascade solver modules.
     """
     device_only_modules = [
         TRAINER_PKG_ROOT / "src" / "dnam_trainer" / "dsp" / "poly_adaa.py",
