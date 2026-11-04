@@ -62,7 +62,11 @@ pub fn eval_poly_adaa_algebraic_f64(u_prev: f64, u_curr: f64, beta: f64, delta: 
 pub fn algebraic_unit_rotor(theta_rad: f32) -> (f32, f32) {
     const PI: f32 = core::f32::consts::PI;
     const TAU: f32 = core::f32::consts::TAU;
-    let wrapped = ((theta_rad + PI).rem_euclid(TAU) - PI).clamp(-3.141_592_5, 3.141_592_5);
+    let wrapped = if (-3.141_592_5..=3.141_592_5).contains(&theta_rad) {
+        theta_rad
+    } else {
+        ((theta_rad + PI).rem_euclid(TAU) - PI).clamp(-3.141_592_5, 3.141_592_5)
+    };
     crate::math::contractive_rotor_f32(wrapped).unwrap_or((1.0, 0.0))
 }
 

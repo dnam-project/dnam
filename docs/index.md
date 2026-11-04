@@ -42,16 +42,17 @@ flowchart TD
         T1 --> T2 --> T3 --> T4
     end
 
-    subgraph SpecsCont ["Layer 2D: Binary Containers & Security Specs (docs/specs/containers/ & security/)"]
+    subgraph SpecsCont ["Layer 2D: Binary Containers, Security & SDK Specs (docs/specs/containers/, security/, sdks/)"]
         C1["r[container.dnam.*]: .dnam Hybrid Binary Format (specs/containers/dnam_binary_format.md)"]
         C2["r[container.ckpt.*]: .dnam-ckpt (DNCK) & DNCA Cache (specs/containers/checkpoint_and_cache_format.md)"]
         S1["r[sec.jcs/sig/drm.*]: Ed25519 Provenance & .dnam-seal DRM (specs/security/provenance_and_enclave_drm.md)"]
         S2["r[sec.watermark/anticlone/preview.*]: Watermarking & Storefront (specs/security/watermarking_and_marketplace.md)"]
-        C1 --> C2 --> S1 --> S2
+        K1["r[sdk.python.*]: Python 3.14 SDK & PyO3 Shim (specs/sdks/python_sdk.md)"]
+        C1 --> C2 --> S1 --> S2 --> K1
     end
 
     subgraph ADRs ["Layer 3: Architectural Decision Records — The 'Why' (docs/adr/)"]
-        A1["ADR-0001..ADR-0010: MADR Design Decisions & Counterexamples (adr/0001..0010-*.md)"]
+        A1["ADR-0001..ADR-0012: MADR Design Decisions & Counterexamples (adr/0001..0012-*.md)"]
     end
 
     G1 --> G2
@@ -106,6 +107,7 @@ flowchart TD
 | **[`specs/containers/checkpoint_and_cache_format.md`](specs/containers/checkpoint_and_cache_format.md)** | `r[container.ckpt.*]`, `r[container.dnca.*]` | **`.dnam-ckpt` (`DNCK`) Checkpoint, `uplo='U'` `Arena 4` & `DNCA` Calibration Format:** Tier-bundled runtime weights, per-stem `uplo='U'` upper-triangular sufficient statistics, `DNCA` portable calibration records, prefix signatures, and `.dnam-cache/*.dnce` workspace sidecars. |
 | **[`specs/security/provenance_and_enclave_drm.md`](specs/security/provenance_and_enclave_drm.md)** | `r[sec.taxonomy.*]`, `r[sec.jcs.*]`, `r[sec.policy.*]`, `r[sec.sig.*]`, `r[sec.drm.*]` | **Cryptographic Provenance (`Ed25519`), `OemDeviceCertificate` Attestation & `.dnam-seal` (`DNSL`) Hardware DRM:** Pillar 1 (Preset-safe RFC 8785 JCS `immutable_header_sha256`, creator-signed `DistributionPolicy`, 2-certificate `Ed25519` delegation chain & 4-tier prefix commitments), Pillar 2 (3 OEM hardware onboarding paths, RFC 9180 HPKE recipient slots, `.dnam-seal` `b"DNSL"` envelope & TrustZone unsealing), and 3 Protection Profiles (`Open`, `DeviceAllowlisted`, `EnclaveSealed`). |
 | **[`specs/security/watermarking_and_marketplace.md`](specs/security/watermarking_and_marketplace.md)** | `r[sec.watermark.*]`, `r[sec.anticlone.*]`, `r[sec.preview.*]`, `r[sec.edge.*]` | **Forensic Traitor Tracing, Anti-Cloning Gate & Marketplace Cloud Infrastructure:** Dual-mechanism buyer watermarking (reciprocal-scaling gauge + Coupled Tardos code), tier-local Stage III structural fingerprinting, interactive `.dnam-prev` storefront auditioning with fixed-anchor rank-`r` containment, and edge fulfillment infrastructure. |
+| **[`specs/sdks/python_sdk.md`](specs/sdks/python_sdk.md)** | `r[sdk.python.*]` | **Python SDK (`dnam`) & Zero-Copy PyO3 Shim:** Domain-free `Model`, `Engine`, and `Checkpoint` API, facet-oriented runtime UX (`controls`, `presets`, `tempo`, `telemetry`), `pedalboard`-compatible callable, file-for-file `StrictModel` schema mirror with JCS round-trip parity, v2 provenance/watermarking, and vectorized TORA reference kernels. |
 
 ### Layer 3 — Architectural Decision Records ("The Why", `docs/adr/`) & Authoring Templates (`docs/templates/`)
 
@@ -122,6 +124,7 @@ flowchart TD
 | **[`adr/0009-jcs-prefix-signing-hpke-and-preview-containment.md`](adr/0009-jcs-prefix-signing-hpke-and-preview-containment.md)** | `Accepted` | RFC 8785 JCS header digest, `DMU1`/`DME1` mutable suffix, RFC 9180 HPKE low-order key rejection, offline auth, and `.dnam-prev`. |
 | **[`adr/0010-rust-reference-spec-rules-and-madr-decisions.md`](adr/0010-rust-reference-spec-rules-and-madr-decisions.md)** | `Accepted` | Three-layer `requirements`/`specs`/`adr` hierarchy, Rust Reference `r[...]` / `ref[...]` / `verify[...]` rules, MADR conventions, and documentation guardrails. |
 | **[`adr/0011-end-to-end-stage-wiring-and-arena-slice-topology.md`](adr/0011-end-to-end-stage-wiring-and-arena-slice-topology.md)** | `Accepted` | End-to-end stage wiring, 256-D feature bus slot map (`0..255`), closed-form `theta_0..theta_15` stage modulation laws, and 64B-aligned `tensor_directory` slice schema. |
+| **[`adr/0012-python-sdk-architecture-and-idiomatic-api.md`](adr/0012-python-sdk-architecture-and-idiomatic-api.md)** | `Accepted` | Idiomatic `dnam` Python SDK architecture, domain-free `Model`/`Engine`/`Checkpoint` naming, thin zero-copy PyO3 shim, and Rust-to-Python JCS schema parity. |
 | **[`templates/requirement_template.md`](templates/requirement_template.md)** · **[`spec_template.md`](templates/spec_template.md)** · **[`adr_template.md`](templates/adr_template.md)** | `Templates` | Canonical authoring templates for `REQ-X.Y` requirements, `r[...]` normative specifications, and MADR `NNNN-*.md` records. |
 
 ---

@@ -360,7 +360,7 @@ def test_spec_rule_identifiers_adr_structure_and_no_spec_text_parsing() -> None:
         )
 
     spec_files = sorted((docs_dir / "specs").rglob("*.md"))
-    assert len(spec_files) == 16
+    assert len(spec_files) == 17
 
     rule_def_pattern = re.compile(r"`r\[([a-z0-9]+(?:\.[a-z0-9_-]+){2,})\]`")
     rule_ref_pattern = re.compile(r"\bref\[([a-z0-9]+(?:\.[a-z0-9_-]+){2,})\]")

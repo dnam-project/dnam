@@ -1,79 +1,105 @@
-# Contributing to `dnam-engine` Python Package (`packages/python/`)
+# Contributing to `dnam` Python SDK (`packages/python/`)
 
-This guide covers engineering, FFI, typing, testing, coverage, and performance benchmarking standards for **`dnam-engine`** ([`README.md`](README.md)), the idiomatic Python 3.14 interface and `PyO3` (`abi3-py314`) + `rust-numpy` extension wrapping `packages/engine`.
+This guide covers architecture, layout conventions, FFI zero-copy rules, static typing (`pyrefly`), parity-first testing, and **Scalene** performance profiling standards for **`dnam`** ([`README.md`](README.md)), specified in [`docs/specs/sdks/python_sdk.md`](../../docs/specs/sdks/python_sdk.md) and [`ADR-0012`](../../docs/adr/0012-python-sdk-architecture-and-idiomatic-api.md).
 
 All contributions must also comply with the root [`CONTRIBUTING.md`](../../CONTRIBUTING.md) and [`CLA.md`](../../CLA.md) (`git commit -s`).
 
 ---
 
-## 1. Dual-Layer Package Architecture
+## 1. Mirrored Package Architecture (`src/dnam/`, `rust/`, `tests/`)
 
-Consult [`AGENTS.md`](AGENTS.md) for the module-to-spec discovery table:
+Every domain subpackage in `src/dnam/` is mirrored 1:1 by a native module in `rust/` (using the modern Rust 2018+ `foo.rs` + `foo/bar.rs` layout with zero `mod.rs` files) and a test directory in `tests/`:
 
-1. **Native PyO3 / `rust-numpy` FFI Layer (`rust/` -> `dnam_engine._native`):**
-   - [`rust/lib.rs`](rust/lib.rs): Module registration for `dnam_engine._native`.
-   - [`rust/engine.rs`](rust/engine.rs): `NativeDnamEngine` wrapping `DynamicDnamEngine<'static>` with zero-copy 1D planar and 2D `(2, N)` C-contiguous slice methods (`process_stereo_2d`, `process_mono_to_stereo_2d`, `process_stereo`, `process_stereo_in_place`, `process_mono`) that release the Python GIL via `py.detach(...)`.
-   - [`rust/container.rs`](rust/container.rs): `NativeControlSpace` pre-compiled clamper, `.dnam` / `.dnam-ckpt` container builders/validators, and `uplo='U'` Gram matrix packing.
-   - [`rust/dsp.rs`](rust/dsp.rs): Scalar and vectorized slice bindings for `PolyADAA`, `SelectiveRgLru`, `ModulatedUfdn`, `LobattoBasis`, `Rank4Fm`, `chebyshev_lfo`, `trust_region_softclip`, `unit_rotor`, and `lagrange_weights`.
-   - [`rust/provenance.rs`](rust/provenance.rs): JCS SHA-256, `Ed25519` signing messages, `ChaCha20` arena encryption, and Buyer Watermarking (`Test 8H`).
-2. **Idiomatic Python 3.14 Interface (`src/dnam_engine/`):**
-   - [`src/dnam_engine/engine.py`](src/dnam_engine/engine.py): `DnamEngine` (with `Spotify pedalboard` `__call__(audio, sample_rate, buffer_size=..., reset=...)` compatibility, zero-allocation `out=` buffer support, and `process_planar`).
-   - [`src/dnam_engine/container.py`](src/dnam_engine/container.py): `DnamContainer`, `GramMatrix`, and `crc32c`.
-   - [`src/dnam_engine/control.py`](src/dnam_engine/control.py): `ControlSpace`, `ControlRack` (`MutableMapping[str, float | str]`), `LobattoBasis`, `Rank4Fm`, `chebyshev_lfo`, and `trust_region_softclip`.
-   - [`src/dnam_engine/dsp.py`](src/dnam_engine/dsp.py): Stateful callable `PolyAdaa`, `SelectiveRgLru`, `ModulatedUfdn`, `lagrange_weights`, `unit_rotor`, and `givens_householder_4x4`.
-   - [`src/dnam_engine/provenance.py`](src/dnam_engine/provenance.py): Cryptographic provenance and watermarking helpers.
-   - [`src/dnam_engine/schema/`](src/dnam_engine/schema/__init__.py) & [`src/dnam_engine/exceptions.py`](src/dnam_engine/exceptions.py): Pydantic v2 `StrictModel` hierarchy and typed `DnamError` exceptions.
-   - [`src/dnam_engine/_native.pyi`](src/dnam_engine/_native.pyi) & [`src/dnam_engine/py.typed`](src/dnam_engine/py.typed): PEP 561 stub file for strict static type checking across the FFI boundary.
-
----
-
-## 2. Development Setup & Editable Release Builds
-
-`packages/python/pyproject.toml` sets `editable-profile = "release"` under `[tool.maturin]`, so `moon` (`uv run --locked`) automatically syncs `.venv` and compiles `dnam_engine._native` with `--release` optimizations:
-
-```bash
-# Explicitly recompile the PyO3 extension via moon
-moon run python:build
+```text
+packages/python/
+├── src/dnam/
+│   ├── __init__.py          # Curated top-level exports (Model, Engine, Checkpoint, Tier, Backend)
+│   ├── _native.pyi          # PEP 561 static type stub kept in lockstep with rust/
+│   ├── errors.py            # Typed DnamError hierarchy raised directly by rust/errors.rs
+│   ├── _arrays.py           # Zero-copy NumPy float32/float64 coercion helpers
+│   ├── model/               # Model, Checkpoint, Preamble, GramMatrix, crc32c
+│   ├── engine/              # Engine + Controls, Presets, Tempo, Telemetry facets
+│   ├── controls/            # ControlSpace, ClampResult, ZohParams, tempo inversion
+│   ├── schema/              # File-for-file Pydantic v2 StrictModel mirror of engine/src/schema/
+│   ├── provenance/          # Verify, Sign, Seal (DNSL), Marketplace (DAU1/DME1), Watermark
+│   └── dsp/                 # Vectorized TORA reference kernels (op_t, op_m, op_n, control_bus, mixing)
+├── rust/
+│   ├── lib.rs, errors.rs, arrays.rs, testing.rs
+│   ├── engine.rs & engine/{process.rs, runtime.rs, telemetry.rs}
+│   ├── model.rs & model/{checkpoint.rs, gram.rs}
+│   ├── controls.rs
+│   ├── provenance.rs & provenance/{verify.rs, signing.rs, sealing.rs, marketplace.rs, watermark.rs}
+│   └── dsp.rs
+└── tests/
+    ├── conftest.py, test_public_api.py
+    ├── strategies/          # Hypothesis strategies split by domain
+    ├── model/, engine/, controls/, schema/, provenance/, dsp/
+    └── benchmarks/          # pytest-benchmark suite (test_benchmarks.py) & Scalene workload (profile_sdk.py)
+└── examples/                # 5 runnable SDK demonstrations (realtime_audio_and_bounce.py,
+                             # controls_presets_and_tempo.py, model_slimming_and_checkpoint.py,
+                             # marketplace_provenance_and_watermark.py, reference_dsp_operators.py)
 ```
 
----
+### Test, Benchmark & Example Placement
 
-## 3. Coding, Typing (`pyrefly`), Pydantic & FFI Performance Rules
-
-1. **Strict Static Typing (`pyrefly`, `preset = "strict"`):**
-   - Target Python 3.14 (`py314`). Every function, method, property, pytest fixture, and test helper must have explicit type annotations.
-   - Never disable rules, downscale presets, or use `# type: ignore`.
-   - Whenever you add or modify a `#[pyfunction]` or `#[pymethods]` signature in `rust/*.rs`, update [`src/dnam_engine/_native.pyi`](src/dnam_engine/_native.pyi) in lockstep.
-2. **Code Formatting & Linting (`ruff` + `clippy`):**
-   - Enforce `line-length = 100` and pass `moon run python:format-check` and `moon run python:lint` with zero warnings.
-3. **Zero Per-Element Python Loops Over Audio or Control Arrays:**
-   - Never loop over 1D or 2D NumPy arrays in Python to invoke scalar FFI functions. Always pass C-contiguous NumPy arrays into a slice-based `#[pyfunction]` in `rust/*.rs`.
-   - Release the GIL (`py.detach(|| ...)`) in `rust/engine.rs` during block audio processing.
-4. **Fast Pydantic v2 Construction on Hot Paths:**
-   - Use `StrictModel` (`frozen=True, extra="forbid"`) for all user-supplied configuration and header validation.
-   - When constructing `StrictModel` instances from pre-validated Rust return values inside hot paths (`ControlSpace.clamp`, `DnamEngine.telemetry`, `PolyAdaa.process`, `SelectiveRgLru.process`, `DnamContainer.with_header`), use `StrictModel._construct_trusted(...)` and cache converted NumPy arrays in `model_post_init` (as in `WatermarkParams.cached_f32_arrays()`).
+- **Unit, Property & Parity Tests (`tests/<subpackage>/`):** Place subpackage tests in [`tests/model/`](tests/model/), [`tests/engine/`](tests/engine/), [`tests/controls/`](tests/controls/), [`tests/schema/`](tests/schema/), [`tests/provenance/`](tests/provenance/), and [`tests/dsp/`](tests/dsp/), using Hypothesis strategies from [`tests/strategies/`](tests/strategies/).
+- **Benchmarks & Profiling (`tests/benchmarks/`):** Place `pytest-benchmark` suites in [`tests/benchmarks/test_benchmarks.py`](tests/benchmarks/test_benchmarks.py) and the standalone **Scalene** profiling workload in [`tests/benchmarks/profile_sdk.py`](tests/benchmarks/profile_sdk.py).
+- **Runnable Examples (`examples/`):** Place self-contained runnable API demonstrations in [`examples/realtime_audio_and_bounce.py`](examples/realtime_audio_and_bounce.py), [`examples/controls_presets_and_tempo.py`](examples/controls_presets_and_tempo.py), [`examples/model_slimming_and_checkpoint.py`](examples/model_slimming_and_checkpoint.py), [`examples/marketplace_provenance_and_watermark.py`](examples/marketplace_provenance_and_watermark.py), and [`examples/reference_dsp_operators.py`](examples/reference_dsp_operators.py) (smoke-tested automatically by [`tests/test_public_api.py`](tests/test_public_api.py)).
 
 ---
 
-## 4. Testing (`pytest` + `hypothesis`), Coverage (≥ 95%) & Benchmarks (`pytest-benchmark`)
+## 2. Core Engineering & Hot-Path Performance Rules
 
-All test files reside in [`tests/`](tests/) (`test_schema.py`, `test_container.py`, `test_control.py`, `test_dsp.py`, `test_provenance.py`, `test_engine.py`, and `test_benchmarks.py`):
+1. **Private `_`-Prefixed Implementation Modules & Curated `__all__` (`ref[sdk.python.layout.package-namespace]`, `ref[sdk.python.layout.curated-exports]`):**
+   - Put implementation details inside `_`-prefixed modules (`_model.py`, `_engine.py`) and re-export the curated public surface in `__init__.py` via an explicit `__all__`.
+   - Never re-export `dnam._native` or `native_*` symbols in any public `__all__`.
+2. **Thin Native Shim & Direct Exception Instantiation (`ref[sdk.python.engine.zero-copy-and-gil]`, `ref[sdk.python.errors.typed-hierarchy]`):**
+   - `rust/engine.rs` wraps `dnam_engine::DynamicDnamEngine<'static>` and delegates 100% of DSP, ZOH sample-rate rescaling, preset batching, and tempo synchronization to `packages/engine`.
+   - `rust/errors.rs` instantiates `dnam.errors.{ContainerError, ValidationError, SampleRateError, ControlError, ProvenanceError}` directly on the cold error path so Python hot paths invoke `dnam._native` functions directly without Python wrapper frames or `*args` tuple allocations.
+   - Always release the Python GIL (`py.detach(|| ...)`) inside block audio processing and offline bounce methods, and intern recurring `PyDict` keys in Rust with `pyo3::intern!`.
+3. **Zero-Copy NumPy Coercion & Fast Overlap Checks (`ref[sdk.python.api.flexible-in-precise-out]`):**
+   - Check `type(arr) is np.ndarray and arr.dtype == _F32_DTYPE and arr.flags.c_contiguous` before calling `np.asarray`.
+   - Avoid calling `np.shares_memory(a, b)` when `a is not b and a.base is None and b.base is None` (two distinct base arrays cannot overlap).
+4. **Strict Static Typing (`pyrefly`, Zero Suppressions) & Fast `StrictModel` Construction:**
+   - Update [`src/dnam/_native.pyi`](src/dnam/_native.pyi) in lockstep with any change in `rust/`.
+   - Never use `# type: ignore` or `# pyrefly: ignore` (`ref[repo.code.type-safety-and-imports]`).
+   - Keep `StrictModel.__pydantic_custom_init__ = False` so `DnamJsonHeader.from_json` validates nested models directly inside Rust `pydantic_core`, and use `StrictModel._construct_trusted_dict(...)` (reusing the per-class `_trusted_fields_set`) when constructing models from pre-validated Rust dictionaries on hot paths (`Engine.telemetry`, `ControlSpace.clamp`, `Model.from_bytes`).
+5. **Parity-First Verification Without Golden Binaries:**
+   - Verify audio rendering against `dnam._native._testing.render_reference_*`, schema serialization against `dnam._native._testing.reference_header_json`, and exception mapping against `dnam._native._testing.error_variant_names`.
+   - Cite the verified `r[sdk.python.*]` rules in test docstrings via `verify[sdk.python.*]`.
+
+---
+
+## 3. Testing, Coverage (≥ 95%), Benchmarking & Scalene Profiling
+
+Run all commands from the monorepo root via `moon`:
 
 ```bash
 # 1. Run all python quality gates (format-check, lint, typecheck, build, test)
 moon check python
 
-# 2. Run unit, property-based (Hypothesis), and smoke benchmark tests with >= 95% coverage
+# 2. Run the exhaustive cross-product parity matrix (@pytest.mark.slow)
+moon run python:test-full
+
+# 3. Check the >= 95% line + branch coverage floor
 moon run python:coverage
 
-# 3. Run full calibrated pytest-benchmark suite
+# 4. Run calibrated pytest-benchmark suite (enforces <= 1.10x native FFI budget)
 moon run python:bench
+
+# 5. Profile Python vs. native C/Rust CPU, memory allocations & copy volume with Scalene
+moon run python:profile
+uv run --no-sync scalene run --profile-all -o scalene-profile.json \
+  packages/python/tests/benchmarks/profile_sdk.py
+uv run --no-sync scalene view --cli scalene-profile.json
 ```
+
+> **Note on Scalene & PyTorch Kineto in the Shared Workspace `.venv`:** Because `packages/trainer` installs `torch` in the shared workspace `.venv`, standalone Scalene scripts targeting `dnam` stub `sys.modules["torch"] = ModuleType("torch")` (as done in [`tests/benchmarks/profile_sdk.py`](tests/benchmarks/profile_sdk.py)) or pass `--cpu-only` so Scalene does not activate PyTorch's Kineto autograd profiler.
 
 ---
 
-## 5. Pre-Commit Checklist for `packages/python/`
+## 4. Pre-Commit Checklist for `packages/python/`
 
-- [ ] `moon check python` passes all Ruff, Clippy, Pyrefly (`0` diagnostics with `src/dnam_engine/_native.pyi` up to date), build, and test checks.
-- [ ] `moon run python:coverage` passes with ≥ 95% coverage.
-- [ ] `moon run python:bench` confirms no performance regressions.
+- [ ] `moon check python` passes all Ruff, Clippy (`-D warnings`), Pyrefly (`0` diagnostics with `src/dnam/_native.pyi` in lockstep), build, and unit/Hypothesis parity tests.
+- [ ] `moon run python:coverage` confirms ≥ 95% line and branch coverage.
+- [ ] `moon run python:bench` and `moon run python:profile` confirm `Engine.process_into` stays within `≤ 1.10×` of native `PyEngine.process_stereo_2d` with zero unexpected Python heap allocations on hot paths.

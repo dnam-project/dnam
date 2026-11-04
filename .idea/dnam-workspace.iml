@@ -23,6 +23,6 @@
     <orderEntry type="inheritedJdk" />
     <orderEntry type="sourceFolder" forTests="false" />
     <orderEntry type="module" module-name="dnam-trainer" exported="" />
-    <orderEntry type="module" module-name="dnam-engine" exported="" />
+    <orderEntry type="module" module-name="dnam" exported="" />
   </component>
 </module>

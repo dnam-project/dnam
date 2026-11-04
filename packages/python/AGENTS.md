@@ -1,18 +1,20 @@
-# `packages/python` — Python 3.14 & `PyO3` Engine Routing Guide
+# `packages/python` — `dnam` Python 3.14 SDK & `PyO3` Routing Guide
 
-**`dnam-engine`** wraps `packages/engine` in a zero-copy `PyO3` (`abi3-py314`) + `rust-numpy` extension (`rust/`) and an idiomatic Python 3.14 interface (`src/dnam_engine/`).
+**`dnam`** wraps `packages/engine` in a zero-copy `PyO3` (`abi3-py314`) + `rust-numpy` shim (`rust/`) and an idiomatic Python 3.14 SDK (`src/dnam/`).
 
-## 1. Key Modules
+## 1. Submodule Discovery Map
 
-- [`rust/`](rust/lib.rs) & [`_native.pyi`](src/dnam_engine/_native.pyi): Native `dnam_engine._native` FFI bindings ([`engine.rs`](rust/engine.rs), [`container.rs`](rust/container.rs), [`dsp.rs`](rust/dsp.rs), [`provenance.rs`](rust/provenance.rs)) and PEP 561 type stub.
-- [`engine.py`](src/dnam_engine/engine.py): `DnamEngine` real-time processor (`pedalboard`-compatible `__call__`, `process`, `process_planar`, `reload`, `telemetry`).
-- [`container.py`](src/dnam_engine/container.py): `DnamContainer`, `GramMatrix` (`uplo='U'`), and `crc32c`.
-- [`control.py`](src/dnam_engine/control.py): `ControlSpace`, `ControlRack`, `LobattoBasis`, `Rank4Fm`, `chebyshev_lfo`, and `trust_region_softclip`.
-- [`dsp.py`](src/dnam_engine/dsp.py): Stateful Reference DSP (`PolyAdaa`, `SelectiveRgLru`, `ModulatedUfdn`, `lagrange_weights`, `unit_rotor`, `givens_householder_4x4`).
-- [`provenance.py`](src/dnam_engine/provenance.py), [`schema/`](src/dnam_engine/schema/__init__.py) & [`exceptions.py`](src/dnam_engine/exceptions.py): Cryptographic provenance/watermarking, `StrictModel` Pydantic v2 schemas, and `DnamError` hierarchy.
-- [`tests/`](tests/): Unit, Hypothesis property, and `pytest-benchmark` suites (`test_*.py`, [`test_benchmarks.py`](tests/test_benchmarks.py)).
+| Subpackage | Python (`src/dnam/`) & Native (`rust/`) | Canonical Spec (SSOT) |
+| :--- | :--- | :--- |
+| **Root & Errors** | [`__init__.py`](src/dnam/__init__.py), [`errors.py`](src/dnam/errors.py), [`_native.pyi`](src/dnam/_native.pyi), [`rust/lib.rs`](rust/lib.rs) | [`python_sdk.md`](../../docs/specs/sdks/python_sdk.md) |
+| **`dnam.model`** | [`model/`](src/dnam/model/__init__.py) (`Model`, `Checkpoint`, `Preamble`, `GramMatrix`), [`rust/model.rs`](rust/model.rs) | [`dnam_binary_format.md`](../../docs/specs/containers/dnam_binary_format.md), [`checkpoint_and_cache_format.md`](../../docs/specs/containers/checkpoint_and_cache_format.md) |
+| **`dnam.engine`** | [`engine/`](src/dnam/engine/__init__.py) (`Engine`, `Controls`, `Presets`, `Tempo`, `Telemetry`), [`rust/engine.rs`](rust/engine.rs) | [`tora_architecture.md`](../../docs/specs/architecture/tora_architecture.md), [`router_and_stages_topology.md`](../../docs/specs/dsp/router_and_stages_topology.md) |
+| **`dnam.controls`** | [`controls/`](src/dnam/controls/__init__.py) (`ControlSpace`, `ClampResult`, `TempoSubdivision`), [`rust/controls.rs`](rust/controls.rs) | [`parametric_control_bus.md`](../../docs/specs/dsp/parametric_control_bus.md) |
+| **`dnam.schema`** | [`schema/`](src/dnam/schema/__init__.py) (`DnamJsonHeader`, `RouterConfig`, `Stage1..4*Config`) | [`python_sdk.md`](../../docs/specs/sdks/python_sdk.md) |
+| **`dnam.provenance`** | [`provenance/`](src/dnam/provenance/__init__.py) (`verify_model`, `seal_model`, `Dau1Manifest`, Watermark), [`rust/provenance.rs`](rust/provenance.rs) | [`provenance_and_enclave_drm.md`](../../docs/specs/security/provenance_and_enclave_drm.md), [`watermarking_and_marketplace.md`](../../docs/specs/security/watermarking_and_marketplace.md) |
+| **`dnam.dsp`** | [`dsp/`](src/dnam/dsp/__init__.py) (`op_t`, `op_m`, `op_n`, `control_bus`, `mixing`), [`rust/dsp.rs`](rust/dsp.rs) | [`python_sdk.md`](../../docs/specs/sdks/python_sdk.md) |
 
 ## 2. Guides & Verification
 
-1. [`CONTRIBUTING.md`](CONTRIBUTING.md) — Dual-layer FFI architecture, strict `pyrefly` typing, Pydantic `_construct_trusted` hot-path rules, and `moon check python` verification workflow.
-2. [`README.md`](README.md) & [`index.md`](../../docs/index.md) — Python API reference and canonical specifications.
+1. [`CONTRIBUTING.md`](CONTRIBUTING.md) & [`README.md`](README.md) — Architecture, typing, and `moon check python`.
+2. [`ADR-0012`](../../docs/adr/0012-python-sdk-architecture-and-idiomatic-api.md) — SDK design rationale.

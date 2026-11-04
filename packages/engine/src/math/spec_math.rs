@@ -444,7 +444,7 @@ pub const QUARTER_PI_F64_BITS: u64 = 0x3FE9_21FB_5444_2D18;
 pub const MAX_ROTOR_ANGLE_F32_BITS: u32 = 0x4049_0FDA;
 
 /// Applies the adaptive 1–2 ULP norm guard to `(c_bits, s_bits)` (`ref[dsp.op-m.rotor.ulp-guard]`).
-#[inline]
+#[inline(always)]
 pub fn project_rotor_components_ulp_guard(
     mut c_bits: u32,
     mut s_bits: u32,
@@ -472,7 +472,7 @@ pub fn project_rotor_components_ulp_guard(
 /// pattern `theta_bits` (`-pi < theta < pi`), returning `(cos_bits, sin_bits)` (`ref[dsp.op-m.rotor.contractive]`,
 /// `ref[dsp.op-m.rotor.zero-hold]`, `ref[dsp.op-m.rotor.quadrant-horner]`, `ref[dsp.op-m.rotor.ulp-guard]`).
 /// Returns `None` if `theta` is non-finite or `|theta| >= pi`.
-#[inline]
+#[inline(always)]
 pub fn contractive_rotor_f32_bits(theta_bits: u32) -> Option<(u32, u32)> {
     let mag_bits = theta_bits & 0x7fff_ffff;
     if mag_bits == 0 {
@@ -531,7 +531,7 @@ pub fn contractive_rotor_f32_bits(theta_bits: u32) -> Option<(u32, u32)> {
 }
 
 /// Evaluates `contractive_rotor_f32_bits` on `theta: f32`, returning `Some((cos, sin))` for `|theta| < pi`.
-#[inline]
+#[inline(always)]
 pub fn contractive_rotor_f32(theta: f32) -> Option<(f32, f32)> {
     let (c_bits, s_bits) = contractive_rotor_f32_bits(theta.to_bits())?;
     Some((f32::from_bits(c_bits), f32::from_bits(s_bits)))

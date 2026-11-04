@@ -8,7 +8,7 @@ dependencies = []
 
 [dependency-groups]
 dev = [
-    "dnam-engine",
+    "dnam",
     "dnam-trainer",
     "maturin>=1.8.0",
     "pytest>=8.3.0",
@@ -18,6 +18,7 @@ dev = [
     "hypothesis-jsonschema>=0.23.0",
     "ruff>=0.9.0",
     "pyrefly>=0.15.0",
+    "scalene>=2.4.0",
 ]
 
 [tool.uv]
@@ -49,7 +50,7 @@ triton = false
 members = ["packages/python", "packages/trainer"]
 
 [tool.uv.sources]
-dnam-engine = { workspace = true }
+dnam = { workspace = true }
 dnam-trainer = { workspace = true }
 torch = [
     { index = "amd-rocm", marker = "extra == 'rocm' and (sys_platform == 'linux')" },
@@ -82,6 +83,7 @@ line-length = 100
 src = [
     "packages/python/src",
     "packages/python/tests",
+    "packages/python/examples",
     "packages/trainer/src",
     "packages/trainer/tests",
     "tests",
@@ -107,6 +109,7 @@ python-version = "3.14"
 project-includes = [
     "packages/python/src",
     "packages/python/tests",
+    "packages/python/examples",
     "packages/trainer/src",
     "packages/trainer/tests",
     "tests",
@@ -114,6 +117,7 @@ project-includes = [
 search-path = [
     "packages/python/src",
     "packages/python/tests",
+    "packages/python/examples",
     "packages/trainer/src",
     "packages/trainer/tests",
     "tests",
@@ -122,10 +126,13 @@ search-path = [
 [tool.pytest.ini_options]
 testpaths = ["packages/python/tests", "packages/trainer/tests", "tests"]
 pythonpath = ["packages/python/tests", "packages/trainer/tests", "tests"]
-addopts = "-ra --strict-markers --benchmark-disable --import-mode=importlib"
+addopts = "-ra --strict-markers --benchmark-disable --import-mode=importlib -m 'not slow'"
+markers = [
+    "slow: exhaustive cross-product matrix tests (run via moon run python:test-full)",
+]
 
 [tool.coverage.run]
-source = ["dnam_engine", "dnam_trainer"]
+source = ["dnam", "dnam_trainer"]
 branch = true
 
 [tool.coverage.report]

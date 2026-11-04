@@ -1,18 +1,19 @@
-//! Zero-copy `NativeDnamEngine` `PyO3` class wrapping [`DynamicDnamEngine<'static>`].
+//! Zero-copy `PyEngine` (`dnam._native.PyEngine`) wrapping [`DynamicDnamEngine<'static>`]
+//! (`ref[sdk.python.engine.zero-copy-and-gil]`, `ref[sdk.python.engine.pedalboard-call]`).
 
-use dnam_engine::container::{DnamPreamble, ZohRescaledParams};
+mod process;
+mod runtime;
+mod telemetry;
+
 use dnam_engine::math::{BackendKind, detect_best_backend};
 use dnam_engine::{DynamicDnamEngine, Tier};
-use numpy::{
-    PyReadonlyArray1, PyReadonlyArray2, PyReadwriteArray1, PyReadwriteArray2, PyUntypedArrayMethods,
-};
-use pyo3::exceptions::PyValueError;
+use numpy::{PyReadonlyArray1, PyReadonlyArray2, PyReadwriteArray1, PyReadwriteArray2};
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
-use crate::dnam_err_to_py;
+use crate::{dnam_err_to_py, validation_err};
 
-fn parse_backend_kind(backend: &str) -> PyResult<BackendKind> {
+pub(crate) fn parse_backend_kind(backend: &str) -> PyResult<BackendKind> {
     match backend.to_ascii_lowercase().as_str() {
         "auto" => Ok(detect_best_backend()),
         "scalar" => Ok(BackendKind::Scalar),
@@ -20,35 +21,32 @@ fn parse_backend_kind(backend: &str) -> PyResult<BackendKind> {
         "arm_sme" | "armsme" | "sme" => Ok(BackendKind::ArmSme),
         "x86_simd" | "x86_avx2_fma" | "avx2" | "x86_sse42" => Ok(BackendKind::X86Simd),
         "wasm_simd128" | "wasm" => Ok(BackendKind::WasmSimd128),
-        other => Err(PyValueError::new_err(format!(
-            "[DNAM-VALIDATION] Unknown backend kind: '{other}'"
-        ))),
+        other => Err(validation_err(format!("Unknown backend kind: '{other}'"))),
     }
 }
 
-fn backend_kind_str(kind: BackendKind) -> &'static str {
+pub(crate) const fn backend_kind_str(kind: BackendKind) -> &'static str {
     match kind {
         BackendKind::Scalar => "scalar",
-        BackendKind::Neon | BackendKind::ArmNeon => "arm_neon",
+        BackendKind::Neon | BackendKind::ArmNeon => "neon",
         BackendKind::ArmSme => "arm_sme",
         BackendKind::X86Simd | BackendKind::X86Avx2Fma | BackendKind::X86Sse42 => "x86_simd",
         BackendKind::WasmSimd128 => "wasm_simd128",
     }
 }
 
-/// Native Rust SIMD engine wrapper exposed to `dnam_engine._native`.
-#[pyclass]
+/// Native Rust SIMD engine wrapper exposed as `dnam._native.PyEngine`.
+///
+/// Delegates 100% of DSP, ZOH rescaling, control clamping, preset loading, and tempo sync
+/// to [`DynamicDnamEngine<'static>`] (`ref[sdk.python.engine.zero-copy-and-gil]`).
+#[pyclass(module = "dnam._native")]
 #[derive(Debug)]
-pub struct NativeDnamEngine {
-    inner: DynamicDnamEngine<'static>,
-    sample_rate_hz: u32,
-    sample_rate_train_hz: u32,
-    control_decimation_train: u8,
-    zoh: ZohRescaledParams,
+pub struct PyEngine {
+    pub(crate) inner: DynamicDnamEngine<'static>,
 }
 
 #[pymethods]
-impl NativeDnamEngine {
+impl PyEngine {
     #[new]
     #[pyo3(signature = (container_bytes, tier = 1, sample_rate_hz = 48_000, backend = "auto", max_supported_tier = None, offline_bounce = false, maximize_tier_on_bounce = true))]
     pub fn new(
@@ -60,67 +58,26 @@ impl NativeDnamEngine {
         offline_bounce: bool,
         maximize_tier_on_bounce: bool,
     ) -> PyResult<Self> {
-        let preamble = DnamPreamble::from_bytes(container_bytes).map_err(dnam_err_to_py)?;
-        let sample_rate_train_hz = preamble.sample_rate_train_hz;
-        let control_decimation_train = preamble.control_decimation.max(8);
-
         let backend_enum = parse_backend_kind(backend)?;
         let tier_enum = Tier::from_u8(tier);
         let max_tier_enum = max_supported_tier.map_or(Tier::Ultra, Tier::from_u8);
-        let mut inner = if max_tier_enum < Tier::Ultra {
-            let mut eng = DynamicDnamEngine::from_bytes_owned_with_max_tier(
-                container_bytes,
-                tier_enum,
-                max_tier_enum,
-                sample_rate_hz,
-            )
-            .map_err(dnam_err_to_py)?;
-            if eng.backend_kind() != backend_enum {
-                eng = DynamicDnamEngine::from_bytes_owned_with_backend(
-                    container_bytes,
-                    tier_enum,
-                    sample_rate_hz,
-                    backend_enum,
-                )
-                .map_err(dnam_err_to_py)?;
-                eng.set_max_supported_tier(max_tier_enum);
-            }
-            eng
-        } else {
-            DynamicDnamEngine::from_bytes_owned_with_backend(
-                container_bytes,
-                tier_enum,
-                sample_rate_hz,
-                backend_enum,
-            )
-            .map_err(dnam_err_to_py)?
-        };
+        let mut inner = DynamicDnamEngine::from_bytes_owned_with_backend(
+            container_bytes,
+            tier_enum,
+            sample_rate_hz,
+            backend_enum,
+        )
+        .map_err(dnam_err_to_py)?;
+        if max_tier_enum < Tier::Ultra {
+            inner.set_max_supported_tier(max_tier_enum);
+        }
         inner.set_maximize_tier_on_bounce(maximize_tier_on_bounce);
         if offline_bounce {
             inner.set_offline_bounce(true);
         }
-
-        let zoh = ZohRescaledParams::compute(
-            sample_rate_train_hz,
-            sample_rate_hz,
-            control_decimation_train,
-            0.9993,
-            0.995,
-            64.0,
-            128,
-        )
-        .map_err(dnam_err_to_py)?;
-
-        Ok(Self {
-            inner,
-            sample_rate_hz,
-            sample_rate_train_hz,
-            control_decimation_train,
-            zoh,
-        })
+        Ok(Self { inner })
     }
 
-    /// Hot-swaps a new `.dnam` or `.dnam-ckpt` container in-place.
     #[pyo3(signature = (container_bytes, tier = None, sample_rate_hz = None))]
     pub fn reload(
         &mut self,
@@ -128,33 +85,7 @@ impl NativeDnamEngine {
         tier: Option<u8>,
         sample_rate_hz: Option<u32>,
     ) -> PyResult<()> {
-        let preamble = DnamPreamble::from_bytes(container_bytes).map_err(dnam_err_to_py)?;
-        let target_tier = tier.map_or_else(
-            || Tier::from_u8(self.inner.telemetry_snapshot().active_tier),
-            Tier::from_u8,
-        );
-        let target_sr = sample_rate_hz.unwrap_or(self.sample_rate_hz);
-
-        self.inner
-            .reload_model_in_place_owned(container_bytes, target_tier, target_sr)
-            .map_err(dnam_err_to_py)?;
-
-        let sample_rate_train_hz = preamble.sample_rate_train_hz;
-        let control_decimation_train = preamble.control_decimation.max(8);
-        self.zoh = ZohRescaledParams::compute(
-            sample_rate_train_hz,
-            target_sr,
-            control_decimation_train,
-            0.9993,
-            0.995,
-            64.0,
-            128,
-        )
-        .map_err(dnam_err_to_py)?;
-        self.sample_rate_hz = target_sr;
-        self.sample_rate_train_hz = sample_rate_train_hz;
-        self.control_decimation_train = control_decimation_train;
-        Ok(())
+        self.reload_impl(container_bytes, tier, sample_rate_hz)
     }
 
     pub fn backend_kind(&self) -> &'static str {
@@ -206,349 +137,215 @@ impl NativeDnamEngine {
     }
 
     pub fn sample_rate_hz(&self) -> u32 {
-        self.sample_rate_hz
+        self.inner.sample_rate_hz()
     }
 
     pub fn set_sample_rate(&mut self, sample_rate_hz: u32) -> PyResult<()> {
-        self.inner
-            .set_sample_rate(sample_rate_hz)
-            .map_err(dnam_err_to_py)?;
-        self.zoh = ZohRescaledParams::compute(
-            self.sample_rate_train_hz,
-            sample_rate_hz,
-            self.control_decimation_train,
-            0.9993,
-            0.995,
-            64.0,
-            128,
-        )
-        .map_err(dnam_err_to_py)?;
-        self.sample_rate_hz = sample_rate_hz;
-        Ok(())
+        self.set_sample_rate_impl(sample_rate_hz)
     }
 
-    pub fn set_control_value(&mut self, ctrl_idx: usize, value: f32) {
-        self.inner.set_control_value(ctrl_idx, value);
+    pub fn num_controls(&self) -> usize {
+        self.inner.num_controls()
     }
 
-    pub fn set_control_immediate(&mut self, ctrl_idx: usize, value: f32) {
-        self.inner.set_control_immediate(ctrl_idx, value);
+    pub fn raw_control_values(&self) -> Vec<f32> {
+        self.inner.raw_control_values().to_vec()
+    }
+
+    pub fn clamped_control_values(&self) -> Vec<f32> {
+        self.inner.clamped_control_values().to_vec()
+    }
+
+    pub fn clamped_control_value(&self, ctrl_idx: usize) -> PyResult<f32> {
+        self.clamped_control_value_impl(ctrl_idx)
+    }
+
+    pub fn set_control_value(&mut self, ctrl_idx: usize, value: f32) -> PyResult<()> {
+        self.set_control_value_impl(ctrl_idx, value)
+    }
+
+    pub fn set_control_immediate(&mut self, ctrl_idx: usize, value: f32) -> PyResult<()> {
+        self.set_control_immediate_impl(ctrl_idx, value)
+    }
+
+    pub fn set_controls_immediate_batch(&mut self, updates: Vec<(usize, f32)>) -> PyResult<()> {
+        self.set_controls_immediate_batch_impl(&updates)
+    }
+
+    pub fn reset_controls(&mut self) {
+        self.inner.reset_controls_to_defaults();
     }
 
     pub fn reset(&mut self) {
         self.inner.reset_to_dc_equilibrium();
     }
 
-    /// Renders a complete stereo buffer in Offline Bounce mode ($4\times$ linear-phase polyphase oversampling),
-    /// automatically stripping the 12-sample PDC lead-in.
+    pub fn supports_freeze(&self) -> bool {
+        self.inner.supports_freeze()
+    }
+
+    pub fn set_freeze(&mut self, freeze: bool) {
+        self.inner.set_freeze(freeze);
+    }
+
+    pub fn set_freeze_amount(&mut self, alpha: f32) {
+        self.inner.set_freeze_amount(alpha);
+    }
+
+    pub fn is_frozen(&self) -> bool {
+        self.inner.is_frozen()
+    }
+
+    pub fn set_bypass(&mut self, bypassed: bool, trails: bool) {
+        self.inner.set_bypass(bypassed, trails);
+    }
+
+    pub fn bypass_state(&self) -> (bool, bool) {
+        self.inner.bypass_state()
+    }
+
+    pub fn set_stereo_width(&mut self, width: f32) {
+        self.inner.set_stereo_width(width);
+    }
+
+    pub fn stereo_width(&self) -> f32 {
+        self.inner.stereo_width()
+    }
+
+    #[pyo3(signature = (blend_wet = 1.0, output_gain_db = 0.0, apply_unity_leveling = true))]
+    pub fn configure_host_mix_and_leveling(
+        &mut self,
+        blend_wet: f32,
+        output_gain_db: f32,
+        apply_unity_leveling: bool,
+    ) {
+        self.inner
+            .configure_host_mix_and_leveling(blend_wet, output_gain_db, apply_unity_leveling);
+    }
+
+    pub fn current_bpm(&self) -> f32 {
+        self.inner.current_bpm()
+    }
+
+    #[pyo3(signature = (bpm, subdivision = None, fold_octave = false))]
+    pub fn sync_tempo(
+        &mut self,
+        bpm: f32,
+        subdivision: Option<&str>,
+        fold_octave: bool,
+    ) -> PyResult<usize> {
+        self.sync_tempo_impl(bpm, subdivision, fold_octave)
+    }
+
+    #[pyo3(signature = (subdivision = None, fold_octave = false))]
+    pub fn register_tap_tempo(
+        &mut self,
+        subdivision: Option<&str>,
+        fold_octave: bool,
+    ) -> PyResult<(f32, usize)> {
+        self.register_tap_tempo_impl(subdivision, fold_octave)
+    }
+
+    pub fn apply_preset(&mut self, preset_id: &str) -> PyResult<()> {
+        self.apply_preset_impl(preset_id)
+    }
+
     pub fn render_offline_bounce<'py>(
         &mut self,
         py: Python<'py>,
         left_in: PyReadonlyArray1<'py, f32>,
         right_in: PyReadonlyArray1<'py, f32>,
-        mut left_out: PyReadwriteArray1<'py, f32>,
-        mut right_out: PyReadwriteArray1<'py, f32>,
+        left_out: PyReadwriteArray1<'py, f32>,
+        right_out: PyReadwriteArray1<'py, f32>,
     ) -> PyResult<()> {
-        let n = left_in.len();
-        if right_in.len() != n || left_out.len() != n || right_out.len() != n {
-            return Err(PyValueError::new_err(
-                "[DNAM-VALIDATION] left_in, right_in, left_out, and right_out must have identical length",
-            ));
-        }
-        let l_in = left_in
-            .as_slice()
-            .map_err(|_| PyValueError::new_err("[DNAM-VALIDATION] left_in must be contiguous"))?;
-        let r_in = right_in
-            .as_slice()
-            .map_err(|_| PyValueError::new_err("[DNAM-VALIDATION] right_in must be contiguous"))?;
-        let l_out = left_out
-            .as_slice_mut()
-            .map_err(|_| PyValueError::new_err("[DNAM-VALIDATION] left_out must be contiguous"))?;
-        let r_out = right_out
-            .as_slice_mut()
-            .map_err(|_| PyValueError::new_err("[DNAM-VALIDATION] right_out must be contiguous"))?;
-        py.detach(|| {
-            self.inner.render_offline_bounce(l_in, r_in, l_out, r_out);
-        });
-        Ok(())
+        self.render_offline_bounce_impl(py, left_in, right_in, left_out, right_out)
     }
 
-    /// Processes stereo planar `float32` slices in-place into `left_out` and `right_out`,
-    /// optionally chunked into `buffer_size` blocks while releasing the Python GIL.
     #[pyo3(signature = (left_in, right_in, left_out, right_out, buffer_size = None))]
     pub fn process_stereo<'py>(
         &mut self,
         py: Python<'py>,
         left_in: PyReadonlyArray1<'py, f32>,
         right_in: PyReadonlyArray1<'py, f32>,
-        mut left_out: PyReadwriteArray1<'py, f32>,
-        mut right_out: PyReadwriteArray1<'py, f32>,
+        left_out: PyReadwriteArray1<'py, f32>,
+        right_out: PyReadwriteArray1<'py, f32>,
         buffer_size: Option<usize>,
     ) -> PyResult<()> {
-        let n = left_in.len();
-        if right_in.len() != n || left_out.len() != n || right_out.len() != n {
-            return Err(PyValueError::new_err(
-                "[DNAM-VALIDATION] left_in, right_in, left_out, and right_out must have identical length",
-            ));
-        }
-        let l_in = left_in
-            .as_slice()
-            .map_err(|_| PyValueError::new_err("[DNAM-VALIDATION] left_in must be contiguous"))?;
-        let r_in = right_in
-            .as_slice()
-            .map_err(|_| PyValueError::new_err("[DNAM-VALIDATION] right_in must be contiguous"))?;
-        let l_out = left_out
-            .as_slice_mut()
-            .map_err(|_| PyValueError::new_err("[DNAM-VALIDATION] left_out must be contiguous"))?;
-        let r_out = right_out
-            .as_slice_mut()
-            .map_err(|_| PyValueError::new_err("[DNAM-VALIDATION] right_out must be contiguous"))?;
-
-        let chunk = buffer_size.unwrap_or(n).max(1);
-        py.detach(|| {
-            if chunk >= n {
-                self.inner.process_block(l_in, r_in, l_out, r_out);
-            } else {
-                for (((li, ri), lo), ro) in l_in
-                    .chunks(chunk)
-                    .zip(r_in.chunks(chunk))
-                    .zip(l_out.chunks_mut(chunk))
-                    .zip(r_out.chunks_mut(chunk))
-                {
-                    self.inner.process_block(li, ri, lo, ro);
-                }
-            }
-        });
-        Ok(())
+        self.process_stereo_impl(py, left_in, right_in, left_out, right_out, buffer_size)
     }
 
-    /// Processes a 2D C-contiguous `(2, N)` stereo `float32` array directly into a `(2, N)` output array
-    /// without creating intermediate 1D NumPy row slice objects in Python.
+    #[pyo3(signature = (left_io, right_io, buffer_size = None))]
+    pub fn process_stereo_in_place<'py>(
+        &mut self,
+        py: Python<'py>,
+        left_io: PyReadwriteArray1<'py, f32>,
+        right_io: PyReadwriteArray1<'py, f32>,
+        buffer_size: Option<usize>,
+    ) -> PyResult<()> {
+        self.process_stereo_in_place_impl(py, left_io, right_io, buffer_size)
+    }
+
     #[pyo3(signature = (stereo_in, stereo_out, buffer_size = None))]
     pub fn process_stereo_2d<'py>(
         &mut self,
         py: Python<'py>,
         stereo_in: PyReadonlyArray2<'py, f32>,
-        mut stereo_out: PyReadwriteArray2<'py, f32>,
+        stereo_out: PyReadwriteArray2<'py, f32>,
         buffer_size: Option<usize>,
     ) -> PyResult<()> {
-        let in_shape = stereo_in.shape();
-        let out_shape = stereo_out.shape();
-        if in_shape.len() != 2 || in_shape[0] != 2 || out_shape != in_shape {
-            return Err(PyValueError::new_err(
-                "[DNAM-VALIDATION] stereo_in and stereo_out must have matching (2, N) shape",
-            ));
-        }
-        let n = in_shape[1];
-        let in_slice = stereo_in
-            .as_slice()
-            .map_err(|_| PyValueError::new_err("[DNAM-VALIDATION] stereo_in must be contiguous"))?;
-        let out_slice = stereo_out.as_slice_mut().map_err(|_| {
-            PyValueError::new_err("[DNAM-VALIDATION] stereo_out must be contiguous")
-        })?;
-        let (l_in, r_in) = in_slice.split_at(n);
-        let (l_out, r_out) = out_slice.split_at_mut(n);
-
-        let chunk = buffer_size.unwrap_or(n).max(1);
-        py.detach(|| {
-            if chunk >= n {
-                self.inner.process_block(l_in, r_in, l_out, r_out);
-            } else {
-                for (((li, ri), lo), ro) in l_in
-                    .chunks(chunk)
-                    .zip(r_in.chunks(chunk))
-                    .zip(l_out.chunks_mut(chunk))
-                    .zip(r_out.chunks_mut(chunk))
-                {
-                    self.inner.process_block(li, ri, lo, ro);
-                }
-            }
-        });
-        Ok(())
+        self.process_stereo_2d_impl(py, stereo_in, stereo_out, buffer_size)
     }
 
-    /// Processes a mono `float32` input slice into true-stereo `left_out` and `right_out`.
+    #[pyo3(signature = (stereo_io, buffer_size = None))]
+    pub fn process_stereo_2d_in_place<'py>(
+        &mut self,
+        py: Python<'py>,
+        stereo_io: PyReadwriteArray2<'py, f32>,
+        buffer_size: Option<usize>,
+    ) -> PyResult<()> {
+        self.process_stereo_2d_in_place_impl(py, stereo_io, buffer_size)
+    }
+
     #[pyo3(signature = (mono_in, left_out, right_out, buffer_size = None))]
     pub fn process_mono_to_stereo<'py>(
         &mut self,
         py: Python<'py>,
         mono_in: PyReadonlyArray1<'py, f32>,
-        mut left_out: PyReadwriteArray1<'py, f32>,
-        mut right_out: PyReadwriteArray1<'py, f32>,
+        left_out: PyReadwriteArray1<'py, f32>,
+        right_out: PyReadwriteArray1<'py, f32>,
         buffer_size: Option<usize>,
     ) -> PyResult<()> {
-        let n = mono_in.len();
-        if left_out.len() != n || right_out.len() != n {
-            return Err(PyValueError::new_err(
-                "[DNAM-VALIDATION] mono_in, left_out, and right_out must have identical length",
-            ));
-        }
-        let m_in = mono_in
-            .as_slice()
-            .map_err(|_| PyValueError::new_err("[DNAM-VALIDATION] mono_in must be contiguous"))?;
-        let l_out = left_out
-            .as_slice_mut()
-            .map_err(|_| PyValueError::new_err("[DNAM-VALIDATION] left_out must be contiguous"))?;
-        let r_out = right_out
-            .as_slice_mut()
-            .map_err(|_| PyValueError::new_err("[DNAM-VALIDATION] right_out must be contiguous"))?;
-
-        let chunk = buffer_size.unwrap_or(n).max(1);
-        py.detach(|| {
-            if chunk >= n {
-                self.inner.process_mono_to_stereo(m_in, l_out, r_out);
-            } else {
-                for ((mi, lo), ro) in m_in
-                    .chunks(chunk)
-                    .zip(l_out.chunks_mut(chunk))
-                    .zip(r_out.chunks_mut(chunk))
-                {
-                    self.inner.process_mono_to_stereo(mi, lo, ro);
-                }
-            }
-        });
-        Ok(())
+        self.process_mono_to_stereo_impl(py, mono_in, left_out, right_out, buffer_size)
     }
 
-    /// Processes a 1D mono `float32` input slice directly into a 2D `(2, N)` stereo output array.
     #[pyo3(signature = (mono_in, stereo_out, buffer_size = None))]
     pub fn process_mono_to_stereo_2d<'py>(
         &mut self,
         py: Python<'py>,
         mono_in: PyReadonlyArray1<'py, f32>,
-        mut stereo_out: PyReadwriteArray2<'py, f32>,
+        stereo_out: PyReadwriteArray2<'py, f32>,
         buffer_size: Option<usize>,
     ) -> PyResult<()> {
-        let n = mono_in.len();
-        let out_shape = stereo_out.shape();
-        if out_shape.len() != 2 || out_shape[0] != 2 || out_shape[1] != n {
-            return Err(PyValueError::new_err(
-                "[DNAM-VALIDATION] stereo_out must have shape (2, N)",
-            ));
-        }
-        let m_in = mono_in
-            .as_slice()
-            .map_err(|_| PyValueError::new_err("[DNAM-VALIDATION] mono_in must be contiguous"))?;
-        let out_slice = stereo_out.as_slice_mut().map_err(|_| {
-            PyValueError::new_err("[DNAM-VALIDATION] stereo_out must be contiguous")
-        })?;
-        let (l_out, r_out) = out_slice.split_at_mut(n);
-
-        let chunk = buffer_size.unwrap_or(n).max(1);
-        py.detach(|| {
-            if chunk >= n {
-                self.inner.process_mono_to_stereo(m_in, l_out, r_out);
-            } else {
-                for ((mi, lo), ro) in m_in
-                    .chunks(chunk)
-                    .zip(l_out.chunks_mut(chunk))
-                    .zip(r_out.chunks_mut(chunk))
-                {
-                    self.inner.process_mono_to_stereo(mi, lo, ro);
-                }
-            }
-        });
-        Ok(())
+        self.process_mono_to_stereo_2d_impl(py, mono_in, stereo_out, buffer_size)
     }
 
-    /// Processes a mono `float32` input slice into a 1-channel `mono_out` slice.
     #[pyo3(signature = (mono_in, mono_out, buffer_size = None))]
     pub fn process_mono<'py>(
         &mut self,
         py: Python<'py>,
         mono_in: PyReadonlyArray1<'py, f32>,
-        mut mono_out: PyReadwriteArray1<'py, f32>,
+        mono_out: PyReadwriteArray1<'py, f32>,
         buffer_size: Option<usize>,
     ) -> PyResult<()> {
-        let n = mono_in.len();
-        if mono_out.len() != n {
-            return Err(PyValueError::new_err(
-                "[DNAM-VALIDATION] mono_in and mono_out must have identical length",
-            ));
-        }
-        let m_in = mono_in
-            .as_slice()
-            .map_err(|_| PyValueError::new_err("[DNAM-VALIDATION] mono_in must be contiguous"))?;
-        let m_out = mono_out
-            .as_slice_mut()
-            .map_err(|_| PyValueError::new_err("[DNAM-VALIDATION] mono_out must be contiguous"))?;
-
-        let chunk = buffer_size.unwrap_or(n).max(1);
-        py.detach(|| {
-            if chunk >= n {
-                self.inner.process_mono(m_in, m_out);
-            } else {
-                for (mi, mo) in m_in.chunks(chunk).zip(m_out.chunks_mut(chunk)) {
-                    self.inner.process_mono(mi, mo);
-                }
-            }
-        });
-        Ok(())
+        self.process_mono_impl(py, mono_in, mono_out, buffer_size)
     }
 
-    /// Returns a dictionary snapshot of `DnamTelemetrySnapshot` and `ZohRescaledParams`.
     pub fn telemetry<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
-        let snap = self.inner.telemetry_snapshot();
-        let zoh = &self.zoh;
-
-        let dict = PyDict::new(py);
-        dict.set_item("active_tier", snap.active_tier)?;
-        dict.set_item("backend", backend_kind_str(self.inner.backend_kind()))?;
-        dict.set_item("sample_rate_hz", self.sample_rate_hz)?;
-        dict.set_item("core2_active", snap.tank_active != 0)?;
-        dict.set_item("tank_active", snap.tank_active != 0)?;
-        dict.set_item("lfo_env_active", snap.lfo_env_active != 0)?;
-        dict.set_item("stereo_out", snap.stereo_out != 0)?;
-        dict.set_item("active_clamp_mask", snap.active_clamp_mask)?;
-        dict.set_item("control_decimation_host", snap.control_decimation_host)?;
-        dict.set_item("max_adaa_drive", snap.max_op_n_drive)?;
-        dict.set_item("max_op_n_drive", snap.max_op_n_drive)?;
-        dict.set_item("max_pole_radius", snap.max_pole_radius)?;
-        dict.set_item("max_effective_loop_gain", snap.max_effective_loop_gain)?;
-        dict.set_item("tail_time_ms", snap.tail_time_ms)?;
-        dict.set_item(
-            "z_head",
-            (
-                snap.z_head[0],
-                snap.z_head[1],
-                snap.z_head[2],
-                snap.z_head[3],
-            ),
-        )?;
-        dict.set_item(
-            "env_states",
-            (
-                snap.env_states[0],
-                snap.env_states[1],
-                snap.env_states[2],
-                snap.env_states[3],
-            ),
-        )?;
-        dict.set_item(
-            "lfo_harmonics",
-            (
-                snap.lfo_harmonics[0],
-                snap.lfo_harmonics[1],
-                snap.lfo_harmonics[2],
-                snap.lfo_harmonics[3],
-                snap.lfo_harmonics[4],
-                snap.lfo_harmonics[5],
-                snap.lfo_harmonics[6],
-                snap.lfo_harmonics[7],
-            ),
-        )?;
-        dict.set_item("clamped_controls", snap.clamped_controls.to_vec())?;
-        dict.set_item("rho_sr", zoh.rho_sr)?;
-        dict.set_item("rho_ctrl", zoh.rho_ctrl)?;
-        dict.set_item("r_ac_host", zoh.r_ac_host)?;
-        dict.set_item("r_dc_host", zoh.r_dc_host)?;
-        dict.set_item("tau_ref_samples_host", zoh.tau_ref_samples_host)?;
-        dict.set_item("switch_xfade_samples_host", zoh.switch_xfade_samples_host)?;
-        Ok(dict)
+        self.telemetry_impl(py)
     }
 }
 
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    m.add_class::<NativeDnamEngine>()?;
+    m.add_class::<PyEngine>()?;
     Ok(())
 }

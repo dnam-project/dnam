@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.14"
 license = { text = "LicenseRef-DNAM-1.0.0" }
 dependencies = [
-    "dnam-engine",
+    "dnam",
     "numpy>=2.1.0",
     "pydantic>=2.10.0",
     "cyclopts>=5.0.0",

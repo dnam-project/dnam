@@ -357,6 +357,65 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
         self.header.as_ref()
     }
 
+    /// Returns the active host tempo in BPM.
+    #[inline]
+    pub const fn current_bpm(&self) -> f32 {
+        self.tempo_state.current_bpm
+    }
+
+    /// Returns the number of user controls $P \in [0, 255]$.
+    #[inline]
+    pub const fn num_controls(&self) -> usize {
+        self.control_bus.num_controls
+    }
+
+    /// Returns the slice of raw user-requested physical control values (`len == num_controls`).
+    #[inline]
+    pub fn raw_control_values(&self) -> &[f32] {
+        let n = self
+            .control_bus
+            .num_controls
+            .min(self.control_bus.raw_values.len());
+        &self.control_bus.raw_values[..n]
+    }
+
+    /// Returns the slice of clamped physical control values (`len == num_controls`).
+    #[inline]
+    pub fn clamped_control_values(&self) -> &[f32] {
+        let n = self
+            .control_bus
+            .num_controls
+            .min(self.control_bus.clamped_values.len());
+        &self.control_bus.clamped_values[..n]
+    }
+
+    /// Returns the compiled 64-byte [`crate::control::ControlClampDescriptor`] slice (`len == num_controls`).
+    #[inline]
+    pub fn control_descriptors(&self) -> &[crate::control::ControlClampDescriptor] {
+        let n = self
+            .control_bus
+            .num_controls
+            .min(self.control_bus.descriptors.len());
+        &self.control_bus.descriptors[..n]
+    }
+
+    /// Snaps all controls immediately back to their schema defaults and refreshes static head/tank state.
+    pub fn reset_controls_to_defaults(&mut self) {
+        self.control_bus.reset_to_defaults();
+        let n = self.control_bus.num_controls;
+        for idx in 0..n {
+            if let Some(&val) = self.control_bus.clamped_values.get(idx) {
+                self.refresh_calibrated_control_effects(idx, val);
+            }
+        }
+        let arena = self.arena_storage.as_bytes();
+        self.control_bus.refresh_static_state(arena);
+        if self.control_bus.tank_mod_dirty {
+            self.apply_tank_modulations();
+            self.control_bus.tank_mod_dirty = false;
+        }
+    }
+
     #[inline]
     pub fn set_control_value(&mut self, ctrl_idx: usize, physical_value: f32) {
         self.control_bus.set_control_value(ctrl_idx, physical_value);

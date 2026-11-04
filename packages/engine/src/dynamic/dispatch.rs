@@ -1,7 +1,10 @@
 //! Method dispatch and tests for [`DynamicDnamEngine`].
 
 use super::DynamicDnamEngine;
-use crate::schema::{DnamError, DnamProtectionProfile};
+use crate::container::{DnamPreamble, ZohRescaledParams};
+use crate::control::ControlClampDescriptor;
+use crate::provenance::VerificationStatus;
+use crate::schema::{DnamError, DnamJsonHeader, DnamProtectionProfile, TempoSubdivision};
 use crate::types::{DnamTelemetrySnapshot, Tier};
 
 impl<'a> DynamicDnamEngine<'a> {
@@ -18,6 +21,86 @@ impl<'a> DynamicDnamEngine<'a> {
             Self::X86Simd(e) => e.protection_profile(),
             #[cfg(target_arch = "wasm32")]
             Self::WasmSimd128(e) => e.protection_profile(),
+        }
+    }
+
+    /// Returns the container's cryptographic [`VerificationStatus`].
+    #[inline]
+    pub const fn verification_status(&self) -> &VerificationStatus {
+        match self {
+            Self::Scalar(e) => e.verification_status(),
+            #[cfg(target_arch = "aarch64")]
+            Self::Neon(e) => e.verification_status(),
+            #[cfg(target_arch = "aarch64")]
+            Self::ArmSme(e) => e.verification_status(),
+            #[cfg(target_arch = "x86_64")]
+            Self::X86Simd(e) => e.verification_status(),
+            #[cfg(target_arch = "wasm32")]
+            Self::WasmSimd128(e) => e.verification_status(),
+        }
+    }
+
+    /// Returns the loaded container [`DnamPreamble`].
+    #[inline]
+    pub const fn preamble(&self) -> &DnamPreamble {
+        match self {
+            Self::Scalar(e) => e.preamble(),
+            #[cfg(target_arch = "aarch64")]
+            Self::Neon(e) => e.preamble(),
+            #[cfg(target_arch = "aarch64")]
+            Self::ArmSme(e) => e.preamble(),
+            #[cfg(target_arch = "x86_64")]
+            Self::X86Simd(e) => e.preamble(),
+            #[cfg(target_arch = "wasm32")]
+            Self::WasmSimd128(e) => e.preamble(),
+        }
+    }
+
+    /// Returns the parsed [`DnamJsonHeader`] if loaded.
+    #[inline]
+    pub const fn header(&self) -> Option<&DnamJsonHeader> {
+        match self {
+            Self::Scalar(e) => e.header(),
+            #[cfg(target_arch = "aarch64")]
+            Self::Neon(e) => e.header(),
+            #[cfg(target_arch = "aarch64")]
+            Self::ArmSme(e) => e.header(),
+            #[cfg(target_arch = "x86_64")]
+            Self::X86Simd(e) => e.header(),
+            #[cfg(target_arch = "wasm32")]
+            Self::WasmSimd128(e) => e.header(),
+        }
+    }
+
+    /// Returns the active host sample rate in Hz.
+    #[inline]
+    pub const fn sample_rate_hz(&self) -> u32 {
+        match self {
+            Self::Scalar(e) => e.sample_rate_hz(),
+            #[cfg(target_arch = "aarch64")]
+            Self::Neon(e) => e.sample_rate_hz(),
+            #[cfg(target_arch = "aarch64")]
+            Self::ArmSme(e) => e.sample_rate_hz(),
+            #[cfg(target_arch = "x86_64")]
+            Self::X86Simd(e) => e.sample_rate_hz(),
+            #[cfg(target_arch = "wasm32")]
+            Self::WasmSimd128(e) => e.sample_rate_hz(),
+        }
+    }
+
+    /// Returns the current [`ZohRescaledParams`] for the active host sample rate.
+    #[inline]
+    pub const fn zoh(&self) -> &ZohRescaledParams {
+        match self {
+            Self::Scalar(e) => e.zoh(),
+            #[cfg(target_arch = "aarch64")]
+            Self::Neon(e) => e.zoh(),
+            #[cfg(target_arch = "aarch64")]
+            Self::ArmSme(e) => e.zoh(),
+            #[cfg(target_arch = "x86_64")]
+            Self::X86Simd(e) => e.zoh(),
+            #[cfg(target_arch = "wasm32")]
+            Self::WasmSimd128(e) => e.zoh(),
         }
     }
 
@@ -268,6 +351,86 @@ impl<'a> DynamicDnamEngine<'a> {
         }
     }
 
+    /// Returns the number of user controls $P \in [0, 255]$.
+    #[inline]
+    pub const fn num_controls(&self) -> usize {
+        match self {
+            Self::Scalar(e) => e.num_controls(),
+            #[cfg(target_arch = "aarch64")]
+            Self::Neon(e) => e.num_controls(),
+            #[cfg(target_arch = "aarch64")]
+            Self::ArmSme(e) => e.num_controls(),
+            #[cfg(target_arch = "x86_64")]
+            Self::X86Simd(e) => e.num_controls(),
+            #[cfg(target_arch = "wasm32")]
+            Self::WasmSimd128(e) => e.num_controls(),
+        }
+    }
+
+    /// Returns the slice of raw user-requested physical control values (`len == num_controls`).
+    #[inline]
+    pub fn raw_control_values(&self) -> &[f32] {
+        match self {
+            Self::Scalar(e) => e.raw_control_values(),
+            #[cfg(target_arch = "aarch64")]
+            Self::Neon(e) => e.raw_control_values(),
+            #[cfg(target_arch = "aarch64")]
+            Self::ArmSme(e) => e.raw_control_values(),
+            #[cfg(target_arch = "x86_64")]
+            Self::X86Simd(e) => e.raw_control_values(),
+            #[cfg(target_arch = "wasm32")]
+            Self::WasmSimd128(e) => e.raw_control_values(),
+        }
+    }
+
+    /// Returns the slice of clamped physical control values (`len == num_controls`).
+    #[inline]
+    pub fn clamped_control_values(&self) -> &[f32] {
+        match self {
+            Self::Scalar(e) => e.clamped_control_values(),
+            #[cfg(target_arch = "aarch64")]
+            Self::Neon(e) => e.clamped_control_values(),
+            #[cfg(target_arch = "aarch64")]
+            Self::ArmSme(e) => e.clamped_control_values(),
+            #[cfg(target_arch = "x86_64")]
+            Self::X86Simd(e) => e.clamped_control_values(),
+            #[cfg(target_arch = "wasm32")]
+            Self::WasmSimd128(e) => e.clamped_control_values(),
+        }
+    }
+
+    /// Returns the compiled 64-byte [`ControlClampDescriptor`] slice (`len == num_controls`).
+    #[inline]
+    pub fn control_descriptors(&self) -> &[ControlClampDescriptor] {
+        match self {
+            Self::Scalar(e) => e.control_descriptors(),
+            #[cfg(target_arch = "aarch64")]
+            Self::Neon(e) => e.control_descriptors(),
+            #[cfg(target_arch = "aarch64")]
+            Self::ArmSme(e) => e.control_descriptors(),
+            #[cfg(target_arch = "x86_64")]
+            Self::X86Simd(e) => e.control_descriptors(),
+            #[cfg(target_arch = "wasm32")]
+            Self::WasmSimd128(e) => e.control_descriptors(),
+        }
+    }
+
+    /// Snaps all controls immediately back to their schema defaults and refreshes static state.
+    #[inline]
+    pub fn reset_controls_to_defaults(&mut self) {
+        match self {
+            Self::Scalar(e) => e.reset_controls_to_defaults(),
+            #[cfg(target_arch = "aarch64")]
+            Self::Neon(e) => e.reset_controls_to_defaults(),
+            #[cfg(target_arch = "aarch64")]
+            Self::ArmSme(e) => e.reset_controls_to_defaults(),
+            #[cfg(target_arch = "x86_64")]
+            Self::X86Simd(e) => e.reset_controls_to_defaults(),
+            #[cfg(target_arch = "wasm32")]
+            Self::WasmSimd128(e) => e.reset_controls_to_defaults(),
+        }
+    }
+
     /// Resets all states to their analytical DC resting equilibrium.
     #[inline]
     pub fn reset_to_dc_equilibrium(&mut self) {
@@ -281,6 +444,23 @@ impl<'a> DynamicDnamEngine<'a> {
             Self::X86Simd(e) => e.reset_to_dc_equilibrium(),
             #[cfg(target_arch = "wasm32")]
             Self::WasmSimd128(e) => e.reset_to_dc_equilibrium(),
+        }
+    }
+
+    /// Returns whether this model supports captured hardware freeze (`supports_freeze == true` or
+    /// a `FreezeLatch`-calibrated control in `controls_schema`, `ref[dsp.stage4.captured-freeze]`).
+    #[inline]
+    pub fn supports_freeze(&self) -> bool {
+        match self {
+            Self::Scalar(e) => e.supports_freeze(),
+            #[cfg(target_arch = "aarch64")]
+            Self::Neon(e) => e.supports_freeze(),
+            #[cfg(target_arch = "aarch64")]
+            Self::ArmSme(e) => e.supports_freeze(),
+            #[cfg(target_arch = "x86_64")]
+            Self::X86Simd(e) => e.supports_freeze(),
+            #[cfg(target_arch = "wasm32")]
+            Self::WasmSimd128(e) => e.supports_freeze(),
         }
     }
 
@@ -329,6 +509,190 @@ impl<'a> DynamicDnamEngine<'a> {
             Self::X86Simd(e) => e.is_frozen(),
             #[cfg(target_arch = "wasm32")]
             Self::WasmSimd128(e) => e.is_frozen(),
+        }
+    }
+
+    /// Sets the bypass state (`bypassed`) and spillover trails mode (`trails`).
+    #[inline]
+    pub fn set_bypass(&mut self, bypassed: bool, trails: bool) {
+        match self {
+            Self::Scalar(e) => e.set_bypass(bypassed, trails),
+            #[cfg(target_arch = "aarch64")]
+            Self::Neon(e) => e.set_bypass(bypassed, trails),
+            #[cfg(target_arch = "aarch64")]
+            Self::ArmSme(e) => e.set_bypass(bypassed, trails),
+            #[cfg(target_arch = "x86_64")]
+            Self::X86Simd(e) => e.set_bypass(bypassed, trails),
+            #[cfg(target_arch = "wasm32")]
+            Self::WasmSimd128(e) => e.set_bypass(bypassed, trails),
+        }
+    }
+
+    /// Returns `(bypassed, trails_enabled)`.
+    #[inline]
+    pub const fn bypass_state(&self) -> (bool, bool) {
+        match self {
+            Self::Scalar(e) => e.bypass_state(),
+            #[cfg(target_arch = "aarch64")]
+            Self::Neon(e) => e.bypass_state(),
+            #[cfg(target_arch = "aarch64")]
+            Self::ArmSme(e) => e.bypass_state(),
+            #[cfg(target_arch = "x86_64")]
+            Self::X86Simd(e) => e.bypass_state(),
+            #[cfg(target_arch = "wasm32")]
+            Self::WasmSimd128(e) => e.bypass_state(),
+        }
+    }
+
+    /// Sets the output Mid/Side stereo width $\alpha_{\text{width}} \in [0.0, 2.0]$.
+    #[inline]
+    pub fn set_stereo_width(&mut self, width: f32) {
+        match self {
+            Self::Scalar(e) => e.set_stereo_width(width),
+            #[cfg(target_arch = "aarch64")]
+            Self::Neon(e) => e.set_stereo_width(width),
+            #[cfg(target_arch = "aarch64")]
+            Self::ArmSme(e) => e.set_stereo_width(width),
+            #[cfg(target_arch = "x86_64")]
+            Self::X86Simd(e) => e.set_stereo_width(width),
+            #[cfg(target_arch = "wasm32")]
+            Self::WasmSimd128(e) => e.set_stereo_width(width),
+        }
+    }
+
+    /// Returns the output Mid/Side stereo width $\alpha_{\text{width}} \in [0.0, 2.0]$.
+    #[inline]
+    pub const fn stereo_width(&self) -> f32 {
+        match self {
+            Self::Scalar(e) => e.stereo_width(),
+            #[cfg(target_arch = "aarch64")]
+            Self::Neon(e) => e.stereo_width(),
+            #[cfg(target_arch = "aarch64")]
+            Self::ArmSme(e) => e.stereo_width(),
+            #[cfg(target_arch = "x86_64")]
+            Self::X86Simd(e) => e.stereo_width(),
+            #[cfg(target_arch = "wasm32")]
+            Self::WasmSimd128(e) => e.stereo_width(),
+        }
+    }
+
+    /// Configures host dry/wet blend, output gain trim (dB), and automatic unity loudness leveling.
+    #[inline]
+    pub fn configure_host_mix_and_leveling(
+        &mut self,
+        blend_wet: f32,
+        output_gain_db: f32,
+        apply_unity_leveling: bool,
+    ) {
+        match self {
+            Self::Scalar(e) => {
+                e.configure_host_mix_and_leveling(blend_wet, output_gain_db, apply_unity_leveling)
+            }
+            #[cfg(target_arch = "aarch64")]
+            Self::Neon(e) => {
+                e.configure_host_mix_and_leveling(blend_wet, output_gain_db, apply_unity_leveling)
+            }
+            #[cfg(target_arch = "aarch64")]
+            Self::ArmSme(e) => {
+                e.configure_host_mix_and_leveling(blend_wet, output_gain_db, apply_unity_leveling)
+            }
+            #[cfg(target_arch = "x86_64")]
+            Self::X86Simd(e) => {
+                e.configure_host_mix_and_leveling(blend_wet, output_gain_db, apply_unity_leveling)
+            }
+            #[cfg(target_arch = "wasm32")]
+            Self::WasmSimd128(e) => {
+                e.configure_host_mix_and_leveling(blend_wet, output_gain_db, apply_unity_leveling)
+            }
+        }
+    }
+
+    /// Returns the active host tempo in BPM.
+    #[inline]
+    pub const fn current_bpm(&self) -> f32 {
+        match self {
+            Self::Scalar(e) => e.current_bpm(),
+            #[cfg(target_arch = "aarch64")]
+            Self::Neon(e) => e.current_bpm(),
+            #[cfg(target_arch = "aarch64")]
+            Self::ArmSme(e) => e.current_bpm(),
+            #[cfg(target_arch = "x86_64")]
+            Self::X86Simd(e) => e.current_bpm(),
+            #[cfg(target_arch = "wasm32")]
+            Self::WasmSimd128(e) => e.current_bpm(),
+        }
+    }
+
+    /// Synchronizes tempo-calibrated controls to `bpm` and optional `subdivision_override`.
+    #[inline]
+    pub fn sync_tempo(
+        &mut self,
+        bpm: f32,
+        subdivision_override: Option<TempoSubdivision>,
+        fold_octave: bool,
+    ) -> usize {
+        match self {
+            Self::Scalar(e) => e.sync_tempo(bpm, subdivision_override, fold_octave),
+            #[cfg(target_arch = "aarch64")]
+            Self::Neon(e) => e.sync_tempo(bpm, subdivision_override, fold_octave),
+            #[cfg(target_arch = "aarch64")]
+            Self::ArmSme(e) => e.sync_tempo(bpm, subdivision_override, fold_octave),
+            #[cfg(target_arch = "x86_64")]
+            Self::X86Simd(e) => e.sync_tempo(bpm, subdivision_override, fold_octave),
+            #[cfg(target_arch = "wasm32")]
+            Self::WasmSimd128(e) => e.sync_tempo(bpm, subdivision_override, fold_octave),
+        }
+    }
+
+    /// Registers a tap-tempo event at the current audio frame counter, updates BPM, and syncs controls.
+    #[inline]
+    pub fn register_tap_tempo(
+        &mut self,
+        subdivision_override: Option<TempoSubdivision>,
+        fold_octave: bool,
+    ) -> (f32, usize) {
+        match self {
+            Self::Scalar(e) => e.register_tap_tempo(subdivision_override, fold_octave),
+            #[cfg(target_arch = "aarch64")]
+            Self::Neon(e) => e.register_tap_tempo(subdivision_override, fold_octave),
+            #[cfg(target_arch = "aarch64")]
+            Self::ArmSme(e) => e.register_tap_tempo(subdivision_override, fold_octave),
+            #[cfg(target_arch = "x86_64")]
+            Self::X86Simd(e) => e.register_tap_tempo(subdivision_override, fold_octave),
+            #[cfg(target_arch = "wasm32")]
+            Self::WasmSimd128(e) => e.register_tap_tempo(subdivision_override, fold_octave),
+        }
+    }
+
+    /// Applies a named preset atomically (`ref[dsp.ctrl.switch.conditional-batch]`).
+    #[inline]
+    pub fn apply_preset(&mut self, preset_id: &str) -> Result<(), DnamError> {
+        match self {
+            Self::Scalar(e) => e.apply_preset(preset_id),
+            #[cfg(target_arch = "aarch64")]
+            Self::Neon(e) => e.apply_preset(preset_id),
+            #[cfg(target_arch = "aarch64")]
+            Self::ArmSme(e) => e.apply_preset(preset_id),
+            #[cfg(target_arch = "x86_64")]
+            Self::X86Simd(e) => e.apply_preset(preset_id),
+            #[cfg(target_arch = "wasm32")]
+            Self::WasmSimd128(e) => e.apply_preset(preset_id),
+        }
+    }
+
+    /// Processes a stereo audio block in-place (`left_io`, `right_io`).
+    #[inline]
+    pub fn process_block_in_place(&mut self, left_io: &mut [f32], right_io: &mut [f32]) {
+        match self {
+            Self::Scalar(e) => e.process_block_in_place(left_io, right_io),
+            #[cfg(target_arch = "aarch64")]
+            Self::Neon(e) => e.process_block_in_place(left_io, right_io),
+            #[cfg(target_arch = "aarch64")]
+            Self::ArmSme(e) => e.process_block_in_place(left_io, right_io),
+            #[cfg(target_arch = "x86_64")]
+            Self::X86Simd(e) => e.process_block_in_place(left_io, right_io),
+            #[cfg(target_arch = "wasm32")]
+            Self::WasmSimd128(e) => e.process_block_in_place(left_io, right_io),
         }
     }
 
@@ -489,6 +853,32 @@ mod tests {
             dyn_eng.set_maximize_tier_on_bounce(true);
             assert!(dyn_eng.maximize_tier_on_bounce());
             assert_eq!(dyn_eng.effective_tier(), Tier::Lite);
+            assert!(dyn_eng.supports_freeze());
+            assert_eq!(dyn_eng.sample_rate_hz(), 44_100);
+            assert_eq!(dyn_eng.zoh().sample_rate_host_hz, 44_100);
+            let _ = dyn_eng.verification_status();
+            let _ = dyn_eng.preamble();
+            assert!(dyn_eng.header().is_some());
+            assert_eq!(dyn_eng.num_controls(), 0);
+            assert_eq!(dyn_eng.raw_control_values().len(), dyn_eng.num_controls());
+            assert_eq!(
+                dyn_eng.clamped_control_values().len(),
+                dyn_eng.num_controls()
+            );
+            assert_eq!(dyn_eng.control_descriptors().len(), dyn_eng.num_controls());
+            dyn_eng.reset_controls_to_defaults();
+            dyn_eng.set_bypass(true, true);
+            assert_eq!(dyn_eng.bypass_state(), (true, true));
+            dyn_eng.set_bypass(false, false);
+            assert_eq!(dyn_eng.bypass_state(), (false, false));
+            dyn_eng.set_stereo_width(1.5);
+            assert!((dyn_eng.stereo_width() - 1.5).abs() < 1e-6);
+            dyn_eng.configure_host_mix_and_leveling(0.8, -1.5, true);
+            let _ = dyn_eng.sync_tempo(128.0, Some(TempoSubdivision::Eighth), false);
+            assert!((dyn_eng.current_bpm() - 128.0).abs() < 1e-6);
+            let (tap_bpm, _) = dyn_eng.register_tap_tempo(None, false);
+            assert!(tap_bpm >= 20.0);
+            assert!(dyn_eng.apply_preset("nonexistent").is_err());
 
             let l_in = [0.1f32; 32];
             let r_in = [-0.1f32; 32];
@@ -496,8 +886,12 @@ mod tests {
             let mut r_out = [0.0f32; 32];
             dyn_eng.render_offline_bounce(&l_in, &r_in, &mut l_out, &mut r_out);
             dyn_eng.process_block(&l_in, &r_in, &mut l_out, &mut r_out);
+            let mut l_ip = l_in;
+            let mut r_ip = r_in;
+            dyn_eng.process_block_in_place(&mut l_ip, &mut r_ip);
             dyn_eng.process_mono_to_stereo(&l_in, &mut l_out, &mut r_out);
             dyn_eng.process_mono(&l_in, &mut l_out);
+            dyn_eng.reset_to_dc_equilibrium();
             dyn_eng
                 .reload_model_in_place_owned(&container, Tier::Lite, 48_000)
                 .unwrap();
@@ -515,5 +909,59 @@ mod tests {
 
         let _owned = DynamicDnamEngine::from_bytes_owned(&container, Tier::Lite, 48_000).unwrap();
         let _auto = DynamicDnamEngine::from_bytes(&container, Tier::Lite, 48_000).unwrap();
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn prop_dynamic_engine_in_place_and_forwarding_parity(
+            width in 0.0f32..=2.0f32,
+            bpm in 20.0f32..=400.0f32,
+            bypassed in proptest::bool::ANY,
+            trails in proptest::bool::ANY,
+            blend_wet in 0.0f32..=1.0f32,
+            gain_db in -12.0f32..=12.0f32,
+            in_sample in -1.0f32..=1.0f32,
+        ) {
+            let mut header = DnamJsonHeader::default_reference();
+            let arena = alloc::vec![0u8; ARENA_OFFSET_ULTRA_END as usize];
+            let container = build_dnam_container(&mut header, &arena, &arena, false).unwrap();
+
+            let mut eng_oop = DynamicDnamEngine::from_bytes_with_backend(
+                &container,
+                Tier::Lite,
+                48_000,
+                BackendKind::Scalar,
+            )
+            .unwrap();
+            let mut eng_ip = DynamicDnamEngine::from_bytes_with_backend(
+                &container,
+                Tier::Lite,
+                48_000,
+                BackendKind::Scalar,
+            )
+            .unwrap();
+
+            for eng in [&mut eng_oop, &mut eng_ip] {
+                eng.set_stereo_width(width);
+                eng.set_bypass(bypassed, trails);
+                eng.configure_host_mix_and_leveling(blend_wet, gain_db, true);
+                eng.sync_tempo(bpm, None, false);
+            }
+
+            let l_in = [in_sample; 16];
+            let r_in = [-in_sample * 0.5; 16];
+            let mut l_out = [0.0f32; 16];
+            let mut r_out = [0.0f32; 16];
+            eng_oop.process_block(&l_in, &r_in, &mut l_out, &mut r_out);
+
+            let mut l_ip = l_in;
+            let mut r_ip = r_in;
+            eng_ip.process_block_in_place(&mut l_ip, &mut r_ip);
+
+            for i in 0..16 {
+                proptest::prop_assert_eq!(l_out[i].to_bits(), l_ip[i].to_bits());
+                proptest::prop_assert_eq!(r_out[i].to_bits(), r_ip[i].to_bits());
+            }
+        }
     }
 }

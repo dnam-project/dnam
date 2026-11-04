@@ -26,6 +26,7 @@ pub const fn uplo_u_packed_len(n_dim: usize) -> usize {
 /// Packs a dense symmetric $N \times N$ row-major matrix `dense_matrix` (`N * N` elements)
 /// into **Column-Major Upper-Triangular (`LAPACK uplo='U'`)** format:
 /// $$\operatorname{pack}_{\text{U}}(\mathbf{G})\!\left[i + \frac{j(j+1)}{2}\right] = \mathbf{G}[i, j], \qquad 0 \le i \le j < N$$
+#[inline]
 pub fn pack_uplo_u_f64(dense_matrix: &[f64], n_dim: usize, out_packed: &mut [f64]) {
     let mut idx = 0;
     for col in 0..n_dim {
@@ -42,6 +43,7 @@ pub fn pack_uplo_u_f64(dense_matrix: &[f64], n_dim: usize, out_packed: &mut [f64
 /// By the **Nested Principal Submatrix Prefix Theorem**, passing `n_tier = 64` (`Lite`) or
 /// `n_tier = 128` (`Full`) on an `Ultra` ($N=192$) packed buffer extracts the exact leading
 /// principal submatrix from the contiguous prefix `[0 .. n_tier*(n_tier+1)/2]`!
+#[inline]
 pub fn unpack_uplo_u_f64(packed_u: &[f64], n_tier: usize, out_dense: &mut [f64]) {
     let mut idx = 0;
     for col in 0..n_tier {

@@ -1001,3 +1001,59 @@ reason = "Studio/Trainer workspace sidecar cache owned by packages/studio and pa
 [rules."train.cloud.job-protocol"]
 scope = "out-of-scope"
 reason = "Cloud training job protocol owned by packages/trainer and packages/studio"
+
+# ==============================================================================
+# 17. SDKs: Python SDK (`docs/specs/sdks/python_sdk.md`)
+# ==============================================================================
+[rules."sdk.python.layout.package-namespace"]
+scope = "out-of-scope"
+reason = "Python SDK (packages/python) contract verified by Python test suite"
+
+[rules."sdk.python.layout.curated-exports"]
+scope = "out-of-scope"
+reason = "Python SDK (packages/python) contract verified by Python test suite"
+
+[rules."sdk.python.api.core-types"]
+scope = "out-of-scope"
+reason = "Python SDK (packages/python) contract verified by Python test suite"
+
+[rules."sdk.python.api.engine-facets"]
+scope = "out-of-scope"
+reason = "Python SDK (packages/python) contract verified by Python test suite"
+
+[rules."sdk.python.api.flexible-in-precise-out"]
+scope = "out-of-scope"
+reason = "Python SDK (packages/python) contract verified by Python test suite"
+
+[rules."sdk.python.errors.typed-hierarchy"]
+scope = "out-of-scope"
+reason = "Python SDK (packages/python) contract verified by Python test suite"
+
+[rules."sdk.python.engine.zero-copy-and-gil"]
+scope = "out-of-scope"
+reason = "Python SDK (packages/python) contract verified by Python test suite"
+
+[rules."sdk.python.engine.pedalboard-call"]
+scope = "out-of-scope"
+reason = "Python SDK (packages/python) contract verified by Python test suite"
+
+[rules."sdk.python.model.containers-and-checkpoints"]
+scope = "out-of-scope"
+reason = "Python SDK (packages/python) contract verified by Python test suite"
+
+[rules."sdk.python.controls.space-and-tempo"]
+scope = "out-of-scope"
+reason = "Python SDK (packages/python) contract verified by Python test suite"
+
+[rules."sdk.python.schema.rust-parity"]
+scope = "out-of-scope"
+reason = "Python SDK (packages/python) contract verified by Python test suite"
+
+[rules."sdk.python.provenance.v2-security"]
+scope = "out-of-scope"
+reason = "Python SDK (packages/python) contract verified by Python test suite"
+
+[rules."sdk.python.dsp.reference-kernels"]
+scope = "out-of-scope"
+reason = "Python SDK (packages/python) contract verified by Python test suite"
+
