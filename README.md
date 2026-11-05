@@ -36,10 +36,11 @@ DNAM models individual pieces of gear or an entire signal chain as a single `.dn
 | **Adding Knob Settings Later** | Capture a separate file | Retrain from scratch | Retrain from scratch | **Incremental checkpoint resume (`.dnam-ckpt`)—add new knob or switch captures in seconds without altering existing tones** |
 | **Uncaptured Knob Range Safety** | N/A | Can become unstable outside captured range | Manual `[0, 1]` UI limits | **Automatic 3-Phase safety clamping keeps uncaptured knob ranges, switches, and extreme multi-knob corners stable** |
 | **Quality Scaling** | Separate model files per size (`Lite` vs. `Standard`) | Single fixed size | Single fixed size per export | **4 nested tiers (`Lite ⊂ Full ⊂ Pro ⊂ Ultra`) in one `.dnam` file, plus automatic `4×` oversampled `Ultra` DAW bounce** |
+| **Est. Max LV2 Instances at Equivalent Quality (`1× RK3582 Cortex-A76` @ 80% Cap, incl. LV2 Overhead)** | **Studio (`Standard`):** `3–5×` mono LV2s (`1–2×` stereo pairs; `1–2×` multi-LV2 full rigs)<br/>**Live (`Lite`):** `8–12×` mono LV2s (`4–6×` stereo pairs) | **Single Fixed Size (`LSTM-40`):** `4–6×` mono LV2s (`2–3×` stereo pairs; `2–3×` multi-LV2 full rigs) | **Studio (`3-Knob`):** `3–4×` mono LV2s (`1–2×` stereo pairs; `1–2×` multi-LV2 full rigs) | **Studio (`Full`):** **`14–20×` true-stereo LV2s / full rigs** (`28–40×` on `2× A76`)<br/>**Live (`Lite`):** **`22–30×` true-stereo LV2s / full rigs** (`44–60×` on `2× A76`) |
 | **Sample Rates & Routing** | Fixed training sample rate; mono | Fixed training sample rate; mono | Fixed training sample rate; mono | **Automatic `44.1–192 kHz` adaptation; Mono (`1→1`, `2→1`), True Stereo (`1→2`, `2→2`), `4CM`, and `WDW`** |
 | **File Format & Creator Attribution** | Large text JSON `.nam` or `.wav` | Text JSON `.json` | JSON or Python `.pt` | **Compact binary `.dnam` (`< 50 µs` load), cryptographic creator signatures, `.dnam-prev` audition files, and buyer watermarking** |
 
-For a deeper technical comparison of the underlying DSP and training architecture, see the [TORA Architecture Overview](docs/specs/architecture/tora_architecture.md) and [System Goals & Requirements](docs/requirements/system_goals_and_requirements.md).
+For a deeper technical comparison of the underlying DSP and training architecture—including how per-plugin LV2 dispatch, `2×` mono-to-stereo LV2 duplication, `4–6×` multi-plugin full-rig chaining, and `64 KB` L1D / `512 KB` L2 cache spills are modeled on the Rockchip RK3582—see the [TORA Architecture Overview](docs/specs/architecture/tora_architecture.md#22-hardware--dsp-benchmark-summary) and [System Goals & Requirements](docs/requirements/system_goals_and_requirements.md).
 
 ---
 
@@ -47,13 +48,14 @@ For a deeper technical comparison of the underlying DSP and training architectur
 
 Instead of forcing tone creators to train and distribute separate "feather", "lite", and "standard" files, DNAM trains all four tiers together in a single run and packs them into one `.dnam` file:
 
-| Tier | Where It Shines | Perceptual Quality Target (`bESR`) | Typical CPU / Instance Budget (`48 kHz` Stereo) |
-| :--- | :--- | :--- | :--- |
-| **`Lite`** | High-density live pedalboards & instant web browser previews | `≤ -18 dB` (`≤ 0.75 dB` EQ tilt) | **10+ instances** on a single embedded ARM64 core (`< 0.7%` single-core CPU on M-series / modern desktop) |
-| **`Full`** | Default stage performance & zero-latency DAW tracking | `≤ -23 dB` (`≤ 0.35 dB` EQ tilt) | **6+ instances** on a single embedded ARM64 core (`< 0.8%` single-core desktop CPU) |
-| **`Pro`** | Critical studio mixing, solo stems & reference monitoring | `≤ -30 dB` (`≤ 0.15 dB` EQ tilt) | **2+ instances** on a single embedded ARM64 core (`< 0.9%` single-core desktop CPU) |
-| **`Ultra`** | Archival studio reference & automatic `4×` oversampled DAW offline bounce | `≤ -34 dB` (`≤ 0.10 dB` EQ tilt) | Track live in `Full`, then automatically promote to **`Ultra` at `4×` oversampling** when exporting your mix |
+| Tier | Where It Shines | Perceptual Quality Target (`bESR`) | Est. Embedded CPU & Safe Instances (`1× RK3582 Cortex-A76` + LV2 @ 80% RT Cap) | Desktop CPU (`48 kHz` Stereo) & Normative Floor |
+| :--- | :--- | :--- | :--- | :--- |
+| **`Lite`** | High-density live pedalboards & instant web browser previews | `≤ -18 dB` (`≤ 0.75 dB` EQ tilt) | **`~2.5% – 3.5%` CPU** (`22–30×` on `1× A76` / `44–60×` on `2× A76`) | `< 0.7%` desktop CPU (`REQ-6.1` floor: `≥ 10×` / core) |
+| **`Full`** | Default stage performance & zero-latency DAW tracking | `≤ -23 dB` (`≤ 0.35 dB` EQ tilt) | **`~4.0% – 5.5%` CPU** (`14–20×` on `1× A76` / `28–40×` on `2× A76`) | `< 0.8%` desktop CPU (`REQ-6.1` floor: `≥ 6×` / core) |
+| **`Pro`** | Critical studio mixing, solo stems & reference monitoring | `≤ -30 dB` (`≤ 0.15 dB` EQ tilt) | **`~6.5% – 9.0%` CPU** (`8–12×` on `1× A76` / `16–24×` on `2× A76`) | `< 0.9%` desktop CPU (`REQ-6.1` floor: `≥ 2×` / core) |
+| **`Ultra`** | Archival studio reference & automatic `4×` oversampled DAW offline bounce | `≤ -34 dB` (`≤ 0.10 dB` EQ tilt) | **`~10.0% – 14.0%` CPU** (`5–8×` on `1× A76` / `10–16×` on `2× A76`) | `< 0.9%` live desktop (`~3.6%` at `4×` oversampled bounce) |
 
+- **Embedded Pedalboard Sizing (`Rockchip RK3582 / Cortex-A76`):** Embedded estimates above include LV2 plugin host dispatch, atom/tempo port parsing, multi-instance L1D $\to$ L2 cache pressure across `64–128` sample buffers, and a `20%` real-time OS/interrupt safety reserve (`80%` audio utilization cap). See [Hardware & DSP Benchmark Summary](docs/specs/architecture/tora_architecture.md#22-hardware--dsp-benchmark-summary) for the full estimation model.
 - **Perceptual Quality Certification:** Every model is verified across Low (`20–250 Hz`), Mid (`250 Hz–2.5 kHz`), and High (`2.5–18 kHz`) frequency bands against your audio interface's measured noise floor so upper-harmonic detail and quiet decay tails are never masked by low-end energy. See the [Psychoacoustic Quality Standard](docs/specs/architecture/psychoacoustic_quality_and_tiers.md).
 - **Consistent Volume & Phase:** Models are automatically calibrated to unity gain at their default knob positions, maintain `0.00 dB` loudness matching when switching between `Lite`, `Full`, `Pro`, and `Ultra`, and automatically correct phase-inverting hardware circuits when blending wet/dry signals in parallel.
 
