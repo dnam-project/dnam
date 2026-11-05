@@ -1,10 +1,5 @@
 # Dynamic Neural Audio Modeler (DNAM) — Agent Development & Discovery Guide
 
-**Dynamic Neural Audio Modeler (DNAM / TORA)** unifies:
-1. **Operators:** Op-T (Transport/Elastic Buffer), Op-M (Modal Bank/Kautz), Op-N (Commuted Cascade/PolyADAA).
-2. **Topology:** 8-Port Matrix Router + Stages I–IV + 256-D Mid/Side Kronecker Head.
-3. **Control Bus:** $3\text{ kHz}$ Envelopes/LFOs + Lobatto HDMR & Rank-4 FM, Non-Stop 3-Phase Clamping, and `.dnam-ckpt` Stem Expansion.
-
 ## 1. Global Tech Stack & Tooling Rules
 
 - **Monorepo Orchestration (`moon` + `mise`):** Run all builds, quality gates, tests, CLIs, and dev servers via `moon` ([`.moon/workspace.yml`](.moon/workspace.yml) & [`mise.toml`](mise.toml)): `moon check --all`, `moon check <project>`, or `moon run <project>:<task>`.
@@ -23,7 +18,7 @@
 
 | Package / Domain | Package `AGENTS.md` & Contributing | Canonical Documentation (SSOT) |
 | :--- | :--- | :--- |
-| **Monorepo & Guardrails (`tests/`)** | [`AGENTS.md`](AGENTS.md), [`tests/AGENTS.md`](tests/AGENTS.md), [`CONTRIBUTING.md`](CONTRIBUTING.md), [`docs/CONTRIBUTING.md`](docs/CONTRIBUTING.md) | [`index.md`](docs/index.md), [`tora_architecture.md`](docs/specs/architecture/tora_architecture.md), [`project_and_documentation_quality.md`](docs/specs/architecture/project_and_documentation_quality.md) |
+| **Monorepo & Guardrails (`tests/`)** | [`README.md`](README.md), [`tests/AGENTS.md`](tests/AGENTS.md), [`CONTRIBUTING.md`](CONTRIBUTING.md), [`docs/CONTRIBUTING.md`](docs/CONTRIBUTING.md) | [`index.md`](docs/index.md), [`project_and_documentation_quality.md`](docs/specs/architecture/project_and_documentation_quality.md) |
 | **Rust Engine (`packages/engine/`)** | [`engine/AGENTS.md`](packages/engine/AGENTS.md), [`engine/CONTRIBUTING.md`](packages/engine/CONTRIBUTING.md) | [`tora_architecture.md`](docs/specs/architecture/tora_architecture.md), [`router_and_stages_topology.md`](docs/specs/dsp/router_and_stages_topology.md) |
 | **Python SDK (`packages/python/`)** | [`python/AGENTS.md`](packages/python/AGENTS.md), [`python/CONTRIBUTING.md`](packages/python/CONTRIBUTING.md) | [`python_sdk.md`](docs/specs/sdks/python_sdk.md), [`dnam_binary_format.md`](docs/specs/containers/dnam_binary_format.md) |
 | **JS / WebAudio (`packages/js/`)** | [`js/AGENTS.md`](packages/js/AGENTS.md), [`js/CONTRIBUTING.md`](packages/js/CONTRIBUTING.md) | [`typescript_sdk.md`](docs/specs/sdks/typescript_sdk.md), [`dnam_binary_format.md`](docs/specs/containers/dnam_binary_format.md) |
@@ -33,5 +28,6 @@
 
 ## 4. Maintaining `AGENTS.md` & Documentation
 
+- **Root `README.md` Audience:** Keep [`README.md`](README.md) tailored for DNAM's target audience (musicians, tone creators, and producers first, plus a concise OEM/SDK overview); keep developer setup and internal specs in [`CONTRIBUTING.md`](CONTRIBUTING.md), package `README.md`s, and [`docs/`](docs/index.md).
 - **Zero Duplication:** Keep `AGENTS.md` files strictly as routing maps (`< 5,000` B root, `< 2,500` B scoped).
 - **Single Source of Truth:** Document every equation, stability rule (`r[...]`), or workflow rule in its canonical `docs/` file per [`docs/CONTRIBUTING.md`](docs/CONTRIBUTING.md) and [`CONTRIBUTING.md`](CONTRIBUTING.md).
