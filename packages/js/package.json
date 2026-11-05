@@ -1,8 +1,13 @@
 {
-  "name": "@dnam-project/engine",
+  "name": "@dnam-project/dnam",
   "version": "0.1.0",
-  "description": "TypeScript, Node.js N-API, and WebAssembly SIMD128 / WebAudio AudioWorklet SDK for the Dynamic Neural Audio Modeler (DNAM)",
+  "description": "Idiomatic TypeScript 7, Node.js 26 N-API v10, and WebAssembly SIMD128 / WebAudio AudioWorklet SDK for the Dynamic Neural Audio Modeler (DNAM)",
   "type": "module",
+  "sideEffects": [
+    "./dist/node.js",
+    "./dist/browser.js",
+    "./dist/web-audio-processor.js"
+  ],
   "license": "LicenseRef-DNAM-1.0.0",
   "repository": {
     "type": "git",
@@ -10,7 +15,7 @@
     "directory": "packages/js"
   },
   "engines": {
-    "node": ">=24.0.0"
+    "node": ">=26.0.0"
   },
   "files": [
     "dist",
@@ -34,23 +39,39 @@
       "types": "./dist/browser.d.ts",
       "default": "./dist/browser.js"
     },
+    "./parameters": {
+      "types": "./dist/parameters/index.d.ts",
+      "default": "./dist/parameters/index.js"
+    },
+    "./tempo": {
+      "types": "./dist/tempo/index.d.ts",
+      "default": "./dist/tempo/index.js"
+    },
     "./schema": {
       "types": "./dist/schema/index.d.ts",
       "default": "./dist/schema/index.js"
     },
-    "./worklet": {
-      "types": "./dist/worklet/index.d.ts",
-      "default": "./dist/worklet/index.js"
+    "./provenance": {
+      "types": "./dist/provenance/index.d.ts",
+      "default": "./dist/provenance/index.js"
     },
-    "./worklet-processor": {
-      "types": "./dist/worklet/processor.d.ts",
-      "default": "./dist/worklet-processor.js"
+    "./checkpoint": {
+      "types": "./dist/checkpoint/index.d.ts",
+      "default": "./dist/checkpoint/index.js"
     },
-    "./dnam_engine.wasm": "./dist/dnam_engine.wasm"
-  },
-  "dependencies": {
-    "@standard-schema/spec": "catalog:",
-    "zod": "catalog:"
+    "./dsp": {
+      "types": "./dist/dsp/index.d.ts",
+      "default": "./dist/dsp/index.js"
+    },
+    "./web-audio": {
+      "types": "./dist/web-audio/index.d.ts",
+      "default": "./dist/web-audio/index.js"
+    },
+    "./web-audio/processor": {
+      "types": "./dist/web-audio/processor.d.ts",
+      "default": "./dist/web-audio-processor.js"
+    },
+    "./dnam.wasm": "./dist/dnam.wasm"
   },
   "devDependencies": {
     "@fast-check/vitest": "catalog:",

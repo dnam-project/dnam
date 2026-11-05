@@ -50,28 +50,88 @@ impl Stage3CabinetModals {
         clean_sub: f32,
         fir_taps: &[f32; 16],
     ) -> (f32, f32) {
+        use crate::math::{DefaultMathBackend, MathBackend, SimdVec4};
+        type V = <DefaultMathBackend as MathBackend>::Vec4;
+
         let ptr = self.fir_write_ptr & 0x0F;
         let x_delayed_16 = self.fir_history[ptr];
         self.fir_history[ptr] = x;
         self.fir_write_ptr = (ptr + 1) & 0x0F;
 
-        let mut acc0 = 0.0f32;
-        let mut acc1 = 0.0f32;
-        let mut acc2 = 0.0f32;
-        let mut acc3 = 0.0f32;
+        let mut acc = V::zero();
         for blk in 0..4 {
             let i = blk * 4;
-            let idx0 = (ptr + 16 - i) & 0x0F;
-            let idx1 = (ptr + 15 - i) & 0x0F;
-            let idx2 = (ptr + 14 - i) & 0x0F;
-            let idx3 = (ptr + 13 - i) & 0x0F;
-            acc0 += self.fir_history[idx0] * fir_taps[i];
-            acc1 += self.fir_history[idx1] * fir_taps[i + 1];
-            acc2 += self.fir_history[idx2] * fir_taps[i + 2];
-            acc3 += self.fir_history[idx3] * fir_taps[i + 3];
+            let h = V::from_array([
+                self.fir_history[(ptr + 16 - i) & 0x0F],
+                self.fir_history[(ptr + 15 - i) & 0x0F],
+                self.fir_history[(ptr + 14 - i) & 0x0F],
+                self.fir_history[(ptr + 13 - i) & 0x0F],
+            ]);
+            let t = V::from_array([
+                fir_taps[i],
+                fir_taps[i + 1],
+                fir_taps[i + 2],
+                fir_taps[i + 3],
+            ]);
+            acc = acc.fma(h, t);
         }
-        let early_fir = (acc0 + acc1) + (acc2 + acc3);
+        let early_fir = acc.horizontal_sum();
         (early_fir + clean_sub, x_delayed_16)
+    }
+
+    /// Evaluates a stereo pair (`self` = Left, `right` = Right) of 16-tap Early FIRs sharing
+    /// `fir_taps`, loading each 4-tap coefficient vector once (`0 FDIV`, `0 FSQRT`).
+    #[inline(always)]
+    pub fn step_fir_stereo_with_delayed_tap<B: crate::math::MathBackend>(
+        &mut self,
+        right: &mut Self,
+        x_l: f32,
+        x_r: f32,
+        clean_sub_l: f32,
+        clean_sub_r: f32,
+        fir_taps: &[f32; 16],
+    ) -> (f32, f32, f32, f32) {
+        use crate::math::SimdVec4;
+        let ptr_l = self.fir_write_ptr & 0x0F;
+        let ptr_r = right.fir_write_ptr & 0x0F;
+        let x_del_l = self.fir_history[ptr_l];
+        let x_del_r = right.fir_history[ptr_r];
+        self.fir_history[ptr_l] = x_l;
+        right.fir_history[ptr_r] = x_r;
+        self.fir_write_ptr = (ptr_l + 1) & 0x0F;
+        right.fir_write_ptr = (ptr_r + 1) & 0x0F;
+
+        let tap_chunks: &[[f32; 4]; 4] = zerocopy::transmute_ref!(fir_taps);
+        let mut acc_l = B::Vec4::zero();
+        let mut acc_r = B::Vec4::zero();
+        for (blk, tap_chunk) in tap_chunks.iter().enumerate() {
+            let i = blk * 4;
+            let idx0_l = (ptr_l + 16 - i) & 0x0F;
+            let idx1_l = (ptr_l + 15 - i) & 0x0F;
+            let idx2_l = (ptr_l + 14 - i) & 0x0F;
+            let idx3_l = (ptr_l + 13 - i) & 0x0F;
+            let hl = B::Vec4::from_array([
+                self.fir_history[idx0_l],
+                self.fir_history[idx1_l],
+                self.fir_history[idx2_l],
+                self.fir_history[idx3_l],
+            ]);
+            let hr = B::Vec4::from_array([
+                right.fir_history[(ptr_r + 16 - i) & 0x0F],
+                right.fir_history[(ptr_r + 15 - i) & 0x0F],
+                right.fir_history[(ptr_r + 14 - i) & 0x0F],
+                right.fir_history[(ptr_r + 13 - i) & 0x0F],
+            ]);
+            let t = B::Vec4::load(tap_chunk);
+            acc_l = acc_l.fma(hl, t);
+            acc_r = acc_r.fma(hr, t);
+        }
+        (
+            acc_l.horizontal_sum() + clean_sub_l,
+            acc_r.horizontal_sum() + clean_sub_r,
+            x_del_l,
+            x_del_r,
+        )
     }
 
     /// Evaluates Stage III for input `x` and parallel `clean_sub` feed, returning `(stage3_out, x_delayed_16)`

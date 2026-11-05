@@ -2,7 +2,10 @@
 //!
 //! Canonical Reference: `docs/specs/dsp/router_and_stages_topology.md` (`ref[dsp.stage4.spatial-tank]`, `ref[dsp.stage4.dc-blocker]`, `ref[dsp.stage4.loop-saturator]`, `ref[dsp.stage4.quiet-feedback-knee]`).
 
-use crate::math::{DefaultMathBackend, MathBackend, flush_recursive_state_f32};
+use crate::math::{
+    DefaultMathBackend, MathBackend, SimdVec4, flush_recursive_state_f32,
+    flush_recursive_state_vec4,
+};
 use crate::operators::op_m::algebraic_unit_rotor_op_m;
 use crate::operators::op_t::BallisticDuckingVca;
 
@@ -191,20 +194,30 @@ impl Stage4SpatialTank {
         let d3 = 1.0 + r3 * r3;
 
         if d0 <= 2.0 && d1 <= 2.0 && d2 <= 2.0 && d3 <= 2.0 {
-            let d = [d0, d1, d2, d3];
+            type V = <DefaultMathBackend as MathBackend>::Vec4;
+            let dv = V::from_array([d0, d1, d2, d3]);
+            let xv = V::load(&x);
+            let two = V::splat(2.0);
+            let mut inv = V::splat(SEED_A).sub(V::splat(SEED_B).mul(dv));
+            inv = inv.mul(two.sub(dv.mul(inv)));
+            inv = inv.mul(two.sub(dv.mul(inv)));
+            inv = inv.mul(two.sub(dv.mul(inv)));
+            let knee_u = V::splat(g)
+                .mul(xv)
+                .mul(V::splat(0.85).add(V::splat(0.15).mul(inv)));
+            let v = knee_u
+                .mul(V::splat(TWO_OVER_3V))
+                .max(V::splat(-1.0))
+                .min(V::splat(1.0));
+            let v_ceil_v = V::splat(V_CEIL);
+            let prod = v_ceil_v.mul(v);
+            let half_sq = V::splat(0.5).mul(v).mul(v);
+            let res = prod
+                .mul(V::splat(1.5).sub(half_sq))
+                .max(V::splat(-V_CEIL))
+                .min(v_ceil_v);
             let mut out = [0.0f32; 4];
-            for i in 0..4 {
-                let di = d[i];
-                let mut inv = SEED_A - SEED_B * di;
-                inv *= 2.0 - di * inv;
-                inv *= 2.0 - di * inv;
-                inv *= 2.0 - di * inv;
-                let knee_u = (g * x[i]) * (0.85 + 0.15 * inv);
-                let v = (knee_u * TWO_OVER_3V).clamp(-1.0, 1.0);
-                let prod = V_CEIL * v;
-                let half_sq = (0.5 * v) * v;
-                out[i] = (prod * (1.5 - half_sq)).clamp(-V_CEIL, V_CEIL);
-            }
+            res.store(&mut out);
             return out;
         }
 
@@ -234,6 +247,7 @@ impl Stage4SpatialTank {
 
     #[inline(always)]
     fn step_reads_and_saturate(&mut self) -> ([f32; TANK_LITE_LINES], [f32; TANK_LITE_LINES]) {
+        type V = <DefaultMathBackend as MathBackend>::Vec4;
         let mut raw_fp16 = [0u16; TANK_LITE_LINES];
         for l in 0..TANK_LITE_LINES {
             let d_len = self.delay_lengths[l].clamp(1, TANK_LINE_CAPACITY - 1);
@@ -242,12 +256,40 @@ impl Stage4SpatialTank {
         }
         let reads = DefaultMathBackend::fp16x4_to_f32x4(&raw_fp16);
 
-        let readout_sig = [
-            self.dc_blockers[0].step(reads[0]),
-            self.dc_blockers[1].step(reads[1]),
-            self.dc_blockers[2].step(reads[2]),
-            self.dc_blockers[3].step(reads[3]),
-        ];
+        let x_vec = V::load(&reads);
+        let x_prev_vec = V::from_array([
+            self.dc_blockers[0].x_prev,
+            self.dc_blockers[1].x_prev,
+            self.dc_blockers[2].x_prev,
+            self.dc_blockers[3].x_prev,
+        ]);
+        let y_prev_vec = V::from_array([
+            self.dc_blockers[0].y_prev,
+            self.dc_blockers[1].y_prev,
+            self.dc_blockers[2].y_prev,
+            self.dc_blockers[3].y_prev,
+        ]);
+        let r_dc_vec = V::from_array([
+            self.dc_blockers[0].r_dc,
+            self.dc_blockers[1].r_dc,
+            self.dc_blockers[2].r_dc,
+            self.dc_blockers[3].r_dc,
+        ]);
+        let alpha_vec = V::splat(0.5).mul(V::splat(1.0).add(r_dc_vec));
+        let y_vec = alpha_vec
+            .mul(x_vec.sub(x_prev_vec))
+            .add(r_dc_vec.mul(y_prev_vec));
+        let mut x_flushed = [0.0f32; TANK_LITE_LINES];
+        let mut y_flushed = [0.0f32; TANK_LITE_LINES];
+        let mut readout_sig = [0.0f32; TANK_LITE_LINES];
+        flush_recursive_state_vec4(x_vec).store(&mut x_flushed);
+        flush_recursive_state_vec4(y_vec).store(&mut y_flushed);
+        y_vec.store(&mut readout_sig);
+        for l in 0..TANK_LITE_LINES {
+            self.dc_blockers[l].x_prev = x_flushed[l];
+            self.dc_blockers[l].y_prev = y_flushed[l];
+        }
+
         let loop_sig = if self.freeze {
             reads
         } else {

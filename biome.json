@@ -10,6 +10,7 @@
     "includes": [
       "packages/js/src/**/*.ts",
       "packages/js/tests/**/*.ts",
+      "packages/js/examples/**/*.ts",
       "packages/js/scripts/**/*.mjs",
       "packages/js/*.ts",
       "packages/js/*.json",
@@ -191,9 +192,9 @@
     {
       "includes": [
         "packages/js/src/browser.ts",
-        "packages/js/src/drivers/wasm.ts",
+        "packages/js/src/internal/native/wasm.ts",
         "packages/js/src/schema/**/*.ts",
-        "packages/js/src/worklet/**/*.ts",
+        "packages/js/src/web-audio/**/*.ts",
         "packages/ui/src/**/*.ts",
         "packages/ui/src/**/*.tsx",
         "packages/studio/src/ui/**/*.ts",
@@ -206,32 +207,12 @@
               "level": "error",
               "options": {
                 "paths": {
-                  "node:fs": "Node.js filesystem imports are forbidden in browser/worklet/schema/ui modules.",
-                  "node:path": "Node.js path imports are forbidden in browser/worklet/schema/ui modules.",
-                  "node:module": "Node.js module imports are forbidden in browser/worklet/schema/ui modules.",
-                  "node:url": "Node.js url imports are forbidden in browser/worklet/schema/ui modules.",
+                  "node:fs": "Node.js filesystem imports are forbidden in browser/web-audio/schema/ui modules.",
+                  "node:path": "Node.js path imports are forbidden in browser/web-audio/schema/ui modules.",
+                  "node:module": "Node.js module imports are forbidden in browser/web-audio/schema/ui modules.",
+                  "node:url": "Node.js url imports are forbidden in browser/web-audio/schema/ui modules.",
                   "node:buffer": "Use Web-standard Uint8Array/ArrayBuffer instead of node:buffer.",
-                  "node:child_process": "Node.js child_process is forbidden in browser/worklet/schema/ui modules."
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    {
-      "includes": [
-        "packages/js/src/worklet/processor.ts",
-        "packages/js/src/worklet/shared_memory.ts"
-      ],
-      "linter": {
-        "rules": {
-          "style": {
-            "noRestrictedImports": {
-              "level": "error",
-              "options": {
-                "paths": {
-                  "zod": "AudioWorkletGlobalScope modules must remain 100% zero-dependency."
+                  "node:child_process": "Node.js child_process is forbidden in browser/web-audio/schema/ui modules."
                 }
               }
             }
@@ -242,6 +223,7 @@
     {
       "includes": [
         "packages/js/scripts/**/*.mjs",
+        "packages/js/examples/**/*.ts",
         "packages/js/src/**/*.test.ts",
         "packages/js/src/**/*.bench.ts",
         "packages/js/tests/**/*.ts",

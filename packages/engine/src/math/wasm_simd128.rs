@@ -5,7 +5,9 @@ use super::{BackendKind, MathBackend, SimdVec4};
 #[cfg(target_feature = "simd128")]
 use core::arch::wasm32::{
     f32x4_abs, f32x4_add, f32x4_extract_lane, f32x4_mul, f32x4_pmax, f32x4_pmin, f32x4_splat,
-    f32x4_sub, i32x4_eq, i32x4_shuffle, i32x4_splat, v128, v128_and, v128_andnot,
+    f32x4_sub, i32x4_add, i32x4_all_true, i32x4_eq, i32x4_shuffle, i32x4_splat, i32x4_sub, u32x4,
+    u32x4_ge, u32x4_lt, u32x4_shl, u32x4_shr, u32x4_splat, v128, v128_and, v128_andnot,
+    v128_any_true, v128_or,
 };
 
 /// WebAssembly 4-lane `f32` vector (`v128` when `simd128` is enabled, or `[f32; 4]` fallback).
@@ -443,5 +445,121 @@ impl MathBackend for WasmSimd128Backend {
         }
 
         WasmVec4(f32x4_add(f32x4_add(za0, za1), f32x4_add(za2, za3)))
+    }
+
+    #[cfg(target_feature = "simd128")]
+    #[inline(always)]
+    fn conv6_taps_4groups(
+        bias: WasmVec4,
+        w_tiles: &[[[f32; 4]; 4]; 24],
+        h_taps: &[&[[f32; 4]; 4]; 6],
+    ) -> WasmVec4 {
+        let mut za0 = bias.0;
+        let mut za1 = f32x4_splat(0.0);
+        let mut za2 = f32x4_splat(0.0);
+        let mut za3 = f32x4_splat(0.0);
+
+        for tap in 0..6 {
+            let ht = h_taps[tap];
+            let base = tap * 4;
+            for g in 0..4 {
+                let vxg = WasmVec4::load(&ht[g]).0;
+                let wtg = &w_tiles[base + g];
+                za0 = f32x4_add(
+                    za0,
+                    f32x4_mul(
+                        WasmVec4::load(&wtg[0]).0,
+                        i32x4_shuffle::<0, 0, 0, 0>(vxg, vxg),
+                    ),
+                );
+                za1 = f32x4_add(
+                    za1,
+                    f32x4_mul(
+                        WasmVec4::load(&wtg[1]).0,
+                        i32x4_shuffle::<1, 1, 1, 1>(vxg, vxg),
+                    ),
+                );
+                za2 = f32x4_add(
+                    za2,
+                    f32x4_mul(
+                        WasmVec4::load(&wtg[2]).0,
+                        i32x4_shuffle::<2, 2, 2, 2>(vxg, vxg),
+                    ),
+                );
+                za3 = f32x4_add(
+                    za3,
+                    f32x4_mul(
+                        WasmVec4::load(&wtg[3]).0,
+                        i32x4_shuffle::<3, 3, 3, 3>(vxg, vxg),
+                    ),
+                );
+            }
+        }
+
+        WasmVec4(f32x4_add(f32x4_add(za0, za1), f32x4_add(za2, za3)))
+    }
+
+    #[cfg(target_feature = "simd128")]
+    #[inline(always)]
+    fn f32x4_to_fp16x4(src: &[f32; 4]) -> [u16; 4] {
+        let bits: v128 = zerocopy::transmute!(*src);
+        let sign = u32x4_shr(v128_and(bits, u32x4_splat(0x8000_0000)), 16);
+        let abs_bits = v128_and(bits, u32x4_splat(0x7fff_ffff));
+        let is_tiny = u32x4_lt(abs_bits, u32x4_splat(0x3300_0000));
+        let is_normal = v128_and(
+            u32x4_ge(abs_bits, u32x4_splat(0x3880_0000)),
+            u32x4_lt(abs_bits, u32x4_splat(0x477f_e000)),
+        );
+        if i32x4_all_true(v128_or(is_tiny, is_normal)) {
+            let odd_bit = v128_and(u32x4_shr(abs_bits, 13), u32x4_splat(1));
+            let rounded = i32x4_add(abs_bits, i32x4_add(u32x4_splat(0x0000_0fff), odd_bit));
+            let biased = i32x4_sub(rounded, u32x4_splat(112 << 23));
+            let half_mag = v128_andnot(u32x4_shr(biased, 13), is_tiny);
+            let combined = v128_or(sign, half_mag);
+            let lanes: [u32; 4] = zerocopy::transmute!(combined);
+            return [
+                lanes[0] as u16,
+                lanes[1] as u16,
+                lanes[2] as u16,
+                lanes[3] as u16,
+            ];
+        }
+        [
+            super::f32_to_fp16(src[0]),
+            super::f32_to_fp16(src[1]),
+            super::f32_to_fp16(src[2]),
+            super::f32_to_fp16(src[3]),
+        ]
+    }
+
+    #[cfg(target_feature = "simd128")]
+    #[inline(always)]
+    fn fp16x4_to_f32x4(src: &[u16; 4]) -> [f32; 4] {
+        let h = u32x4(
+            u32::from(src[0]),
+            u32::from(src[1]),
+            u32::from(src[2]),
+            u32::from(src[3]),
+        );
+        let sign = u32x4_shl(v128_and(h, u32x4_splat(0x8000)), 16);
+        let exp = v128_and(u32x4_shr(h, 10), u32x4_splat(0x1f));
+        let mant = v128_and(h, u32x4_splat(0x03ff));
+        let is_zero_exp = i32x4_eq(exp, i32x4_splat(0));
+        let is_inf_nan = i32x4_eq(exp, i32x4_splat(31));
+        let is_subnormal = v128_andnot(is_zero_exp, i32x4_eq(mant, i32x4_splat(0)));
+        if !v128_any_true(v128_or(is_subnormal, is_inf_nan)) {
+            let norm_bits = v128_or(
+                u32x4_shl(i32x4_add(exp, i32x4_splat(112)), 23),
+                u32x4_shl(mant, 13),
+            );
+            let f32_bits = v128_or(sign, v128_andnot(norm_bits, is_zero_exp));
+            return zerocopy::transmute!(f32_bits);
+        }
+        [
+            super::fp16_to_f32(src[0]),
+            super::fp16_to_f32(src[1]),
+            super::fp16_to_f32(src[2]),
+            super::fp16_to_f32(src[3]),
+        ]
     }
 }

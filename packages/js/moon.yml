@@ -11,8 +11,8 @@ tags:
   - "napi"
 
 project:
-  name: "@dnam-project/engine"
-  description: "TypeScript, Node.js N-API, and WebAssembly SIMD128 / WebAudio AudioWorklet SDK for DNAM"
+  name: "@dnam-project/dnam"
+  description: "Idiomatic TypeScript 7, Node.js 26 N-API v10, and WebAssembly SIMD128 / WebAudio AudioWorklet SDK for DNAM"
 
 dependsOn:
   - "engine"
@@ -20,7 +20,7 @@ dependsOn:
 tasks:
   format:
     type: "run"
-    script: "pnpm exec biome format --write . && cargo fmt --package dnam-js"
+    script: "pnpm exec biome check --write . && cargo fmt --package dnam-js"
     options:
       cache: false
       runInCI: false
@@ -35,6 +35,7 @@ tasks:
       - "package.json"
       - "tsconfig*.json"
       - "vite.config.ts"
+      - "examples/**/*"
       - "rust/**/*"
       - "scripts/**/*"
       - "src/**/*"
@@ -47,13 +48,14 @@ tasks:
       - "format"
 
   lint:
-    script: "pnpm exec biome check . && cargo clippy --package dnam-js --all-targets -- -D warnings"
+    script: "pnpm exec biome check . && cargo clippy --package dnam-js --all-targets -- -D warnings && cargo clippy --package dnam-js --target wasm32-unknown-unknown --no-default-features -- -D warnings"
     inputs:
       - "Cargo.toml"
       - "build.rs"
       - "package.json"
       - "tsconfig*.json"
       - "vite.config.ts"
+      - "examples/**/*"
       - "rust/**/*"
       - "scripts/**/*"
       - "src/**/*"
@@ -83,6 +85,7 @@ tasks:
       - "package.json"
       - "tsconfig*.json"
       - "vite.config.ts"
+      - "examples/**/*"
       - "src/**/*"
       - "tests/**/*"
       - "/pnpm-lock.yaml"
@@ -106,8 +109,8 @@ tasks:
       - "/packages/engine/Cargo.toml"
       - "/packages/engine/src/**/*"
     outputs:
-      - "dist/dnam_js.*.node"
-      - "dist/dnam_engine.wasm"
+      - "dist/dnam.*.node"
+      - "dist/dnam.wasm"
     options:
       mutex: "cargo"
       outputStyle: "buffer-only-failure"
@@ -199,3 +202,23 @@ tasks:
       runInCI: false
     tags:
       - "bench"
+
+  profile:
+    type: "run"
+    script: "node ./scripts/build_wasm.mjs --profiling && node --cpu-prof --cpu-prof-dir=./dist/profiles ./scripts/profile_sdk.mjs"
+    deps:
+      - "~:build"
+    inputs:
+      - "package.json"
+      - "tsconfig*.json"
+      - "vite.config.ts"
+      - "scripts/**/*"
+      - "src/**/*"
+      - "tests/profile/**/*"
+      - "/pnpm-lock.yaml"
+    options:
+      mutex: "cargo"
+      cache: false
+      runInCI: false
+    tags:
+      - "profile"

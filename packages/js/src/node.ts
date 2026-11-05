@@ -1,9 +1,90 @@
+/// <reference lib="esnext.disposable" />
+
 /**
- * Node.js entry point for `@dnam-project/engine` (`@dnam-project/engine/node`).
- * Automatically registers the zero-copy N-API v8 `NativeDriver` and synchronous Node `WasmDriver`.
+ * Node.js 26 LTS (`N-API v10` with synchronous WASM SIMD128 fallback) entrypoint for
+ * `@dnam-project/dnam` (`ref[sdk.ts.api.sync-init]`, `ref[sdk.ts.runtime.dual-target-drivers]`).
+ *
+ * @module
  */
 
-import "./drivers/native.js";
+import { setActiveDriver } from "./internal/native/load.js";
+import { loadNodeDriverSync } from "./internal/native/napi.js";
 
-export * from "./browser.js";
-export { ensureNodeWasmDriver, getNativeDriver, NativeDriver } from "./drivers/native.js";
+setActiveDriver(loadNodeDriverSync());
+
+export {
+  type ActiveBackend,
+  type AudioBlock,
+  type AudioInput,
+  type Backend,
+  type BounceOptions,
+  type BuildModelOptions,
+  type BypassOptions,
+  backends,
+  Checkpoint,
+  type ClampedParameterEntry,
+  type ClampReport,
+  ControlSpace,
+  clampParameters,
+  crc32c,
+  DnamError,
+  type DnamErrorOptions,
+  type DnckLayoutInfo,
+  decodeHeader,
+  defineModelTypes,
+  Engine,
+  type EngineOptions,
+  type ErrorCode,
+  type ErrorDetail,
+  encodeHeader,
+  errorCodes,
+  type FreezeOptions,
+  GramMatrix,
+  type HostMixOptions,
+  headerToJcs,
+  type InferParameterMap,
+  type InitWasmOptions,
+  initWasm,
+  isDnamError,
+  Model,
+  type ModelHeader,
+  type ModelLoadOptions,
+  type ModelSource,
+  type OverflowFlags,
+  Parameter,
+  type ParameterCalibration,
+  type ParameterDescriptor,
+  type ParameterKind,
+  ParameterMap,
+  type ParameterUiHints,
+  type ParameterValueMap,
+  type PreambleInfo,
+  type Preset,
+  type ProcessAsyncOptions,
+  type ProcessOptions,
+  type ProtectionProfile,
+  parseSchemaVersion,
+  protectionProfiles,
+  type ReferenceCheckpointOptions,
+  type ReferenceModelOptions,
+  type ReloadOptions,
+  type RenderOptions,
+  type SchemaVersion,
+  type SetParameterOptions,
+  type StateScope,
+  type StreamOptions,
+  type Subdivision,
+  subdivisions,
+  type TapTempoResult,
+  type TelemetrySnapshot,
+  TempoController,
+  type TempoSyncOptions,
+  type TempoTapOptions,
+  type Tier,
+  type TierArenas,
+  type TierInput,
+  type TypedParameterEntry,
+  tiers,
+  uploUPackedLength,
+  type V2OpenLayoutInfo,
+} from "./public-exports.js";

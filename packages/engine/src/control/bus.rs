@@ -796,12 +796,16 @@ impl<B: MathBackend> ControlBus<B> {
         Self::compute_micro_ramp_deltas(theta_curr, theta_next, 0.0625)
     }
 
-    /// Audio-rate sample-by-sample parameter update via single FMA.
+    /// Audio-rate sample-by-sample parameter update via 4-lane SIMD addition.
     /// Direct callers must hold a [`crate::FtzDazGuard`] for the enclosing batch.
     #[inline(always)]
     pub fn step_micro_ramp(theta_audio: &mut [f32; 16], deltas: &[f32; 16]) {
-        for i in 0..16 {
-            theta_audio[i] += deltas[i];
+        let t_chunks: &mut [[f32; 4]; 4] = zerocopy::transmute_mut!(theta_audio);
+        let d_chunks: &[[f32; 4]; 4] = zerocopy::transmute_ref!(deltas);
+        for c in 0..4 {
+            B::Vec4::load(&t_chunks[c])
+                .add(B::Vec4::load(&d_chunks[c]))
+                .store(&mut t_chunks[c]);
         }
     }
 }
@@ -814,6 +818,13 @@ impl<B: MathBackend> Default for ControlBus<B> {
 
 #[inline(always)]
 fn read_vec4_le<B: MathBackend>(bytes: &[u8], off: usize) -> B::Vec4 {
+    #[cfg(target_endian = "little")]
+    {
+        if let Ok(chunk) = <&[u8; 16]>::try_from(&bytes[off..off + 16]) {
+            let arr: [f32; 4] = zerocopy::transmute!(*chunk);
+            return B::Vec4::load(&arr);
+        }
+    }
     let f0 = f32::from_le_bytes([bytes[off], bytes[off + 1], bytes[off + 2], bytes[off + 3]]);
     let f1 = f32::from_le_bytes([
         bytes[off + 4],

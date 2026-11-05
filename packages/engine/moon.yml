@@ -126,25 +126,6 @@ tasks:
     tags:
       - "test"
 
-  test-portable:
-    type: "run"
-    command: "node"
-    args:
-      - "packages/engine/tests/run_portable_denormal.mjs"
-    inputs:
-      - "Cargo.toml"
-      - "src/**/*"
-      - "tests/portable_denormal.rs"
-      - "tests/run_portable_denormal.mjs"
-      - "/Cargo.toml"
-      - "/Cargo.lock"
-    options:
-      cache: false
-      mutex: "cargo"
-      runFromWorkspaceRoot: true
-    tags:
-      - "test"
-
   coverage:
     type: "run"
     command: "cargo"

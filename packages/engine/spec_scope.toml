@@ -1057,3 +1057,88 @@ reason = "Python SDK (packages/python) contract verified by Python test suite"
 scope = "out-of-scope"
 reason = "Python SDK (packages/python) contract verified by Python test suite"
 
+# ==============================================================================
+# 18. SDKs: TypeScript SDK (`docs/specs/sdks/typescript_sdk.md`)
+# ==============================================================================
+[rules."sdk.ts.layout.feature-modules"]
+scope = "out-of-scope"
+reason = "TypeScript SDK (packages/js) contract verified by TypeScript test suite"
+
+[rules."sdk.ts.layout.curated-exports"]
+scope = "out-of-scope"
+reason = "TypeScript SDK (packages/js) contract verified by TypeScript test suite"
+
+[rules."sdk.ts.layout.dependency-direction"]
+scope = "out-of-scope"
+reason = "TypeScript SDK (packages/js) contract verified by TypeScript test suite"
+
+[rules."sdk.ts.api.resources-and-data"]
+scope = "out-of-scope"
+reason = "TypeScript SDK (packages/js) contract verified by TypeScript test suite"
+
+[rules."sdk.ts.api.literal-unions-and-options"]
+scope = "out-of-scope"
+reason = "TypeScript SDK (packages/js) contract verified by TypeScript test suite"
+
+[rules."sdk.ts.api.typed-model-inference"]
+scope = "out-of-scope"
+reason = "TypeScript SDK (packages/js) contract verified by TypeScript test suite"
+
+[rules."sdk.ts.api.sync-init"]
+scope = "out-of-scope"
+reason = "TypeScript SDK (packages/js) contract verified by TypeScript test suite"
+
+[rules."sdk.ts.api.disposable-scopes"]
+scope = "out-of-scope"
+reason = "TypeScript SDK (packages/js) contract verified by TypeScript test suite"
+
+[rules."sdk.ts.parameters.audio-param-semantics"]
+scope = "out-of-scope"
+reason = "TypeScript SDK (packages/js) contract verified by TypeScript test suite"
+
+[rules."sdk.ts.errors.coded-error"]
+scope = "out-of-scope"
+reason = "TypeScript SDK (packages/js) contract verified by TypeScript test suite"
+
+[rules."sdk.ts.schema.camel-case-codec-parity"]
+scope = "out-of-scope"
+reason = "TypeScript SDK (packages/js) contract verified by TypeScript test suite"
+
+[rules."sdk.ts.runtime.dual-target-drivers"]
+scope = "out-of-scope"
+reason = "TypeScript SDK (packages/js) contract verified by TypeScript test suite"
+
+[rules."sdk.ts.engine.zero-copy-and-async"]
+scope = "out-of-scope"
+reason = "TypeScript SDK (packages/js) contract verified by TypeScript test suite"
+
+[rules."sdk.ts.engine.streaming-and-render"]
+scope = "out-of-scope"
+reason = "TypeScript SDK (packages/js) contract verified by TypeScript test suite"
+
+[rules."sdk.ts.engine.behavioral-parity"]
+scope = "out-of-scope"
+reason = "TypeScript SDK (packages/js) contract verified by TypeScript test suite"
+
+[rules."sdk.ts.model.containers-and-checkpoints"]
+scope = "out-of-scope"
+reason = "TypeScript SDK (packages/js) contract verified by TypeScript test suite"
+
+[rules."sdk.ts.provenance.v2-security"]
+scope = "out-of-scope"
+reason = "TypeScript SDK (packages/js) contract verified by TypeScript test suite"
+
+[rules."sdk.ts.dsp.reference-kernels"]
+scope = "out-of-scope"
+reason = "TypeScript SDK (packages/js) contract verified by TypeScript test suite"
+
+[rules."sdk.ts.web-audio.realtime-bridge"]
+scope = "out-of-scope"
+reason = "TypeScript SDK (packages/js) contract verified by TypeScript test suite"
+
+[rules."sdk.ts.perf.profiling-budgets"]
+scope = "out-of-scope"
+reason = "TypeScript SDK (packages/js) contract verified by TypeScript test suite"
+
+
+

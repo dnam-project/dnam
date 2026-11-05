@@ -32,7 +32,7 @@ hotpath = "0.31"
 proptest = "1.6"
 pyo3 = { version = "0.30", features = ["extension-module", "abi3-py314"] }
 numpy = "0.30"
-napi = { version = "3.15", default-features = false, features = ["napi8", "compat-mode"] }
+napi = { version = "3.15", default-features = false, features = ["napi10", "compat-mode"] }
 napi-derive = "3.6"
 napi-build = "2.6"
 tauri = { version = "2", features = ["isolation"] }

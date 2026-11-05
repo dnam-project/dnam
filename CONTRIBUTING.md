@@ -32,8 +32,8 @@ DNAM is organized as a multi-language workspace across `docs/`, `packages/*`, an
 | :--- | :--- | :--- | :--- |
 | **Specification Manual (`docs/`)** | `docs/` | [`docs/index.md`](docs/index.md) | [`docs/CONTRIBUTING.md`](docs/CONTRIBUTING.md) |
 | **Rust SIMD Engine (`dnam-engine`)** | `packages/engine/` | [`packages/engine/AGENTS.md`](packages/engine/AGENTS.md) | [`packages/engine/CONTRIBUTING.md`](packages/engine/CONTRIBUTING.md) |
-| **Python Engine (`dnam_engine`)** | `packages/python/` | [`packages/python/AGENTS.md`](packages/python/AGENTS.md) | [`packages/python/CONTRIBUTING.md`](packages/python/CONTRIBUTING.md) |
-| **JS / WebAudio SDK (`@dnam-project/engine`)** | `packages/js/` | [`packages/js/AGENTS.md`](packages/js/AGENTS.md) | [`packages/js/CONTRIBUTING.md`](packages/js/CONTRIBUTING.md) |
+| **Python SDK (`dnam`)** | `packages/python/` | [`packages/python/AGENTS.md`](packages/python/AGENTS.md) | [`packages/python/CONTRIBUTING.md`](packages/python/CONTRIBUTING.md) |
+| **TypeScript / WebAudio SDK (`@dnam-project/dnam`)** | `packages/js/` | [`packages/js/AGENTS.md`](packages/js/AGENTS.md) | [`packages/js/CONTRIBUTING.md`](packages/js/CONTRIBUTING.md) |
 | **PyTorch Two-Sweep Trainer (`dnam_trainer`)** | `packages/trainer/` | [`packages/trainer/AGENTS.md`](packages/trainer/AGENTS.md) | [`packages/trainer/CONTRIBUTING.md`](packages/trainer/CONTRIBUTING.md) |
 | **Design System & Visualizers (`@dnam-project/ui`)** | `packages/ui/` | [`packages/ui/AGENTS.md`](packages/ui/AGENTS.md) | [`packages/ui/CONTRIBUTING.md`](packages/ui/CONTRIBUTING.md) |
 | **CLI & Desktop Studio (`@dnam-project/studio`)** | `packages/studio/` | [`packages/studio/AGENTS.md`](packages/studio/AGENTS.md) | [`packages/studio/CONTRIBUTING.md`](packages/studio/CONTRIBUTING.md) |
@@ -105,11 +105,14 @@ moon check tests
    - Every pole radius ($r_c \le 0.9995$), FDN loop gain ($g_{\text{lin},m} \le 0.9990$), all-pass diffusion coefficient ($|a_{\text{diff},m}| \le 0.75$), fractional delay ($\tau_m \ge 4.0$), and control range must obey the bounds in [`docs/specs/training/control_space_audit.md`](docs/specs/training/control_space_audit.md).
 4. **Fail-Fast Validation:**
    - Never silently substitute default controls, sample rates, or tensor shapes when loading `.dnam` or `.dnam-ckpt` containers; return or raise explicit, typed diagnostic errors (`DnamError`).
-5. **Property-Based Testing (`proptest!` / `hypothesis`), TDD, Coverage (≥ 95%) & Benchmarks:**
-   - **Mandatory `proptest!` / `hypothesis` Usage:** Use `proptest!` in Rust unit (`#[cfg(test)]` inside `src/**`) and integration (`tests/*`) test suites—and `hypothesis` in Python test suites—wherever possible to verify algebraic identities, ULP/rounding bounds, state stability, wire-format roundtrips, and cross-tier equivalence over arbitrary input domains rather than relying solely on fixed hand-picked examples.
+5. **Zero Duplicated Engine Logic in Language SDKs (`packages/python/`, `packages/js/`):**
+   - Language SDKs (`dnam` and `@dnam-project/dnam`) and their FFI shims (`packages/python/rust/`, `packages/js/rust/`) must **never** reimplement DSP math, ZOH rescaling, 3-Phase control clamping, Lobatto calibration inversion, schema validation, RFC 8785 JCS canonicalization, or provenance signature assembly in Python or TypeScript (`ref[sdk.python.engine.zero-copy-and-gil]`, `ref[sdk.ts.runtime.dual-target-drivers]`).
+   - Delegate 100% of domain logic to `dnam-engine` in Rust; keep SDK host-language layers strictly focused on idiomatic ergonomics, casing/type coercion, and zero-copy buffer/handle lifecycles.
+6. **Property-Based Testing (`proptest!` / `hypothesis` / `fast-check`), TDD, Coverage (≥ 95%) & Benchmarks:**
+   - **Mandatory `proptest!` / `hypothesis` / `fast-check` Usage:** Use `proptest!` in Rust unit (`#[cfg(test)]` inside `src/**`) and integration (`tests/*`) test suites, `hypothesis` in Python test suites, and `fast-check` (`fc.assert(fc.property(...))`) in TypeScript test suites wherever possible to verify algebraic identities, ULP/rounding bounds, state stability, wire-format roundtrips, and cross-tier/cross-driver equivalence over arbitrary input domains rather than relying solely on fixed hand-picked examples.
    - Write a failing unit or property-based regression test before fixing a bug.
    - Unit, property, and integration tests must cite canonical `r[...]` spec rules via `verify[...]` and must **never** read or parse Markdown text blocks from `docs/` (only [`tests/test_guardrails.py`](tests/test_guardrails.py) reads `docs/` to verify references and registries).
-   - Maintain ≥ 95% test coverage in both Rust (`cargo llvm-cov`) and Python (`pytest --cov`) and verify zero performance regressions with `cargo bench` and `pytest-benchmark`.
+   - Maintain ≥ 95% test coverage in Rust (`cargo llvm-cov`), Python (`pytest --cov`), and TypeScript (`vitest run --coverage`), and verify zero performance regressions with `cargo bench`, `pytest-benchmark`, and `vitest bench`.
 
 ---
 

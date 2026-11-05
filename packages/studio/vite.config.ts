@@ -64,7 +64,7 @@ export default defineConfig(({ mode }) => {
                 "react-dom",
                 "lucide-react",
                 "@dnam-project/ui",
-                "@dnam-project/engine",
+                /^@dnam-project\/dnam/,
                 /^node:/,
               ],
             },

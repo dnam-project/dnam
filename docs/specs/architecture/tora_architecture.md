@@ -160,7 +160,7 @@ All block-processing entry points enforce round-to-nearest, ties-to-even (`RNE`)
 | :--- | :--- |
 | **`aarch64`** | Save `FPCR`; clear `RMode` bits `23:22` and exception trap-enable bits `8:12, 15`; set `FZ` bit `24`; if `AH` bit `1` is set (`FEAT_AFP`), set `FIZ` bit `0`; restore saved `FPCR` on exit. |
 | **`x86_64`** | Save `MXCSR`; clear `RC` bits `14:13` and sticky flags `0:5`; set `FTZ` (`15`), `DAZ` (`6`), and exception masks `7:12`; restore saved `MXCSR` on exit. |
-| **WebAssembly / Portable** | Standard WASM enforces `RNE` with gradual underflow; apply branchless exponent-mask zeroing (`exp == 0 -> ±0.0f32`) to persistent recursive-state writebacks while preserving sign, normals, infinities, and `NaN` payloads. |
+| **WebAssembly / Portable** | Standard WASM enforces `RNE` with gradual underflow; apply branchless 4-lane `SimdVec4::flush_subnormal` (`v128` exponent-mask zeroing, `exp == 0 -> ±0.0f32`) to persistent recursive-state writebacks while preserving sign, normals, infinities, and `NaN` payloads. |
 
 #### Finite-Precision Range and Saturation Policy
 
@@ -216,11 +216,11 @@ flowchart LR
 | **`Op-M` (Symplectic Complex & Ballistics)** | Complex resonant filters, `H1` Hilbert SSB, Kautz modal bank | `Q0.192` quadrature LFO rotors, `Q64`/`Q32` tempo phase, 4-Band block-peak envelopes | Quadrant-reduced contractive rotor and 1-pole ballistics |
 | **`Op-N` (Polynomials & Nonlinearities)** | Multi-Drive `1×` B-Spline `PolyADAA`, `C²` wavefolder, bitcrushers | Packed `CP1` Lobatto/FM projections, exact-integer accumulator, outward trust clip | Branchless polynomial FMA and straight-through bounding |
 
-#### 2.4.1 SIMD Lane Packing (AVX2 & ARM NEON)
+#### 2.4.1 SIMD Lane Packing (AVX2, ARM NEON & WebAssembly SIMD128)
 
 `r[arch.simd.lane-packing]`
 
-`TORA` organizes all multichannel state and parameter matrices in **4-lane blocks** (`float32x4_t` in NEON, half of `__m256` in AVX2) matching the nested tier hierarchy:
+`TORA` organizes all multichannel state, `fp16` delay conversions (`f32x4_to_fp16x4` / `fp16x4_to_f32x4`), and parameter matrices in **4-lane blocks** (`float32x4_t` in NEON, `v128` `f32x4` in WebAssembly `SIMD128`, half of `__m256` in AVX2) matching the nested tier hierarchy:
 
 ```text
 NEON 128-Bit Vector Layout:

@@ -37,7 +37,7 @@ export default defineConfig(({ mode }) => ({
               "tailwind-merge",
               "class-variance-authority",
               /^@base-ui\/react/,
-              "@dnam-project/engine",
+              /^@dnam-project\/dnam/,
             ],
           },
         },

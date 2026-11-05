@@ -248,13 +248,20 @@ impl<const CAPACITY: usize> OpTDelayLine<CAPACITY> {
         let p_1 = (p_0 + Self::HALF_CAPACITY - 1) & Self::HALF_MASK;
         let p_2 = (p_0 + Self::HALF_CAPACITY - 2) & Self::HALF_MASK;
 
-        let l_m1 = fp16_to_f32(self.ring[p_m1]);
-        let l_1 = fp16_to_f32(self.ring[p_1]);
-        let l_2 = fp16_to_f32(self.ring[p_2]);
-
-        let r_m1 = fp16_to_f32(self.ring[r_off + p_m1]);
-        let r_1 = fp16_to_f32(self.ring[r_off + p_1]);
-        let r_2 = fp16_to_f32(self.ring[r_off + p_2]);
+        let [l_m1, l_1, l_2, r_m1] =
+            <crate::math::DefaultMathBackend as crate::math::MathBackend>::fp16x4_to_f32x4(&[
+                self.ring[p_m1],
+                self.ring[p_1],
+                self.ring[p_2],
+                self.ring[r_off + p_m1],
+            ]);
+        let [r_1, r_2, _, _] =
+            <crate::math::DefaultMathBackend as crate::math::MathBackend>::fp16x4_to_f32x4(&[
+                self.ring[r_off + p_1],
+                self.ring[r_off + p_2],
+                0,
+                0,
+            ]);
 
         (
             catmull_rom_hermite_cubic(l_m1, l_0, l_1, l_2, mu),
@@ -296,8 +303,12 @@ impl<const CAPACITY: usize> OpTDelayLine<CAPACITY> {
         };
 
         let w_ptr = self.write_ptr & Self::HALF_MASK;
-        self.ring[w_ptr] = f32_to_fp16(in_l);
-        self.ring[Self::HALF_CAPACITY + w_ptr] = f32_to_fp16(in_r);
+        let [h_l, h_r, _, _] =
+            <crate::math::DefaultMathBackend as crate::math::MathBackend>::f32x4_to_fp16x4(&[
+                in_l, in_r, 0.0, 0.0,
+            ]);
+        self.ring[w_ptr] = h_l;
+        self.ring[Self::HALF_CAPACITY + w_ptr] = h_r;
         self.write_ptr = (w_ptr + 1) & Self::HALF_MASK;
         (out_l, out_r)
     }

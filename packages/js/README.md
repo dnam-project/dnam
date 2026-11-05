@@ -1,62 +1,74 @@
-# `@dnam-project/engine` — Node.js N-API v8, WebAssembly SIMD128 & WebAudio SDK
+# `@dnam-project/dnam` — Idiomatic TypeScript 7, Node.js 26 N-API v10 & WebAudio SDK
 
-**`@dnam-project/engine`** is the official TypeScript, Node.js, and Browser WebAudio SDK for the **Dynamic Neural Audio Modeler (DNAM)** architecture, wrapping the native Rust SIMD engine ([`packages/engine/`](../engine/README.md)) in a unified dual-target package:
+**`@dnam-project/dnam`** is the official TypeScript 7.0, Node.js 26 LTS (`N-API v10`), and Browser WebAssembly `SIMD128` / WebAudio `AudioWorklet` SDK for the **Dynamic Neural Audio Modeler (DNAM / TORA v2.0)** architecture ([`docs/specs/sdks/typescript_sdk.md`](../../docs/specs/sdks/typescript_sdk.md), [`ADR-0013`](../../docs/adr/0013-typescript-sdk-architecture-and-dual-target-runtime.md)):
 
-1. **Node.js / Bun / Deno Native N-API v8 (`napi-rs` v3):** Zero-copy `Float32Array`, `Float64Array`, and `Uint8Array` slices backed by hardware `ARM64 NEON` / `x86_64 AVX2+FMA` SIMD and libuv worker-pool `processAsync(...)`.
-2. **Browser / Edge WebAssembly SIMD128 (`dnam_engine.wasm`):** Zero-dependency `wasm32-unknown-unknown` `+simd128` execution with persistent pre-allocated linear-memory audio arenas and `FinalizationRegistry` + `Symbol.dispose` deterministic cleanup.
-3. **WebAudio `AudioWorklet` Integration (`@dnam-project/engine/worklet`):** Real-time 128-sample quantum processing via `DnamAudioWorkletProcessor` and `DnamWorkletController<TControls>`, using a lock-free 256-byte `SharedArrayBuffer` (`Atomics`) control/telemetry bridge when `crossOriginIsolated === true` and automatic `MessagePort` fallback when `crossOriginIsolated === false`.
-4. **Zod v4 + Standard Schema v1 (`@dnam-project/engine/schema`):** Bidirectional `.dnam` wire `snake_case` $\leftrightarrow$ idiomatic TypeScript `camelCase` validation implementing `@standard-schema/spec` (including `ModelCapabilities` `supportsFreeze`/`freezeMutesDry`, `ControlCalibrationRole` granular/freeze roles, and `.dnam-ckpt` `ExtractedPhysics` grain/pitch telemetry).
+1. **Zero Runtime Dependencies (`0 KB` JS validator overhead):** 100% of DSP, ZOH sample-rate rescaling, 3-Phase control clamping, Lobatto calibration inversion, `.dnam` / `.dnam-ckpt` schema validation, RFC 8785 JCS canonicalization, and `Ed25519`/`X25519`/`ChaCha20-Poly1305` provenance logic delegates directly to compiled Rust (`dnam-engine`).
+2. **Unified Dual-Target Rust Core (`dnam-js`):**
+   - **Node.js 26 LTS (`N-API v10`):** Zero-copy `Float32Array`, `Float64Array`, and `Uint8Array` slices backed by hardware `ARM64 NEON` / `x86_64 AVX2+FMA` SIMD plus libuv worker-pool `processAsync(...)`.
+   - **Browser / Edge (`wasm32-unknown-unknown` `+simd128`):** Synchronous and streaming WASM instantiation (`initWasm`) with persistent pre-allocated linear-memory scratch rings (`0` per-block allocations).
+3. **Idiomatic TypeScript-First Ergonomics:**
+   - Deeply frozen `camelCase` plain objects (`model.header.ioConfig.outputMode`, `model.presets`) paired with explicit `Disposable` (`using` / `.dispose()` + `FinalizationRegistry`) native handles (`Model`, `Checkpoint`, `Engine`, `ControlSpace`, `DnamAudioNode`).
+   - WebAudio `AudioParam`-style `Parameter` controllers (`engine.parameters.get("gain")`) and `TempoController` (`engine.tempo.sync({ bpm: 120, subdivision: "1/8." })`).
+   - Compile-time typed parameter maps via `defineModelTypes(...)`.
+4. **Real-Time WebAudio `AudioWorklet` (`@dnam-project/dnam/web-audio`):**
+   - `DnamAudioNode<TParams>` and standalone `dist/web-audio-processor.js` using a lock-free `SharedArrayBuffer` (`Atomics`) parameter & seqlock telemetry ring when `crossOriginIsolated === true` and automatic `MessagePort` fallback otherwise.
 
 ---
 
 ## 1. Quick Start
 
-### Node.js / Server-Side Batch & Real-Time Processing
+### Node.js / Server-Side Real-Time & Offline Rendering
 
 ```typescript
-import { DnamContainer, DnamEngine } from "@dnam-project/engine";
+import { defineModelTypes, Model } from "@dnam-project/dnam";
 
-interface AmpControls {
-  gain: number;
-  boost: "off" | "on" | "ultra";
-  [key: string]: number | string;
+const RigSchema = defineModelTypes([
+  { id: "gain", type: "range" },
+  { id: "boost", type: "switch", declaredOptions: ["off", "on", "ultra"] },
+  { id: "delay_ms", type: "range" },
+] as const);
+
+using model = Model.reference<typeof RigSchema.$infer>({ supportsFreeze: true });
+using engine = model.createEngine({ sampleRate: 48_000, tier: "full" });
+
+// AudioParam-style parameter updates with automatic 3-Phase clamping
+const gain = engine.parameters.get("gain");
+gain.setValue(7.5, { immediate: true });
+engine.tempo.sync({ bpm: 120, subdivision: "1/8." });
+
+// Zero-allocation 128-frame stereo processing
+const leftIn = new Float32Array(128).fill(0.25);
+const rightIn = new Float32Array(128).fill(-0.25);
+const leftOut = new Float32Array(128);
+const rightOut = new Float32Array(128);
+engine.process([leftIn, rightIn], { output: [leftOut, rightOut] });
+
+// Scoped Stage IV hardware freeze (`using` restores state on scope exit)
+{
+  using _freeze = engine.freeze({ amount: 0.85 });
+  engine.process([leftIn, rightIn], { output: [leftOut, rightOut] });
 }
 
-const container = DnamContainer.createReference(true);
-using engine = new DnamEngine<AmpControls>(container, {
-  tier: "full",
-  sampleRateHz: 48_000,
-});
-
-// Update parametric controls with 3-Phase clamping
-const clampSnap = engine.setControls({ gain: 7.5, boost: "on" });
-
-// Synchronous zero-copy stereo processing
-const leftIn = new Float32Array(128);
-const rightIn = new Float32Array(128);
-const [leftOut, rightOut] = engine.processStereo(leftIn, rightIn);
-
-// Asynchronous libuv worker-pool processing
-const [asyncL, asyncR] = await engine.processAsync(leftIn, rightIn);
+// Asynchronous libuv worker-pool processing & 4x oversampled studio bounce
+const [asyncL, asyncR] = await engine.processAsync([leftIn, rightIn]);
+const [bounceL, bounceR] = engine.bounce([leftIn, rightIn], { maxTier: true });
 ```
 
 ### Browser WebAudio `AudioWorklet`
 
 ```typescript
-import { DnamWorkletController } from "@dnam-project/engine";
+import { initWasm, Model } from "@dnam-project/dnam";
+import { DnamAudioNode } from "@dnam-project/dnam/web-audio";
+
+await initWasm(); // Optional pre-initialization in browsers
+const model = await Model.load("/models/studio_rig.dnam");
 
 const audioCtx = new AudioContext({ sampleRate: 48_000 });
-const response = await fetch("/models/darkglass_b7k.dnam");
-const modelBytes = new Uint8Array(await response.arrayBuffer());
+using dnamNode = await DnamAudioNode.create(audioCtx, model, { tier: "full" });
 
-const controller = await DnamWorkletController.createNode(audioCtx, modelBytes, {
-  tier: "full",
-  workletModuleUrl: new URL("@dnam-project/engine/worklet-processor", import.meta.url),
-});
-
-controller.node.connect(audioCtx.destination);
-controller.setControls({ gain: 6.5, boost: "on" });
-const telemetry = controller.telemetry();
+dnamNode.connect(audioCtx.destination);
+dnamNode.parameters.get("gain").setValue(6.5);
+dnamNode.tempo.set({ bpm: 128, subdivision: "1/8" });
 ```
 
 ---
@@ -65,24 +77,42 @@ const telemetry = controller.telemetry();
 
 | Subpath | Environment | Description |
 | :--- | :--- | :--- |
-| `@dnam-project/engine` | Node.js & Browser | Conditional entry point (`node` → N-API v8 + WASM; `browser` → WASM SIMD128) |
-| `@dnam-project/engine/node` | Node.js / Bun / Deno | Explicit Node.js N-API v8 + synchronous WASM driver |
-| `@dnam-project/engine/browser` | Browser / Edge | Pure browser entry point (zero `node:*` imports) |
-| `@dnam-project/engine/schema` | Universal | Zod v4 + `@standard-schema/spec` v1 schemas & wire serializers |
-| `@dnam-project/engine/worklet` | Universal | `DnamWorkletController`, `DnamSharedBridge`, and `DnamAudioWorkletProcessor` |
-| `@dnam-project/engine/worklet-processor` | `AudioWorkletGlobalScope` | Self-contained zero-dependency bundle for `audioWorklet.addModule(...)` |
-| `@dnam-project/engine/wasm` | Universal | Raw `dnam_engine.wasm` (`wasm32-unknown-unknown` `+simd128`) binary asset |
+| `@dnam-project/dnam` | Node.js & Browser | `Model`, `Checkpoint`, `GramMatrix`, `Engine`, `Parameter`, `ParameterMap`, `ControlSpace`, `clampParameters`, `defineModelTypes`, `TempoController`, `decodeHeader`/`encodeHeader`/`headerToJcs`, `DnamError`, `initWasm` |
+| `@dnam-project/dnam/parameters` | Universal | `Parameter`, `ParameterMap`, `ControlSpace`, `clampParameters`, `defineModelTypes` |
+| `@dnam-project/dnam/tempo` | Universal | `TempoController`, `subdivisions`, `computeZoh`, `controlStride`, `controlTickRatio`, `subdivisionPhase`, `evalCalibration3Node`, `invertTempoCalibration` |
+| `@dnam-project/dnam/schema` | Universal | `ModelHeader`, `decodeHeader`, `encodeHeader`, `headerToJcs`, `canonicalJson`, `parseSchemaVersion`, and stage/parameter/checkpoint TypeScript interfaces |
+| `@dnam-project/dnam/provenance` | Universal | `verify`, `enforcePolicy`, `signCreatorHeader`, `signMarketplaceReceipt`, `seal`, `unseal`, `encodeDau1`/`decodeDau1`, `applyGaugeWatermark`, `applyTardosWatermark`, `scoreTardosWatermark` |
+| `@dnam-project/dnam/checkpoint` | Universal | `Checkpoint`, `GramMatrix`, `uploUPackedLength` |
+| `@dnam-project/dnam/dsp` | Universal | Reference TORA DSP kernels (`catmullRomHermiteSlice`, `tankSlice`, `modalSlice`, `unitRotorSlice`, `polyAdaaSlice`, `lobattoBasisSlice`, `rank4FmSlice`, `chebyshevLfoSlice`, `trustRegionSoftclipSlice`, `givensHouseholder8chSlice`, `givensHouseholder16chSlice`) |
+| `@dnam-project/dnam/web-audio` | Browser / Universal | `DnamAudioNode`, `DnamAudioWorkletProcessor`, `WorkletSharedState`, `registerDnamProcessor`, `isSharedMemorySupported` |
+| `@dnam-project/dnam/web-audio/processor` | `AudioWorkletGlobalScope` | Standalone zero-dependency worklet processor bundle (`dist/web-audio-processor.js`) |
+| `@dnam-project/dnam/wasm` | Universal | Compiled `wasm32-unknown-unknown` `+simd128` binary (`dist/dnam.wasm`) |
 
 ---
 
-## 3. Development & Verification
+## 3. Measured Real-Time Performance (48 kHz, 128-Frame Stereo Block = `2,666.7 us` Budget)
 
-See [`CONTRIBUTING.md`](CONTRIBUTING.md) and [`AGENTS.md`](AGENTS.md) for full build, lint, test, and benchmark instructions:
+| Target | Tier | Backend | Mean (`us`) | P50 (`us`) | P99 (`us`) | Real-Time Speedup |
+| :--- | :--- | :--- | ---: | ---: | ---: | ---: |
+| Node.js 26 N-API v10 | `lite` (64-D) | `neon` | 18.63 | 18.25 | 23.12 | 143.1× |
+| Node.js 26 N-API v10 | `full` (128-D) | `neon` | 20.54 | 20.13 | 29.54 | 129.8× |
+| Node.js 26 N-API v10 | `pro` (192-D) | `neon` | 21.58 | 21.21 | 25.62 | 123.6× |
+| Node.js 26 N-API v10 | `ultra` (256-D) | `neon` | 22.70 | 22.33 | 25.71 | 117.5× |
+| WASM SIMD128 | `lite` (64-D) | `wasm-simd128` | 25.40 | 24.96 | 42.10 | 105.0× |
+| WASM SIMD128 | `full` (128-D) | `wasm-simd128` | 27.90 | 26.96 | 46.79 | 95.6× |
+| WASM SIMD128 | `pro` (192-D) | `wasm-simd128` | 29.93 | 29.13 | 46.25 | 89.1× |
+| WASM SIMD128 | `ultra` (256-D) | `wasm-simd128` | 32.11 | 31.33 | 43.96 | 83.1× |
+
+---
+
+## 4. Development, Profiling & Verification
+
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) and [`examples/`](examples/) for full build, test, coverage, and profiling instructions:
 
 ```bash
-pnpm --filter @dnam-project/engine build
-pnpm --filter @dnam-project/engine lint
-pnpm --filter @dnam-project/engine typecheck
-pnpm --filter @dnam-project/engine coverage
-pnpm --filter @dnam-project/engine bench
+moon check js           # format-check, lint, typecheck, build, test
+moon run js:coverage    # >= 95% v8 coverage (unit + fast-check + N-API/WASM parity)
+moon run js:bench       # Vitest benchmarks across tiers and drivers
+moon run js:profile     # Symbolicated WASM (--profile profiling) + V8 --cpu-prof
 ```
+

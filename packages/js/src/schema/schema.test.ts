@@ -1,335 +1,198 @@
-import type { StandardSchemaV1 } from "@standard-schema/spec";
+/**
+ * Tests for `@dnam-project/dnam/schema` camelCase codec, RFC 8785 JCS round-trip parity against
+ * Rust `DnamJsonHeader`, and exhaustive `DnamError` variant mapping.
+ */
+
+import "../node.js";
+
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
-import { DnamContainer, DnamValidationError } from "../index.js";
+import { DnamError, type ErrorCode, fromNativeError, isDnamError } from "../errors.js";
+import { withDriver } from "../internal/native/load.js";
 import {
-  AuditReportSchema,
-  AuthorizedDeviceSchema,
-  ClampResultSnapshotSchema,
-  ControlCalibrationSchema,
-  ControlSchemaDefSchema,
-  ControlUiHintsSchema,
-  CreatorSignatureSchema,
-  computeSkewExponent,
-  controlSchemaDefToWire,
-  DatasetProvenanceSchema,
-  DnamJsonHeaderSchema,
-  dnamJsonHeaderToWire,
-  ExtractedPhysicsSchema,
-  LevelingConfigSchema,
-  MarketplaceReceiptSchema,
-  ModelCapabilitiesSchema,
-  ModelSignaturesSchema,
-  ModulatedUfdnParamsSchema,
-  normalizedToPhysical,
-  PolyAdaaParamsSchema,
-  PreambleSnapshotSchema,
-  PresetDefSchema,
-  parseTier,
-  physicalToNormalized,
-  RoyaltySplitSchema,
-  resolveTempoSyncTarget,
-  SelectiveRgLruParamsSchema,
-  StemProvenanceSchema,
-  StemRegistryEntrySchema,
-  TEMPO_SUBDIVISIONS,
-  TelemetrySnapshotSchema,
-  TierSchema,
-  tempoSubdivisionDelayMs,
-  tierToName,
-  validateStandardSchema,
-  ZohParamsSnapshotSchema,
+  getTestingBindings,
+  loadNodeDriverSync,
+  loadNodeWasmDriverSync,
+} from "../internal/native/napi.js";
+import { immutableHeaderSha256 } from "../provenance/verify.js";
+import { camelToWireObject, wireToCamelObject } from "./case-codec.js";
+import {
+  canonicalJson,
+  DEFAULT_ALLPASS_DELAYS,
+  decodeHeader,
+  encodeHeader,
+  headerToJcs,
+  parseSchemaVersion,
 } from "./index.js";
 
-describe("Schema Suite", () => {
-  it("parses and formats slimmable tiers", () => {
-    expect(parseTier("lite")).toBe(0);
-    expect(parseTier("Full")).toBe(1);
-    expect(parseTier("Pro")).toBe(2);
-    expect(parseTier("Ultra")).toBe(3);
-    expect(parseTier(0)).toBe(0);
-    expect(parseTier(1)).toBe(1);
-    expect(parseTier(2)).toBe(2);
-    expect(parseTier(3)).toBe(3);
-    expect(() => parseTier(9)).toThrow(DnamValidationError);
-    expect(() => parseTier("invalid" as "lite")).toThrow(DnamValidationError);
+describe("schema & error parity", () => {
+  it.each(["default", "full"] as const)(
+    "round-trips Rust %s DnamJsonHeader through camelCase ModelHeader to byte-identical JCS",
+    (kind) => {
+      // verify[sdk.ts.schema.camel-case-codec-parity]
+      // verify[sdk.ts.api.resources-and-data]
+      const testing = getTestingBindings();
+      const rustJson = testing.testingReferenceHeaderJson(kind);
+      const header = decodeHeader(rustJson);
 
-    expect(tierToName(0)).toBe("lite");
-    expect(tierToName(1)).toBe("full");
-    expect(tierToName(2)).toBe("pro");
-    expect(tierToName(3)).toBe("ultra");
-    expect(() => tierToName(5)).toThrow(DnamValidationError);
-    expect(TierSchema.parse("full")).toBe("full");
-    expect(TierSchema.parse("pro")).toBe("pro");
-    expect(TierSchema.parse("ultra")).toBe("ultra");
-  });
+      expect(Object.isFrozen(header)).toBe(true);
+      expect(Object.isFrozen(header.metadata)).toBe(true);
+      expect(Object.isFrozen(header.ioConfig)).toBe(true);
 
-  it("validates via StandardSchemaV1 (~standard) and handles sync/async error paths", () => {
-    const validHints = validateStandardSchema(ControlUiHintsSchema, {
-      section: "Preamp",
-      order: 1,
-      midpoint: 4.0,
-    });
-    expect(validHints.section).toBe("Preamp");
-    expect(validHints.midpoint).toBe(4.0);
+      const reencodedJson = encodeHeader(header);
+      const rustJcs = canonicalJson(rustJson);
+      const tsJcs = headerToJcs(header);
+      expect(tsJcs).toBe(rustJcs);
 
-    expect(() =>
-      validateStandardSchema(ControlSchemaDefSchema, { id: "x", name: "X", default: 1.0 }),
-    ).toThrow(DnamValidationError);
+      const rustImmutableJcs = canonicalJson(rustJson, { projectImmutable: true });
+      const tsImmutableJcs = headerToJcs(header, { projectImmutable: true });
+      expect(tsImmutableJcs).toBe(rustImmutableJcs);
 
-    const fakeAsyncSchema: StandardSchemaV1<string, string> = {
-      "~standard": {
-        version: 1,
-        vendor: "test",
-        validate: () => Promise.resolve({ value: "ok" }),
-      },
+      expect(immutableHeaderSha256(header)).toBe(immutableHeaderSha256(rustJson));
+      expect(decodeHeader(reencodedJson)).toEqual(header);
+
+      // Also verify JCS canonicalization via WASM driver matches
+      const wasmDriver = loadNodeWasmDriverSync();
+      withDriver(wasmDriver, () => {
+        expect(wasmDriver.canonicalizeJcs(reencodedJson, false, false)).toBe(rustJcs);
+        expect(wasmDriver.canonicalizeJcs(reencodedJson, true, false)).toBe(rustImmutableJcs);
+        expect(immutableHeaderSha256(header)).toBe(immutableHeaderSha256(rustJson));
+      });
+    },
+  );
+
+  it("maps every Rust DnamError variant exhaustively to its exact ErrorCode", () => {
+    // verify[sdk.ts.errors.coded-error]
+    const testing = getTestingBindings();
+    const expectedCodes: Readonly<Record<string, ErrorCode>> = {
+      BufferTooSmall: "ERR_DNAM_CONTAINER",
+      InvalidMagic: "ERR_DNAM_CONTAINER",
+      UnsupportedVersion: "ERR_DNAM_CONTAINER",
+      HeaderCapacityExceeded: "ERR_DNAM_CONTAINER",
+      Crc32cMismatch: "ERR_DNAM_CONTAINER",
+      InvalidSampleRate: "ERR_DNAM_SAMPLE_RATE",
+      InvalidControlIndex: "ERR_DNAM_PARAMETER",
+      CryptoVerificationFailed: "ERR_DNAM_PROVENANCE",
+      EncryptedArenaRequiresDeviceKey: "ERR_DNAM_PROVENANCE",
+      PreviewContainerRejected: "ERR_DNAM_PROVENANCE",
+      UnalignedOffset: "ERR_DNAM_VALIDATION",
+      InvalidJsonHeader: "ERR_DNAM_VALIDATION",
+      SchemaValidationError: "ERR_DNAM_VALIDATION",
     };
-    expect(() => validateStandardSchema(fakeAsyncSchema, "x")).toThrow(DnamValidationError);
+
+    const variantNames = testing.testingErrorVariantNames();
+    expect(new Set(variantNames)).toEqual(new Set(Object.keys(expectedCodes)));
+
+    for (const name of variantNames) {
+      const expectedCode = expectedCodes[name];
+      let caught: unknown;
+      try {
+        testing.testingRaiseErrorVariant(name);
+      } catch (err) {
+        caught = fromNativeError(err);
+      }
+      expect(isDnamError(caught, expectedCode)).toBe(true);
+      if (isDnamError(caught)) {
+        expect(caught.message.startsWith("[DNAM-")).toBe(false);
+        expect(Object.isFrozen(caught.detail)).toBe(true);
+      }
+    }
+
+    expect(isDnamError(new Error("plain"))).toBe(false);
+    const paramErr = new DnamError("ERR_DNAM_PARAMETER", "bad knob", { parameterId: "gain" });
+    expect(isDnamError(paramErr, "ERR_DNAM_PARAMETER")).toBe(true);
+    expect(isDnamError(paramErr, "ERR_DNAM_CONTAINER")).toBe(false);
+    expect(fromNativeError(paramErr)).toBe(paramErr);
   });
 
-  it("satisfies midpoint power-skew round-trip property across [0, 1]", () => {
-    expect(computeSkewExponent({ midpoint: 5.0 }, 5.0, 5.0)).toBe(1.0);
-    expect(computeSkewExponent({ midpoint: 5.0 }, 0.0, 10.0)).toBe(1.0);
-    expect(normalizedToPhysical({ midpoint: 2.5 }, 0.0, 0.0, 10.0)).toBe(0.0);
-    expect(normalizedToPhysical({ midpoint: 2.5 }, 1.0, 0.0, 10.0)).toBe(10.0);
-    expect(physicalToNormalized({ midpoint: 2.5 }, 0.0, 5.0, 5.0)).toBe(0.0);
-    expect(physicalToNormalized({ midpoint: 2.5 }, 0.0, 0.0, 10.0)).toBe(0.0);
-    expect(physicalToNormalized({ midpoint: 2.5 }, 10.0, 0.0, 10.0)).toBe(1.0);
+  it("validates SchemaVersion and canonical JCS via native Rust serde on both N-API and WASM drivers", () => {
+    // verify[sdk.ts.schema.camel-case-codec-parity]
+    // verify[sdk.ts.api.literal-unions-and-options]
+    for (const driver of [loadNodeDriverSync(), loadNodeWasmDriverSync()]) {
+      withDriver(driver, () => {
+        const v11 = parseSchemaVersion("1.1.0");
+        expect(v11.semver).toBe("1.1.0");
+        expect(v11.isSupported).toBe(true);
+        expect(parseSchemaVersion("1.0").semver).toBe("1.0.0");
+        expect(parseSchemaVersion("2.0.0").isSupported).toBe(false);
+        expect(() => parseSchemaVersion("bad")).toThrow(DnamError);
+        expect(() => parseSchemaVersion("1.x.0")).toThrow(DnamError);
+
+        expect(() => decodeHeader("{bad json")).toThrow(DnamError);
+        expect(() => decodeHeader({ unknownField: 123 })).toThrow(DnamError);
+
+        // Canonical JCS edge cases & DEFAULT_ALLPASS_DELAYS
+        expect(canonicalJson({ b: -0, a: [true, false, null] })).toBe(
+          '{"a":[true,false,null],"b":0}',
+        );
+        expect(() => canonicalJson(Number.NaN)).toThrow(DnamError);
+        expect(DEFAULT_ALLPASS_DELAYS).toHaveLength(16);
+      });
+    }
+  });
+
+  it("property: fast-check verifies camelCase/snakeCase codec, SchemaVersion, and JCS header roundtrips", () => {
+    // verify[sdk.ts.schema.camel-case-codec-parity]
+    const baseHeader = decodeHeader(getTestingBindings().testingReferenceHeaderJson("default"));
 
     fc.assert(
       fc.property(
-        fc.double({ min: 1.0, max: 9.0, noNaN: true }),
-        fc.double({ min: 0.01, max: 0.99, noNaN: true }),
-        (midpoint, tNorm) => {
-          const hints = { midpoint };
-          const xPhys = normalizedToPhysical(hints, tNorm, 0.0, 10.0);
-          const tBack = physicalToNormalized(hints, xPhys, 0.0, 10.0);
-          return Math.abs(tBack - tNorm) < 1e-6;
+        fc.string({ minLength: 1, maxLength: 32 }),
+        fc.string({ minLength: 1, maxLength: 24 }),
+        fc.constantFrom(44_100, 48_000, 88_200, 96_000),
+        (name, author, sampleRateTrainHz) => {
+          const modified: typeof baseHeader = {
+            ...baseHeader,
+            sampleRateTrainHz,
+            metadata: {
+              ...baseHeader.metadata,
+              name,
+              author,
+            },
+          };
+          const wireJson = encodeHeader(modified);
+          const roundtripped = decodeHeader(wireJson);
+          expect(roundtripped).toEqual(modified);
+          expect(headerToJcs(roundtripped)).toBe(canonicalJson(wireJson));
+          expect(immutableHeaderSha256(roundtripped)).toBe(immutableHeaderSha256(wireJson));
         },
       ),
+      { numRuns: 30 },
     );
-  });
 
-  it("parses and round-trips DnamJsonHeader, signatures, stems, and runtime schemas", () => {
-    const refContainer = DnamContainer.buildReference({ core2Active: true, isCheckpoint: true });
-    const header = refContainer.header;
-    expect(header.containerKind).toBe("dnam-ckpt");
-    expect(header.core2Mufdn.active).toBe(true);
-
-    const wire = dnamJsonHeaderToWire(header);
-    const reParsed = DnamJsonHeaderSchema.parse(wire);
-    expect(reParsed).toEqual(header);
-
-    const firstCtrl = header.controlsSchema[0];
-    if (firstCtrl) {
-      const ctrlWire = controlSchemaDefToWire(firstCtrl);
-      expect(ControlSchemaDefSchema.parse(ctrlWire)).toEqual(firstCtrl);
-    }
-
-    const preset = PresetDefSchema.parse({
-      id: "clean",
-      name: "Clean",
-      controls: { gain: 2.0 },
-    });
-    expect(preset.id).toBe("clean");
-
-    const prov = DatasetProvenanceSchema.parse({
-      datasetManifestSha256: "a".repeat(64),
-      epochsTrained: 100,
-    });
-    expect(prov.epochsTrained).toBe(100);
-
-    const dev = AuthorizedDeviceSchema.parse({
-      oemVendor: "darkglass",
-      modelCode: "anagram",
-      deviceIdHash: "b".repeat(64),
-    });
-    expect(dev.oemVendor).toBe("darkglass");
-
-    const split = RoyaltySplitSchema.parse({
-      recipientId: "did:web:creator",
-      role: "amp_capture",
-      shareBps: 10000,
-    });
-    expect(split.shareBps).toBe(10000);
-
-    const creatorSig = CreatorSignatureSchema.parse({
-      signerId: "did:web:creator",
-      pubkeyEd25519: "c".repeat(64),
-      sigEd25519: "d".repeat(128),
-    });
-    expect(() => CreatorSignatureSchema.parse({ signerId: "only" })).toThrow();
-
-    const receipt = MarketplaceReceiptSchema.parse({
-      marketplaceId: "dnam.store",
-      licenseId: "0192b5",
-      buyerHash: "e".repeat(64),
-      licenseTier: "personal",
-      issuedAt: "2026-10-23T00:00:00Z",
-      buyerArenaSha256: "f".repeat(64),
-      authorizedDevices: [dev],
-      royaltySplits: [split],
-      receiptSigEd25519: "1".repeat(128),
-    });
-
-    const sigs = ModelSignaturesSchema.parse({
-      immutableHeaderSha256: "a".repeat(64),
-      masterArenaSha256: "b".repeat(64),
-      creatorSignature: creatorSig,
-      marketplaceReceipt: receipt,
-    });
-    expect(sigs.marketplaceReceipt?.marketplaceId).toBe("dnam.store");
-    expect(() => ModelSignaturesSchema.parse({ immutableHeaderSha256: "a" })).toThrow();
-
-    const stemProv = StemProvenanceSchema.parse({
-      inputPcmSha256: "1".repeat(64),
-      targetPcmSha256: "2".repeat(64),
-      numFrames: 48000,
-    });
-    const phys = ExtractedPhysicsSchema.parse({
-      delaysMs: [12.5],
-      lfoFreqsHz: [1.2],
-      decayGainsLin: [0.8],
-    });
-    const stemEntry = StemRegistryEntrySchema.parse({
-      stemId: "stem_0",
-      controlsMeta: { gain: 5.0 },
-      provenance: stemProv,
-      stemArena3Crc32c: 123,
-      extractedPhysics: phys,
-      gAudioUploUF64: {
-        arena: 3,
-        dtype: "f64",
-        packing: "uplo_upper_col_major_tier_ordered",
-        featureDim: 64,
-        packedLen: 2080,
-        byteOffset: 0,
-        byteLength: 16640,
-      },
-      cAudioTierF64: {
-        arena: 3,
-        dtype: "f64",
-        shape: [64, 2],
-        byteOffset: 16640,
-        byteLength: 1024,
-      },
-    });
-    const audit = AuditReportSchema.parse({
-      phase1Clamps: ["CLAMP-RANGE"],
-      prescriptions: ["Add max stem"],
-    });
-
-    const fullHeader = DnamJsonHeaderSchema.parse({
-      ...header,
-      metadata: {
-        ...header.metadata,
-        signatures: sigs,
-      },
-      tensorDirectory: {
-        core1_weights: {
-          arena: 0,
-          dtype: "f32",
-          shape: [64],
-          byteOffset: 0,
-          byteLength: 256,
+    fc.assert(
+      fc.property(
+        fc.integer({ min: 0, max: 5 }),
+        fc.integer({ min: 0, max: 5 }),
+        fc.integer({ min: 0, max: 20 }),
+        (major, minor, patch) => {
+          const v = parseSchemaVersion(`${String(major)}.${String(minor)}.${String(patch)}`);
+          expect(v.major).toBe(major);
+          expect(v.minor).toBe(minor);
+          expect(v.patch).toBe(patch);
+          expect(v.isSupported).toBe(major === 1 && (minor === 0 || minor === 1));
         },
-      },
-      stemsRegistry: [stemEntry],
-      auditReport: audit,
-    });
-    const fullWire = dnamJsonHeaderToWire(fullHeader);
-    expect(DnamJsonHeaderSchema.parse(fullWire)).toEqual(fullHeader);
-    expect(() => DnamJsonHeaderSchema.parse({ metadata: header.metadata })).toThrow();
-
-    expect(PreambleSnapshotSchema.parse(refContainer.preamble)).toEqual(refContainer.preamble);
-    const zoh = refContainer.computeZoh(48_000);
-    expect(ZohParamsSnapshotSchema.parse(zoh)).toEqual(zoh);
-    expect(
-      ClampResultSnapshotSchema.parse({
-        clampedControls: { gain: 5.0 },
-        normalizedU: { gain: 0.0 },
-        wasClamped: { gain: false },
-        warnings: {},
-      }),
-    ).toBeDefined();
-    expect(PolyAdaaParamsSchema.parse({ beta: 0.5, delta: 0.1 })).toBeDefined();
-    expect(SelectiveRgLruParamsSchema.parse({ rLow: 0.9, drSpan: 0.05 })).toBeDefined();
-    expect(() => SelectiveRgLruParamsSchema.parse({ rLow: 0.98, drSpan: 0.05 })).toThrow();
-    expect(ModulatedUfdnParamsSchema.parse({ gLin: 0.85, vCeil: 0.985 })).toBeDefined();
-    expect(TelemetrySnapshotSchema).toBeDefined();
-  });
-
-  it("parses ControlCalibration, 12 tempo subdivisions, ModelCapabilities, and LevelingConfig", async () => {
-    expect(TEMPO_SUBDIVISIONS).toHaveLength(12);
-    expect(tempoSubdivisionDelayMs(120, "1/2.")).toBeCloseTo(1500, 3);
-    expect(tempoSubdivisionDelayMs(120, "1/8.")).toBeCloseTo(375, 3);
-    expect(tempoSubdivisionDelayMs(120, "1/16T")).toBeCloseTo(83.3333, 2);
-
-    const cal = ControlCalibrationSchema.parse({
-      role: "delay_time_ms",
-      conditional_physical_anchors: {
-        "range=0.01-0.1s": [10, 55, 100],
-        "range=0.1-1s": [100, 550, 1000],
-        "range=1-2s": [1000, 1500, 2000],
-      },
-      tempo_sync_default_subdivision: "1/8.",
-    });
-    const res = resolveTempoSyncTarget(cal, 120, "1/2.", false);
-    expect(res?.switchSelection).toEqual(["range", "1-2s"]);
-    expect(res?.targetPhysical).toBeCloseTo(1500, 3);
-    expect(res?.normalizedU).toBeCloseTo(0, 4);
-
-    const caps = ModelCapabilitiesSchema.parse({
-      blend_mode: "host_parallel",
-      default_blend: 0.5,
-      wet_polarity_inverted: true,
-      supports_trails: true,
-      tempo_sync_capable: true,
-    });
-    expect(caps.wetPolarityInverted).toBe(true);
-
-    const lvl = LevelingConfigSchema.parse({
-      auto_unity_enabled: true,
-      leveling_metric: "rms_dbfs",
-      reference_input_level_db: -20.5,
-      measured_default_output_level_db: -14.5,
-      unity_gain_offset_db: -6.0,
-      target_gain_db: 1.5,
-      calibrated_trim_db: -4.5,
-    });
-    expect(lvl.levelingMetric).toBe("rms_dbfs");
-    expect(lvl.calibratedTrimDb).toBeCloseTo(-4.5, 4);
-
-    const { evaluateLobattoAnchors, freezeAmountForOption, invertLobattoAnchors } = await import(
-      "./controls.js"
+      ),
+      { numRuns: 40 },
     );
-    expect(invertLobattoAnchors(10, [10, 10, 10])).toBe(0);
-    const uCurved = invertLobattoAnchors(300, [10, 200, 1000]);
-    const calLob = ControlCalibrationSchema.parse({
-      role: "lfo_rate_hz",
-      lobatto_physical_anchors: [10, 200, 1000],
-    });
-    expect(evaluateLobattoAnchors(calLob, uCurved)).toBeCloseTo(300, 2);
-    expect(
-      evaluateLobattoAnchors(ControlCalibrationSchema.parse({ role: "mix" }), 0),
-    ).toBeUndefined();
 
-    const calFreeze = ControlCalibrationSchema.parse({ role: "freeze_latch" });
-    expect(freezeAmountForOption(calFreeze, "off")).toBe(0.0);
-    expect(freezeAmountForOption(calFreeze, "freeze")).toBe(1.0);
-    expect(freezeAmountForOption(calFreeze, "maybe")).toBeUndefined();
-    expect(freezeAmountForOption(calLob, "on")).toBeUndefined();
-
-    const resLfo = resolveTempoSyncTarget(calLob, 120, "1/4", true);
-    expect(resLfo?.wasClamped).toBe(true);
-    const resLfoHigh = resolveTempoSyncTarget(calLob, 600_000, "1/16T", true);
-    expect(resLfoHigh).toBeDefined();
-    const resCondFold = resolveTempoSyncTarget(cal, 30, "1/2.", true);
-    expect(resCondFold?.wasClamped).toBe(true);
-    const resCondLow = resolveTempoSyncTarget(cal, 2400, "1/16T", false);
-    expect(resCondLow).toBeDefined();
-    expect(
-      resolveTempoSyncTarget(ControlCalibrationSchema.parse({ role: "mix" }), 120),
-    ).toBeUndefined();
+    fc.assert(
+      fc.property(
+        fc.dictionary(
+          fc.constantFrom("gain_db", "delay_ms", "user_key"),
+          fc.double({ min: -100, max: 100, noNaN: true }),
+        ),
+        (controlsDict) => {
+          const raw = {
+            sample_rate_train_hz: 48_000,
+            presets: [{ preset_id: "p1", name: "P1", controls: controlsDict }],
+          };
+          const camel = wireToCamelObject(raw);
+          const backToSnake = camelToWireObject(camel);
+          expect(backToSnake).toEqual(raw);
+        },
+      ),
+      { numRuns: 30 },
+    );
   });
 });

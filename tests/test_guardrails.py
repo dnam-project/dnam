@@ -360,7 +360,7 @@ def test_spec_rule_identifiers_adr_structure_and_no_spec_text_parsing() -> None:
         )
 
     spec_files = sorted((docs_dir / "specs").rglob("*.md"))
-    assert len(spec_files) == 17
+    assert len(spec_files) == 18
 
     rule_def_pattern = re.compile(r"`r\[([a-z0-9]+(?:\.[a-z0-9_-]+){2,})\]`")
     rule_ref_pattern = re.compile(r"\bref\[([a-z0-9]+(?:\.[a-z0-9_-]+){2,})\]")
@@ -640,6 +640,8 @@ def test_spec_rules_verified_in_tests() -> None:
         *list((MONOREPO_ROOT / "packages").glob("*/src/**/*.rs")),
         *list((MONOREPO_ROOT / "packages").glob("*/src/**/*.test.ts")),
         *list((MONOREPO_ROOT / "packages").glob("*/src/**/*.test.tsx")),
+        *list((MONOREPO_ROOT / "packages").glob("*/tests/**/*.ts")),
+        *list((MONOREPO_ROOT / "packages").glob("*/tests/**/*.tsx")),
     ]
     verified_in_tests: set[str] = set()
     for test_path in test_files:

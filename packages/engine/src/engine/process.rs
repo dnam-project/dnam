@@ -7,6 +7,13 @@ use crate::types::FtzDazGuard;
 
 #[inline(always)]
 fn read_vec4_le<B: MathBackend>(bytes: &[u8], off: usize) -> B::Vec4 {
+    #[cfg(target_endian = "little")]
+    {
+        if let Ok(chunk) = <&[u8; 16]>::try_from(&bytes[off..off + 16]) {
+            let arr: [f32; 4] = zerocopy::transmute!(*chunk);
+            return B::Vec4::load(&arr);
+        }
+    }
     let f0 = f32::from_le_bytes([bytes[off], bytes[off + 1], bytes[off + 2], bytes[off + 3]]);
     let f1 = f32::from_le_bytes([
         bytes[off + 4],
@@ -232,15 +239,17 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
         let s2_r = basis_r[0];
 
         // Stage III: Cabinet Modals (Early FIR + Stereo Kautz Modal Bank driven by 16-sample-delayed tap + Clean Sub crossover)
-        let fir_taps = self.stage_pipeline.fir_taps;
-        let (s3_fir_l, s2_delayed_16_l) = self
+        let (s3_fir_l, s3_fir_r, s2_delayed_16_l, s2_delayed_16_r) = self
             .stage_pipeline
             .stage3
-            .step_fir_only_with_delayed_tap(s2_l, clean_sub_l, &fir_taps);
-        let (s3_fir_r, s2_delayed_16_r) = self
-            .stage_pipeline
-            .stage3_r
-            .step_fir_only_with_delayed_tap(s2_r, clean_sub_r, &fir_taps);
+            .step_fir_stereo_with_delayed_tap::<B>(
+                &mut self.stage_pipeline.stage3_r,
+                s2_l,
+                s2_r,
+                clean_sub_l,
+                clean_sub_r,
+                &self.stage_pipeline.fir_taps,
+            );
 
         let arena_len = self.arena_storage.as_bytes().len();
         let active_tiers =
@@ -257,16 +266,18 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
         let mut head_acc_r = B::Vec4::zero();
         let mut kautz_acc_l = B::Vec4::zero();
         let mut kautz_acc_r = B::Vec4::zero();
+        let xl_vec = B::Vec4::splat(s2_delayed_16_l);
+        let xr_vec = B::Vec4::splat(s2_delayed_16_r);
         for t in 0..active_tiers {
             let kwl = &self.collapsed_kautz_wl[t];
             let kwr = &self.collapsed_kautz_wr[t];
             let tiers_l = &mut self.stage_pipeline.kautz_tiers_l[t];
             let tiers_r = &mut self.stage_pipeline.kautz_tiers_r[t];
             for blk in 0..4 {
-                let (vl, vr) = tiers_l[blk].step_4lane_stereo_simd_vec::<B>(
+                let (vl, vr) = tiers_l[blk].step_4lane_stereo_simd_splatted::<B>(
                     &mut tiers_r[blk],
-                    s2_delayed_16_l,
-                    s2_delayed_16_r,
+                    xl_vec,
+                    xr_vec,
                 );
                 kautz_acc_l = kautz_acc_l.add(vl);
                 kautz_acc_r = kautz_acc_r.add(vr);

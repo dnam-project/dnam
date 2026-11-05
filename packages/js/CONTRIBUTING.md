@@ -1,51 +1,59 @@
-# Contributing to `@dnam-project/engine` (`packages/js/`)
+# Contributing to `@dnam-project/dnam` (`packages/js/`)
 
-This guide covers engineering, dual-target Rust compilation (Node.js 24/26 LTS N-API v8 + WebAssembly SIMD128), strict Biome linting, TypeScript 5.8 typing, WebAudio `AudioWorklet` runtime boundary rules, testing, coverage, and performance benchmarking standards for **`@dnam-project/engine`** ([`README.md`](README.md)).
+This guide covers engineering, dual-target Rust compilation (Node.js 26 LTS `N-API v10` + WebAssembly `SIMD128`), strict Biome linting, TypeScript 7.0 typing, WebAudio `AudioWorklet` runtime boundary rules, testing, coverage, and profiling/benchmarking standards for **`@dnam-project/dnam`** ([`README.md`](README.md), specified in [`docs/specs/sdks/typescript_sdk.md`](../../docs/specs/sdks/typescript_sdk.md) and [`ADR-0013`](../../docs/adr/0013-typescript-sdk-architecture-and-dual-target-runtime.md)).
 
 All contributions must also comply with the root [`CONTRIBUTING.md`](../../CONTRIBUTING.md) and [`CLA.md`](../../CLA.md) (`git commit -s`).
 
 ---
 
-## 1. Unified Dual-Target Architecture
+## 1. Unified Dual-Target Architecture & Zero-Duplication Rule
 
 Consult [`AGENTS.md`](AGENTS.md) for the module-to-spec discovery table:
 
-1. **Unified Dual-Target Rust Core (`rust/` -> `dnam-js` crate):**
-   - [`rust/engine.rs`](rust/engine.rs), [`rust/container.rs`](rust/container.rs), [`rust/dsp.rs`](rust/dsp.rs), and [`rust/provenance.rs`](rust/provenance.rs) implement the shared safe Rust core (`#![forbid(unsafe_code)]`) used by both Node.js and WebAssembly.
-   - **Host Target (`#[cfg(not(target_arch = "wasm32"))]` in [`rust/napi_bindings.rs`](rust/napi_bindings.rs)):** Compiles via `napi = "3.15"` + `napi-derive = "3.6"` into `dist/dnam_js.<platform>-<arch>.node` with zero-copy `Float32Array`, `Float64Array`, and `Uint8Array` views plus libuv worker-pool `AsyncTask` support (`processAsync`).
-   - **WASM Target (`#[cfg(target_arch = "wasm32")]` in [`rust/wasm_ffi.rs`](rust/wasm_ffi.rs)):** Compiles with `RUSTFLAGS="-C target-feature=+simd128"` into `dist/dnam_engine.wasm`.
-2. **TypeScript & WebAudio `AudioWorklet` SDK (`src/`):**
-   - Conditional `exports` in [`package.json`](package.json) automatically route Node.js/Bun/Deno imports (`"node"` condition -> [`src/node.ts`](src/node.ts)) to the native N-API v8 driver ([`src/drivers/native.ts`](src/drivers/native.ts), with synchronous WASM fallback) and Browser/Bundler imports (`"browser"` / `"default"` condition -> [`src/browser.ts`](src/browser.ts)) to the pure WebAssembly SIMD128 driver ([`src/drivers/wasm.ts`](src/drivers/wasm.ts)).
-   - [`src/engine.ts`](src/engine.ts) (`DnamEngine<TControls>`), [`src/container.ts`](src/container.ts) (`DnamContainer`, `GramMatrix`, ZOH rescaling, `crc32c`), [`src/control.ts`](src/control.ts) (`ControlSpace`, `ControlRack<TControls>`, `LobattoBasis`, `Rank4Fm`, `chebyshevLfo`, `trustRegionSoftclip`), [`src/dsp.ts`](src/dsp.ts) (`PolyAdaa`, `SelectiveRgLru`, `ModulatedUfdn`, `unitRotor`, `lagrangeWeights`, `givensHouseholderMix`), [`src/provenance.ts`](src/provenance.ts), [`src/schema/`](src/schema/index.ts), and [`src/errors.ts`](src/errors.ts) expose the full TypeScript SDK.
-   - [`src/worklet/`](src/worklet/index.ts) ([`shared_memory.ts`](src/worklet/shared_memory.ts), [`processor.ts`](src/worklet/processor.ts), [`controller.ts`](src/worklet/controller.ts)) provides `DnamWorkletController<TControls>` and `DnamAudioWorkletProcessor`, using a 256-byte lock-free `SharedArrayBuffer` (`Atomics`) state/telemetry bridge when `crossOriginIsolated === true` and automatically falling back to `MessagePort` when `crossOriginIsolated === false`.
+1. **Zero Duplicated Engine Logic (`ref[sdk.ts.runtime.dual-target-drivers]`):**
+   - Never reimplement DSP, ZOH sample-rate rescaling, 3-Phase control clamping, Lobatto calibration inversion, JSON schema validation, RFC 8785 JCS canonicalization, or provenance signature/receipt construction in TypeScript or in `packages/js/rust/`.
+   - Delegate 100% of domain logic to `dnam-engine` via [`rust/core/`](rust/core.rs). Keep `src/` strictly focused on idiomatic TypeScript ergonomics (`Model`, `Checkpoint`, `Engine`, `Parameter`, `DnamAudioNode`), snake_case $\leftrightarrow$ camelCase key translation (`src/schema/case-codec.ts`), and native handle/buffer management (`0` runtime npm dependencies).
+2. **Unified Dual-Target Rust Crate (`rust/` -> `dnam-js`):**
+   - Uses the modern Rust 2018+ `foo.rs` + `foo/bar.rs` module layout (zero `mod.rs` files).
+   - [`rust/core.rs`](rust/core.rs) + `rust/core/{engine,container,control,provenance,operators}.rs` implement the target-agnostic safe Rust core (`#[forbid(unsafe_code)]`).
+   - **Host Target (`#[cfg(not(target_arch = "wasm32"))]` in [`rust/napi.rs`](rust/napi.rs)):** Compiles via `napi` (`napi10`) into `dist/dnam.<platform>-<arch>.node` with zero-copy `Float32Array`, `Float64Array`, and `Uint8Array` borrows plus libuv worker-pool `AsyncTask` support (`processAsync`).
+   - **WASM Target (`#[cfg(target_arch = "wasm32")]` in [`rust/wasm.rs`](rust/wasm.rs)):** Compiles with `RUSTFLAGS="-C target-feature=+simd128"` (`--no-default-features`, omitting `testing`) into `dist/dnam.wasm`.
+3. **Feature-Oriented TypeScript 7 & WebAudio `AudioWorklet` SDK (`src/`):**
+   - Conditional `exports` in [`package.json`](package.json) route Node.js 26 LTS (`"node"` -> [`src/node.ts`](src/node.ts)) to `NapiDriver` ([`src/internal/native/napi.ts`](src/internal/native/napi.ts), with synchronous WASM fallback) and Browser/Bundler imports (`"browser"` -> [`src/browser.ts`](src/browser.ts)) to `WasmDriver` ([`src/internal/native/wasm.ts`](src/internal/native/wasm.ts)).
+   - Feature directories: `src/model/`, `src/checkpoint/`, `src/engine/`, `src/parameters/`, `src/tempo/`, `src/schema/`, `src/provenance/`, `src/dsp/`, `src/web-audio/`, and private `src/internal/`.
 
 ---
 
-## 2. Build & Development Commands
+## 2. Build, Profiling & Development Commands
 
 Run all commands via **`moon`**:
 
 ```bash
-# 1. Compile both the native Node.js N-API v8 addon (.node) and WASM SIMD128 binary (.wasm)
+# 1. Compile both the native Node.js 26 N-API v10 addon (.node) and WASM SIMD128 binary (.wasm)
 moon run js:build-rust
 
-# 2. Full build (Rust N-API + WASM + TypeScript ESM bundles + worklet-processor.js + .d.ts)
+# 2. Full build (Rust N-API + WASM + TypeScript ESM bundles + web-audio-processor.js + .d.ts)
 moon run js:build
+
+# 3. Build symbolicated profiling WASM (--profile profiling) and capture V8 --cpu-prof profiles
+moon run js:profile
 ```
 
 ---
 
-## 3. Strict Agentic Biome & Runtime Boundary Rules
+## 3. Strict Biome & Runtime Boundary Rules (`ref[sdk.ts.layout.dependency-direction]`)
 
 Root [`biome.json`](../../biome.json) and [`tsconfig.json`](tsconfig.json) enforce strict typing and runtime isolation:
 
-1. **Browser & Schema Isolation:** `src/browser.ts`, `src/drivers/wasm.ts`, `src/schema/**/*.ts`, and `src/worklet/**/*.ts` must never import `node:*` built-in modules (`noRestrictedImports` in `biome.json`).
-2. **Zero-Dependency `AudioWorkletGlobalScope`:** `src/worklet/processor.ts` and `src/worklet/shared_memory.ts` are bundled into the standalone `dist/worklet-processor.js` loaded via `audioContext.audioWorklet.addModule(...)` and must never import `"zod"` or `node:*`.
-3. **Strict TypeScript (`tsc --noEmit`):** Maintain `strict: true`, `noUncheckedIndexedAccess: true`, `exactOptionalPropertyTypes: true`, and `verbatimModuleSyntax: true` with zero `any` or non-null assertions (`!`).
+1. **Browser, Schema & Worklet Isolation:** `src/browser.ts`, `src/internal/native/wasm.ts`, `src/schema/**/*.ts`, and `src/web-audio/**/*.ts` must never import `node:*` built-in modules (`noRestrictedImports` in `biome.json`).
+2. **Zero-Dependency Package & `AudioWorkletGlobalScope`:** `@dnam-project/dnam` has zero runtime npm dependencies (`"dependencies"` is omitted), and `src/web-audio/processor.ts` bundles into a standalone `dist/web-audio-processor.js` module.
+3. **Strict TypeScript 7 (`tsc --noEmit`):** Maintain `strict: true`, `noUncheckedIndexedAccess: true`, `exactOptionalPropertyTypes: true`, and `verbatimModuleSyntax: true` with zero `any` or non-null assertions (`!`).
 
 ---
 
 ## 4. Testing, Coverage (≥ 95%) & Benchmarks (`vitest` v5 + `fast-check`)
+
+Use **`fast-check`** (`fc.assert(fc.property(...))`) wherever possible across all unit and integration test suites (`src/**/*.test.ts` and `tests/**/*.test.ts`) to verify snake_case $\leftrightarrow$ camelCase codec roundtrips, container header/arena integrity, 3-Phase parameter clamping, ZOH sample-rate rescaling, audio block processing stability, provenance signatures, WebAudio shared-ring state transitions, and N-API vs WASM parity over arbitrary generated inputs.
 
 ```bash
 # 1. Run all js quality gates (format-check, lint, typecheck, build, test)

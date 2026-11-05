@@ -2,7 +2,10 @@
 //!
 //! Canonical Reference: `docs/dsp/op_n_commuted_cascade.md` §4 & `docs/dsp/router_and_stages_topology.md` §2.2.
 
-use crate::math::flush_recursive_state_f32;
+use crate::math::{
+    DefaultMathBackend, MathBackend, SimdVec4, flush_recursive_state_f32,
+    flush_recursive_state_vec4,
+};
 use crate::operators::op_n::{
     MultiDrivePolyAdaaChannel, QuadratureHysteresis2D, c2_wavefolder,
     eval_adaa_cubic_c2_wavefolder_odd_f32,
@@ -93,8 +96,14 @@ impl ToneBasisFilters {
         // HPF 1200 Hz (y[n] = alpha * y[n-1] + alpha * (x[n] - x[n-1]))
         let s_hpf1200 =
             self.alpha_1200 * self.hpf1200_state + self.alpha_1200 * (x - self.hpf1200_x1);
-        self.hpf1200_state = flush_recursive_state_f32(s_hpf1200);
-        self.hpf1200_x1 = flush_recursive_state_f32(x);
+        type V = <DefaultMathBackend as MathBackend>::Vec4;
+        let mut flushed = [0.0f32; 4];
+        flush_recursive_state_vec4(V::from_array([s_lpf80, s_lpf400, s_hpf1200, x]))
+            .store(&mut flushed);
+        self.lpf80_state = flushed[0];
+        self.lpf400_state = flushed[1];
+        self.hpf1200_state = flushed[2];
+        self.hpf1200_x1 = flushed[3];
 
         [s_direct, s_lpf80, s_lpf400, s_hpf1200]
     }

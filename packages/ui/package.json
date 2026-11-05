@@ -10,7 +10,7 @@
     "directory": "packages/ui"
   },
   "engines": {
-    "node": ">=24.0.0"
+    "node": ">=26.0.0"
   },
   "files": [
     "dist",
@@ -42,7 +42,7 @@
   },
   "dependencies": {
     "@base-ui/react": "catalog:",
-    "@dnam-project/engine": "workspace:*",
+    "@dnam-project/dnam": "workspace:*",
     "@tailwindcss/vite": "catalog:",
     "class-variance-authority": "catalog:",
     "clsx": "catalog:",

@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Dual-target Node-API v8 (napi-rs) and WebAssembly SIMD128 bindings for Dynamic Neural Audio Modeler (DNAM)"
+description = "Dual-target Node-API v10 (napi-rs) and WebAssembly SIMD128 bindings for Dynamic Neural Audio Modeler (DNAM)"
 publish = false
 
 [lib]
@@ -14,8 +14,13 @@ path = "rust/lib.rs"
 crate-type = ["cdylib"]
 bench = false
 
+[features]
+default = ["testing"]
+testing = []
+
 [dependencies]
 dnam-engine.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]

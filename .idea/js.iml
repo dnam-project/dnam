@@ -6,6 +6,7 @@
       <sourceFolder url="file://$MODULE_DIR$/packages/js/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/packages/js/scripts" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/packages/js/tests" isTestSource="true" />
+      <sourceFolder url="file://$MODULE_DIR$/packages/js/examples" isTestSource="false" />
       <excludeFolder url="file://$MODULE_DIR$/packages/js/.vitest" />
       <excludeFolder url="file://$MODULE_DIR$/packages/js/coverage" />
       <excludeFolder url="file://$MODULE_DIR$/packages/js/dist" />

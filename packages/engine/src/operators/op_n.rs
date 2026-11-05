@@ -4,7 +4,10 @@
 
 use alloc::vec::Vec;
 
-use crate::math::{flush_recursive_state_f32, newton6_reciprocal_f64};
+use crate::math::{
+    DefaultMathBackend, MathBackend, SimdVec4, flush_recursive_state_f32,
+    flush_recursive_state_vec4, newton6_reciprocal_f64,
+};
 
 /// Drive scales for the 4-lane Multi-Drive PolyADAA Bank.
 pub const MULTI_DRIVE_SCALES: [f32; 4] = [0.25, 1.0, 4.0, 16.0];
@@ -36,6 +39,33 @@ pub fn poly_adaa_algebraic_eval(u_prev: f32, u_curr: f32, beta: f32, delta: f32)
     let a_even = quad - quart;
 
     beta * a_odd + delta * a_even
+}
+
+#[inline(always)]
+fn poly_adaa_eval_vec4<V: SimdVec4>(u_prev: V, u_curr: V, beta: V, delta: V) -> V {
+    let half = V::splat(0.5);
+    let one_pt_five = V::splat(1.5);
+    let one_third = V::splat(1.0 / 3.0);
+    let one_fifth = V::splat(0.2);
+    let two = V::splat(2.0);
+
+    let m = half.mul(u_curr.add(u_prev));
+    let d = half.mul(u_curr.sub(u_prev));
+
+    let m2 = m.mul(m);
+    let d2 = d.mul(d);
+
+    let odd_factor = one_pt_five.sub(half.mul(m2.add(d2)));
+    let a_odd = m.mul(odd_factor);
+
+    let quad = m2.add(one_third.mul(d2));
+    let quart = m2
+        .mul(m2)
+        .add(two.mul(m2).mul(d2))
+        .add(one_fifth.mul(d2).mul(d2));
+    let a_even = quad.sub(quart);
+
+    beta.mul(a_odd).add(delta.mul(a_even))
 }
 
 /// Instantaneous C^2 compactly supported wavefolder.
@@ -255,26 +285,27 @@ impl MultiDrivePolyAdaaChannel {
 
     #[inline(always)]
     pub fn step(&mut self, x: f32, beta: f32, delta: f32, alpha: f32, r_ac: f32) -> [f32; 4] {
-        let mut out = [0.0; 4];
+        type V = <DefaultMathBackend as MathBackend>::Vec4;
         let one_minus_rac = 1.0 - r_ac;
         let x_scaled = (2.0 / 3.0) * x;
 
-        let u_raw_arr = [
-            MULTI_DRIVE_SCALES[0] * x_scaled,
-            MULTI_DRIVE_SCALES[1] * x_scaled,
-            MULTI_DRIVE_SCALES[2] * x_scaled,
-            MULTI_DRIVE_SCALES[3] * x_scaled,
-        ];
-        let mut a_arr = [0.0f32; 4];
-        for i in 0..4 {
-            let u_p = self.u_prev[i].clamp(-1.0, 1.0);
-            let u_c = u_raw_arr[i].clamp(-1.0, 1.0);
-            a_arr[i] = poly_adaa_algebraic_eval(u_p, u_c, beta, delta);
-        }
+        let u_raw_v = V::load(&MULTI_DRIVE_SCALES).mul(V::splat(x_scaled));
+        let u_prev_v = V::load(&self.u_prev);
+        let neg_one = V::splat(-1.0);
+        let pos_one = V::splat(1.0);
+        let u_p_v = u_prev_v.max(neg_one).min(pos_one);
+        let u_c_v = u_raw_v.max(neg_one).min(pos_one);
+
+        let mut a_v = poly_adaa_eval_vec4(u_p_v, u_c_v, V::splat(beta), V::splat(delta));
+        let mut u_raw_arr = [0.0f32; 4];
+        u_raw_v.store(&mut u_raw_arr);
+
         if Self::crosses_rail(self.u_prev[3], u_raw_arr[3])
             || u_raw_arr[2].abs() > 1.0
             || self.u_prev[2].abs() > 1.0
         {
+            let mut a_arr = [0.0f32; 4];
+            a_v.store(&mut a_arr);
             for i in 0..4 {
                 if Self::crosses_rail(self.u_prev[i], u_raw_arr[i]) {
                     let (odd, even, _) = eval_saturated_polyadaa_rail_crossing_f64(
@@ -284,16 +315,23 @@ impl MultiDrivePolyAdaaChannel {
                     a_arr[i] = ((beta as f64) * odd + (delta as f64) * even) as f32;
                 }
             }
+            a_v = V::load(&a_arr);
         }
-        for i in 0..4 {
-            let a_curr = a_arr[i];
-            let y_nl = 0.875 * a_curr + 0.125 * self.a_prev[i];
-            let next_m_dc = r_ac * self.m_dc[i] + one_minus_rac * y_nl;
-            out[i] = alpha * x + (y_nl - next_m_dc);
-            self.u_prev[i] = flush_recursive_state_f32(u_raw_arr[i]);
-            self.a_prev[i] = flush_recursive_state_f32(a_curr);
-            self.m_dc[i] = flush_recursive_state_f32(next_m_dc);
-        }
+
+        let a_prev_v = V::load(&self.a_prev);
+        let m_prev_v = V::load(&self.m_dc);
+        let y_nl_v = V::splat(0.875).mul(a_v).add(V::splat(0.125).mul(a_prev_v));
+        let next_m_dc_v = V::splat(r_ac)
+            .mul(m_prev_v)
+            .add(V::splat(one_minus_rac).mul(y_nl_v));
+        let out_v = V::splat(alpha * x).add(y_nl_v.sub(next_m_dc_v));
+
+        flush_recursive_state_vec4(u_raw_v).store(&mut self.u_prev);
+        flush_recursive_state_vec4(a_v).store(&mut self.a_prev);
+        flush_recursive_state_vec4(next_m_dc_v).store(&mut self.m_dc);
+
+        let mut out = [0.0; 4];
+        out_v.store(&mut out);
         out
     }
 
@@ -367,6 +405,7 @@ impl MultiDrivePolyAdaaChannel {
         alpha: f32,
         r_ac: f32,
     ) -> (f32, f32, f32, f32) {
+        type V = <DefaultMathBackend as MathBackend>::Vec4;
         let one_minus_rac = 1.0 - r_ac;
         let xl_s = (2.0 / 3.0) * x_l;
         let xr_s = (2.0 / 3.0) * x_r;
@@ -387,12 +426,14 @@ impl MultiDrivePolyAdaaChannel {
         let m_prev_4 = [left.m_dc[1], left.m_dc[2], right.m_dc[1], right.m_dc[2]];
         let alpha_x_4 = [alpha * x_l, alpha * x_l, alpha * x_r, alpha * x_r];
 
-        let mut a_4 = [0.0f32; 4];
-        for i in 0..4 {
-            let u_p = u_prev_4[i].clamp(-1.0, 1.0);
-            let u_c = u_raw_4[i].clamp(-1.0, 1.0);
-            a_4[i] = poly_adaa_algebraic_eval(u_p, u_c, beta, delta);
-        }
+        let neg_one = V::splat(-1.0);
+        let pos_one = V::splat(1.0);
+        let u_prev_v = V::load(&u_prev_4);
+        let u_raw_v = V::load(&u_raw_4);
+        let u_p_v = u_prev_v.max(neg_one).min(pos_one);
+        let u_c_v = u_raw_v.max(neg_one).min(pos_one);
+        let mut a_v = poly_adaa_eval_vec4(u_p_v, u_c_v, V::splat(beta), V::splat(delta));
+
         if Self::crosses_rail(u_prev_4[1], u_raw_4[1])
             || Self::crosses_rail(u_prev_4[3], u_raw_4[3])
             || u_raw_4[0].abs() > 1.0
@@ -400,6 +441,8 @@ impl MultiDrivePolyAdaaChannel {
             || u_raw_4[2].abs() > 1.0
             || u_prev_4[2].abs() > 1.0
         {
+            let mut a_4 = [0.0f32; 4];
+            a_v.store(&mut a_4);
             for i in 0..4 {
                 if Self::crosses_rail(u_prev_4[i], u_raw_4[i]) {
                     let (odd, even, _) = eval_saturated_polyadaa_rail_crossing_f64(
@@ -409,31 +452,40 @@ impl MultiDrivePolyAdaaChannel {
                     a_4[i] = ((beta as f64) * odd + (delta as f64) * even) as f32;
                 }
             }
+            a_v = V::load(&a_4);
         }
 
+        let a_prev_v = V::load(&a_prev_4);
+        let m_prev_v = V::load(&m_prev_4);
+        let y_nl_v = V::splat(0.875).mul(a_v).add(V::splat(0.125).mul(a_prev_v));
+        let next_m_v = V::splat(r_ac)
+            .mul(m_prev_v)
+            .add(V::splat(one_minus_rac).mul(y_nl_v));
+        let out_v = V::load(&alpha_x_4).add(y_nl_v.sub(next_m_v));
+
+        let mut u_flushed = [0.0f32; 4];
+        let mut a_flushed = [0.0f32; 4];
+        let mut m_flushed = [0.0f32; 4];
         let mut out_4 = [0.0f32; 4];
-        let mut next_m_4 = [0.0f32; 4];
-        for i in 0..4 {
-            let y_nl = 0.875 * a_4[i] + 0.125 * a_prev_4[i];
-            let next_m = r_ac * m_prev_4[i] + one_minus_rac * y_nl;
-            out_4[i] = alpha_x_4[i] + (y_nl - next_m);
-            next_m_4[i] = next_m;
-        }
+        flush_recursive_state_vec4(u_raw_v).store(&mut u_flushed);
+        flush_recursive_state_vec4(a_v).store(&mut a_flushed);
+        flush_recursive_state_vec4(next_m_v).store(&mut m_flushed);
+        out_v.store(&mut out_4);
 
-        left.u_prev[1] = flush_recursive_state_f32(u_raw_4[0]);
-        left.u_prev[2] = flush_recursive_state_f32(u_raw_4[1]);
-        right.u_prev[1] = flush_recursive_state_f32(u_raw_4[2]);
-        right.u_prev[2] = flush_recursive_state_f32(u_raw_4[3]);
+        left.u_prev[1] = u_flushed[0];
+        left.u_prev[2] = u_flushed[1];
+        right.u_prev[1] = u_flushed[2];
+        right.u_prev[2] = u_flushed[3];
 
-        left.a_prev[1] = flush_recursive_state_f32(a_4[0]);
-        left.a_prev[2] = flush_recursive_state_f32(a_4[1]);
-        right.a_prev[1] = flush_recursive_state_f32(a_4[2]);
-        right.a_prev[2] = flush_recursive_state_f32(a_4[3]);
+        left.a_prev[1] = a_flushed[0];
+        left.a_prev[2] = a_flushed[1];
+        right.a_prev[1] = a_flushed[2];
+        right.a_prev[2] = a_flushed[3];
 
-        left.m_dc[1] = flush_recursive_state_f32(next_m_4[0]);
-        left.m_dc[2] = flush_recursive_state_f32(next_m_4[1]);
-        right.m_dc[1] = flush_recursive_state_f32(next_m_4[2]);
-        right.m_dc[2] = flush_recursive_state_f32(next_m_4[3]);
+        left.m_dc[1] = m_flushed[0];
+        left.m_dc[2] = m_flushed[1];
+        right.m_dc[1] = m_flushed[2];
+        right.m_dc[2] = m_flushed[3];
 
         (out_4[0], out_4[1], out_4[2], out_4[3])
     }

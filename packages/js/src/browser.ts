@@ -1,102 +1,97 @@
+/// <reference lib="esnext.disposable" />
+
 /**
- * Browser & Edge entry point for `@dnam-project/engine` (`@dnam-project/engine/browser`).
- * Zero `node:*` imports.
+ * Browser / WebAssembly `SIMD128` entrypoint for `@dnam-project/dnam/browser`
+ * (`ref[sdk.ts.api.sync-init]`, `ref[sdk.ts.layout.dependency-direction]`).
+ *
+ * Automatically initializes the WebAssembly SIMD128 driver via top-level `await` when
+ * `dnam.wasm` is reachable via `fetch`, while allowing explicit override via `await initWasm(...)`.
+ *
+ * @module
  */
 
+import { initWasm } from "./internal/native/load.js";
+
+try {
+  await initWasm();
+} catch {
+  // In custom hosting or test environments without a relative ./dnam.wasm asset,
+  // callers initialize explicitly via `await initWasm({ module | bytes | url })`.
+}
+
 export {
-  type BuildContainerOptions,
-  type BuildReferenceOptions,
-  buildDnamContainer,
-  buildReferenceContainer,
-  computeZohRescaledParams,
-  crc32c,
-  DnamContainer,
-  type FromBytesOptions,
-  GramMatrix,
-  type SealContainerOptions,
-  stripContainerToTier,
-  toUint8Array,
-  updateHeaderInPlace,
-  validateDnamModel,
-  type ZohComputeOptions,
-} from "./container.js";
-export {
-  ControlRack,
-  type ControlSink,
+  type ActiveBackend,
+  type AudioBlock,
+  type AudioInput,
+  type Backend,
+  type BounceOptions,
+  type BuildModelOptions,
+  type BypassOptions,
+  backends,
+  Checkpoint,
+  type ClampedParameterEntry,
+  type ClampReport,
   ControlSpace,
-  chebyshevLfo,
-  clampControlValues,
-  LobattoBasis,
-  type LobattoEvalOptions,
-  Rank4Fm,
-  type SetControlOptions,
-  trustRegionSoftclip,
-} from "./control.js";
-export {
-  type BackendChoice,
-  type DnamControlSpaceHandle,
-  type DnamDriver,
-  type DnamEngineHandle,
-  getCachedWasmBinary,
-  getWasmDriver,
-  hasWasmDriver,
-  initDnamWasm,
-  initDnamWasmSync,
-  type RawClampResult,
-  resolveDriver,
-  type ValidatedContainerRaw,
-} from "./drivers/index.js";
-export {
-  type DspScanOptions,
-  givensHouseholderMix,
-  lagrangeWeights,
-  ModulatedUfdn,
-  PolyAdaa,
-  SelectiveRgLru,
-  unitRotor,
-} from "./dsp.js";
-export {
-  type AudioBufferLike,
-  DnamEngine,
-  type DnamEngineOptions,
-  DnamProcessor,
-  type ProcessMonoOptions,
-  type ProcessPlanarOptions,
-  type ProcessStereoOptions,
-} from "./engine.js";
-export {
-  DnamContainerError,
-  DnamControlError,
+  clampParameters,
+  crc32c,
   DnamError,
-  DnamSampleRateError,
-  DnamValidationError,
-  mapTaggedError,
-  rethrowDnamError,
-} from "./errors.js";
-export {
-  applyIsometricGaugeWatermark,
-  applyTardosWatermark,
-  buildCreatorSigningMessage,
-  buildMarketplaceSigningMessage,
-  chacha20XorArena,
-  computeImmutableHeaderSha256,
-  ed25519PubkeyHex,
-  ed25519SignHex,
-  extractStructuralHash160d,
-  extractStructuralHash224d,
-  generateTardosCode,
-  type SealDnamContainerOptions,
-  type SignOemDeviceCertificateOptions,
-  scoreTardosWatermark,
-  sealDnamContainer,
-  sha256Hex,
-  signOemDeviceCertificate,
-  structuralCosineSimilarity,
-  type UnsealDnamContainerOptions,
-  unsealDnamContainer,
-  verifyOemDeviceCertificate,
-  wrapDeviceCekHex,
-  x25519PubkeyHex,
-} from "./provenance.js";
-export * from "./schema/index.js";
-export * from "./worklet/index.js";
+  type DnamErrorOptions,
+  type DnckLayoutInfo,
+  decodeHeader,
+  defineModelTypes,
+  Engine,
+  type EngineOptions,
+  type ErrorCode,
+  type ErrorDetail,
+  encodeHeader,
+  errorCodes,
+  type FreezeOptions,
+  GramMatrix,
+  type HostMixOptions,
+  headerToJcs,
+  type InferParameterMap,
+  type InitWasmOptions,
+  initWasm,
+  isDnamError,
+  Model,
+  type ModelHeader,
+  type ModelLoadOptions,
+  type ModelSource,
+  type OverflowFlags,
+  Parameter,
+  type ParameterCalibration,
+  type ParameterDescriptor,
+  type ParameterKind,
+  ParameterMap,
+  type ParameterUiHints,
+  type ParameterValueMap,
+  type PreambleInfo,
+  type Preset,
+  type ProcessAsyncOptions,
+  type ProcessOptions,
+  type ProtectionProfile,
+  parseSchemaVersion,
+  protectionProfiles,
+  type ReferenceCheckpointOptions,
+  type ReferenceModelOptions,
+  type ReloadOptions,
+  type RenderOptions,
+  type SchemaVersion,
+  type SetParameterOptions,
+  type StateScope,
+  type StreamOptions,
+  type Subdivision,
+  subdivisions,
+  type TapTempoResult,
+  type TelemetrySnapshot,
+  TempoController,
+  type TempoSyncOptions,
+  type TempoTapOptions,
+  type Tier,
+  type TierArenas,
+  type TierInput,
+  type TypedParameterEntry,
+  tiers,
+  uploUPackedLength,
+  type V2OpenLayoutInfo,
+} from "./public-exports.js";
