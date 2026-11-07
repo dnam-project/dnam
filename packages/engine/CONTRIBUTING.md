@@ -35,10 +35,10 @@ Consult [`AGENTS.md`](AGENTS.md) and the submodule `AGENTS.md` files for progres
 
 ## 2. Safety, `#![forbid(unsafe_code)]` & Real-Time Audio Invariants
 
-1. **Strict `unsafe` Isolation:**
-   - `src/lib.rs` and all algorithmic submodules (`operators`, `stages`, `control`, `container`, `provenance`, `schema`, `engine`, `dynamic`) enforce `#[forbid(unsafe_code)]`.
-   - Use disjoint struct field borrows (`step_frame_tora`) rather than raw pointer casts in `engine/`.
-   - `unsafe` is permitted **only** in hardware SIMD intrinsic modules (`src/math/neon.rs`, `src/math/x86_simd.rs`, `src/math/wasm_simd128.rs`, `src/math/arm_sme.rs`), hardware `FTZ`/`DAZ` CSR guards (`src/types.rs`), 64-byte aligned allocation (`src/memory.rs`), and C-ABI pointer entrypoints (`src/ffi.rs`). Every `unsafe` block must carry an explicit `// SAFETY:` justification.
+1. **Strict `unsafe` Isolation & Safe-Rust-First Requirement (`ref[repo.code.type-safety-and-imports]`):**
+   - `src/lib.rs` enforces `#![deny(unsafe_code)]` and all algorithmic and concurrency submodules (`operators`, `stages`, `control`, `container`, `provenance`, `schema`, `engine`, `dynamic`, `host`) enforce `#[forbid(unsafe_code)]` (zero `#[allow(unsafe_code)]`).
+   - **Never use `#[allow(unsafe_code)]` out of convenience:** Always design lock-free rings, seqlocks, hot-swap handles, and DSP state borrowing using safe Rust primitives first (`core::sync::atomic::AtomicU64` word arrays, atomic slot indices with `try_lock()`, disjoint struct field borrows in `step_frame_tora`, and `zerocopy::transmute!`).
+   - `#[allow(unsafe_code)]` is permitted **only** when **(a)** it is strictly unavoidable at a hardware/OS intrinsic or C-ABI boundary (`src/math/{neon,x86_simd,wasm_simd128,arm_sme}.rs`, `src/types.rs` `FTZ`/`DAZ` CSR guards, `src/memory.rs` 64-byte aligned allocation, and `src/ffi.rs` C-ABI entrypoints), or **(b)** Criterion benchmarks prove the safe Rust checker version incurs a high real-time performance penalty **and** the `unsafe` block is guaranteed sound with an explicit `// SAFETY:` proof.
 2. **Zero Audio-Thread Heap Allocations:**
    - `process_block`, `process_block_in_place`, `process_mono_to_stereo`, `process_mono`, `set_tier`, `set_sample_rate`, `set_control_value`, `reset_to_dc_equilibrium`, `telemetry_snapshot`, `from_bytes_with_scratch`, and `reload_model_in_place` must never allocate or deallocate heap memory.
 3. **Zero `FSQRT`, `FDIV`, or `libm` in $48\text{ kHz}$ / $3\text{ kHz}$ Paths:**

@@ -232,6 +232,46 @@ impl ControlClampDescriptor {
         };
         [psi1, psi2, psi3]
     }
+
+    /// Evaluates two-pass (`switch` then `range`) conditional clamping across `num_controls`
+    /// controls (`ref[dsp.ctrl.range.normalize-clamp]`), updating `clamped_values` and
+    /// `active_switch_options` in place and returning the 16-bit `active_clamp_mask`.
+    pub fn clamp_all_controls(
+        descriptors: &[Self],
+        num_controls: usize,
+        raw_values: &[f32],
+        clamped_values: &mut [f32],
+        active_switch_options: &mut [u8],
+    ) -> u16 {
+        let mut clamp_mask: u16 = 0;
+        let n = num_controls
+            .min(descriptors.len())
+            .min(raw_values.len())
+            .min(clamped_values.len())
+            .min(active_switch_options.len());
+        for p in 0..n {
+            if descriptors[p].ctrl_kind == 1 {
+                let (clamped, _, was_clamped) =
+                    descriptors[p].clamp_and_normalize(raw_values[p], active_switch_options);
+                clamped_values[p] = clamped;
+                active_switch_options[p] = (clamped + 0.5) as u8;
+                if was_clamped && p < 16 {
+                    clamp_mask |= 1_u16 << p;
+                }
+            }
+        }
+        for p in 0..n {
+            if descriptors[p].ctrl_kind == 0 {
+                let (clamped, _, was_clamped) =
+                    descriptors[p].clamp_and_normalize(raw_values[p], active_switch_options);
+                clamped_values[p] = clamped;
+                if was_clamped && p < 16 {
+                    clamp_mask |= 1_u16 << p;
+                }
+            }
+        }
+        clamp_mask
+    }
 }
 
 #[cfg(test)]

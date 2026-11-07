@@ -182,6 +182,8 @@ describe("Engine real-time processing, scopes, async & streaming", () => {
   it("executes processAsync on the worker pool, enforces ERR_DNAM_BUSY on concurrent calls, and streams via TransformStream", async () => {
     // verify[sdk.ts.engine.zero-copy-and-async]
     // verify[sdk.ts.engine.streaming-and-render]
+    // verify[dsp.ctrl.op-m.spsc-ingress]
+    // verify[arch.telemetry.seqlock-publication]
     using model = Model.reference();
     using engine = model.createEngine({ sampleRate: 48_000, tier: "ultra" });
     const inL = new Float32Array(32_768).fill(0.1);
@@ -195,6 +197,16 @@ describe("Engine real-time processing, scopes, async & streaming", () => {
       busyErr = err;
     }
     expect(isDnamError(busyErr, "ERR_DNAM_BUSY")).toBe(true);
+
+    // Control mutations and wait-free telemetry succeed concurrently without ERR_DNAM_BUSY
+    engine.parameters.get("gain").value = 7.5;
+    expect(engine.parameters.get("gain").value).toBeCloseTo(7.5, 5);
+    engine.applyPreset("warm_slapback");
+    expect(engine.tempo.sync({ bpm: 132, subdivision: "1/8" })).toBeGreaterThanOrEqual(1);
+    const midTelemetry = engine.telemetry();
+    expect(midTelemetry.sampleRateHz).toBe(48_000);
+    expect(midTelemetry.currentBpm).toBeCloseTo(132, 4);
+
     const [asyncL, asyncR] = await promise;
     expect(asyncL?.length).toBe(32_768);
     expect(asyncR?.length).toBe(32_768);
@@ -206,10 +218,17 @@ describe("Engine real-time processing, scopes, async & streaming", () => {
       using wasmEngine = wasmModel.createEngine({ sampleRate: 48_000, tier: "lite" });
       const outA = new Float32Array(128);
       const outB = new Float32Array(128);
-      const [wL, wR] = await wasmEngine.processAsync(
+      const wasmPromise = wasmEngine.processAsync(
         [new Float32Array(128).fill(0.1), new Float32Array(128).fill(-0.1)],
         { output: [outA, outB] },
       );
+      wasmEngine.parameters.get("gain").value = 6.5;
+      expect(wasmEngine.parameters.get("gain").value).toBeCloseTo(6.5, 4);
+      expect(wasmEngine.telemetry().sampleRateHz).toBe(48_000);
+      expect(() => wasmEngine.process([new Float32Array(16), new Float32Array(16)])).toThrowError(
+        /ERR_DNAM_BUSY|busy/i,
+      );
+      const [wL, wR] = await wasmPromise;
       expect(wL).toBe(outA);
       expect(wR).toBe(outB);
 

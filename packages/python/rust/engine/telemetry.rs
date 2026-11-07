@@ -1,4 +1,5 @@
-//! Telemetry snapshot serialization for [`PyEngine`] (`ref[sdk.python.api.engine-facets]`).
+//! Wait-free Seqlock telemetry snapshot serialization for [`PyEngine`]
+//! (`ref[sdk.python.api.engine-facets]`, `ref[arch.telemetry.seqlock-publication]`).
 
 use pyo3::intern;
 use pyo3::prelude::*;
@@ -8,44 +9,23 @@ use super::{PyEngine, backend_kind_str};
 
 impl PyEngine {
     pub(crate) fn telemetry_impl<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
-        let (
-            snap,
-            zoh,
-            (bypassed, trails_enabled),
-            effective_tier,
-            backend_str,
-            sample_rate_hz,
-            supports_freeze,
-            stereo_width,
-            current_bpm,
-            num_ctrl,
-        ) = py.detach(|| {
-            let inner = self.lock_inner();
-            (
-                inner.telemetry_snapshot(),
-                *inner.zoh(),
-                inner.bypass_state(),
-                inner.effective_tier() as u8,
-                backend_kind_str(inner.backend_kind()),
-                inner.sample_rate_hz(),
-                inner.supports_freeze(),
-                inner.stereo_width(),
-                inner.current_bpm(),
-                inner.num_controls().min(16),
-            )
-        });
+        let rec = py.detach(|| self.host.telemetry_record());
+        let backend_str = backend_kind_str(rec.backend_kind);
+        let num_ctrl = (rec.num_controls as usize).min(16);
+        let snap = rec.snapshot;
+        let zoh = rec.zoh;
 
         let dict = PyDict::new(py);
-        dict.set_item(intern!(py, "active_tier"), effective_tier)?;
+        dict.set_item(intern!(py, "active_tier"), snap.active_tier)?;
         dict.set_item(intern!(py, "backend"), backend_str)?;
-        dict.set_item(intern!(py, "sample_rate_hz"), sample_rate_hz)?;
+        dict.set_item(intern!(py, "sample_rate_hz"), rec.sample_rate_hz)?;
         dict.set_item(intern!(py, "stereo_out"), snap.stereo_out != 0)?;
-        dict.set_item(intern!(py, "bypassed"), bypassed)?;
-        dict.set_item(intern!(py, "trails_enabled"), trails_enabled)?;
+        dict.set_item(intern!(py, "bypassed"), snap.bypassed != 0)?;
+        dict.set_item(intern!(py, "trails_enabled"), rec.trails_enabled)?;
         dict.set_item(intern!(py, "is_frozen"), snap.is_frozen != 0)?;
-        dict.set_item(intern!(py, "supports_freeze"), supports_freeze)?;
-        dict.set_item(intern!(py, "stereo_width"), stereo_width)?;
-        dict.set_item(intern!(py, "current_bpm"), current_bpm)?;
+        dict.set_item(intern!(py, "supports_freeze"), rec.supports_freeze)?;
+        dict.set_item(intern!(py, "stereo_width"), rec.stereo_width)?;
+        dict.set_item(intern!(py, "current_bpm"), rec.current_bpm)?;
         dict.set_item(intern!(py, "active_clamp_mask"), snap.active_clamp_mask)?;
         dict.set_item(
             intern!(py, "control_decimation_host"),

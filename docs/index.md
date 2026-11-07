@@ -53,7 +53,7 @@ flowchart TD
     end
 
     subgraph ADRs ["Layer 3: Architectural Decision Records — The 'Why' (docs/adr/)"]
-        A1["ADR-0001..ADR-0014: MADR Design Decisions & Counterexamples (adr/0001..0014-*.md)"]
+        A1["ADR-0001..ADR-0015: MADR Design Decisions & Counterexamples (adr/0001..0015-*.md)"]
     end
 
     G1 --> G2
@@ -129,6 +129,7 @@ flowchart TD
 | **[`adr/0012-python-sdk-architecture-and-idiomatic-api.md`](adr/0012-python-sdk-architecture-and-idiomatic-api.md)** | `Accepted` | Idiomatic `dnam` Python SDK architecture, domain-free `Model`/`Engine`/`Checkpoint` naming, thin zero-copy PyO3 shim, and Rust-to-Python JCS schema parity. |
 | **[`adr/0013-typescript-sdk-architecture-and-dual-target-runtime.md`](adr/0013-typescript-sdk-architecture-and-dual-target-runtime.md)** | `Accepted` | Idiomatic `@dnam-project/dnam` TypeScript 7 SDK architecture, dual-target `N-API v10` + raw `WASM SIMD128` runtime, `AudioParam`-aligned parameters, and camelCase/JCS schema parity. |
 | **[`adr/0014-python-3-15-free-threading-and-stable-abi-abi3t.md`](adr/0014-python-3-15-free-threading-and-stable-abi-abi3t.md)** | `Accepted` | Python 3.15 (`3.15t` free-threaded dev runtime), PEP 803 dual-ABI (`cp315-abi3.abi3t`) wheels, `#[pymodule(gil_used = false)]`, and ROCm 10.0 per-GPU extras. |
+| **[`adr/0015-realtime-host-concurrency-spsc-and-telemetry-seqlock.md`](adr/0015-realtime-host-concurrency-spsc-and-telemetry-seqlock.md)** | `Accepted` | `dnam_engine::host` 3-Lane SPSC control ingress (`SpscControlRing`), `AcceptedStateShadow`, wait-free `AtomicU64` `TelemetryCell` seqlock, and safe ping-pong `RealtimeEngineSwap`. |
 | **[`templates/requirement_template.md`](templates/requirement_template.md)** · **[`spec_template.md`](templates/spec_template.md)** · **[`adr_template.md`](templates/adr_template.md)** | `Templates` | Canonical authoring templates for `REQ-X.Y` requirements, `r[...]` normative specifications, and MADR `NNNN-*.md` records. |
 
 ---

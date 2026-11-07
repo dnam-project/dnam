@@ -39,15 +39,8 @@ impl PyEngine {
         let out_slice = slice_2d_mut(&mut stereo_out, "stereo_out")?;
         let (l_out, r_out) = out_slice.split_at_mut(n);
         py.detach(|| {
-            let mut inner = self.lock_inner();
-            let prev_max = inner.maximize_tier_on_bounce();
-            if let Some(max_t) = maximize_tier {
-                inner.set_maximize_tier_on_bounce(max_t);
-            }
-            inner.render_offline_bounce(l_in, r_in, l_out, r_out);
-            if maximize_tier.is_some() {
-                inner.set_maximize_tier_on_bounce(prev_max);
-            }
+            self.host
+                .render_offline_bounce_with_options(l_in, r_in, l_out, r_out, maximize_tier);
         });
         Ok(())
     }
@@ -72,21 +65,9 @@ impl PyEngine {
         let l_out = slice_1d_mut(&mut left_out, "left_out")?;
         let r_out = slice_1d_mut(&mut right_out, "right_out")?;
 
-        let chunk = buffer_size.unwrap_or(n).max(1);
         py.detach(|| {
-            let mut inner = self.lock_inner();
-            if chunk >= n {
-                inner.process_block(l_in, r_in, l_out, r_out);
-            } else {
-                for (((li, ri), lo), ro) in l_in
-                    .chunks(chunk)
-                    .zip(r_in.chunks(chunk))
-                    .zip(l_out.chunks_mut(chunk))
-                    .zip(r_out.chunks_mut(chunk))
-                {
-                    inner.process_block(li, ri, lo, ro);
-                }
-            }
+            self.host
+                .process_block_chunked(l_in, r_in, l_out, r_out, buffer_size);
         });
         Ok(())
     }
@@ -106,16 +87,9 @@ impl PyEngine {
         }
         let l_io = slice_1d_mut(&mut left_io, "left_io")?;
         let r_io = slice_1d_mut(&mut right_io, "right_io")?;
-        let chunk = buffer_size.unwrap_or(n).max(1);
         py.detach(|| {
-            let mut inner = self.lock_inner();
-            if chunk >= n {
-                inner.process_block_in_place(l_io, r_io);
-            } else {
-                for (l_ch, r_ch) in l_io.chunks_mut(chunk).zip(r_io.chunks_mut(chunk)) {
-                    inner.process_block_in_place(l_ch, r_ch);
-                }
-            }
+            self.host
+                .process_block_in_place_chunked(l_io, r_io, buffer_size);
         });
         Ok(())
     }
@@ -140,21 +114,9 @@ impl PyEngine {
         let (l_in, r_in) = in_slice.split_at(n);
         let (l_out, r_out) = out_slice.split_at_mut(n);
 
-        let chunk = buffer_size.unwrap_or(n).max(1);
         py.detach(|| {
-            let mut inner = self.lock_inner();
-            if chunk >= n {
-                inner.process_block(l_in, r_in, l_out, r_out);
-            } else {
-                for (((li, ri), lo), ro) in l_in
-                    .chunks(chunk)
-                    .zip(r_in.chunks(chunk))
-                    .zip(l_out.chunks_mut(chunk))
-                    .zip(r_out.chunks_mut(chunk))
-                {
-                    inner.process_block(li, ri, lo, ro);
-                }
-            }
+            self.host
+                .process_block_chunked(l_in, r_in, l_out, r_out, buffer_size);
         });
         Ok(())
     }
@@ -172,16 +134,9 @@ impl PyEngine {
         let n = shape[1];
         let slice = slice_2d_mut(&mut stereo_io, "stereo_io")?;
         let (l_io, r_io) = slice.split_at_mut(n);
-        let chunk = buffer_size.unwrap_or(n).max(1);
         py.detach(|| {
-            let mut inner = self.lock_inner();
-            if chunk >= n {
-                inner.process_block_in_place(l_io, r_io);
-            } else {
-                for (l_ch, r_ch) in l_io.chunks_mut(chunk).zip(r_io.chunks_mut(chunk)) {
-                    inner.process_block_in_place(l_ch, r_ch);
-                }
-            }
+            self.host
+                .process_block_in_place_chunked(l_io, r_io, buffer_size);
         });
         Ok(())
     }
@@ -204,20 +159,9 @@ impl PyEngine {
         let l_out = slice_1d_mut(&mut left_out, "left_out")?;
         let r_out = slice_1d_mut(&mut right_out, "right_out")?;
 
-        let chunk = buffer_size.unwrap_or(n).max(1);
         py.detach(|| {
-            let mut inner = self.lock_inner();
-            if chunk >= n {
-                inner.process_mono_to_stereo(m_in, l_out, r_out);
-            } else {
-                for ((mi, lo), ro) in m_in
-                    .chunks(chunk)
-                    .zip(l_out.chunks_mut(chunk))
-                    .zip(r_out.chunks_mut(chunk))
-                {
-                    inner.process_mono_to_stereo(mi, lo, ro);
-                }
-            }
+            self.host
+                .process_mono_to_stereo_chunked(m_in, l_out, r_out, buffer_size);
         });
         Ok(())
     }
@@ -238,20 +182,9 @@ impl PyEngine {
         let out_slice = slice_2d_mut(&mut stereo_out, "stereo_out")?;
         let (l_out, r_out) = out_slice.split_at_mut(n);
 
-        let chunk = buffer_size.unwrap_or(n).max(1);
         py.detach(|| {
-            let mut inner = self.lock_inner();
-            if chunk >= n {
-                inner.process_mono_to_stereo(m_in, l_out, r_out);
-            } else {
-                for ((mi, lo), ro) in m_in
-                    .chunks(chunk)
-                    .zip(l_out.chunks_mut(chunk))
-                    .zip(r_out.chunks_mut(chunk))
-                {
-                    inner.process_mono_to_stereo(mi, lo, ro);
-                }
-            }
+            self.host
+                .process_mono_to_stereo_chunked(m_in, l_out, r_out, buffer_size);
         });
         Ok(())
     }
@@ -272,16 +205,8 @@ impl PyEngine {
         let m_in = slice_1d(&mono_in, "mono_in")?;
         let m_out = slice_1d_mut(&mut mono_out, "mono_out")?;
 
-        let chunk = buffer_size.unwrap_or(n).max(1);
         py.detach(|| {
-            let mut inner = self.lock_inner();
-            if chunk >= n {
-                inner.process_mono(m_in, m_out);
-            } else {
-                for (mi, mo) in m_in.chunks(chunk).zip(m_out.chunks_mut(chunk)) {
-                    inner.process_mono(mi, mo);
-                }
-            }
+            self.host.process_mono_chunked(m_in, m_out, buffer_size);
         });
         Ok(())
     }
@@ -293,17 +218,8 @@ impl PyEngine {
         buffer_size: Option<usize>,
     ) -> PyResult<()> {
         let m_io = slice_1d_mut(&mut mono_io, "mono_io")?;
-        let chunk = buffer_size.unwrap_or(m_io.len()).max(1);
         py.detach(|| {
-            let mut inner = self.lock_inner();
-            let mut scratch = [0.0_f32; 256];
-            for outer in m_io.chunks_mut(chunk) {
-                for sub in outer.chunks_mut(256) {
-                    let len = sub.len();
-                    scratch[..len].copy_from_slice(sub);
-                    inner.process_mono(&scratch[..len], sub);
-                }
-            }
+            self.host.process_mono_in_place_chunked(m_io, buffer_size);
         });
         Ok(())
     }

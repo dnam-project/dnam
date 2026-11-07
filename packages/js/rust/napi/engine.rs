@@ -1,7 +1,8 @@
-//! Node-API v10 `NativeEngine` & `StereoProcessTask` (`ref[sdk.ts.engine.zero-copy-and-async]`).
+//! Node-API v10 `NativeEngine` & `StereoProcessTask` (`ref[sdk.ts.engine.zero-copy-and-async]`,
+//! `ref[dsp.ctrl.op-m.spsc-ingress]`, `ref[arch.telemetry.seqlock-publication]`).
 
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard};
 
 use napi::bindgen_prelude::{AsyncTask, Env, Float32Array, Float64Array, Result, Task, Uint8Array};
 use napi_derive::napi;
@@ -20,7 +21,7 @@ impl Drop for BusyResetGuard {
 }
 
 pub struct StereoProcessTask {
-    inner: Arc<Mutex<EngineCore>>,
+    core: EngineCore,
     busy_guard: BusyResetGuard,
     left_in: Vec<f32>,
     right_in: Vec<f32>,
@@ -45,11 +46,7 @@ impl Task for StereoProcessTask {
         let n = self.left_in.len();
         let mut left_out = vec![0.0_f32; n];
         let mut right_out = vec![0.0_f32; n];
-        let mut guard = self
-            .inner
-            .lock()
-            .map_err(|_| napi_err(busy_err("Engine mutex poisoned")))?;
-        guard
+        self.core
             .process_stereo(
                 &self.left_in,
                 &self.right_in,
@@ -72,7 +69,7 @@ impl Task for StereoProcessTask {
 
 #[napi]
 pub struct NativeEngine {
-    inner: Arc<Mutex<EngineCore>>,
+    core: EngineCore,
     busy: Arc<AtomicBool>,
 }
 
@@ -84,17 +81,13 @@ impl std::fmt::Debug for NativeEngine {
 
 impl NativeEngine {
     #[inline]
-    fn lock_exclusive(&self) -> Result<MutexGuard<'_, EngineCore>> {
+    fn ensure_audio_idle(&self) -> Result<&EngineCore> {
         if self.busy.load(Ordering::Acquire) {
             return Err(napi_err(busy_err(
                 "Engine is busy executing an in-flight processAsync task",
             )));
         }
-        self.inner.try_lock().map_err(|_| {
-            napi_err(busy_err(
-                "Engine is busy executing an in-flight processAsync task",
-            ))
-        })
+        Ok(&self.core)
     }
 }
 
@@ -123,146 +116,136 @@ impl NativeEngine {
         )
         .map_err(napi_err)?;
         Ok(Self {
-            inner: Arc::new(Mutex::new(core)),
+            core,
             busy: Arc::new(AtomicBool::new(false)),
         })
     }
 
     #[napi]
     pub fn reload(
-        &mut self,
+        &self,
         container_bytes: Uint8Array,
         tier: Option<u8>,
         sample_rate_hz: Option<u32>,
     ) -> Result<()> {
-        self.lock_exclusive()?
+        self.core
             .reload(&container_bytes, tier, sample_rate_hz)
             .map_err(napi_err)
     }
 
     #[napi(getter)]
     pub fn backend(&self) -> Result<String> {
-        Ok(backend_kind_str(self.lock_exclusive()?.backend_kind()).to_string())
+        Ok(backend_kind_str(self.core.backend_kind()).to_string())
     }
 
     #[napi(getter)]
     pub fn tier(&self) -> Result<u8> {
-        Ok(self.lock_exclusive()?.tier())
+        Ok(self.core.tier())
     }
 
     #[napi]
-    pub fn set_tier(&mut self, tier: u8) -> Result<()> {
-        self.lock_exclusive()?.set_tier(tier).map_err(napi_err)
+    pub fn set_tier(&self, tier: u8) -> Result<()> {
+        self.core.set_tier(tier).map_err(napi_err)
     }
 
     #[napi(getter)]
     pub fn max_supported_tier(&self) -> Result<u8> {
-        Ok(self.lock_exclusive()?.max_supported_tier())
+        Ok(self.core.max_supported_tier())
     }
 
     #[napi]
-    pub fn set_max_supported_tier(&mut self, tier: u8) -> Result<()> {
-        self.lock_exclusive()?
-            .set_max_supported_tier(tier)
-            .map_err(napi_err)
+    pub fn set_max_supported_tier(&self, tier: u8) -> Result<()> {
+        self.core.set_max_supported_tier(tier).map_err(napi_err)
     }
 
     #[napi(getter)]
     pub fn max_available_tier(&self) -> Result<u8> {
-        Ok(self.lock_exclusive()?.max_available_tier())
+        Ok(self.core.max_available_tier())
     }
 
     #[napi(getter)]
     pub fn effective_tier(&self) -> Result<u8> {
-        Ok(self.lock_exclusive()?.effective_tier())
+        Ok(self.core.effective_tier())
     }
 
     #[napi(getter)]
     pub fn sample_rate(&self) -> Result<u32> {
-        Ok(self.lock_exclusive()?.sample_rate_hz())
+        Ok(self.core.sample_rate_hz())
     }
 
     #[napi]
-    pub fn set_sample_rate(&mut self, sample_rate_hz: u32) -> Result<()> {
-        self.lock_exclusive()?
+    pub fn set_sample_rate(&self, sample_rate_hz: u32) -> Result<()> {
+        self.ensure_audio_idle()?
             .set_sample_rate(sample_rate_hz)
             .map_err(napi_err)
     }
 
     #[napi(getter)]
     pub fn latency_samples(&self) -> Result<u32> {
-        Ok(self.lock_exclusive()?.latency_samples() as u32)
+        Ok(self.core.latency_samples() as u32)
     }
 
     #[napi(getter)]
     pub fn offline_bounce(&self) -> Result<bool> {
-        Ok(self.lock_exclusive()?.offline_bounce())
+        Ok(self.core.offline_bounce())
     }
 
     #[napi]
-    pub fn set_offline_bounce(&mut self, enabled: bool) -> Result<()> {
-        self.lock_exclusive()?.set_offline_bounce(enabled);
+    pub fn set_offline_bounce(&self, enabled: bool) -> Result<()> {
+        self.core.set_offline_bounce(enabled);
         Ok(())
     }
 
     #[napi(getter)]
     pub fn maximize_tier_on_bounce(&self) -> Result<bool> {
-        Ok(self.lock_exclusive()?.maximize_tier_on_bounce())
+        Ok(self.core.maximize_tier_on_bounce())
     }
 
     #[napi]
-    pub fn set_maximize_tier_on_bounce(&mut self, enabled: bool) -> Result<()> {
-        self.lock_exclusive()?.set_maximize_tier_on_bounce(enabled);
+    pub fn set_maximize_tier_on_bounce(&self, enabled: bool) -> Result<()> {
+        self.core.set_maximize_tier_on_bounce(enabled);
         Ok(())
     }
 
     #[napi(getter)]
     pub fn num_controls(&self) -> Result<u32> {
-        Ok(self.lock_exclusive()?.num_controls() as u32)
+        Ok(self.core.num_controls() as u32)
     }
 
     #[napi]
     pub fn raw_control_values(&self) -> Result<Float32Array> {
-        Ok(Float32Array::new(
-            self.lock_exclusive()?.raw_control_values().to_vec(),
-        ))
+        Ok(Float32Array::new(self.core.raw_control_values()))
     }
 
     #[napi]
     pub fn clamped_control_values(&self) -> Result<Float32Array> {
-        Ok(Float32Array::new(
-            self.lock_exclusive()?.clamped_control_values().to_vec(),
-        ))
+        Ok(Float32Array::new(self.core.clamped_control_values()))
     }
 
     #[napi]
     pub fn clamped_control_value(&self, ctrl_idx: u32) -> Result<f64> {
-        self.lock_exclusive()?
+        self.core
             .clamped_control_value(ctrl_idx as usize)
             .map(f64::from)
             .map_err(napi_err)
     }
 
     #[napi]
-    pub fn set_control_value(&mut self, ctrl_idx: u32, value: f64) -> Result<()> {
-        self.lock_exclusive()?
+    pub fn set_control_value(&self, ctrl_idx: u32, value: f64) -> Result<()> {
+        self.core
             .set_control_value(ctrl_idx as usize, value as f32)
             .map_err(napi_err)
     }
 
     #[napi]
-    pub fn set_control_immediate(&mut self, ctrl_idx: u32, value: f64) -> Result<()> {
-        self.lock_exclusive()?
+    pub fn set_control_immediate(&self, ctrl_idx: u32, value: f64) -> Result<()> {
+        self.core
             .set_control_immediate(ctrl_idx as usize, value as f32)
             .map_err(napi_err)
     }
 
     #[napi]
-    pub fn set_controls_immediate_batch(
-        &mut self,
-        indices: Vec<u32>,
-        values: Vec<f64>,
-    ) -> Result<()> {
+    pub fn set_controls_immediate_batch(&self, indices: Vec<u32>, values: Vec<f64>) -> Result<()> {
         if indices.len() != values.len() {
             return Err(napi_err(validation_err(
                 "indices and values must have identical length",
@@ -273,76 +256,76 @@ impl NativeEngine {
             .zip(values)
             .map(|(i, v)| (i as usize, v as f32))
             .collect();
-        self.lock_exclusive()?
+        self.core
             .set_controls_immediate_batch(&pairs)
             .map_err(napi_err)
     }
 
     #[napi]
-    pub fn reset_controls_to_defaults(&mut self) -> Result<()> {
-        self.lock_exclusive()?.reset_controls_to_defaults();
+    pub fn reset_controls_to_defaults(&self) -> Result<()> {
+        self.core.reset_controls_to_defaults();
         Ok(())
     }
 
     #[napi]
-    pub fn reset(&mut self) -> Result<()> {
-        self.lock_exclusive()?.reset_to_dc_equilibrium();
+    pub fn reset(&self) -> Result<()> {
+        self.core.reset_to_dc_equilibrium();
         Ok(())
     }
 
     #[napi(getter)]
     pub fn supports_freeze(&self) -> Result<bool> {
-        Ok(self.lock_exclusive()?.supports_freeze())
+        Ok(self.core.supports_freeze())
     }
 
     #[napi(getter)]
     pub fn is_frozen(&self) -> Result<bool> {
-        Ok(self.lock_exclusive()?.is_frozen())
+        Ok(self.core.is_frozen())
     }
 
     #[napi]
-    pub fn set_freeze(&mut self, freeze: bool) -> Result<()> {
-        self.lock_exclusive()?.set_freeze(freeze);
+    pub fn set_freeze(&self, freeze: bool) -> Result<()> {
+        self.core.set_freeze(freeze);
         Ok(())
     }
 
     #[napi]
-    pub fn set_freeze_amount(&mut self, alpha: f64) -> Result<()> {
-        self.lock_exclusive()?.set_freeze_amount(alpha as f32);
+    pub fn set_freeze_amount(&self, alpha: f64) -> Result<()> {
+        self.core.set_freeze_amount(alpha as f32);
         Ok(())
     }
 
     #[napi]
     pub fn bypass_state(&self) -> Result<Vec<bool>> {
-        let (b, t) = self.lock_exclusive()?.bypass_state();
+        let (b, t) = self.core.bypass_state();
         Ok(vec![b, t])
     }
 
     #[napi]
-    pub fn set_bypass(&mut self, bypassed: bool, trails: bool) -> Result<()> {
-        self.lock_exclusive()?.set_bypass(bypassed, trails);
+    pub fn set_bypass(&self, bypassed: bool, trails: bool) -> Result<()> {
+        self.core.set_bypass(bypassed, trails);
         Ok(())
     }
 
     #[napi(getter)]
     pub fn stereo_width(&self) -> Result<f64> {
-        Ok(f64::from(self.lock_exclusive()?.stereo_width()))
+        Ok(f64::from(self.core.stereo_width()))
     }
 
     #[napi]
-    pub fn set_stereo_width(&mut self, width: f64) -> Result<()> {
-        self.lock_exclusive()?.set_stereo_width(width as f32);
+    pub fn set_stereo_width(&self, width: f64) -> Result<()> {
+        self.core.set_stereo_width(width as f32);
         Ok(())
     }
 
     #[napi]
     pub fn configure_host_mix(
-        &mut self,
+        &self,
         blend_wet: f64,
         output_gain_db: f64,
         apply_unity_leveling: bool,
     ) -> Result<()> {
-        self.lock_exclusive()?.configure_host_mix_and_leveling(
+        self.core.configure_host_mix_and_leveling(
             blend_wet as f32,
             output_gain_db as f32,
             apply_unity_leveling,
@@ -352,17 +335,17 @@ impl NativeEngine {
 
     #[napi(getter)]
     pub fn current_bpm(&self) -> Result<f64> {
-        Ok(f64::from(self.lock_exclusive()?.current_bpm()))
+        Ok(f64::from(self.core.current_bpm()))
     }
 
     #[napi]
     pub fn sync_tempo(
-        &mut self,
+        &self,
         bpm: f64,
         subdivision: Option<String>,
         fold_octave: Option<bool>,
     ) -> Result<u32> {
-        self.lock_exclusive()?
+        self.core
             .sync_tempo(
                 bpm as f32,
                 subdivision.as_deref(),
@@ -374,40 +357,38 @@ impl NativeEngine {
 
     #[napi]
     pub fn register_tap_tempo(
-        &mut self,
+        &self,
         subdivision: Option<String>,
         fold_octave: Option<bool>,
     ) -> Result<Vec<f64>> {
         let (bpm, count) = self
-            .lock_exclusive()?
+            .core
             .register_tap_tempo(subdivision.as_deref(), fold_octave.unwrap_or(false))
             .map_err(napi_err)?;
         Ok(vec![f64::from(bpm), count as f64])
     }
 
     #[napi]
-    pub fn apply_preset(&mut self, preset_id: String) -> Result<()> {
-        self.lock_exclusive()?
-            .apply_preset(&preset_id)
-            .map_err(napi_err)
+    pub fn apply_preset(&self, preset_id: String) -> Result<()> {
+        self.core.apply_preset(&preset_id).map_err(napi_err)
     }
 
     #[napi]
     pub fn process_stereo_in_place(
-        &mut self,
+        &self,
         mut left_io: Float32Array,
         mut right_io: Float32Array,
     ) -> Result<()> {
         let l = f32_slice_mut(&mut left_io);
         let r = f32_slice_mut(&mut right_io);
-        self.lock_exclusive()?
+        self.ensure_audio_idle()?
             .process_stereo_in_place(l, r)
             .map_err(napi_err)
     }
 
     #[napi]
     pub fn process_stereo(
-        &mut self,
+        &self,
         left_in: Float32Array,
         right_in: Float32Array,
         mut left_out: Float32Array,
@@ -417,14 +398,14 @@ impl NativeEngine {
         let bs = block_size.map(|b| b as usize);
         let lo = f32_slice_mut(&mut left_out);
         let ro = f32_slice_mut(&mut right_out);
-        self.lock_exclusive()?
+        self.ensure_audio_idle()?
             .process_stereo(&left_in, &right_in, lo, ro, bs)
             .map_err(napi_err)
     }
 
     #[napi]
     pub fn process_mono_to_stereo(
-        &mut self,
+        &self,
         mono_in: Float32Array,
         mut left_out: Float32Array,
         mut right_out: Float32Array,
@@ -433,28 +414,28 @@ impl NativeEngine {
         let bs = block_size.map(|b| b as usize);
         let lo = f32_slice_mut(&mut left_out);
         let ro = f32_slice_mut(&mut right_out);
-        self.lock_exclusive()?
+        self.ensure_audio_idle()?
             .process_mono_to_stereo(&mono_in, lo, ro, bs)
             .map_err(napi_err)
     }
 
     #[napi]
     pub fn process_mono(
-        &mut self,
+        &self,
         mono_in: Float32Array,
         mut mono_out: Float32Array,
         block_size: Option<u32>,
     ) -> Result<()> {
         let bs = block_size.map(|b| b as usize);
         let mo = f32_slice_mut(&mut mono_out);
-        self.lock_exclusive()?
+        self.ensure_audio_idle()?
             .process_mono(&mono_in, mo, bs)
             .map_err(napi_err)
     }
 
     #[napi]
     pub fn render_offline_bounce(
-        &mut self,
+        &self,
         left_in: Float32Array,
         right_in: Float32Array,
         mut left_out: Float32Array,
@@ -462,7 +443,7 @@ impl NativeEngine {
     ) -> Result<()> {
         let lo = f32_slice_mut(&mut left_out);
         let ro = f32_slice_mut(&mut right_out);
-        self.lock_exclusive()?
+        self.ensure_audio_idle()?
             .render_offline_bounce(&left_in, &right_in, lo, ro)
             .map_err(napi_err)
     }
@@ -489,7 +470,7 @@ impl NativeEngine {
             )));
         }
         Ok(AsyncTask::new(StereoProcessTask {
-            inner: Arc::clone(&self.inner),
+            core: self.core.clone(),
             busy_guard: BusyResetGuard(Arc::clone(&self.busy)),
             left_in: left_in.to_vec(),
             right_in: right_in.to_vec(),
@@ -505,7 +486,7 @@ impl NativeEngine {
                 "telemetry_into requires Float64Array of length {TELEMETRY_F64_LEN}"
             )))
         })?;
-        self.lock_exclusive()?.telemetry_into_f64(out_arr);
+        self.core.telemetry_into_f64(out_arr);
         Ok(())
     }
 }

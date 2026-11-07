@@ -132,6 +132,9 @@ scope = "engine"
 [rules."arch.fp.range-saturation"]
 scope = "engine"
 
+[rules."arch.telemetry.seqlock-publication"]
+scope = "engine"
+
 [rules."arch.operators.tri-kernel"]
 scope = "engine"
 

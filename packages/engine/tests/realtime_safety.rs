@@ -245,4 +245,57 @@ fn test_zero_heap_allocations_in_all_realtime_paths_and_embedded_scratch_loader(
         0,
         "reload_model_in_place allocated heap memory!"
     );
+
+    // 5. Verify SpscControlRing, TelemetryCell seqlock, and RealtimeEngineSwap perform ZERO heap allocations on the RT path!
+    // verify[dsp.ctrl.op-m.spsc-ingress]
+    // verify[arch.telemetry.seqlock-publication]
+    {
+        use dnam_engine::DynamicDnamEngine;
+        use dnam_engine::host::{
+            RawTelemetryRecord, realtime_engine_swap, spsc_control_channel, telemetry_channel,
+        };
+
+        let initial_engine =
+            DynamicDnamEngine::from_bytes_owned(container_active.as_bytes(), Tier::Full, 48_000)
+                .unwrap();
+        let staged_engine =
+            DynamicDnamEngine::from_bytes_owned(container_small.as_bytes(), Tier::Lite, 48_000)
+                .unwrap();
+
+        let (mut producer, mut consumer) = spsc_control_channel(&initial_engine);
+        let initial_rec = RawTelemetryRecord::from_engine(&initial_engine, 0);
+        let (mut telem_writer, telem_reader) = telemetry_channel(initial_rec);
+        let (mut swap_ctrl, mut swap_audio) = realtime_engine_swap(initial_engine);
+
+        // Stage a replacement engine on the non-RT controller side before resetting allocation counters
+        swap_ctrl.publish_engine_at_epoch(staged_engine, 1);
+
+        reset_alloc_counters();
+
+        // Producer-side control updates (Lane 1 coalescing + Lane 2 preset & tempo + Lane 3 overflow latch)
+        producer.set_control_value(0, 7.5);
+        producer.set_control_immediate(1, 1.0);
+        producer.apply_preset("rt_preset").unwrap();
+        producer.sync_tempo(132.0, None, true);
+        for i in 0..80 {
+            producer.set_bypass(i % 2 == 0, true);
+        }
+
+        // Real-time audio-side poll_swap, SPSC drain_into, and Seqlock telemetry publication/read
+        assert_eq!(swap_audio.poll_swap_epoch(), Some(1));
+        let applied = consumer.drain_into(swap_audio.engine_mut());
+        assert!(applied > 0);
+        telem_writer.publish_from_engine(swap_audio.engine(), consumer.drained_causal_epoch());
+        let snap = telem_reader.read();
+        assert_eq!(snap.causal_epoch, producer.causal_epoch());
+
+        assert_eq!(
+            current_alloc_count(),
+            0,
+            "SpscControlRing / TelemetryCell / RealtimeEngineSwap allocated heap memory on real-time path!"
+        );
+
+        // Reclaim retired engine on the non-RT controller side
+        assert_eq!(swap_ctrl.reclaim_retired(), 1);
+    }
 }

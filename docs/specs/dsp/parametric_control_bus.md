@@ -14,11 +14,12 @@ requirements:
 adrs:
   - ADR-0007
   - ADR-0011
+  - ADR-0015
 ---
 
 # Self-Similar 3 kHz Dual-Rate Control Plane & Parametric Control Bus
 
-This specification defines the **nominal 3 kHz Dual-Rate Control Plane** ([`packages/engine/src/control/`](../../../packages/engine/README.md), [`packages/trainer/src/dnam_trainer/training/`](../../../packages/trainer/README.md)), shared control descriptors and packed tier-local `CP1` `f32` projection slices, exact-integer sufficient-statistic accumulation, outward-checked trust-region clipping, tier-aware `16 × 16` + `16 × 4` stage dispatch, division-free linear micro-ramping, and `20–400 BPM` tempo synchronization across 12 rhythmic subdivisions ([`tora_architecture.md`](../architecture/tora_architecture.md), [`REQ-2.5`](../../requirements/system_goals_and_requirements.md)). For R&D counterexamples and derivations, see [`../../adr/0007-exact-integer-control-bus-and-tempo-inversion.md`](../../adr/0007-exact-integer-control-bus-and-tempo-inversion.md).
+This specification defines the **nominal 3 kHz Dual-Rate Control Plane** ([`packages/engine/src/control/`](../../../packages/engine/README.md), [`packages/trainer/src/dnam_trainer/training/`](../../../packages/trainer/README.md)), shared control descriptors and packed tier-local `CP1` `f32` projection slices, exact-integer sufficient-statistic accumulation, outward-checked trust-region clipping, tier-aware `16 × 16` + `16 × 4` stage dispatch, division-free linear micro-ramping, and `20–400 BPM` tempo synchronization across 12 rhythmic subdivisions ([`tora_architecture.md`](../architecture/tora_architecture.md), [`REQ-2.5`](../../requirements/system_goals_and_requirements.md)). For R&D counterexamples and derivations, see [`../../adr/0007-exact-integer-control-bus-and-tempo-inversion.md`](../../adr/0007-exact-integer-control-bus-and-tempo-inversion.md) and [`../../adr/0015-realtime-host-concurrency-spsc-and-telemetry-seqlock.md`](../../adr/0015-realtime-host-concurrency-spsc-and-telemetry-seqlock.md).
 
 ---
 
@@ -64,7 +65,7 @@ At each control boundary (decimation stride $K_{\text{ctrl}}(f_{s,\text{eff}}) =
 2. **Continuous Host Curves (`VST3 IParamValueQueue`):** Reconstruct piecewise-linear normalized curves in normalized space before mapping to physical coordinates.
 3. **Timestamp Arbitration & Tie Precedence:** Order eligible events by timestamp. At an exact timestamp tie for the same parameter, **DAW automation wins over live Studio/MIDI requests**; between live Studio and MIDI requests at an exact tie, **the most recently received accepted request wins**.
 4. **Late, Stale & Untimestamped Requests:** Compare late ordinary requests against each control's last published ordering key `(timestamp, source_priority, receipt_order, sub_ordinal)` and apply at the next boundary only if not superseded. Reject stale presets as a whole. Untimestamped live Studio/MIDI requests receive the first eligible cutoff's signal-time timestamp as their immutable logical scheduled time.
-5. `r[dsp.ctrl.op-m.spsc-ingress]` **Bounded Per-Producer Ingress Protocol:** Preallocated SPSC lanes linearize acceptance and boundary cutoffs via a single sequentially consistent `u64` atomic (`high 48 bits = generation`, `low 16 bits = sequence`, total slots `< 65,536`).
+5. `r[dsp.ctrl.op-m.spsc-ingress]` **Bounded Per-Producer Ingress Protocol & 3-Lane `SpscControlRing` (`dnam_engine::host`):** Preallocated SPSC lanes linearize acceptance and boundary cutoffs via a single sequentially consistent `u64` atomic (`high 48 bits = generation`, `low 16 bits = sequence`, total slots `< 65,536`). In `dnam_engine::host::SpscControlRing` (`#[repr(align(64))]`, `#[forbid(unsafe_code)]`, `ADR-0015`), `ControlProducer` validates indices/bounds and updates `AcceptedStateShadow` synchronously before publishing to three pure-atomic lanes drained by `ControlConsumer::drain_into(&mut DynamicDnamEngine)` at every sub-block entry in deterministic causal epoch order (`Lane 3 FallbackLatch -> Lane 2 64-slot SPSC command ring -> Lane 1 32-slot coalescing parameter mailbox` packing `(epoch_u29, mode_u2, kind_u1, payload_u32)`).
 
 ### 1.2 `Op-N[Ctrl]`: 3 kHz Algebraic Polynomial, Hysteresis & $O(1)$ Sufficient-Statistic Engine
 

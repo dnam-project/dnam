@@ -623,6 +623,70 @@ impl<'a> DynamicDnamEngine<'a> {
         }
     }
 
+    /// Sets the active host tempo in BPM without modifying control values.
+    #[inline]
+    pub fn set_bpm(&mut self, bpm: f32) {
+        match self {
+            Self::Scalar(e) => e.set_bpm(bpm),
+            #[cfg(target_arch = "aarch64")]
+            Self::Neon(e) => e.set_bpm(bpm),
+            #[cfg(target_arch = "aarch64")]
+            Self::ArmSme(e) => e.set_bpm(bpm),
+            #[cfg(target_arch = "x86_64")]
+            Self::X86Simd(e) => e.set_bpm(bpm),
+            #[cfg(target_arch = "wasm32")]
+            Self::WasmSimd128(e) => e.set_bpm(bpm),
+        }
+    }
+
+    /// Accumulates additional clamping bits into `active_clamp_mask`.
+    #[inline]
+    pub(crate) fn or_active_clamp_mask(&mut self, mask: u16) {
+        match self {
+            Self::Scalar(e) => e.or_active_clamp_mask(mask),
+            #[cfg(target_arch = "aarch64")]
+            Self::Neon(e) => e.or_active_clamp_mask(mask),
+            #[cfg(target_arch = "aarch64")]
+            Self::ArmSme(e) => e.or_active_clamp_mask(mask),
+            #[cfg(target_arch = "x86_64")]
+            Self::X86Simd(e) => e.or_active_clamp_mask(mask),
+            #[cfg(target_arch = "wasm32")]
+            Self::WasmSimd128(e) => e.or_active_clamp_mask(mask),
+        }
+    }
+
+    /// Returns `(r_ac_tr, r_dc_tr, tau_ref_tr, switch_xfade_tr)` for ZOH pole rescaling.
+    #[inline]
+    pub(crate) fn training_zoh_poles(&self) -> (f32, f32, f32, u32) {
+        match self {
+            Self::Scalar(e) => e.training_zoh_poles(),
+            #[cfg(target_arch = "aarch64")]
+            Self::Neon(e) => e.training_zoh_poles(),
+            #[cfg(target_arch = "aarch64")]
+            Self::ArmSme(e) => e.training_zoh_poles(),
+            #[cfg(target_arch = "x86_64")]
+            Self::X86Simd(e) => e.training_zoh_poles(),
+            #[cfg(target_arch = "wasm32")]
+            Self::WasmSimd128(e) => e.training_zoh_poles(),
+        }
+    }
+
+    /// Returns the cumulative number of processed audio frames tracked for tap-tempo intervals.
+    #[inline]
+    pub(crate) const fn tempo_total_frames(&self) -> u64 {
+        match self {
+            Self::Scalar(e) => e.tempo_state.total_frames,
+            #[cfg(target_arch = "aarch64")]
+            Self::Neon(e) => e.tempo_state.total_frames,
+            #[cfg(target_arch = "aarch64")]
+            Self::ArmSme(e) => e.tempo_state.total_frames,
+            #[cfg(target_arch = "x86_64")]
+            Self::X86Simd(e) => e.tempo_state.total_frames,
+            #[cfg(target_arch = "wasm32")]
+            Self::WasmSimd128(e) => e.tempo_state.total_frames,
+        }
+    }
+
     /// Synchronizes tempo-calibrated controls to `bpm` and optional `subdivision_override`.
     #[inline]
     pub fn sync_tempo(
@@ -677,6 +741,22 @@ impl<'a> DynamicDnamEngine<'a> {
             Self::X86Simd(e) => e.apply_preset(preset_id),
             #[cfg(target_arch = "wasm32")]
             Self::WasmSimd128(e) => e.apply_preset(preset_id),
+        }
+    }
+
+    /// Applies a preset by index without any heap allocations (`ref[dsp.ctrl.op-m.spsc-ingress]`).
+    #[inline]
+    pub fn apply_preset_by_index(&mut self, preset_index: usize) -> Result<(), DnamError> {
+        match self {
+            Self::Scalar(e) => e.apply_preset_by_index(preset_index),
+            #[cfg(target_arch = "aarch64")]
+            Self::Neon(e) => e.apply_preset_by_index(preset_index),
+            #[cfg(target_arch = "aarch64")]
+            Self::ArmSme(e) => e.apply_preset_by_index(preset_index),
+            #[cfg(target_arch = "x86_64")]
+            Self::X86Simd(e) => e.apply_preset_by_index(preset_index),
+            #[cfg(target_arch = "wasm32")]
+            Self::WasmSimd128(e) => e.apply_preset_by_index(preset_index),
         }
     }
 

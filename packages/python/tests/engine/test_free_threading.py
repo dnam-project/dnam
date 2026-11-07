@@ -351,3 +351,89 @@ def test_reload_trails_and_concurrent_atomic_bounce_and_dsp_in_place(
     s_adaa = sig.copy()
     dnam.dsp.poly_adaa_slice(s_adaa, out=s_adaa)
     np.testing.assert_allclose(s_adaa, dnam.dsp.poly_adaa_slice(sig)[0])
+
+
+def test_spsc_control_and_seqlock_telemetry_nonblocking_during_long_render(
+    reference_model: dnam.Model,
+) -> None:
+    """verify[dsp.ctrl.op-m.spsc-ingress]
+    verify[arch.telemetry.seqlock-publication]
+    verify[sdk.python.engine.free-threading]
+    Verifies that control mutations (Lane 1 parameter mailbox + Lane 2 structural ring) and
+    Seqlock `engine.telemetry` reads complete without blocking on an active multi-block audio
+    render (`< 5 ms` per operation).
+    """
+    import time
+
+    eng = dnam.Engine(
+        reference_model,
+        sample_rate=48_000,
+        tier=Tier.ULTRA,
+        offline_bounce=True,
+    )
+    rng = np.random.default_rng(2026)
+    long_audio = rng.uniform(-0.2, 0.2, size=(2, 48_000)).astype(np.float32)
+    long_out = np.empty_like(long_audio)
+
+    started = threading.Event()
+    finished = threading.Event()
+
+    def _long_audio_render() -> None:
+        started.set()
+        while not finished.is_set():
+            eng.process_into(long_audio, long_out, buffer_size=256)
+
+    audio_thread = threading.Thread(target=_long_audio_render, daemon=True)
+    audio_thread.start()
+    try:
+        assert started.wait(timeout=2.0)
+        # Allow the audio thread to enter the native C/Rust DSP loop
+        time.sleep(0.005)
+
+        t0 = time.perf_counter()
+        eng.controls["gain"] = 7.5
+        assert abs(float(eng.controls["gain"]) - 7.5) < 1e-5
+        dt_gain_ms = (time.perf_counter() - t0) * 1000.0
+        assert dt_gain_ms < 5.0, f"Lane 1 control write blocked for {dt_gain_ms:.3f} ms"
+
+        t0 = time.perf_counter()
+        eng.controls.snap(gain=8.2, boost="on")
+        assert eng.controls["boost"] == "on"
+        dt_snap_ms = (time.perf_counter() - t0) * 1000.0
+        assert dt_snap_ms < 5.0, f"Batch snap blocked for {dt_snap_ms:.3f} ms"
+
+        t0 = time.perf_counter()
+        eng.presets.apply("warm_slapback")
+        dt_preset_ms = (time.perf_counter() - t0) * 1000.0
+        assert dt_preset_ms < 5.0, f"Preset apply blocked for {dt_preset_ms:.3f} ms"
+
+        t0 = time.perf_counter()
+        matched = eng.tempo.sync(136.0, subdivision="1/8")
+        assert matched >= 1
+        assert abs(eng.tempo.bpm - 136.0) < 1e-5
+        dt_tempo_ms = (time.perf_counter() - t0) * 1000.0
+        assert dt_tempo_ms < 5.0, f"Tempo sync blocked for {dt_tempo_ms:.3f} ms"
+
+        t0 = time.perf_counter()
+        eng.tier = Tier.PRO
+        assert eng.tier == Tier.PRO
+        eng.set_bypass(True, trails=True)
+        assert eng.is_bypassed
+        assert eng.trails_enabled
+        eng.set_bypass(False, trails=True)
+        eng.set_freeze(True)
+        assert eng.is_frozen
+        eng.set_freeze(False)
+        dt_struct_ms = (time.perf_counter() - t0) * 1000.0
+        assert dt_struct_ms < 5.0, f"Structural Lane 2 updates blocked for {dt_struct_ms:.3f} ms"
+
+        t0 = time.perf_counter()
+        tel = eng.telemetry
+        dt_tel_ms = (time.perf_counter() - t0) * 1000.0
+        assert dt_tel_ms < 5.0, f"Seqlock telemetry read blocked for {dt_tel_ms:.3f} ms"
+        assert tel.sample_rate_hz == 48_000
+        assert abs(tel.current_bpm - 136.0) < 1e-5
+    finally:
+        finished.set()
+        audio_thread.join(timeout=5.0)
+    assert np.all(np.isfinite(long_out))

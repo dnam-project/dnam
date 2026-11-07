@@ -23,6 +23,7 @@ requirements:
   - REQ-7.4
 adrs:
   - ADR-0002
+  - ADR-0015
 ---
 
 # Tri-Operator Recurrent Architecture (`TORA`) System Overview
@@ -177,6 +178,14 @@ Every model and configuration guarantees an unclipped operating envelope of at l
 | `4` | `OUTSIDE_CERTIFIED_INPUT` | An input exceeded the model's certified input envelope (`≥ ±100.0`). |
 | `5` | `INVALID_NONFINITE` | A non-finite external sample, control, or parameter was detected and rejected. |
 
+#### Wait-Free Telemetry Seqlock & Real-Time Host Concurrency
+
+`r[arch.telemetry.seqlock-publication]`
+
+Real-time host wrappers (`dnam_engine::host::DnamHostHandle`, [`../../adr/0015-realtime-host-concurrency-spsc-and-telemetry-seqlock.md`](../../adr/0015-realtime-host-concurrency-spsc-and-telemetry-seqlock.md)) decouple audio rendering callbacks from concurrent UI, MIDI, Python (`3.15t`), and TypeScript (`N-API` / `WASM`) control and telemetry threads in 100% safe `#![no_std]` + `alloc` Rust (`#[forbid(unsafe_code)]`):
+1. **Wait-Free `AtomicU64` Seqlock (`TelemetryCell`):** `TelemetryWriter` packs `DnamTelemetrySnapshot` (`RawTelemetryRecord`) into a cache-line-aligned (`#[repr(align(64))]`) array of `29` `AtomicU64` words guarded by a monotonically advancing sequence counter `seq: AtomicU64` (`seq` odd before relaxed word stores, `Release` store `seq + 1` on completion). `TelemetryReader::read()` loads `seq1` (`Acquire`), copies the `29` atomic words, issues an `Acquire` fence, and verifies `seq1 == seq2` (with bounded retry and last-good snapshot fallback) without locking `DynamicDnamEngine`.
+2. **Sub-Block SPSC Drain & Telemetry Publication:** `DnamHostHandle` drains the 3-Lane `SpscControlRing` (`ref[dsp.ctrl.op-m.spsc-ingress]`) at the start of every `64`-frame sub-block and publishes the updated `DnamTelemetrySnapshot` to `TelemetryCell` at sub-block exit, while `RealtimeEngineSwap` performs non-blocking ping-pong hot-swaps so retired `DynamicDnamEngine` instances are dropped exclusively on the non-real-time controller thread.
+
 ---
 
 ### 1.3 The 3 Universal Zero-FDIV SIMD Operator Kernels
@@ -311,10 +320,11 @@ When comparing plugin instance budgets on an embedded Linux LV2 host (such as Da
 
 1. **Per-Instance LV2 Wrapper & Port Dispatch (`T_LV2-block / B ≈ 50–150 ns/sample`):** Every active LV2 plugin instance executes `LV2_Descriptor::run()`, parses `LV2_Atom_Sequence` / control ports, applies input/output gain-trim smoothing, and routes host audio port buffers on every `64–128` sample block.
 2. **Dual-Instance Penalty for Stereo (`2×` LV2 Instances):** Because `NAM A2`, `GuitarML Proteus`, and `NAM ParametricOD` are mono (`1 → 1`) architectures, processing a stereo bus or dual-channel path requires instantiating **two separate LV2 plugins**—doubling LV2 host dispatch, port buffer copies, and per-instance L1D/L2 state RAM (`2 × 203.1 KB = 406.2 KB` for stereo `NAM A2 Standard`, consuming `> 79%` of the core's `512 KB` L2 cache for a single stereo pair). By contrast, `DNAM` executes true stereo (`2 → 2`) inside **one LV2 instance** with a shared `3 kHz` control plane and shared Kautz cabinet poles.
-3. **Multi-Plugin Chain Penalty for Full Rigs (`4–6×` LV2 Instances vs. `1×` Unified `.dnam` LV2):** Modeling a complete stereo rig (`Drive → Amp → Cab IR → Stereo Delay/Reverb`) with mono amp-only plugins requires chaining **4 to 6 separate LV2 plugins** (`4–6×` `run()` calls, intermediate host buffer reads/writes, and L1I/L1D instruction/data cache eviction across distinct `.so` binaries), whereas `DNAM` models the entire multi-stage rig in **a single LV2 plugin instance** (`1×` LV2 dispatch).
+3. **Multi-Plugin Chain Penalty for Full Rigs (`4–6×` LV2 Instances vs. `1×` Unified `.dnam` LV2):** Modeling a complete stereo rig (`Drive → Amp → Cab IR → Stereo Delay/Reverb`) with mono amp-only plugins or discrete factory "grey-box" DSP blocks requires chaining **4 to 7 separate plugin blocks** (`4–7×` `run()` calls, per-block oversampling filter stages, intermediate host buffer reads/writes, and L1I/L1D instruction/data cache eviction across distinct `.so` binaries), whereas `DNAM` models the entire multi-stage hardware rig—or distills an offline SPICE/WDF solver and multi-plugin studio chain—in **a single LV2 plugin instance** (`1×` LV2 dispatch; see [`../../adr/0002-tri-operator-recurrent-architecture.md` §1.1](../../adr/0002-tri-operator-recurrent-architecture.md#11-why-tora-outperforms-grey-box-multi-fx-approximations--enables-offline-spice-distillation)).
 
 | Architecture & Equivalent Quality Tier | Native LV2 Topology | Per-Instance Compute, Cache & LV2 Overhead on `Cortex-A76` (`64 KB` L1D / `512 KB` L2) | Est. `1× A76` CPU / LV2 Instance | Est. Safe Mono LV2 Instances (`1× A76` @ 80% Cap) | Est. Safe Stereo LV2 Chains (`1× A76` @ 80% Cap) | Est. Complete Stereo Rigs (`Drive+Amp+Cab+FX` on `1× A76`) |
 | :--- | :---: | :--- | :---: | :---: | :---: | :---: |
+| **Factory "Grey-Box" Multi-FX Blocks** (C++ LUTs + `2×–8×` OS Newton–Raphson + FFT Cab + FDN) | Per-block mono/stereo (`4–7×` blocks per rig) | Decoupled sub-circuits (`1D`/`2D` LUTs, `1`-step NR, per-block oversampling filters, FFT/FIR cab, FDN tank) + `4–7×` host block dispatch & L1I/L1D eviction | `2.0% – 6.0%` per single block (`14.0% – 26.0%` per `5–7` block stereo rig) | `15 – 35×` single blocks | `12 – 25×` single stereo blocks | `3 – 5×` full rigs (`5–7` chained blocks each) |
 | **`NAM A2 Standard / Full` (Studio Grade)** | Mono LV2 (`2×` LV2s for stereo) | `~12,146` MACs (23 dilated conv layers) + `203.1 KB` state (`> 3.1×` L1D; `2` instances spill `512 KB` L2 to L3/DRAM) + C++ `Eigen` & LV2 port/trim overhead | `16.0% – 22.0%` (mono)<br/>`32.0% – 44.0%` (stereo pair) | `3 – 5×` mono LV2s | `1 – 2×` stereo pairs (`2–4` LV2s) | `1 – 2×` full rigs (`4–6` chained LV2s each) |
 | **`NAM A2 Lite / Feather` (Live Grade)** | Mono LV2 (`2×` LV2s for stereo) | `~1,871` MACs at `75%` NEON utilization (`C = 3` unaligned loops) + `76.2 KB` state (`> 64 KB` L1D) + LV2 port/trim wrapper overhead | `6.5% – 9.0%` (mono)<br/>`13.0% – 18.0%` (stereo pair) | `8 – 12×` mono LV2s | `4 – 6×` stereo pairs (`8–12` LV2s) | `3 – 4×` full rigs (`4–6` chained LV2s each) |
 | **`GuitarML Proteus` (`LSTM-40`, 1–2 Knobs)** | Mono LV2 (`2×` LV2s for stereo) | `~6,560–7,040` serial recurrent MACs + `160×` `sigmoid`/`tanh` `libm` calls/sample + `48 kHz` LV2 knob port smoothing (`+40·P` MACs static) + LV2 dispatch | `12.0% – 17.0%` (mono)<br/>`24.0% – 34.0%` (stereo pair) | `4 – 6×` mono LV2s | `2 – 3×` stereo pairs (`4–6` LV2s) | `2 – 3×` full rigs (`4–6` chained LV2s each) |
@@ -680,4 +690,4 @@ TORA builds a nested 4-tier physical hierarchy matching `REQ-5`: `Lite` ($64\tex
   - [`provenance_and_enclave_drm.md`](../security/provenance_and_enclave_drm.md): Ed25519 Signatures, Enclave DRM & Protection Profiles.
   - [`watermarking_and_marketplace.md`](../security/watermarking_and_marketplace.md): Buyer Watermarking, Structural Fingerprint & Storefront Previews.
 - **Architectural Decision Records (`docs/adr/`)**
-  - [`0002-tri-operator-recurrent-architecture.md`](../../adr/0002-tri-operator-recurrent-architecture.md) through [`0010-rust-reference-spec-rules-and-madr-decisions.md`](../../adr/0010-rust-reference-spec-rules-and-madr-decisions.md).
+  - [`0002-tri-operator-recurrent-architecture.md`](../../adr/0002-tri-operator-recurrent-architecture.md) through [`0015-realtime-host-concurrency-spsc-and-telemetry-seqlock.md`](../../adr/0015-realtime-host-concurrency-spsc-and-telemetry-seqlock.md).

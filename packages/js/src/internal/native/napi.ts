@@ -515,6 +515,13 @@ class NapiEngineHandle implements NativeEngineHandle {
     if (this.#disposed) {
       throw new DnamError("ERR_DNAM_DISPOSED", "Engine has been disposed");
     }
+    return this.#raw;
+  }
+
+  #ensureAudioIdle(): RawNapiEngine {
+    if (this.#disposed) {
+      throw new DnamError("ERR_DNAM_DISPOSED", "Engine has been disposed");
+    }
     if (this.#busy) {
       throw new DnamError(
         "ERR_DNAM_BUSY",
@@ -561,7 +568,7 @@ class NapiEngineHandle implements NativeEngineHandle {
   }
 
   setSampleRate(sampleRateHz: number): void {
-    callNapi(() => this.#ensureAlive().setSampleRate(sampleRateHz));
+    callNapi(() => this.#ensureAudioIdle().setSampleRate(sampleRateHz));
   }
 
   latencySamples(): number {
@@ -676,7 +683,7 @@ class NapiEngineHandle implements NativeEngineHandle {
   }
 
   processStereoInPlace(leftIo: Float32Array, rightIo: Float32Array): void {
-    callNapi(() => this.#ensureAlive().processStereoInPlace(leftIo, rightIo));
+    callNapi(() => this.#ensureAudioIdle().processStereoInPlace(leftIo, rightIo));
   }
 
   processStereo(
@@ -687,7 +694,7 @@ class NapiEngineHandle implements NativeEngineHandle {
     blockSize?: number,
   ): void {
     callNapi(() =>
-      this.#ensureAlive().processStereo(leftIn, rightIn, leftOut, rightOut, blockSize),
+      this.#ensureAudioIdle().processStereo(leftIn, rightIn, leftOut, rightOut, blockSize),
     );
   }
 
@@ -697,11 +704,13 @@ class NapiEngineHandle implements NativeEngineHandle {
     rightOut: Float32Array,
     blockSize?: number,
   ): void {
-    callNapi(() => this.#ensureAlive().processMonoToStereo(monoIn, leftOut, rightOut, blockSize));
+    callNapi(() =>
+      this.#ensureAudioIdle().processMonoToStereo(monoIn, leftOut, rightOut, blockSize),
+    );
   }
 
   processMono(monoIn: Float32Array, monoOut: Float32Array, blockSize?: number): void {
-    callNapi(() => this.#ensureAlive().processMono(monoIn, monoOut, blockSize));
+    callNapi(() => this.#ensureAudioIdle().processMono(monoIn, monoOut, blockSize));
   }
 
   renderOfflineBounce(
@@ -710,7 +719,7 @@ class NapiEngineHandle implements NativeEngineHandle {
     leftOut: Float32Array,
     rightOut: Float32Array,
   ): void {
-    callNapi(() => this.#ensureAlive().renderOfflineBounce(leftIn, rightIn, leftOut, rightOut));
+    callNapi(() => this.#ensureAudioIdle().renderOfflineBounce(leftIn, rightIn, leftOut, rightOut));
   }
 
   async processStereoAsync(
@@ -718,7 +727,7 @@ class NapiEngineHandle implements NativeEngineHandle {
     rightIn: Float32Array,
     blockSize?: number,
   ): Promise<readonly [Float32Array, Float32Array]> {
-    const raw = this.#ensureAlive();
+    const raw = this.#ensureAudioIdle();
     this.#busy = true;
     try {
       const task = raw.processStereoAsync(leftIn, rightIn, blockSize);

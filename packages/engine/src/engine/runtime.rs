@@ -81,11 +81,7 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
         self.reconfigure_for_sample_rate_with_mode(sample_rate_hz, false)
     }
 
-    pub(crate) fn reconfigure_for_sample_rate_with_mode(
-        &mut self,
-        sample_rate_hz: u32,
-        reset_controls: bool,
-    ) -> Result<(), DnamError> {
+    pub(crate) fn training_zoh_poles(&self) -> (f32, f32, f32, u32) {
         let arena_len = self.arena_storage.as_bytes().len();
         let hdr_ac_pole = self
             .header
@@ -117,7 +113,16 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
             .as_ref()
             .map(|h| h.stage4_tank.switch_xfade_samples)
             .filter(|&x| x > 0)
-            .unwrap_or(128);
+            .unwrap_or(128) as u32;
+        (r_ac_tr, r_dc_tr, tau_ref_tr, switch_xfade_tr)
+    }
+
+    pub(crate) fn reconfigure_for_sample_rate_with_mode(
+        &mut self,
+        sample_rate_hz: u32,
+        reset_controls: bool,
+    ) -> Result<(), DnamError> {
+        let (r_ac_tr, r_dc_tr, tau_ref_tr, switch_xfade_tr) = self.training_zoh_poles();
 
         let oversample_factor = if self.offline_bounce { 4 } else { 1 };
         self.zoh = ZohRescaledParams::compute_oversampled(
@@ -127,7 +132,7 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
             r_ac_tr,
             r_dc_tr,
             tau_ref_tr,
-            switch_xfade_tr as u32,
+            switch_xfade_tr,
         )?;
 
         if reset_controls {

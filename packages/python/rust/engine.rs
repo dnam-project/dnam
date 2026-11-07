@@ -1,12 +1,12 @@
-//! Zero-copy `PyEngine` (`dnam._native.PyEngine`) wrapping [`DynamicDnamEngine<'static>`]
-//! (`ref[sdk.python.engine.zero-copy-and-gil]`, `ref[sdk.python.engine.pedalboard-call]`).
+//! Zero-copy `PyEngine` (`dnam._native.PyEngine`) wrapping [`DnamHostHandle`]
+//! (`ref[sdk.python.engine.zero-copy-and-gil]`, `ref[sdk.python.engine.pedalboard-call]`,
+//! `ref[sdk.python.engine.free-threading]`).
 
 mod process;
 mod runtime;
 mod telemetry;
 
-use std::sync::{Mutex, MutexGuard, PoisonError};
-
+use dnam_engine::host::DnamHostHandle;
 use dnam_engine::math::{BackendKind, detect_best_backend};
 use dnam_engine::{DynamicDnamEngine, Tier};
 use numpy::{PyReadonlyArray1, PyReadonlyArray2, PyReadwriteArray1, PyReadwriteArray2};
@@ -39,20 +39,13 @@ pub(crate) const fn backend_kind_str(kind: BackendKind) -> &'static str {
 
 /// Native Rust SIMD engine wrapper exposed as `dnam._native.PyEngine`.
 ///
-/// Delegates 100% of DSP, ZOH rescaling, control clamping, preset loading, and tempo sync
-/// to [`DynamicDnamEngine<'static>`] (`ref[sdk.python.engine.zero-copy-and-gil]`,
-/// `ref[sdk.python.engine.free-threading]`).
+/// Delegates 100% of DSP, ZOH rescaling, control clamping, preset loading, tempo sync,
+/// SPSC lock-free control ingress, and wait-free Seqlock telemetry to [`DnamHostHandle`]
+/// (`ref[sdk.python.engine.zero-copy-and-gil]`, `ref[sdk.python.engine.free-threading]`).
 #[pyclass(module = "dnam._native", frozen)]
 #[derive(Debug)]
 pub struct PyEngine {
-    pub(crate) inner: Mutex<DynamicDnamEngine<'static>>,
-}
-
-impl PyEngine {
-    #[inline]
-    pub(crate) fn lock_inner(&self) -> MutexGuard<'_, DynamicDnamEngine<'static>> {
-        self.inner.lock().unwrap_or_else(PoisonError::into_inner)
-    }
+    pub(crate) host: DnamHostHandle,
 }
 
 #[pymethods]
@@ -73,7 +66,7 @@ impl PyEngine {
         let backend_enum = parse_backend_kind(backend)?;
         let tier_enum = Tier::from_u8(tier);
         let max_tier_enum = max_supported_tier.map_or(Tier::Ultra, Tier::from_u8);
-        let inner = py
+        let host = py
             .detach(|| {
                 let mut eng = DynamicDnamEngine::from_bytes_owned_with_backend(
                     container_bytes,
@@ -88,12 +81,10 @@ impl PyEngine {
                 if offline_bounce {
                     eng.set_offline_bounce(true);
                 }
-                Ok(eng)
+                Ok(DnamHostHandle::new(eng))
             })
             .map_err(dnam_err_to_py)?;
-        Ok(Self {
-            inner: Mutex::new(inner),
-        })
+        Ok(Self { host })
     }
 
     #[pyo3(signature = (container_bytes, tier = None, sample_rate_hz = None))]
@@ -108,57 +99,57 @@ impl PyEngine {
     }
 
     pub fn backend_kind(&self, py: Python<'_>) -> &'static str {
-        py.detach(|| backend_kind_str(self.lock_inner().backend_kind()))
+        py.detach(|| backend_kind_str(self.host.backend_kind()))
     }
 
     pub fn active_tier(&self, py: Python<'_>) -> u8 {
-        py.detach(|| self.lock_inner().tier() as u8)
+        py.detach(|| self.host.tier() as u8)
     }
 
     pub fn set_tier(&self, py: Python<'_>, tier: u8) {
         let parsed = Tier::from_u8(tier);
-        py.detach(|| self.lock_inner().set_tier(parsed));
+        py.detach(|| self.host.set_tier(parsed));
     }
 
     pub fn max_available_tier(&self, py: Python<'_>) -> u8 {
-        py.detach(|| self.lock_inner().max_available_tier() as u8)
+        py.detach(|| self.host.max_available_tier() as u8)
     }
 
     pub fn max_supported_tier(&self, py: Python<'_>) -> u8 {
-        py.detach(|| self.lock_inner().max_supported_tier() as u8)
+        py.detach(|| self.host.max_supported_tier() as u8)
     }
 
     pub fn set_max_supported_tier(&self, py: Python<'_>, tier: u8) {
         let parsed = Tier::from_u8(tier);
-        py.detach(|| self.lock_inner().set_max_supported_tier(parsed));
+        py.detach(|| self.host.set_max_supported_tier(parsed));
     }
 
     pub fn effective_tier(&self, py: Python<'_>) -> u8 {
-        py.detach(|| self.lock_inner().effective_tier() as u8)
+        py.detach(|| self.host.effective_tier() as u8)
     }
 
     pub fn offline_bounce(&self, py: Python<'_>) -> bool {
-        py.detach(|| self.lock_inner().offline_bounce())
+        py.detach(|| self.host.offline_bounce())
     }
 
     pub fn set_offline_bounce(&self, py: Python<'_>, enabled: bool) {
-        py.detach(|| self.lock_inner().set_offline_bounce(enabled));
+        py.detach(|| self.host.set_offline_bounce(enabled));
     }
 
     pub fn maximize_tier_on_bounce(&self, py: Python<'_>) -> bool {
-        py.detach(|| self.lock_inner().maximize_tier_on_bounce())
+        py.detach(|| self.host.maximize_tier_on_bounce())
     }
 
     pub fn set_maximize_tier_on_bounce(&self, py: Python<'_>, enabled: bool) {
-        py.detach(|| self.lock_inner().set_maximize_tier_on_bounce(enabled));
+        py.detach(|| self.host.set_maximize_tier_on_bounce(enabled));
     }
 
     pub fn latency_samples(&self, py: Python<'_>) -> usize {
-        py.detach(|| self.lock_inner().latency_samples())
+        py.detach(|| self.host.latency_samples())
     }
 
     pub fn sample_rate_hz(&self, py: Python<'_>) -> u32 {
-        py.detach(|| self.lock_inner().sample_rate_hz())
+        py.detach(|| self.host.sample_rate_hz())
     }
 
     pub fn set_sample_rate(&self, py: Python<'_>, sample_rate_hz: u32) -> PyResult<()> {
@@ -166,15 +157,15 @@ impl PyEngine {
     }
 
     pub fn num_controls(&self, py: Python<'_>) -> usize {
-        py.detach(|| self.lock_inner().num_controls())
+        py.detach(|| self.host.num_controls())
     }
 
     pub fn raw_control_values(&self, py: Python<'_>) -> Vec<f32> {
-        py.detach(|| self.lock_inner().raw_control_values().to_vec())
+        py.detach(|| self.host.raw_control_values())
     }
 
     pub fn clamped_control_values(&self, py: Python<'_>) -> Vec<f32> {
-        py.detach(|| self.lock_inner().clamped_control_values().to_vec())
+        py.detach(|| self.host.clamped_control_values())
     }
 
     pub fn clamped_control_value(&self, py: Python<'_>, ctrl_idx: usize) -> PyResult<f32> {
@@ -203,43 +194,43 @@ impl PyEngine {
     }
 
     pub fn reset_controls(&self, py: Python<'_>) {
-        py.detach(|| self.lock_inner().reset_controls_to_defaults());
+        py.detach(|| self.host.reset_controls_to_defaults());
     }
 
     pub fn reset(&self, py: Python<'_>) {
-        py.detach(|| self.lock_inner().reset_to_dc_equilibrium());
+        py.detach(|| self.host.reset_to_dc_equilibrium());
     }
 
     pub fn supports_freeze(&self, py: Python<'_>) -> bool {
-        py.detach(|| self.lock_inner().supports_freeze())
+        py.detach(|| self.host.supports_freeze())
     }
 
     pub fn set_freeze(&self, py: Python<'_>, freeze: bool) {
-        py.detach(|| self.lock_inner().set_freeze(freeze));
+        py.detach(|| self.host.set_freeze(freeze));
     }
 
     pub fn set_freeze_amount(&self, py: Python<'_>, alpha: f32) {
-        py.detach(|| self.lock_inner().set_freeze_amount(alpha));
+        py.detach(|| self.host.set_freeze_amount(alpha));
     }
 
     pub fn is_frozen(&self, py: Python<'_>) -> bool {
-        py.detach(|| self.lock_inner().is_frozen())
+        py.detach(|| self.host.is_frozen())
     }
 
     pub fn set_bypass(&self, py: Python<'_>, bypassed: bool, trails: bool) {
-        py.detach(|| self.lock_inner().set_bypass(bypassed, trails));
+        py.detach(|| self.host.set_bypass(bypassed, trails));
     }
 
     pub fn bypass_state(&self, py: Python<'_>) -> (bool, bool) {
-        py.detach(|| self.lock_inner().bypass_state())
+        py.detach(|| self.host.bypass_state())
     }
 
     pub fn set_stereo_width(&self, py: Python<'_>, width: f32) {
-        py.detach(|| self.lock_inner().set_stereo_width(width));
+        py.detach(|| self.host.set_stereo_width(width));
     }
 
     pub fn stereo_width(&self, py: Python<'_>) -> f32 {
-        py.detach(|| self.lock_inner().stereo_width())
+        py.detach(|| self.host.stereo_width())
     }
 
     #[pyo3(signature = (blend_wet = 1.0, output_gain_db = 0.0, apply_unity_leveling = true))]
@@ -251,7 +242,7 @@ impl PyEngine {
         apply_unity_leveling: bool,
     ) {
         py.detach(|| {
-            self.lock_inner().configure_host_mix_and_leveling(
+            self.host.configure_host_mix_and_leveling(
                 blend_wet,
                 output_gain_db,
                 apply_unity_leveling,
@@ -260,7 +251,7 @@ impl PyEngine {
     }
 
     pub fn current_bpm(&self, py: Python<'_>) -> f32 {
-        py.detach(|| self.lock_inner().current_bpm())
+        py.detach(|| self.host.current_bpm())
     }
 
     #[pyo3(signature = (bpm, subdivision = None, fold_octave = false))]

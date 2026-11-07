@@ -38,6 +38,8 @@ pub mod dynamic;
 #[forbid(unsafe_code)]
 pub mod engine;
 pub mod ffi;
+#[forbid(unsafe_code)]
+pub mod host;
 pub mod math;
 #[forbid(unsafe_code)]
 pub mod memory;

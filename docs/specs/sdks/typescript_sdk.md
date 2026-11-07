@@ -22,11 +22,12 @@ adrs:
   - ADR-0010
   - ADR-0011
   - ADR-0013
+  - ADR-0015
 ---
 
 # TypeScript SDK (`@dnam-project/dnam`): Idiomatic TypeScript 7 Interface, Dual-Target N-API v10 + WASM SIMD128 Runtime & WebAudio Contract
 
-This specification defines the normative architecture, feature-module organization, idiomatic TypeScript 7 API semantics, dual-target `N-API v10` + WebAssembly `SIMD128` runtime invariants, WebAudio `AudioWorklet` bridge, and Rust behavioral parity contracts for **`@dnam-project/dnam`** ([`packages/js/`](../../../packages/js/README.md)), wrapping `packages/engine/` ([`../architecture/tora_architecture.md`](../architecture/tora_architecture.md)). For the design rationale and rejected alternatives, see [`../../adr/0013-typescript-sdk-architecture-and-dual-target-runtime.md`](../../adr/0013-typescript-sdk-architecture-and-dual-target-runtime.md).
+This specification defines the normative architecture, feature-module organization, idiomatic TypeScript 7 API semantics, dual-target `N-API v10` + WebAssembly `SIMD128` runtime invariants, WebAudio `AudioWorklet` bridge, and Rust behavioral parity contracts for **`@dnam-project/dnam`** ([`packages/js/`](../../../packages/js/README.md)), wrapping `packages/engine/` ([`../architecture/tora_architecture.md`](../architecture/tora_architecture.md)). For the design rationale and rejected alternatives, see [`../../adr/0013-typescript-sdk-architecture-and-dual-target-runtime.md`](../../adr/0013-typescript-sdk-architecture-and-dual-target-runtime.md) and [`../../adr/0015-realtime-host-concurrency-spsc-and-telemetry-seqlock.md`](../../adr/0015-realtime-host-concurrency-spsc-and-telemetry-seqlock.md).
 
 ---
 
@@ -51,7 +52,7 @@ flowchart LR
     end
 
     subgraph RustCrate ["dnam-js Dual-Target Rust Crate (packages/js/rust/)"]
-        RCore["core.rs + core/* -> DynamicDnamEngine<'static> & dnam-engine"]
+        RCore["core.rs + core/* -> DnamHostHandle & dnam-engine"]
         RNapi["napi.rs -> Node.js 26 N-API v10 Zero-Copy Addon"]
         RWasm["wasm.rs -> Raw extern C WASM SIMD128 Linear-Memory ABI"]
     end
@@ -91,7 +92,7 @@ flowchart LR
 
 | Category | Public Types / Classes | Ownership & Immutability Contract |
 | :--- | :--- | :--- |
-| **Stateful Resources (Classes)** | `Model`, `Checkpoint`, `Engine`, `Parameter` | Wrap native `DynamicDnamEngine` or validated container buffers; expose `.dispose()` and `[Symbol.dispose]()`. |
+| **Stateful Resources (Classes)** | `Model`, `Checkpoint`, `Engine`, `Parameter` | Wrap native `DnamHostHandle` (`DynamicDnamEngine`) or validated container buffers; expose `.dispose()` and `[Symbol.dispose]()`. |
 | **Plain Metadata (Frozen Objects)** | `ModelHeader`, `PreambleInfo`, `ParameterDescriptor`, `Preset`, `TelemetrySnapshot`, `ClampReport`, `VerificationResult` | Deeply `readonly` and `Object.freeze`-d plain camelCase objects with zero prototype methods or hidden native pointers. |
 
 1. **Zero Legacy Tri-Physics Symbols:** Superseded Tri-Physics identifiers (`SelectiveRgLru`, `SelectiveRgLruParams`, `ModulatedUfdn`, `MufdnParams`, `Core1Config`, `Core2Config`, `core2Active`) must not exist anywhere in `@dnam-project/dnam`.
@@ -153,7 +154,7 @@ flowchart LR
 | `InvalidControlIndex` (plus unknown parameter/preset IDs or unsupported freeze) | `[DNAM-CONTROL]` | `"ERR_DNAM_PARAMETER"` |
 | `CryptoVerificationFailed`, `EncryptedArenaRequiresDeviceKey`, `PreviewContainerRejected` | `[DNAM-PROVENANCE]` | `"ERR_DNAM_PROVENANCE"` |
 | `UnalignedOffset`, `InvalidJsonHeader`, `SchemaValidationError` | `[DNAM-VALIDATION]` | `"ERR_DNAM_VALIDATION"` |
-| Concurrent mutation during active `processAsync` or use after `.dispose()` | `[DNAM-BUSY]` / `[DNAM-DISPOSED]` | `"ERR_DNAM_BUSY"` / `"ERR_DNAM_DISPOSED"` |
+| Concurrent audio render / disposal during active `processAsync` or use after `.dispose()` | `[DNAM-BUSY]` / `[DNAM-DISPOSED]` | `"ERR_DNAM_BUSY"` / `"ERR_DNAM_DISPOSED"` |
 
 1. **Exhaustive Rust Match:** `packages/js/rust/error.rs` matches `dnam_engine::schema::DnamError` without a wildcard arm so adding any variant in `packages/engine` forces an explicit error code mapping.
 2. **Type Guard:** `isDnamError(err: unknown, code?: ErrorCode)` narrows `err` to `DnamError` (and to the specific `code` when provided).
@@ -175,7 +176,7 @@ flowchart LR
 
 1. **Planar `Float32Array` Audio Contract:** `engine.process(input, options?: { output?: Float32Array[] })` accepts a mono `Float32Array` or planar `readonly Float32Array[]` (`[left]` or `[left, right]`) across all four model topologies (`1->1`, `2->1`, `1->2`, `2->2`, `ref[arch.topology.signal-flow]`). When `options.output` is provided with matching channel count and frame length, the SDK writes directly into the caller's `Float32Array` buffers with zero output allocation.
 2. **Persistent WASM Linear-Memory Scratch Arena:** `WasmDriver` maintains pre-allocated input/output `f32` scratch buffers inside WASM linear memory and caches typed-array views keyed by `memory.buffer`, refreshing views only when WASM memory grows.
-3. **Worker-Pool `processAsync` with Exclusive-Access Guard:** `engine.processAsync(input, options?: { output?: Float32Array[]; signal?: AbortSignal })` executes on the Node.js libuv worker pool via an `N-API` `AsyncTask` (and resolves asynchronously in browsers), honoring `AbortSignal` prior to dispatch and rejecting concurrent engine access while in flight with `DnamError` (`"ERR_DNAM_BUSY"`).
+3. **Worker-Pool `processAsync` with Non-Blocking SPSC Control & Wait-Free Telemetry (`DnamHostHandle`, `ADR-0015`):** `engine.processAsync(input, options?: { output?: Float32Array[]; signal?: AbortSignal })` executes on the Node.js libuv worker pool via an `N-API` `AsyncTask` over `dnam_engine::host::DnamHostHandle` (and resolves asynchronously in browsers), honoring `AbortSignal` prior to dispatch. Concurrent audio rendering or `.dispose()` calls while `processAsync` is in flight are rejected with `DnamError` (`"ERR_DNAM_BUSY"`), whereas parameter/preset/tempo/bypass/freeze/tier updates (`ref[dsp.ctrl.op-m.spsc-ingress]`) and `engine.telemetry` reads (`ref[arch.telemetry.seqlock-publication]`) complete synchronously and non-blockingly on the main thread during an active `processAsync` render.
 
 ### 3.3 Offline `render` (`4x` Bounce) & Web `TransformStream`
 

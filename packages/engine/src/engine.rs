@@ -8,7 +8,7 @@ pub mod tempo;
 use crate::container::{
     ARENA_LITE_END_CL, ARENA_OFFSET_LITE_END, DnamContainerView, DnamPreamble, ZohRescaledParams,
 };
-use crate::control::ControlBus;
+use crate::control::{ControlBus, ControlClampDescriptor};
 use crate::math::{DefaultMathBackend, MathBackend};
 use crate::memory::{AlignedBuffer, AlignedFp16Block, ArenaStorage, CacheLine64};
 use crate::provenance::{CryptoProvider, DefaultCryptoProvider, VerificationStatus};
@@ -436,57 +436,15 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
     }
 
     fn refresh_calibrated_control_effects(&mut self, ctrl_idx: usize, physical_value: f32) {
-        let Some(ref hdr) = self.header else {
-            return;
-        };
-        let Some(ctrl_def) = hdr.controls_schema.get(ctrl_idx) else {
-            return;
-        };
-        let Some(ref cal) = ctrl_def.calibration else {
-            return;
-        };
-        let decl = ctrl_def.declared_range.unwrap_or([0.0, 10.0]);
-        let span = (decl[1] - decl[0]).max(1e-6);
-        let norm_01 = ((physical_value - decl[0]) / span).clamp(0.0, 1.0);
-
-        match cal.role {
-            ControlCalibrationRole::StereoMode => {
-                if let Some(ref opts) = ctrl_def.declared_options {
-                    let idx = (physical_value.round() as isize).max(0) as usize;
-                    if let Some(opt_label) = opts.get(idx)
-                        && let Some(w) = cal.stereo_width_for_option(opt_label)
-                    {
-                        self.stereo_width = w;
-                    }
-                }
-            }
-            ControlCalibrationRole::StereoWidth => {
-                let u = (2.0 * norm_01 - 1.0).clamp(-1.0, 1.0);
-                let w = cal.evaluate_lobatto_anchors(u).unwrap_or_else(|| {
-                    if decl[1] <= 2.0 {
-                        physical_value
-                    } else {
-                        norm_01
-                    }
-                });
-                self.stereo_width = w.clamp(0.0, 2.0);
-            }
-            ControlCalibrationRole::FreezeLatch => {
-                if ctrl_def.kind == crate::schema::ControlKind::Switch {
-                    if let Some(ref opts) = ctrl_def.declared_options {
-                        let idx = (physical_value.round() as isize).max(0) as usize;
-                        if let Some(opt_label) = opts.get(idx)
-                            && let Some(alpha) = cal.freeze_amount_for_option(opt_label)
-                        {
-                            self.set_freeze_amount(alpha);
-                        }
-                    }
-                } else {
-                    self.set_freeze_amount(norm_01);
-                }
-            }
-            _ => {}
-        }
+        let supports_freeze = self.supports_freeze();
+        apply_calibrated_control_role(
+            self.header.as_ref(),
+            ctrl_idx,
+            physical_value,
+            &mut self.stereo_width,
+            &mut self.stage_pipeline.stage4.freeze,
+            supports_freeze,
+        );
     }
 
     /// Returns whether this model supports captured hardware freeze (`supports_freeze == true` or
@@ -612,76 +570,53 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
         (bpm, count)
     }
 
+    /// Sets the active host tempo in BPM without modifying control values.
+    #[inline]
+    pub fn set_bpm(&mut self, bpm: f32) {
+        self.tempo_state.set_bpm(bpm);
+    }
+
+    /// Accumulates additional clamping bits into `active_clamp_mask`.
+    #[inline]
+    pub(crate) fn or_active_clamp_mask(&mut self, mask: u16) {
+        self.control_bus.active_clamp_mask |= mask;
+    }
+
     pub fn apply_preset(&mut self, preset_id: &str) -> Result<(), DnamError> {
-        let Some(ref hdr) = self.header else {
-            return Err(DnamError::SchemaValidationError("header not loaded".into()));
-        };
-        let Some(preset) = hdr.presets.iter().find(|p| p.id == preset_id) else {
-            return Err(DnamError::SchemaValidationError(alloc::format!(
-                "unknown preset id: {}",
-                preset_id
-            )));
-        };
-        // Restore signed defaults for any controls omitted by a partial preset (`ref[dsp.ctrl.switch.conditional-batch]`)
-        let mut default_restores = [(0usize, 0.0f32, false); 256];
-        let mut restore_count = 0;
-        for (idx, def) in hdr.controls_schema.iter().enumerate() {
-            if !preset.controls.contains_key(&def.id) && restore_count < default_restores.len() {
-                let is_switch = def.kind == crate::schema::ControlKind::Switch;
-                let def_val = self
-                    .control_bus
-                    .descriptors
-                    .get(idx)
-                    .map(|d| d.default_val)
-                    .unwrap_or(0.0);
-                default_restores[restore_count] = (idx, def_val, is_switch);
-                restore_count += 1;
-            }
-        }
-        let mut switch_updates = [(0usize, 0.0f32); 256];
-        let mut switch_count = 0;
-        let mut range_updates = [(0usize, 0.0f32); 256];
-        let mut range_count = 0;
-        for (id, val) in &preset.controls {
-            if let Some((idx, def)) = hdr
-                .controls_schema
-                .iter()
-                .enumerate()
-                .find(|(_, c)| &c.id == id)
-            {
-                let is_switch = def.kind == crate::schema::ControlKind::Switch;
-                if let Some(f) = val.as_f64() {
-                    if is_switch && switch_count < switch_updates.len() {
-                        switch_updates[switch_count] = (idx, f as f32);
-                        switch_count += 1;
-                    } else if !is_switch && range_count < range_updates.len() {
-                        range_updates[range_count] = (idx, f as f32);
-                        range_count += 1;
-                    }
-                } else if let Some(s) = val.as_str()
-                    && let Some(ref opts) = def.declared_options
-                    && let Some(opt_idx) = opts.iter().position(|o| o == s)
-                    && switch_count < switch_updates.len()
-                {
-                    switch_updates[switch_count] = (idx, opt_idx as f32);
-                    switch_count += 1;
-                }
-            }
-        }
-        for &(idx, val, is_sw) in &default_restores[..restore_count] {
+        let batch = resolve_preset_batch_by_id(
+            self.header.as_ref(),
+            &self.control_bus.descriptors,
+            preset_id,
+        )?;
+        self.apply_resolved_preset_batch(&batch);
+        Ok(())
+    }
+
+    /// Applies a preset by index without any heap allocations (`ref[dsp.ctrl.op-m.spsc-ingress]`).
+    pub fn apply_preset_by_index(&mut self, preset_index: usize) -> Result<(), DnamError> {
+        let batch = resolve_preset_batch_by_index(
+            self.header.as_ref(),
+            &self.control_bus.descriptors,
+            preset_index,
+        )?;
+        self.apply_resolved_preset_batch(&batch);
+        Ok(())
+    }
+
+    fn apply_resolved_preset_batch(&mut self, batch: &ResolvedPresetBatch) {
+        for &(idx, val, is_sw) in &batch.default_restores[..batch.restore_count] {
             if is_sw {
                 self.set_control_immediate(idx, val);
             } else {
                 self.set_control_value(idx, val);
             }
         }
-        for &(idx, val) in &switch_updates[..switch_count] {
+        for &(idx, val) in &batch.switch_updates[..batch.switch_count] {
             self.set_control_immediate(idx, val);
         }
-        for &(idx, val) in &range_updates[..range_count] {
+        for &(idx, val) in &batch.range_updates[..batch.range_count] {
             self.set_control_value(idx, val);
         }
-        Ok(())
     }
 
     pub fn telemetry_snapshot(&self) -> DnamTelemetrySnapshot {
@@ -703,6 +638,159 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
             overflow_or_saturation_flags: self.saturation_flags,
         }
     }
+}
+
+/// Applies calibrated control role side effects (`StereoMode`, `StereoWidth`, `FreezeLatch`)
+/// shared between [`DnamEngine`] and [`crate::host::AcceptedStateShadow`].
+pub(crate) fn apply_calibrated_control_role(
+    header: Option<&DnamJsonHeader>,
+    ctrl_idx: usize,
+    physical_value: f32,
+    stereo_width: &mut f32,
+    is_frozen: &mut bool,
+    supports_freeze: bool,
+) {
+    let Some(hdr) = header else {
+        return;
+    };
+    let Some(ctrl_def) = hdr.controls_schema.get(ctrl_idx) else {
+        return;
+    };
+    let Some(ref cal) = ctrl_def.calibration else {
+        return;
+    };
+    let decl = ctrl_def.declared_range.unwrap_or([0.0, 10.0]);
+    let span = (decl[1] - decl[0]).max(1e-6);
+    let norm_01 = ((physical_value - decl[0]) / span).clamp(0.0, 1.0);
+
+    match cal.role {
+        ControlCalibrationRole::StereoMode => {
+            if let Some(ref opts) = ctrl_def.declared_options {
+                let idx = (physical_value.round() as isize).max(0) as usize;
+                if let Some(opt_label) = opts.get(idx)
+                    && let Some(w) = cal.stereo_width_for_option(opt_label)
+                {
+                    *stereo_width = w;
+                }
+            }
+        }
+        ControlCalibrationRole::StereoWidth => {
+            let u = (2.0 * norm_01 - 1.0).clamp(-1.0, 1.0);
+            let w = cal.evaluate_lobatto_anchors(u).unwrap_or_else(|| {
+                if decl[1] <= 2.0 {
+                    physical_value
+                } else {
+                    norm_01
+                }
+            });
+            *stereo_width = w.clamp(0.0, 2.0);
+        }
+        ControlCalibrationRole::FreezeLatch => {
+            if ctrl_def.kind == crate::schema::ControlKind::Switch {
+                if let Some(ref opts) = ctrl_def.declared_options {
+                    let idx = (physical_value.round() as isize).max(0) as usize;
+                    if let Some(opt_label) = opts.get(idx)
+                        && let Some(alpha) = cal.freeze_amount_for_option(opt_label)
+                    {
+                        *is_frozen = (alpha > 0.5) && supports_freeze;
+                    }
+                }
+            } else {
+                *is_frozen = (norm_01 > 0.5) && supports_freeze;
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Stack-allocated preset update batch shared between [`DnamEngine`] and [`crate::host::ControlProducer`].
+pub(crate) struct ResolvedPresetBatch {
+    pub preset_index: u16,
+    pub default_restores: [(usize, f32, bool); 256],
+    pub restore_count: usize,
+    pub switch_updates: [(usize, f32); 256],
+    pub switch_count: usize,
+    pub range_updates: [(usize, f32); 256],
+    pub range_count: usize,
+}
+
+/// Resolves a preset by `preset_id` into a stack-allocated [`ResolvedPresetBatch`].
+pub(crate) fn resolve_preset_batch_by_id(
+    header: Option<&DnamJsonHeader>,
+    descriptors: &[ControlClampDescriptor],
+    preset_id: &str,
+) -> Result<ResolvedPresetBatch, DnamError> {
+    let Some(hdr) = header else {
+        return Err(DnamError::SchemaValidationError("header not loaded".into()));
+    };
+    let Some(preset_index) = hdr.presets.iter().position(|p| p.id == preset_id) else {
+        return Err(DnamError::SchemaValidationError(alloc::format!(
+            "unknown preset id: {preset_id}"
+        )));
+    };
+    resolve_preset_batch_by_index(Some(hdr), descriptors, preset_index)
+}
+
+/// Resolves a preset by `preset_index` into a stack-allocated [`ResolvedPresetBatch`].
+pub(crate) fn resolve_preset_batch_by_index(
+    header: Option<&DnamJsonHeader>,
+    descriptors: &[ControlClampDescriptor],
+    preset_index: usize,
+) -> Result<ResolvedPresetBatch, DnamError> {
+    let Some(hdr) = header else {
+        return Err(DnamError::SchemaValidationError("header not loaded".into()));
+    };
+    let Some(preset) = hdr.presets.get(preset_index) else {
+        return Err(DnamError::SchemaValidationError(
+            "preset index out of range".into(),
+        ));
+    };
+    let mut batch = ResolvedPresetBatch {
+        preset_index: preset_index as u16,
+        default_restores: [(0usize, 0.0f32, false); 256],
+        restore_count: 0,
+        switch_updates: [(0usize, 0.0f32); 256],
+        switch_count: 0,
+        range_updates: [(0usize, 0.0f32); 256],
+        range_count: 0,
+    };
+    for (idx, def) in hdr.controls_schema.iter().enumerate() {
+        if !preset.controls.contains_key(&def.id)
+            && batch.restore_count < batch.default_restores.len()
+        {
+            let is_switch = def.kind == crate::schema::ControlKind::Switch;
+            let def_val = descriptors.get(idx).map(|d| d.default_val).unwrap_or(0.0);
+            batch.default_restores[batch.restore_count] = (idx, def_val, is_switch);
+            batch.restore_count += 1;
+        }
+    }
+    for (id, val) in &preset.controls {
+        if let Some((idx, def)) = hdr
+            .controls_schema
+            .iter()
+            .enumerate()
+            .find(|(_, c)| &c.id == id)
+        {
+            let is_switch = def.kind == crate::schema::ControlKind::Switch;
+            if let Some(f) = val.as_f64() {
+                if is_switch && batch.switch_count < batch.switch_updates.len() {
+                    batch.switch_updates[batch.switch_count] = (idx, f as f32);
+                    batch.switch_count += 1;
+                } else if !is_switch && batch.range_count < batch.range_updates.len() {
+                    batch.range_updates[batch.range_count] = (idx, f as f32);
+                    batch.range_count += 1;
+                }
+            } else if let Some(s) = val.as_str()
+                && let Some(ref opts) = def.declared_options
+                && let Some(opt_idx) = opts.iter().position(|o| o == s)
+                && batch.switch_count < batch.switch_updates.len()
+            {
+                batch.switch_updates[batch.switch_count] = (idx, opt_idx as f32);
+                batch.switch_count += 1;
+            }
+        }
+    }
+    Ok(batch)
 }
 
 #[cfg(test)]

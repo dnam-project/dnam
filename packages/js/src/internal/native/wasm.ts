@@ -936,13 +936,18 @@ class WasmEngineHandle implements NativeEngineHandle {
     if (this.#ptr === 0) {
       throw new DnamError("ERR_DNAM_DISPOSED", "Engine has been disposed");
     }
+    return this.#ptr;
+  }
+
+  #ensureAudioIdlePtr(): number {
+    const ptr = this.#ensurePtr();
     if (this.#busy) {
       throw new DnamError(
         "ERR_DNAM_BUSY",
         "Engine is busy executing an in-flight processAsync task",
       );
     }
-    return this.#ptr;
+    return ptr;
   }
 
   reload(containerBytes: Uint8Array, tier?: number, sampleRateHz?: number): void {
@@ -990,7 +995,7 @@ class WasmEngineHandle implements NativeEngineHandle {
 
   setSampleRate(sampleRateHz: number): void {
     this.#mem.checkStatus(
-      this.#mem.exports.dnam_wasm_engine_set_sample_rate(this.#ensurePtr(), sampleRateHz),
+      this.#mem.exports.dnam_wasm_engine_set_sample_rate(this.#ensureAudioIdlePtr(), sampleRateHz),
     );
   }
 
@@ -1170,7 +1175,7 @@ class WasmEngineHandle implements NativeEngineHandle {
   }
 
   processStereoInPlace(leftIo: Float32Array, rightIo: Float32Array): void {
-    const ptr = this.#ensurePtr();
+    const ptr = this.#ensureAudioIdlePtr();
     const n = leftIo.length;
     if (n === 0) {
       return;
@@ -1196,7 +1201,7 @@ class WasmEngineHandle implements NativeEngineHandle {
     rightOut: Float32Array,
     blockSize?: number,
   ): void {
-    const ptr = this.#ensurePtr();
+    const ptr = this.#ensureAudioIdlePtr();
     const n = leftIn.length;
     if (n === 0) {
       return;
@@ -1229,7 +1234,7 @@ class WasmEngineHandle implements NativeEngineHandle {
     rightOut: Float32Array,
     blockSize?: number,
   ): void {
-    const ptr = this.#ensurePtr();
+    const ptr = this.#ensureAudioIdlePtr();
     const n = monoIn.length;
     if (n === 0) {
       return;
@@ -1254,7 +1259,7 @@ class WasmEngineHandle implements NativeEngineHandle {
   }
 
   processMono(monoIn: Float32Array, monoOut: Float32Array, blockSize?: number): void {
-    const ptr = this.#ensurePtr();
+    const ptr = this.#ensureAudioIdlePtr();
     const n = monoIn.length;
     if (n === 0) {
       return;
@@ -1274,7 +1279,7 @@ class WasmEngineHandle implements NativeEngineHandle {
     leftOut: Float32Array,
     rightOut: Float32Array,
   ): void {
-    const ptr = this.#ensurePtr();
+    const ptr = this.#ensureAudioIdlePtr();
     const n = leftIn.length;
     if (n === 0) {
       return;
@@ -1305,7 +1310,7 @@ class WasmEngineHandle implements NativeEngineHandle {
     rightIn: Float32Array,
     blockSize?: number,
   ): Promise<readonly [Float32Array, Float32Array]> {
-    this.#ensurePtr();
+    this.#ensureAudioIdlePtr();
     this.#busy = true;
     try {
       await Promise.resolve();

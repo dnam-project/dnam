@@ -23,11 +23,12 @@ adrs:
   - ADR-0011
   - ADR-0012
   - ADR-0014
+  - ADR-0015
 ---
 
 # Python SDK (`dnam`): Idiomatic Python 3.15 Interface, PEP 803 Dual-ABI (`abi3.abi3t`) PyO3 Shim & Parity Contract
 
-This specification defines the normative architecture, module organization, public API semantics, PEP 803 dual-ABI (`cp315-abi3.abi3t`) free-threading invariants, FFI zero-copy rules, and Rust-to-Python parity contracts for **`dnam`** ([`packages/python/`](../../../packages/python/README.md)), the idiomatic Python 3.15 SDK wrapping `packages/engine/` ([`../architecture/tora_architecture.md`](../architecture/tora_architecture.md)). For the design rationale and rejected alternatives, see [`../../adr/0012-python-sdk-architecture-and-idiomatic-api.md`](../../adr/0012-python-sdk-architecture-and-idiomatic-api.md) and [`../../adr/0014-python-3-15-free-threading-and-stable-abi-abi3t.md`](../../adr/0014-python-3-15-free-threading-and-stable-abi-abi3t.md).
+This specification defines the normative architecture, module organization, public API semantics, PEP 803 dual-ABI (`cp315-abi3.abi3t`) free-threading invariants, FFI zero-copy rules, and Rust-to-Python parity contracts for **`dnam`** ([`packages/python/`](../../../packages/python/README.md)), the idiomatic Python 3.15 SDK wrapping `packages/engine/` ([`../architecture/tora_architecture.md`](../architecture/tora_architecture.md)). For the design rationale and rejected alternatives, see [`../../adr/0012-python-sdk-architecture-and-idiomatic-api.md`](../../adr/0012-python-sdk-architecture-and-idiomatic-api.md), [`../../adr/0014-python-3-15-free-threading-and-stable-abi-abi3t.md`](../../adr/0014-python-3-15-free-threading-and-stable-abi-abi3t.md), and [`../../adr/0015-realtime-host-concurrency-spsc-and-telemetry-seqlock.md`](../../adr/0015-realtime-host-concurrency-spsc-and-telemetry-seqlock.md).
 
 ---
 
@@ -51,7 +52,7 @@ flowchart LR
 
     subgraph Native ["Zero-Copy PyO3 FFI Shim (packages/python/rust/)"]
         NCore["lib.rs + errors.rs + arrays.rs"]
-        NEng["engine.rs -> DynamicDnamEngine<'static>"]
+        NEng["engine.rs -> DnamHostHandle (SPSC + TelemetryCell + DynamicDnamEngine)"]
         NMod["model.rs -> DnamContainerView / DNCK / Gram"]
         NCtrl["controls.rs -> ControlClampDescriptor / Tempo"]
         NProv["provenance.rs -> Ed25519 / DNSL / DAU1 / Tardos"]
@@ -96,7 +97,7 @@ flowchart LR
 | Core Type | Canonical Import | Responsibility & Underlying Engine Primitive |
 | :--- | :--- | :--- |
 | **`Model`** | `dnam.Model` / `dnam.model.Model` | Immutable, validated `.dnam` deployment container (`ref[container.dnam.preamble-directory]`) supporting inspection, in-place header updates, and tier stripping. |
-| **`Engine`** | `dnam.Engine` / `dnam.engine.Engine` | Stateful real-time processor (`DynamicDnamEngine<'static>`, `ref[arch.topology.signal-flow]`) executing block audio rendering, offline bounce, and live control/preset/tempo mutations. |
+| **`Engine`** | `dnam.Engine` / `dnam.engine.Engine` | Stateful real-time processor (`dnam_engine::host::DnamHostHandle`, `ref[arch.topology.signal-flow]`, `ref[dsp.ctrl.op-m.spsc-ingress]`) executing block audio rendering, offline bounce, and live non-blocking control/preset/tempo mutations. |
 | **`Checkpoint`** | `dnam.Checkpoint` / `dnam.model.Checkpoint` | Immutable, validated `.dnam-ckpt` (`DNCK`, `ref[container.ckpt.bundle-framing]`) training container supporting stem/calibration inspection and runtime `Model` export. |
 
 1. **Informative Representations:** `Model.__repr__`, `Engine.__repr__`, and `Checkpoint.__repr__` include the model name, active or available tiers, control count, and verification or sample-rate summary.
@@ -110,7 +111,7 @@ flowchart LR
    - `engine.controls` (`Controls`): `MutableMapping[str, float | str]` proxy over the engine's live control bus supporting `engine.controls[id] = value` ($3\text{ kHz}$ slewed `set_control_value`), `engine.controls.snap(**values)` (immediate `set_control_immediate`), `engine.controls.reset()`, `engine.controls.clamped` (`ClampResult`), `engine.controls.to_physical(id, u)`, and `engine.controls.to_normalized(id, val)`.
    - `engine.presets` (`Presets`): `Mapping[str, PresetDef]` proxy over the loaded model's presets supporting `engine.presets.apply(preset_id)` (`ref[dsp.ctrl.switch.conditional-batch]`).
    - `engine.tempo` (`Tempo`): Tempo synchronization controller exposing `engine.tempo.bpm`, `engine.tempo.sync(bpm, subdivision=None, *, fold_octave=False)`, and `engine.tempo.tap(subdivision=None, *, fold_octave=False)` (`ref[dsp.tempo.physical-inversion]`).
-   - `engine.telemetry` (`Telemetry`): Lock-free snapshot (`DnamTelemetrySnapshot`) of active tier, bypass/freeze states, `active_clamp_mask`, `max_op_n_drive`, `max_pole_radius`, `max_effective_loop_gain`, `tail_time_ms`, `z_head`, `env_states`, `lfo_harmonics`, `clamped_controls`, and `overflow_or_saturation_flags` (`ref[arch.fp.range-saturation]`).
+   - `engine.telemetry` (`Telemetry`): Wait-free seqlock snapshot (`DnamTelemetrySnapshot` via `TelemetryReader`, `ref[arch.telemetry.seqlock-publication]`) of active tier, bypass/freeze states, `active_clamp_mask`, `max_op_n_drive`, `max_pole_radius`, `max_effective_loop_gain`, `tail_time_ms`, `z_head`, `env_states`, `lfo_harmonics`, `clamped_controls`, and `overflow_or_saturation_flags` (`ref[arch.fp.range-saturation]`).
 2. **Exception-Safe State Context Managers:**
    - `with engine.bypassed(trails: bool = True):` enters bypass (`SpilloverTrails` when `trails=True`, `HardBypass` when `trails=False`, `ref[arch.topology.spillover-trails]`) and restores the previous `(bypassed, trails)` state in a `finally` block.
    - `with engine.frozen(amount: float = 1.0):` engages Stage IV captured hardware freeze (`ref[dsp.stage4.captured-freeze]`) if `engine.supports_freeze` is `True` (raising `ControlError` if unsupported) and restores the previous freeze state in a `finally` block.
@@ -144,9 +145,9 @@ flowchart LR
 
 `r[sdk.python.engine.zero-copy-and-gil]`
 
-1. **Zero Duplicated Engine Math in `packages/python/rust/`:** `PyEngine` wraps `dnam_engine::DynamicDnamEngine<'static>` directly and delegates all sample-rate ZOH rescaling (`ref[dsp.zoh.ctrl-stride]`), control clamping, preset loading, and block rendering to `DynamicDnamEngine` without re-computing `ZohRescaledParams` or stage parameters in the binding crate.
+1. **Zero Duplicated Engine Math in `packages/python/rust/`:** `PyEngine` wraps `dnam_engine::host::DnamHostHandle` directly and delegates all sample-rate ZOH rescaling (`ref[dsp.zoh.ctrl-stride]`), control clamping, preset loading, 3-Lane SPSC control ingress (`ref[dsp.ctrl.op-m.spsc-ingress]`), wait-free seqlock telemetry (`ref[arch.telemetry.seqlock-publication]`), and block rendering to `dnam_engine` without re-computing `ZohRescaledParams` or stage parameters in the binding crate.
 2. **Zero-Allocation `process_into` & `process_planar` with Checked `rust-numpy` Borrows:** When the caller supplies pre-allocated C-contiguous `float32` input and `out=` buffers (`process(audio, out=...)`, `process_into(audio, out)`, or `process_planar(left, right, out_left=..., out_right=...)`), the SDK borrows the underlying memory slices directly via `rust-numpy`'s checked borrow tracker without allocating intermediate audio arrays or accumulating steady-state Python heap allocations.
-3. **Unconditional Runtime Detach (`py.detach`):** Every native audio block call (`process_stereo`, `process_stereo_in_place`, `process_stereo_2d`, `process_mono_to_stereo`, `process_mono_to_stereo_2d`, `process_mono`, and `render_offline_bounce`) detaches from the Python runtime via `py.detach(|| ...)` (releasing the GIL on `3.15` and allowing concurrent stop-the-world cyclic GC on `3.15t`) while holding exclusive access to `DynamicDnamEngine`.
+3. **Unconditional Runtime Detach (`py.detach`):** Every native audio block call (`process_stereo`, `process_stereo_in_place`, `process_stereo_2d`, `process_mono_to_stereo`, `process_mono_to_stereo_2d`, `process_mono`, and `render_offline_bounce`) detaches from the Python runtime via `py.detach(|| ...)` (releasing the GIL on `3.15` and allowing concurrent stop-the-world cyclic GC on `3.15t`) while draining the 3-Lane SPSC control ring at `64`-frame sub-block boundaries and publishing `TelemetryCell` snapshots at sub-block exits.
 
 ### 3.2 `pedalboard`-Compatible Callable & Bit-Identical Rust Parity
 
@@ -156,11 +157,11 @@ flowchart LR
 2. **Offline Bounce (`engine.bounce`):** `engine.bounce(audio, *, maximize_tier=True)` executes $4\times$ linear-phase polyphase oversampling with automatic `12`-sample PDC lead-in stripping (`ref[arch.bounce.oversampling]`).
 3. **Bit-Identical Parity with Native Rust:** Across all tiers (`Lite`, `Full`, `Pro`, `Ultra`), backends (`Scalar`, `Neon`, `ArmSme`, `X86Simd`), sample rates (`44.1–192 kHz`), topologies, and block sizes, `engine.process(...)` and `engine(audio, sample_rate, reset=...)` produce `float32` samples bit-identical (`0 ULP`) to invoking `DynamicDnamEngine` directly in Rust.
 
-### 3.3 Thread-Safe Frozen `PyEngine`, Atomic Reload & Free-Threaded Concurrency
+### 3.3 Thread-Safe Frozen `PyEngine`, Non-Blocking SPSC/Seqlock Host & Atomic Reload
 
 `r[sdk.python.engine.free-threading]`
 
-1. **Frozen `#[pyclass(frozen)]` with Detached Lock Acquisition:** `PyEngine` is declared `#[pyclass(module = "dnam._native", frozen)]` and synchronizes internal state via a Rust `std::sync::Mutex<DynamicDnamEngine<'static>>` acquired strictly inside `py.detach(|| ...)` after extracting and validating Python/NumPy buffer slices. Concurrent calls to a shared `Engine` instance across OS threads never raise `PyBorrowMutError`, never hold the GIL while waiting for the engine lock on standard `3.15`, and never block stop-the-world cyclic garbage collection (`gc.collect()`) on free-threaded `3.15t`.
+1. **Frozen `#[pyclass(frozen)]` with Decoupled Audio, Control & Wait-Free Telemetry (`DnamHostHandle`, `ADR-0015`):** `PyEngine` is declared `#[pyclass(module = "dnam._native", frozen)]` and wraps `dnam_engine::host::DnamHostHandle`. Audio rendering acquires only the audio-side lock inside `py.detach(|| ...)`, while control/preset/tempo/bypass/freeze/tier mutations acquire only the producer-side `SpscControlRing` + `AcceptedStateShadow` lock (`ref[dsp.ctrl.op-m.spsc-ingress]`) and `engine.telemetry` reads `TelemetryCell` wait-free (`ref[arch.telemetry.seqlock-publication]`) without acquiring any audio or control lock. Concurrent control updates and telemetry reads complete immediately without blocking on an active multi-block `process` or `bounce` render, never raise `PyBorrowMutError`, and never block stop-the-world cyclic garbage collection (`gc.collect()`) on free-threaded `3.15t`.
 2. **Atomic `_EngineState` Swap on `Engine.reload`:** The Python `Engine` wrapper bundles its active `Model`, `PyEngine`, `ControlSpace`, preset map, and control caches into a coherent `_EngineState` snapshot swapped atomically under a reentrant lock (`threading.RLock`) during `Engine.reload(...)`, ensuring concurrent reader, control, telemetry, and audio threads never observe torn state (`_model` out of sync with `_native` or control caches).
 3. **Detached Heavy Native Operations:** Non-trivial container validation/building, checkpoint verification/export, `uplo='U'` Gram matrix packing/unpacking, 3-Phase control clamping, provenance signing/sealing/verification/watermarking, and vectorized `dnam.dsp` slice kernels execute inside `py.detach(|| ...)` so multi-threaded Python workloads scale across CPU cores without runtime contention.
 

@@ -57,6 +57,7 @@ packages/python/
    - `rust/engine.rs` wraps `dnam_engine::DynamicDnamEngine<'static>` and delegates 100% of DSP, ZOH sample-rate rescaling, preset batching, and tempo synchronization to `packages/engine`.
    - `rust/errors.rs` instantiates `dnam.errors.{ContainerError, ValidationError, SampleRateError, ControlError, ProvenanceError}` directly on the cold error path so Python hot paths invoke `dnam._native` functions directly without Python wrapper frames or `*args` tuple allocations.
    - Always release the Python GIL (`py.detach(|| ...)`) inside block audio processing and offline bounce methods, and intern recurring `PyDict` keys in Rust with `pyo3::intern!`.
+   - Enforce `#![forbid(unsafe_code)]` across `packages/python/rust/` (`ref[repo.code.type-safety-and-imports]`). Never use `#[allow(unsafe_code)]` or raw NumPy pointer casts; always use `rust-numpy`'s checked `PyReadonlyArray*` / `PyReadwriteArray*` slice borrows and safe Rust synchronization primitives.
 3. **Zero-Copy NumPy Coercion & Fast Overlap Checks (`ref[sdk.python.api.flexible-in-precise-out]`):**
    - Check `type(arr) is np.ndarray and arr.dtype == _F32_DTYPE and arr.flags.c_contiguous` before calling `np.asarray`.
    - Avoid calling `np.shares_memory(a, b)` when `a is not b and a.base is None and b.base is None` (two distinct base arrays cannot overlap).

@@ -4,8 +4,8 @@
 
 - **Monorepo Orchestration (`moon` + `mise`):** Run all builds, quality gates, tests, CLIs, and dev servers via `moon` ([`.moon/workspace.yml`](.moon/workspace.yml) & [`mise.toml`](mise.toml)): `moon check --all`, `moon check <project>`, or `moon run <project>:<task>`.
 - **CLIs & Dev Servers:** `moon run studio:cli -- <args>`, `moon run trainer:cli -- <args>`, `moon run studio:dev`, `moon run studio:tauri-dev`, and `moon run ui:dev`.
-- **Quality Gates:** `moon run :format-check`, `moon run :lint`, `moon run :typecheck` (zero `# type: ignore` or `any`), `moon run :coverage` (≥ 95%), and `moon run :bench`.
-- **Git & CLA:** Sign off commits via `git commit -s` per [`CLA.md`](CLA.md) and [`CONTRIBUTING.md`](CONTRIBUTING.md).
+- **Quality Gates:** `moon check <project>`, `moon run <project>:coverage` (≥ 95%), `moon run :format-check`, `moon run :lint`, `moon run :typecheck` (zero `# type: ignore` or `any`), and `moon run :bench`.
+- **Git & Contributing:** Read `packages/<pkg>/CONTRIBUTING.md` before editing; sign off commits via `git commit -s` per [`CLA.md`](CLA.md) and [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 ## 2. Core Cross-Cutting Architectural Invariants
 
