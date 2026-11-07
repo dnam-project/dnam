@@ -9,7 +9,7 @@ use crate::core::control::{
     eval_3node_calibration_core, eval_subdivision_phase_core, invert_tempo_calibration_core,
 };
 use crate::error::validation_err;
-use crate::napi::{f32_slice_mut, napi_err};
+use crate::napi::{MutF32Slice, napi_err};
 
 #[napi]
 #[derive(Debug, Clone)]
@@ -34,12 +34,11 @@ impl NativeControlSpace {
     pub fn clamp_into(
         &self,
         raw_numeric_values: Float32Array,
-        mut clamped_out: Float32Array,
-        mut norm_out: Float32Array,
+        clamped_out: MutF32Slice<'_>,
+        norm_out: MutF32Slice<'_>,
     ) -> u32 {
-        let c_out = f32_slice_mut(&mut clamped_out);
-        let n_out = f32_slice_mut(&mut norm_out);
-        self.inner.clamp_into(&raw_numeric_values, c_out, n_out)
+        self.inner
+            .clamp_into(&raw_numeric_values, clamped_out, norm_out)
     }
 
     #[napi]

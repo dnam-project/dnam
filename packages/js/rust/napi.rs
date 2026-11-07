@@ -10,23 +10,12 @@ pub mod engine;
 pub mod operators;
 pub mod provenance;
 
-use napi::bindgen_prelude::{Error as NapiError, Float32Array, Float64Array, Status};
+use napi::bindgen_prelude::{Error as NapiError, Status};
+
+pub(crate) type MutF32Slice<'a> = &'a mut [f32];
+pub(crate) type MutF64Slice<'a> = &'a mut [f64];
 
 #[inline]
 pub(crate) fn napi_err(msg: String) -> NapiError {
     NapiError::new(Status::GenericFailure, msg)
-}
-
-#[allow(unsafe_code)]
-#[inline]
-pub(crate) fn f32_slice_mut(arr: &mut Float32Array) -> &mut [f32] {
-    // SAFETY: Synchronous N-API call on the JS thread; the output TypedArray is mutated in-place.
-    unsafe { arr.as_mut() }
-}
-
-#[allow(unsafe_code)]
-#[inline]
-pub(crate) fn f64_slice_mut(arr: &mut Float64Array) -> &mut [f64] {
-    // SAFETY: Synchronous N-API call on the JS thread; the output TypedArray is mutated in-place.
-    unsafe { arr.as_mut() }
 }

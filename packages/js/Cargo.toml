@@ -22,6 +22,7 @@ testing = []
 dnam-engine.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+zerocopy.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 napi.workspace = true

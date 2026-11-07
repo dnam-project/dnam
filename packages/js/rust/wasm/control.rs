@@ -1,87 +1,80 @@
 //! WASM `ControlSpaceCore`, ZOH rescaling, and tempo calibration inversion exports
-//! (`ref[sdk.ts.parameters.audio-param-semantics]`).
+//! (`ref[sdk.ts.parameters.audio-param-semantics]`, `ref[sdk.ts.runtime.zero-unsafe]`).
 
 use crate::core::control::{
     ControlSpaceCore, compute_zoh_core, control_stride_for_rate_core, control_tick_ratio_core,
     eval_3node_calibration_core, eval_subdivision_phase_core, invert_tempo_calibration_core,
 };
 use crate::error::validation_err;
-use crate::wasm::abi::{set_error, slice_from_raw, slice_from_raw_mut, str_from_raw};
+use crate::wasm::abi::{
+    insert_control_space, read_f64_vec, read_str, remove_control_space, set_error,
+    with_control_space, with_f32_1_in_2_out, write_f32, write_f64, write_f64_slice,
+};
 
 #[unsafe(no_mangle)]
-pub extern "C" fn dnam_wasm_control_space_create(
-    hdr_ptr: *const u8,
-    hdr_len: usize,
-) -> *mut ControlSpaceCore {
-    // SAFETY: Caller passes valid UTF-8 slice in WASM linear memory.
-    let hdr_str = match str_from_raw(hdr_ptr, hdr_len) {
+pub extern "C" fn dnam_wasm_control_space_create(hdr_ptr: usize, hdr_len: usize) -> u32 {
+    let hdr_str = match read_str(hdr_ptr, hdr_len) {
         Ok(s) => s,
         Err(msg) => {
             set_error(msg);
-            return core::ptr::null_mut();
+            return 0;
         }
     };
-    match ControlSpaceCore::new(hdr_str) {
-        Ok(space) => Box::into_raw(Box::new(space)),
+    match ControlSpaceCore::new(&hdr_str) {
+        Ok(space) => insert_control_space(space),
         Err(msg) => {
             set_error(msg);
-            core::ptr::null_mut()
+            0
         }
     }
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn dnam_wasm_control_space_free(ptr: *mut ControlSpaceCore) {
-    if !ptr.is_null() {
-        // SAFETY: `ptr` was allocated via `Box::into_raw` in `dnam_wasm_control_space_create`.
-        unsafe { drop(Box::from_raw(ptr)) };
-    }
+pub extern "C" fn dnam_wasm_control_space_free(handle: u32) {
+    remove_control_space(handle);
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn dnam_wasm_control_space_num_controls(ptr: *const ControlSpaceCore) -> u32 {
-    if ptr.is_null() {
-        return 0;
-    }
-    // SAFETY: `ptr` is a valid `ControlSpaceCore` pointer.
-    unsafe { (*ptr).num_controls() as u32 }
+pub extern "C" fn dnam_wasm_control_space_num_controls(handle: u32) -> u32 {
+    with_control_space(handle, |space| space.num_controls() as u32).unwrap_or(0)
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn dnam_wasm_control_space_clamp_into(
-    ptr: *const ControlSpaceCore,
-    raw_ptr: *const f32,
-    clamped_ptr: *mut f32,
-    norm_ptr: *mut f32,
+    handle: u32,
+    raw_ptr: usize,
+    clamped_ptr: usize,
+    norm_ptr: usize,
     len: usize,
 ) -> u32 {
-    if ptr.is_null() {
-        return 0;
-    }
-    // SAFETY: Caller passes valid non-overlapping f32 slices in WASM linear memory.
-    let space = unsafe { &*ptr };
-    let raw = slice_from_raw(raw_ptr, len);
-    let clamped = slice_from_raw_mut(clamped_ptr, len);
-    let norm = slice_from_raw_mut(norm_ptr, len);
-    space.clamp_into(raw, clamped, norm)
+    with_control_space(handle, |space| {
+        with_f32_1_in_2_out(raw_ptr, clamped_ptr, norm_ptr, len, |raw, clamped, norm| {
+            space.clamp_into(raw, clamped, norm)
+        })
+        .unwrap_or(0)
+    })
+    .unwrap_or(0)
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn dnam_wasm_control_space_to_physical(
-    ptr: *const ControlSpaceCore,
+    handle: u32,
     ctrl_idx: usize,
     normalized_u: f32,
-    out_ptr: *mut f32,
+    out_ptr: usize,
 ) -> i32 {
-    if ptr.is_null() || out_ptr.is_null() {
+    if out_ptr == 0 {
         return set_error("[DNAM-VALIDATION] null pointer".to_string());
     }
-    // SAFETY: `ptr` and `out_ptr` are valid in WASM linear memory.
-    let space = unsafe { &*ptr };
-    match space.to_physical(ctrl_idx, normalized_u) {
+    let Some(res) = with_control_space(handle, |space| space.to_physical(ctrl_idx, normalized_u))
+    else {
+        return set_error("[DNAM-VALIDATION] null pointer".to_string());
+    };
+    match res {
         Ok(v) => {
-            // SAFETY: `out_ptr` is non-null and points to a valid `f32` in WASM linear memory.
-            unsafe { *out_ptr = v };
+            if !write_f32(out_ptr, v) {
+                return set_error("[DNAM-VALIDATION] invalid out_ptr".to_string());
+            }
             0
         }
         Err(msg) => set_error(msg),
@@ -90,20 +83,23 @@ pub extern "C" fn dnam_wasm_control_space_to_physical(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn dnam_wasm_control_space_to_normalized(
-    ptr: *const ControlSpaceCore,
+    handle: u32,
     ctrl_idx: usize,
     physical_val: f32,
-    out_ptr: *mut f32,
+    out_ptr: usize,
 ) -> i32 {
-    if ptr.is_null() || out_ptr.is_null() {
+    if out_ptr == 0 {
         return set_error("[DNAM-VALIDATION] null pointer".to_string());
     }
-    // SAFETY: `ptr` and `out_ptr` are valid in WASM linear memory.
-    let space = unsafe { &*ptr };
-    match space.to_normalized(ctrl_idx, physical_val) {
+    let Some(res) = with_control_space(handle, |space| space.to_normalized(ctrl_idx, physical_val))
+    else {
+        return set_error("[DNAM-VALIDATION] null pointer".to_string());
+    };
+    match res {
         Ok(v) => {
-            // SAFETY: `out_ptr` is non-null and points to a valid `f32` in WASM linear memory.
-            unsafe { *out_ptr = v };
+            if !write_f32(out_ptr, v) {
+                return set_error("[DNAM-VALIDATION] invalid out_ptr".to_string());
+            }
             0
         }
         Err(msg) => set_error(msg),
@@ -118,9 +114,9 @@ pub extern "C" fn dnam_wasm_compute_zoh(
     r_dc_train: f32,
     tau_ref_train: f32,
     switch_xfade_train: u32,
-    out9_ptr: *mut f64,
+    out9_ptr: usize,
 ) -> i32 {
-    if out9_ptr.is_null() {
+    if out9_ptr == 0 {
         return set_error("[DNAM-VALIDATION] null out9_ptr".to_string());
     }
     match compute_zoh_core(
@@ -132,9 +128,9 @@ pub extern "C" fn dnam_wasm_compute_zoh(
         switch_xfade_train,
     ) {
         Ok(arr) => {
-            // SAFETY: `out9_ptr` points to 9 f64 slots in WASM linear memory.
-            let out = slice_from_raw_mut(out9_ptr, 9);
-            out.copy_from_slice(&arr);
+            if !write_f64_slice(out9_ptr, &arr) {
+                return set_error("[DNAM-VALIDATION] invalid out9_ptr".to_string());
+            }
             0
         }
         Err(msg) => set_error(msg),
@@ -155,25 +151,24 @@ pub extern "C" fn dnam_wasm_control_tick_ratio(sample_rate_hz: u32) -> f64 {
 pub extern "C" fn dnam_wasm_eval_subdivision_phase(
     beat_mod12: u8,
     within_beat_q32: u32,
-    sub_ptr: *const u8,
+    sub_ptr: usize,
     sub_len: usize,
     offset_q32: u32,
-    out3_ptr: *mut f64,
+    out3_ptr: usize,
 ) -> i32 {
-    if out3_ptr.is_null() {
+    if out3_ptr == 0 {
         return set_error("[DNAM-VALIDATION] null out3_ptr".to_string());
     }
-    // SAFETY: Caller passes valid UTF-8 slice and 3-f64 output buffer in WASM linear memory.
-    let sub = match str_from_raw(sub_ptr, sub_len) {
+    let sub = match read_str(sub_ptr, sub_len) {
         Ok(s) => s,
         Err(msg) => return set_error(msg),
     };
-    match eval_subdivision_phase_core(beat_mod12, within_beat_q32, sub, offset_q32) {
+    match eval_subdivision_phase_core(beat_mod12, within_beat_q32, &sub, offset_q32) {
         Ok((q32, cos_phi, sin_phi)) => {
-            let out = slice_from_raw_mut(out3_ptr, 3);
-            out[0] = f64::from(q32);
-            out[1] = f64::from(cos_phi);
-            out[2] = f64::from(sin_phi);
+            let arr = [f64::from(q32), f64::from(cos_phi), f64::from(sin_phi)];
+            if !write_f64_slice(out3_ptr, &arr) {
+                return set_error("[DNAM-VALIDATION] invalid out3_ptr".to_string());
+            }
             0
         }
         Err(msg) => set_error(msg),
@@ -182,20 +177,20 @@ pub extern "C" fn dnam_wasm_eval_subdivision_phase(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn dnam_wasm_eval_3node_calibration(
-    anchors_ptr: *const f64,
+    anchors_ptr: usize,
     u: f64,
-    out_ptr: *mut f64,
+    out_ptr: usize,
 ) -> i32 {
-    if anchors_ptr.is_null() || out_ptr.is_null() {
+    if anchors_ptr == 0 || out_ptr == 0 {
         return set_error("[DNAM-VALIDATION] null pointer".to_string());
     }
-    // SAFETY: Caller passes 3 f64 anchors and 1 f64 output in WASM linear memory.
-    let anc_slice = slice_from_raw(anchors_ptr, 3);
-    let Ok(anc) = <[f64; 3]>::try_from(anc_slice) else {
+    let anc_vec = read_f64_vec(anchors_ptr, 3);
+    let Ok(anc) = <[f64; 3]>::try_from(anc_vec.as_slice()) else {
         return set_error(validation_err("anchors must have 3 elements"));
     };
-    // SAFETY: `out_ptr` is non-null and points to a valid `f64` in WASM linear memory.
-    unsafe { *out_ptr = eval_3node_calibration_core(anc, u) };
+    if !write_f64(out_ptr, eval_3node_calibration_core(anc, u)) {
+        return set_error("[DNAM-VALIDATION] invalid out_ptr".to_string());
+    }
     0
 }
 
@@ -205,17 +200,16 @@ pub extern "C" fn dnam_wasm_invert_tempo_calibration(
     declared_max: f32,
     safe_min: f32,
     safe_max: f32,
-    anchors_ptr: *const f64,
+    anchors_ptr: usize,
     target: f64,
     flush_subnormals: u8,
-    out5_ptr: *mut f64,
+    out5_ptr: usize,
 ) -> i32 {
-    if anchors_ptr.is_null() || out5_ptr.is_null() {
+    if anchors_ptr == 0 || out5_ptr == 0 {
         return set_error("[DNAM-VALIDATION] null pointer".to_string());
     }
-    // SAFETY: Caller passes 3 f64 anchors and 5 f64 outputs in WASM linear memory.
-    let anc_slice = slice_from_raw(anchors_ptr, 3);
-    let Ok(anc) = <[f64; 3]>::try_from(anc_slice) else {
+    let anc_vec = read_f64_vec(anchors_ptr, 3);
+    let Ok(anc) = <[f64; 3]>::try_from(anc_vec.as_slice()) else {
         return set_error(validation_err("anchors must have 3 elements"));
     };
     match invert_tempo_calibration_core(
@@ -226,8 +220,9 @@ pub extern "C" fn dnam_wasm_invert_tempo_calibration(
         flush_subnormals != 0,
     ) {
         Ok(res) => {
-            let out = slice_from_raw_mut(out5_ptr, 5);
-            out.copy_from_slice(&res);
+            if !write_f64_slice(out5_ptr, &res) {
+                return set_error("[DNAM-VALIDATION] invalid out5_ptr".to_string());
+            }
             0
         }
         Err(msg) => set_error(msg),

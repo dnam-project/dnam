@@ -2,6 +2,8 @@
 //! and `NumPy` FFI Shim for `dnam-engine` (`ref[sdk.python.layout.package-namespace]`,
 //! `ref[sdk.python.abi.abi3-abi3t]`, `ref[sdk.python.engine.zero-copy-and-gil]`).
 
+#![forbid(unsafe_code)]
+
 mod arrays;
 mod controls;
 mod dsp;

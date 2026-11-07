@@ -4,12 +4,12 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use napi::bindgen_prelude::{AsyncTask, Env, Float32Array, Float64Array, Result, Task, Uint8Array};
+use napi::bindgen_prelude::{AsyncTask, Env, Float32Array, Result, Task, Uint8Array};
 use napi_derive::napi;
 
 use crate::core::engine::{EngineCore, TELEMETRY_F64_LEN, backend_kind_str, parse_backend_kind};
 use crate::error::{busy_err, validation_err};
-use crate::napi::{f32_slice_mut, f64_slice_mut, napi_err};
+use crate::napi::{MutF32Slice, MutF64Slice, napi_err};
 
 #[derive(Debug)]
 pub struct BusyResetGuard(Arc<AtomicBool>);
@@ -376,13 +376,11 @@ impl NativeEngine {
     #[napi]
     pub fn process_stereo_in_place(
         &self,
-        mut left_io: Float32Array,
-        mut right_io: Float32Array,
+        left_io: MutF32Slice<'_>,
+        right_io: MutF32Slice<'_>,
     ) -> Result<()> {
-        let l = f32_slice_mut(&mut left_io);
-        let r = f32_slice_mut(&mut right_io);
         self.ensure_audio_idle()?
-            .process_stereo_in_place(l, r)
+            .process_stereo_in_place(left_io, right_io)
             .map_err(napi_err)
     }
 
@@ -391,15 +389,13 @@ impl NativeEngine {
         &self,
         left_in: Float32Array,
         right_in: Float32Array,
-        mut left_out: Float32Array,
-        mut right_out: Float32Array,
+        left_out: MutF32Slice<'_>,
+        right_out: MutF32Slice<'_>,
         block_size: Option<u32>,
     ) -> Result<()> {
         let bs = block_size.map(|b| b as usize);
-        let lo = f32_slice_mut(&mut left_out);
-        let ro = f32_slice_mut(&mut right_out);
         self.ensure_audio_idle()?
-            .process_stereo(&left_in, &right_in, lo, ro, bs)
+            .process_stereo(&left_in, &right_in, left_out, right_out, bs)
             .map_err(napi_err)
     }
 
@@ -407,15 +403,13 @@ impl NativeEngine {
     pub fn process_mono_to_stereo(
         &self,
         mono_in: Float32Array,
-        mut left_out: Float32Array,
-        mut right_out: Float32Array,
+        left_out: MutF32Slice<'_>,
+        right_out: MutF32Slice<'_>,
         block_size: Option<u32>,
     ) -> Result<()> {
         let bs = block_size.map(|b| b as usize);
-        let lo = f32_slice_mut(&mut left_out);
-        let ro = f32_slice_mut(&mut right_out);
         self.ensure_audio_idle()?
-            .process_mono_to_stereo(&mono_in, lo, ro, bs)
+            .process_mono_to_stereo(&mono_in, left_out, right_out, bs)
             .map_err(napi_err)
     }
 
@@ -423,13 +417,12 @@ impl NativeEngine {
     pub fn process_mono(
         &self,
         mono_in: Float32Array,
-        mut mono_out: Float32Array,
+        mono_out: MutF32Slice<'_>,
         block_size: Option<u32>,
     ) -> Result<()> {
         let bs = block_size.map(|b| b as usize);
-        let mo = f32_slice_mut(&mut mono_out);
         self.ensure_audio_idle()?
-            .process_mono(&mono_in, mo, bs)
+            .process_mono(&mono_in, mono_out, bs)
             .map_err(napi_err)
     }
 
@@ -438,13 +431,11 @@ impl NativeEngine {
         &self,
         left_in: Float32Array,
         right_in: Float32Array,
-        mut left_out: Float32Array,
-        mut right_out: Float32Array,
+        left_out: MutF32Slice<'_>,
+        right_out: MutF32Slice<'_>,
     ) -> Result<()> {
-        let lo = f32_slice_mut(&mut left_out);
-        let ro = f32_slice_mut(&mut right_out);
         self.ensure_audio_idle()?
-            .render_offline_bounce(&left_in, &right_in, lo, ro)
+            .render_offline_bounce(&left_in, &right_in, left_out, right_out)
             .map_err(napi_err)
     }
 
@@ -479,9 +470,8 @@ impl NativeEngine {
     }
 
     #[napi]
-    pub fn telemetry_into(&self, mut out: Float64Array) -> Result<()> {
-        let slice = f64_slice_mut(&mut out);
-        let out_arr: &mut [f64; TELEMETRY_F64_LEN] = slice.try_into().map_err(|_| {
+    pub fn telemetry_into(&self, out: MutF64Slice<'_>) -> Result<()> {
+        let out_arr: &mut [f64; TELEMETRY_F64_LEN] = out.try_into().map_err(|_| {
             napi_err(validation_err(format!(
                 "telemetry_into requires Float64Array of length {TELEMETRY_F64_LEN}"
             )))

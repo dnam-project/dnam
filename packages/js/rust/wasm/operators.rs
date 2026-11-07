@@ -1,5 +1,5 @@
 //! WASM TORA Reference DSP Kernels (`Op-T`, `Op-M`, `Op-N`, Control Bus, and Mixing)
-//! (`ref[sdk.ts.dsp.reference-kernels]`).
+//! (`ref[sdk.ts.dsp.reference-kernels]`, `ref[sdk.ts.runtime.zero-unsafe]`).
 
 use crate::core::operators::{
     catmull_rom_hermite_core, catmull_rom_hermite_slice_core, cubic_lagrange_weights_core,
@@ -12,7 +12,7 @@ use crate::core::operators::{
     op_t_coercive_step_core, op_t_tank_slice_core, poly_adaa_algebraic_core, poly_adaa_slice_core,
     poly_adaa_step_core, unit_rotor_core, unit_rotor_slice_core,
 };
-use crate::wasm::abi::{set_error, slice_from_raw, slice_from_raw_mut};
+use crate::wasm::abi::{read_f64_vec, set_error, with_f64_mut, write_f64_slice};
 
 #[unsafe(no_mangle)]
 pub extern "C" fn dnam_wasm_catmull_rom_hermite(
@@ -27,22 +27,25 @@ pub extern "C" fn dnam_wasm_catmull_rom_hermite(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn dnam_wasm_catmull_rom_hermite_slice(
-    s_m1_ptr: *const f64,
-    s_0_ptr: *const f64,
-    s_1_ptr: *const f64,
-    s_2_ptr: *const f64,
-    mu_ptr: *const f64,
-    out_ptr: *mut f64,
+    s_m1_ptr: usize,
+    s_0_ptr: usize,
+    s_1_ptr: usize,
+    s_2_ptr: usize,
+    mu_ptr: usize,
+    out_ptr: usize,
     len: usize,
 ) -> i32 {
-    // SAFETY: Caller passes valid non-overlapping f64 slices in WASM linear memory.
-    let s_m1 = slice_from_raw(s_m1_ptr, len);
-    let s_0 = slice_from_raw(s_0_ptr, len);
-    let s_1 = slice_from_raw(s_1_ptr, len);
-    let s_2 = slice_from_raw(s_2_ptr, len);
-    let mu = slice_from_raw(mu_ptr, len);
-    let out = slice_from_raw_mut(out_ptr, len);
-    match catmull_rom_hermite_slice_core(s_m1, s_0, s_1, s_2, mu, out) {
+    let s_m1 = read_f64_vec(s_m1_ptr, len);
+    let s_0 = read_f64_vec(s_0_ptr, len);
+    let s_1 = read_f64_vec(s_1_ptr, len);
+    let s_2 = read_f64_vec(s_2_ptr, len);
+    let mu = read_f64_vec(mu_ptr, len);
+    let Some(res) = with_f64_mut(out_ptr, len, |out| {
+        catmull_rom_hermite_slice_core(&s_m1, &s_0, &s_1, &s_2, &mu, out)
+    }) else {
+        return set_error("[DNAM-VALIDATION] invalid out_ptr".to_string());
+    };
+    match res {
         Ok(()) => 0,
         Err(msg) => set_error(msg),
     }
@@ -57,35 +60,36 @@ pub extern "C" fn dnam_wasm_op_t_coercive_step(
     r_dc: f64,
     dc_x_prev: f64,
     dc_y_prev: f64,
-    out3_ptr: *mut f64,
+    out3_ptr: usize,
 ) {
     let res = op_t_coercive_step_core(u_in, g_lin, sigma_knee, v_ceil, r_dc, dc_x_prev, dc_y_prev);
-    // SAFETY: `out3_ptr` points to 3 f64 slots in WASM linear memory.
-    let out = slice_from_raw_mut(out3_ptr, 3);
-    out.copy_from_slice(&res);
+    let _ = write_f64_slice(out3_ptr, &res);
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn dnam_wasm_op_t_tank_slice(
-    inp_ptr: *const f64,
-    out_ptr: *mut f64,
+    inp_ptr: usize,
+    out_ptr: usize,
     len: usize,
     g_lin: f64,
     sigma_knee: f64,
     v_ceil: f64,
     r_dc: f64,
 ) -> i32 {
-    // SAFETY: Caller passes valid non-overlapping f64 slices in WASM linear memory.
-    let inp = slice_from_raw(inp_ptr, len);
-    let out = slice_from_raw_mut(out_ptr, len);
-    match op_t_tank_slice_core(inp, out, g_lin, sigma_knee, v_ceil, r_dc) {
+    let inp = read_f64_vec(inp_ptr, len);
+    let Some(res) = with_f64_mut(out_ptr, len, |out| {
+        op_t_tank_slice_core(&inp, out, g_lin, sigma_knee, v_ceil, r_dc)
+    }) else {
+        return set_error("[DNAM-VALIDATION] invalid out_ptr".to_string());
+    };
+    match res {
         Ok(()) => 0,
         Err(msg) => set_error(msg),
     }
 }
 
-#[unsafe(no_mangle)]
 #[allow(clippy::too_many_arguments)]
+#[unsafe(no_mangle)]
 pub extern "C" fn dnam_wasm_op_m_modal_step(
     x: f64,
     r_low: f64,
@@ -98,7 +102,7 @@ pub extern "C" fn dnam_wasm_op_m_modal_step(
     u_rot_sin: f64,
     z_re: f64,
     z_im: f64,
-    out3_ptr: *mut f64,
+    out3_ptr: usize,
 ) {
     let res = op_m_modal_step_core(
         x,
@@ -113,16 +117,14 @@ pub extern "C" fn dnam_wasm_op_m_modal_step(
         z_re,
         z_im,
     );
-    // SAFETY: `out3_ptr` points to 3 f64 slots in WASM linear memory.
-    let out = slice_from_raw_mut(out3_ptr, 3);
-    out.copy_from_slice(&res);
+    let _ = write_f64_slice(out3_ptr, &res);
 }
 
-#[unsafe(no_mangle)]
 #[allow(clippy::too_many_arguments)]
+#[unsafe(no_mangle)]
 pub extern "C" fn dnam_wasm_op_m_modal_slice(
-    inp_ptr: *const f64,
-    out_ptr: *mut f64,
+    inp_ptr: usize,
+    out_ptr: usize,
     len: usize,
     r_low: f64,
     dr_span: f64,
@@ -135,29 +137,33 @@ pub extern "C" fn dnam_wasm_op_m_modal_slice(
     z_re: f64,
     z_im: f64,
     reset: u8,
-    state2_ptr: *mut f64,
+    state2_ptr: usize,
 ) -> i32 {
-    // SAFETY: Caller passes valid non-overlapping f64 slices in WASM linear memory.
-    let inp = slice_from_raw(inp_ptr, len);
-    let out = slice_from_raw_mut(out_ptr, len);
-    match op_m_modal_slice_core(
-        inp,
-        out,
-        r_low,
-        dr_span,
-        w_sel,
-        b_gamma_norm,
-        c_real,
-        c_imag,
-        u_rot_cos,
-        u_rot_sin,
-        z_re,
-        z_im,
-        reset != 0,
-    ) {
+    let inp = read_f64_vec(inp_ptr, len);
+    let Some(res) = with_f64_mut(out_ptr, len, |out| {
+        op_m_modal_slice_core(
+            &inp,
+            out,
+            r_low,
+            dr_span,
+            w_sel,
+            b_gamma_norm,
+            c_real,
+            c_imag,
+            u_rot_cos,
+            u_rot_sin,
+            z_re,
+            z_im,
+            reset != 0,
+        )
+    }) else {
+        return set_error("[DNAM-VALIDATION] invalid out_ptr".to_string());
+    };
+    match res {
         Ok(st) => {
-            let st_out = slice_from_raw_mut(state2_ptr, 2);
-            st_out.copy_from_slice(&st);
+            if !write_f64_slice(state2_ptr, &st) {
+                return set_error("[DNAM-VALIDATION] invalid state2_ptr".to_string());
+            }
             0
         }
         Err(msg) => set_error(msg),
@@ -165,24 +171,23 @@ pub extern "C" fn dnam_wasm_op_m_modal_slice(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn dnam_wasm_unit_rotor(phi: f32, out2_ptr: *mut f64) {
+pub extern "C" fn dnam_wasm_unit_rotor(phi: f32, out2_ptr: usize) {
     let res = unit_rotor_core(phi);
-    // SAFETY: `out2_ptr` points to 2 f64 slots in WASM linear memory.
-    let out = slice_from_raw_mut(out2_ptr, 2);
-    out.copy_from_slice(&res);
+    let _ = write_f64_slice(out2_ptr, &res);
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn dnam_wasm_unit_rotor_slice(
-    phi_ptr: *const f64,
+    phi_ptr: usize,
     len: usize,
-    out_ptr: *mut f64,
+    out_ptr: usize,
     out_len: usize,
 ) -> i32 {
-    // SAFETY: Caller passes valid non-overlapping f64 slices in WASM linear memory.
-    let phi = slice_from_raw(phi_ptr, len);
-    let out = slice_from_raw_mut(out_ptr, out_len);
-    match unit_rotor_slice_core(phi, out) {
+    let phi = read_f64_vec(phi_ptr, len);
+    let Some(res) = with_f64_mut(out_ptr, out_len, |out| unit_rotor_slice_core(&phi, out)) else {
+        return set_error("[DNAM-VALIDATION] invalid out_ptr".to_string());
+    };
+    match res {
         Ok(()) => 0,
         Err(msg) => set_error(msg),
     }
@@ -198,8 +203,8 @@ pub extern "C" fn dnam_wasm_poly_adaa_algebraic(
     poly_adaa_algebraic_core(u_prev, u_curr, beta, delta)
 }
 
-#[unsafe(no_mangle)]
 #[allow(clippy::too_many_arguments)]
+#[unsafe(no_mangle)]
 pub extern "C" fn dnam_wasm_poly_adaa_step(
     x: f64,
     b_conv: f64,
@@ -210,19 +215,17 @@ pub extern "C" fn dnam_wasm_poly_adaa_step(
     u_prev: f64,
     a_prev: f64,
     m_dc: f64,
-    out4_ptr: *mut f64,
+    out4_ptr: usize,
 ) {
     let res = poly_adaa_step_core(x, b_conv, alpha, beta, delta, r_ac, u_prev, a_prev, m_dc);
-    // SAFETY: `out4_ptr` points to 4 f64 slots in WASM linear memory.
-    let out = slice_from_raw_mut(out4_ptr, 4);
-    out.copy_from_slice(&res);
+    let _ = write_f64_slice(out4_ptr, &res);
 }
 
-#[unsafe(no_mangle)]
 #[allow(clippy::too_many_arguments)]
+#[unsafe(no_mangle)]
 pub extern "C" fn dnam_wasm_poly_adaa_slice(
-    inp_ptr: *const f64,
-    out_ptr: *mut f64,
+    inp_ptr: usize,
+    out_ptr: usize,
     len: usize,
     b_conv: f64,
     alpha: f64,
@@ -233,27 +236,31 @@ pub extern "C" fn dnam_wasm_poly_adaa_slice(
     a_prev: f64,
     m_dc: f64,
     reset: u8,
-    state3_ptr: *mut f64,
+    state3_ptr: usize,
 ) -> i32 {
-    // SAFETY: Caller passes valid non-overlapping f64 slices in WASM linear memory.
-    let inp = slice_from_raw(inp_ptr, len);
-    let out = slice_from_raw_mut(out_ptr, len);
-    match poly_adaa_slice_core(
-        inp,
-        out,
-        b_conv,
-        alpha,
-        beta,
-        delta,
-        r_ac,
-        u_prev,
-        a_prev,
-        m_dc,
-        reset != 0,
-    ) {
+    let inp = read_f64_vec(inp_ptr, len);
+    let Some(res) = with_f64_mut(out_ptr, len, |out| {
+        poly_adaa_slice_core(
+            &inp,
+            out,
+            b_conv,
+            alpha,
+            beta,
+            delta,
+            r_ac,
+            u_prev,
+            a_prev,
+            m_dc,
+            reset != 0,
+        )
+    }) else {
+        return set_error("[DNAM-VALIDATION] invalid out_ptr".to_string());
+    };
+    match res {
         Ok(st) => {
-            let st_out = slice_from_raw_mut(state3_ptr, 3);
-            st_out.copy_from_slice(&st);
+            if !write_f64_slice(state3_ptr, &st) {
+                return set_error("[DNAM-VALIDATION] invalid state3_ptr".to_string());
+            }
             0
         }
         Err(msg) => set_error(msg),
@@ -263,17 +270,17 @@ pub extern "C" fn dnam_wasm_poly_adaa_slice(
 #[unsafe(no_mangle)]
 pub extern "C" fn dnam_wasm_eval_lobatto_basis(
     u: f64,
-    anchors_ptr: *const f64,
+    anchors_ptr: usize,
     anchors_len: usize,
     degree: usize,
-    out3_ptr: *mut f64,
+    out3_ptr: usize,
 ) -> i32 {
-    // SAFETY: Caller passes valid f64 slices in WASM linear memory.
-    let anchors = slice_from_raw(anchors_ptr, anchors_len);
-    match eval_lobatto_basis_core(u, anchors, degree) {
+    let anchors = read_f64_vec(anchors_ptr, anchors_len);
+    match eval_lobatto_basis_core(u, &anchors, degree) {
         Ok(res) => {
-            let out = slice_from_raw_mut(out3_ptr, 3);
-            out.copy_from_slice(&res);
+            if !write_f64_slice(out3_ptr, &res) {
+                return set_error("[DNAM-VALIDATION] invalid out3_ptr".to_string());
+            }
             0
         }
         Err(msg) => set_error(msg),
@@ -282,19 +289,22 @@ pub extern "C" fn dnam_wasm_eval_lobatto_basis(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn dnam_wasm_eval_lobatto_basis_slice(
-    u_ptr: *const f64,
+    u_ptr: usize,
     u_len: usize,
-    out_ptr: *mut f64,
+    out_ptr: usize,
     out_len: usize,
-    anchors_ptr: *const f64,
+    anchors_ptr: usize,
     anchors_len: usize,
     degree: usize,
 ) -> i32 {
-    // SAFETY: Caller passes valid non-overlapping f64 slices in WASM linear memory.
-    let u = slice_from_raw(u_ptr, u_len);
-    let out = slice_from_raw_mut(out_ptr, out_len);
-    let anchors = slice_from_raw(anchors_ptr, anchors_len);
-    match eval_lobatto_basis_slice_core(u, out, anchors, degree) {
+    let u = read_f64_vec(u_ptr, u_len);
+    let anchors = read_f64_vec(anchors_ptr, anchors_len);
+    let Some(res) = with_f64_mut(out_ptr, out_len, |out| {
+        eval_lobatto_basis_slice_core(&u, out, &anchors, degree)
+    }) else {
+        return set_error("[DNAM-VALIDATION] invalid out_ptr".to_string());
+    };
+    match res {
         Ok(()) => 0,
         Err(msg) => set_error(msg),
     }
@@ -302,19 +312,19 @@ pub extern "C" fn dnam_wasm_eval_lobatto_basis_slice(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn dnam_wasm_eval_rank4_fm(
-    feat_ptr: *const f64,
+    feat_ptr: usize,
     feat_len: usize,
-    vf_ptr: *const f64,
+    vf_ptr: usize,
     vf_len: usize,
-    out4_ptr: *mut f64,
+    out4_ptr: usize,
 ) -> i32 {
-    // SAFETY: Caller passes valid f64 slices in WASM linear memory.
-    let feat = slice_from_raw(feat_ptr, feat_len);
-    let vf = slice_from_raw(vf_ptr, vf_len);
-    match eval_rank4_fm_core(feat, vf) {
+    let feat = read_f64_vec(feat_ptr, feat_len);
+    let vf = read_f64_vec(vf_ptr, vf_len);
+    match eval_rank4_fm_core(&feat, &vf) {
         Ok(res) => {
-            let out = slice_from_raw_mut(out4_ptr, 4);
-            out.copy_from_slice(&res);
+            if !write_f64_slice(out4_ptr, &res) {
+                return set_error("[DNAM-VALIDATION] invalid out4_ptr".to_string());
+            }
             0
         }
         Err(msg) => set_error(msg),
@@ -323,44 +333,48 @@ pub extern "C" fn dnam_wasm_eval_rank4_fm(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn dnam_wasm_eval_rank4_fm_slice(
-    feat_ptr: *const f64,
+    feat_ptr: usize,
     feat_len: usize,
     n_frames: usize,
     d_dim: usize,
-    vf_ptr: *const f64,
+    vf_ptr: usize,
     vf_len: usize,
-    out_ptr: *mut f64,
+    out_ptr: usize,
     out_len: usize,
 ) -> i32 {
-    // SAFETY: Caller passes valid non-overlapping f64 slices in WASM linear memory.
-    let feat = slice_from_raw(feat_ptr, feat_len);
-    let vf = slice_from_raw(vf_ptr, vf_len);
-    let out = slice_from_raw_mut(out_ptr, out_len);
-    match eval_rank4_fm_slice_core(feat, n_frames, d_dim, vf, out) {
+    let feat = read_f64_vec(feat_ptr, feat_len);
+    let vf = read_f64_vec(vf_ptr, vf_len);
+    let Some(res) = with_f64_mut(out_ptr, out_len, |out| {
+        eval_rank4_fm_slice_core(&feat, n_frames, d_dim, &vf, out)
+    }) else {
+        return set_error("[DNAM-VALIDATION] invalid out_ptr".to_string());
+    };
+    match res {
         Ok(()) => 0,
         Err(msg) => set_error(msg),
     }
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn dnam_wasm_eval_chebyshev_lfo(cos_phi: f64, out4_ptr: *mut f64) {
+pub extern "C" fn dnam_wasm_eval_chebyshev_lfo(cos_phi: f64, out4_ptr: usize) {
     let res = eval_chebyshev_lfo_core(cos_phi);
-    // SAFETY: `out4_ptr` points to 4 f64 slots in WASM linear memory.
-    let out = slice_from_raw_mut(out4_ptr, 4);
-    out.copy_from_slice(&res);
+    let _ = write_f64_slice(out4_ptr, &res);
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn dnam_wasm_eval_chebyshev_lfo_slice(
-    cos_phi_ptr: *const f64,
+    cos_phi_ptr: usize,
     len: usize,
-    out_ptr: *mut f64,
+    out_ptr: usize,
     out_len: usize,
 ) -> i32 {
-    // SAFETY: Caller passes valid non-overlapping f64 slices in WASM linear memory.
-    let cos_phi = slice_from_raw(cos_phi_ptr, len);
-    let out = slice_from_raw_mut(out_ptr, out_len);
-    match eval_chebyshev_lfo_slice_core(cos_phi, out) {
+    let cos_phi = read_f64_vec(cos_phi_ptr, len);
+    let Some(res) = with_f64_mut(out_ptr, out_len, |out| {
+        eval_chebyshev_lfo_slice_core(&cos_phi, out)
+    }) else {
+        return set_error("[DNAM-VALIDATION] invalid out_ptr".to_string());
+    };
+    match res {
         Ok(()) => 0,
         Err(msg) => set_error(msg),
     }
@@ -373,39 +387,43 @@ pub extern "C" fn dnam_wasm_eval_trust_region_softclip(z: f64, mh: f64) -> f64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn dnam_wasm_eval_trust_region_softclip_slice(
-    z_ptr: *const f64,
-    out_ptr: *mut f64,
+    z_ptr: usize,
+    out_ptr: usize,
     len: usize,
     mh: f64,
 ) -> i32 {
-    // SAFETY: Caller passes valid non-overlapping f64 slices in WASM linear memory.
-    let z = slice_from_raw(z_ptr, len);
-    let out = slice_from_raw_mut(out_ptr, len);
-    match eval_trust_region_softclip_slice_core(z, out, mh) {
+    let z = read_f64_vec(z_ptr, len);
+    let Some(res) = with_f64_mut(out_ptr, len, |out| {
+        eval_trust_region_softclip_slice_core(&z, out, mh)
+    }) else {
+        return set_error("[DNAM-VALIDATION] invalid out_ptr".to_string());
+    };
+    match res {
         Ok(()) => 0,
         Err(msg) => set_error(msg),
     }
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn dnam_wasm_cubic_lagrange_weights(mu: f64, out4_ptr: *mut f64) {
+pub extern "C" fn dnam_wasm_cubic_lagrange_weights(mu: f64, out4_ptr: usize) {
     let res = cubic_lagrange_weights_core(mu);
-    // SAFETY: `out4_ptr` points to 4 f64 slots in WASM linear memory.
-    let out = slice_from_raw_mut(out4_ptr, 4);
-    out.copy_from_slice(&res);
+    let _ = write_f64_slice(out4_ptr, &res);
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn dnam_wasm_cubic_lagrange_weights_slice(
-    mu_ptr: *const f64,
+    mu_ptr: usize,
     len: usize,
-    out_ptr: *mut f64,
+    out_ptr: usize,
     out_len: usize,
 ) -> i32 {
-    // SAFETY: Caller passes valid non-overlapping f64 slices in WASM linear memory.
-    let mu = slice_from_raw(mu_ptr, len);
-    let out = slice_from_raw_mut(out_ptr, out_len);
-    match cubic_lagrange_weights_slice_core(mu, out) {
+    let mu = read_f64_vec(mu_ptr, len);
+    let Some(res) = with_f64_mut(out_ptr, out_len, |out| {
+        cubic_lagrange_weights_slice_core(&mu, out)
+    }) else {
+        return set_error("[DNAM-VALIDATION] invalid out_ptr".to_string());
+    };
+    match res {
         Ok(()) => 0,
         Err(msg) => set_error(msg),
     }
@@ -413,18 +431,18 @@ pub extern "C" fn dnam_wasm_cubic_lagrange_weights_slice(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn dnam_wasm_givens_householder_8ch(
-    x_ptr: *const f64,
+    x_ptr: usize,
     x_len: usize,
     cos_psi: f64,
     sin_psi: f64,
-    out8_ptr: *mut f64,
+    out8_ptr: usize,
 ) -> i32 {
-    // SAFETY: Caller passes valid f64 slices in WASM linear memory.
-    let x = slice_from_raw(x_ptr, x_len);
-    match givens_householder_8ch_core(x, cos_psi, sin_psi) {
+    let x = read_f64_vec(x_ptr, x_len);
+    match givens_householder_8ch_core(&x, cos_psi, sin_psi) {
         Ok(res) => {
-            let out = slice_from_raw_mut(out8_ptr, 8);
-            out.copy_from_slice(&res);
+            if !write_f64_slice(out8_ptr, &res) {
+                return set_error("[DNAM-VALIDATION] invalid out8_ptr".to_string());
+            }
             0
         }
         Err(msg) => set_error(msg),
@@ -433,16 +451,19 @@ pub extern "C" fn dnam_wasm_givens_householder_8ch(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn dnam_wasm_givens_householder_8ch_slice(
-    x_ptr: *const f64,
-    out_ptr: *mut f64,
+    x_ptr: usize,
+    out_ptr: usize,
     len: usize,
     cos_psi: f64,
     sin_psi: f64,
 ) -> i32 {
-    // SAFETY: Caller passes valid non-overlapping f64 slices in WASM linear memory.
-    let x = slice_from_raw(x_ptr, len);
-    let out = slice_from_raw_mut(out_ptr, len);
-    match givens_householder_8ch_slice_core(x, out, cos_psi, sin_psi) {
+    let x = read_f64_vec(x_ptr, len);
+    let Some(res) = with_f64_mut(out_ptr, len, |out| {
+        givens_householder_8ch_slice_core(&x, out, cos_psi, sin_psi)
+    }) else {
+        return set_error("[DNAM-VALIDATION] invalid out_ptr".to_string());
+    };
+    match res {
         Ok(()) => 0,
         Err(msg) => set_error(msg),
     }
@@ -450,24 +471,24 @@ pub extern "C" fn dnam_wasm_givens_householder_8ch_slice(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn dnam_wasm_givens_householder_16ch(
-    x_ptr: *const f64,
+    x_ptr: usize,
     x_len: usize,
     cos_psi: f64,
     sin_psi: f64,
-    cc_ptr: *const f64,
+    cc_ptr: usize,
     cc_len: usize,
-    cs_ptr: *const f64,
+    cs_ptr: usize,
     cs_len: usize,
-    out16_ptr: *mut f64,
+    out16_ptr: usize,
 ) -> i32 {
-    // SAFETY: Caller passes valid f64 slices in WASM linear memory.
-    let x = slice_from_raw(x_ptr, x_len);
-    let cc = slice_from_raw(cc_ptr, cc_len);
-    let cs = slice_from_raw(cs_ptr, cs_len);
-    match givens_householder_16ch_core(x, cos_psi, sin_psi, cc, cs) {
+    let x = read_f64_vec(x_ptr, x_len);
+    let cc = read_f64_vec(cc_ptr, cc_len);
+    let cs = read_f64_vec(cs_ptr, cs_len);
+    match givens_householder_16ch_core(&x, cos_psi, sin_psi, &cc, &cs) {
         Ok(res) => {
-            let out = slice_from_raw_mut(out16_ptr, 16);
-            out.copy_from_slice(&res);
+            if !write_f64_slice(out16_ptr, &res) {
+                return set_error("[DNAM-VALIDATION] invalid out16_ptr".to_string());
+            }
             0
         }
         Err(msg) => set_error(msg),
@@ -476,22 +497,25 @@ pub extern "C" fn dnam_wasm_givens_householder_16ch(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn dnam_wasm_givens_householder_16ch_slice(
-    x_ptr: *const f64,
-    out_ptr: *mut f64,
+    x_ptr: usize,
+    out_ptr: usize,
     len: usize,
     cos_psi: f64,
     sin_psi: f64,
-    cc_ptr: *const f64,
+    cc_ptr: usize,
     cc_len: usize,
-    cs_ptr: *const f64,
+    cs_ptr: usize,
     cs_len: usize,
 ) -> i32 {
-    // SAFETY: Caller passes valid non-overlapping f64 slices in WASM linear memory.
-    let x = slice_from_raw(x_ptr, len);
-    let out = slice_from_raw_mut(out_ptr, len);
-    let cc = slice_from_raw(cc_ptr, cc_len);
-    let cs = slice_from_raw(cs_ptr, cs_len);
-    match givens_householder_16ch_slice_core(x, out, cos_psi, sin_psi, cc, cs) {
+    let x = read_f64_vec(x_ptr, len);
+    let cc = read_f64_vec(cc_ptr, cc_len);
+    let cs = read_f64_vec(cs_ptr, cs_len);
+    let Some(res) = with_f64_mut(out_ptr, len, |out| {
+        givens_householder_16ch_slice_core(&x, out, cos_psi, sin_psi, &cc, &cs)
+    }) else {
+        return set_error("[DNAM-VALIDATION] invalid out_ptr".to_string());
+    };
+    match res {
         Ok(()) => 0,
         Err(msg) => set_error(msg),
     }

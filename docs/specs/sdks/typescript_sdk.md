@@ -163,12 +163,18 @@ flowchart LR
 
 ## 3. Dual-Target Runtime, Real-Time Engine & Behavioral Parity
 
-### 3.1 Unified `NativeDriver` Seam (`N-API v10` + Raw `WASM SIMD128`) & Zero Duplicated Logic
+### 3.1 Unified `NativeDriver` Seam (`N-API v10` + Raw `WASM SIMD128`), Zero Duplicated Logic & Zero-`unsafe` Rust Bindings
 
 `r[sdk.ts.runtime.dual-target-drivers]`
 
 1. **100% Delegation to `dnam-engine` (Zero Duplicated Logic in TypeScript or FFI Adapters):** `packages/js/rust/core/` and `packages/js/src/` must never reimplement any algorithm, validation rule, or domain constant already owned by `packages/engine`. Specifically, all DSP, ZOH rescaling (`ref[dsp.zoh.ctrl-stride]`), 3-Phase control clamping, Lobatto calibration inversion, preset loading, tempo synchronization, `DnamJsonHeader` / `SchemaVersion` validation, RFC 8785 JCS canonicalization and immutable-header projection (`ref[sec.jcs.immutable-header-digest]`), and creator/marketplace tier-prefix signing (`ref[sec.sig.prefix-delegation]`) must execute in Rust via `dnam-engine`. The TypeScript layer is restricted strictly to idiomatic API ergonomics, camelCase/snake_case key translation, input coercion, and memory/handle lifecycle management.
 2. **Identical Driver Semantics:** `NapiDriver` and `WasmDriver` implement the exact same `NativeDriver` interface in `src/internal/native/driver.ts`.
+
+`r[sdk.ts.runtime.zero-unsafe]`
+
+1. **Zero `unsafe` Blocks & Module-Level `#[forbid(unsafe_code)]`:** `packages/python/rust/lib.rs` enforces `#![forbid(unsafe_code)]` at the crate root, and `packages/js/rust/lib.rs` enforces `#![deny(unsafe_code)]` at the crate root (allowing only `#[napi]` proc-macro expansion and narrow `#[allow(unsafe_code)]` for Rust 2024 `#[unsafe(no_mangle)]` C-ABI symbol export attributes in `packages/js/rust/wasm/`) while enforcing `#[forbid(unsafe_code)]` on `core`, `error`, and `wasm::abi`, with zero `unsafe { ... }` blocks, zero raw-pointer slice dereferences, and zero `unsafe impl Send` anywhere in `packages/js/rust/` or `packages/python/rust/`.
+2. **Safe WASM Linear-Memory Arena & Handle Tables:** `packages/js/rust/wasm/abi.rs` (`#[forbid(unsafe_code)]`) manages 64-byte-aligned `CacheLine64` allocations and `EngineCore` / `ControlSpaceCore` instances via safe thread-local handle tables and `zerocopy` (`FromBytes` / `IntoBytes`) byte-slice conversions with `split_at_mut` disjoint multi-slice borrowing for zero-allocation audio processing.
+3. **Aliasing-Free `processAsync` Snapshot & `ArrayBuffer` Ownership Transfer:** `StereoProcessTask` (`packages/js/rust/napi/engine.rs`) and `WasmEngineHandle.processStereoAsync` snapshot caller input `Float32Array` channels on the main thread before dispatching asynchronous worker execution so concurrent JS-thread mutations to caller input buffers never race with or alias worker memory. `engine.processAsync` supports both `engine.processAsync(input, out)` and `engine.processAsync(input, { output, transfer, blockSize, signal })`, detaching the caller's input `ArrayBuffer`(s) via `ArrayBuffer.prototype.transfer()` when `{ transfer: true }` is specified.
 
 ### 3.2 Zero-Copy Planar Audio, In-Place Output & Libuv `processAsync`
 
@@ -176,7 +182,7 @@ flowchart LR
 
 1. **Planar `Float32Array` Audio Contract:** `engine.process(input, options?: { output?: Float32Array[] })` accepts a mono `Float32Array` or planar `readonly Float32Array[]` (`[left]` or `[left, right]`) across all four model topologies (`1->1`, `2->1`, `1->2`, `2->2`, `ref[arch.topology.signal-flow]`). When `options.output` is provided with matching channel count and frame length, the SDK writes directly into the caller's `Float32Array` buffers with zero output allocation.
 2. **Persistent WASM Linear-Memory Scratch Arena:** `WasmDriver` maintains pre-allocated input/output `f32` scratch buffers inside WASM linear memory and caches typed-array views keyed by `memory.buffer`, refreshing views only when WASM memory grows.
-3. **Worker-Pool `processAsync` with Non-Blocking SPSC Control & Wait-Free Telemetry (`DnamHostHandle`, `ADR-0015`):** `engine.processAsync(input, options?: { output?: Float32Array[]; signal?: AbortSignal })` executes on the Node.js libuv worker pool via an `N-API` `AsyncTask` over `dnam_engine::host::DnamHostHandle` (and resolves asynchronously in browsers), honoring `AbortSignal` prior to dispatch. Concurrent audio rendering or `.dispose()` calls while `processAsync` is in flight are rejected with `DnamError` (`"ERR_DNAM_BUSY"`), whereas parameter/preset/tempo/bypass/freeze/tier updates (`ref[dsp.ctrl.op-m.spsc-ingress]`) and `engine.telemetry` reads (`ref[arch.telemetry.seqlock-publication]`) complete synchronously and non-blockingly on the main thread during an active `processAsync` render.
+3. **Worker-Pool `processAsync` with Non-Blocking SPSC Control & Wait-Free Telemetry (`DnamHostHandle`, `ADR-0015`):** `engine.processAsync(input, outOrOptions?)` executes on the Node.js libuv worker pool via an `N-API` `AsyncTask` over `dnam_engine::host::DnamHostHandle` (and resolves asynchronously in browsers), honoring `AbortSignal` prior to dispatch, writing into caller-supplied `out` / `options.output` buffers when provided, and detaching caller input `ArrayBuffer`s when `options.transfer === true` (`ref[sdk.ts.runtime.zero-unsafe]`). Concurrent audio rendering or `.dispose()` calls while `processAsync` is in flight are rejected with `DnamError` (`"ERR_DNAM_BUSY"`), whereas parameter/preset/tempo/bypass/freeze/tier updates (`ref[dsp.ctrl.op-m.spsc-ingress]`) and `engine.telemetry` reads (`ref[arch.telemetry.seqlock-publication]`) complete synchronously and non-blockingly on the main thread during an active `processAsync` render.
 
 ### 3.3 Offline `render` (`4x` Bounce) & Web `TransformStream`
 

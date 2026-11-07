@@ -1119,6 +1119,10 @@ reason = "TypeScript SDK (packages/js) contract verified by TypeScript test suit
 scope = "out-of-scope"
 reason = "TypeScript SDK (packages/js) contract verified by TypeScript test suite"
 
+[rules."sdk.ts.runtime.zero-unsafe"]
+scope = "out-of-scope"
+reason = "TypeScript SDK (packages/js) contract verified by TypeScript test suite"
+
 [rules."sdk.ts.engine.zero-copy-and-async"]
 scope = "out-of-scope"
 reason = "TypeScript SDK (packages/js) contract verified by TypeScript test suite"

@@ -1,5 +1,5 @@
 //! WASM `.dnam` container, `.dnam-ckpt` checkpoint & `uplo='U'` Gram matrix exports
-//! (`ref[sdk.ts.model.containers-and-checkpoints]`).
+//! (`ref[sdk.ts.model.containers-and-checkpoints]`, `ref[sdk.ts.runtime.zero-unsafe]`).
 
 use crate::core::container::{
     build_dmu1_frame_core, build_dnam_container_core, build_reference_checkpoint_core,
@@ -13,44 +13,37 @@ use crate::core::container::{
 };
 use crate::error::validation_err;
 use crate::wasm::abi::{
-    set_arena, set_error, set_result, slice_from_raw, slice_from_raw_mut, str_from_raw,
+    read_bytes, read_f64_vec, read_opt_bytes, read_opt_str, read_str, set_arena, set_error,
+    set_result, with_f64_mut, write_u32_slice,
 };
 
 #[unsafe(no_mangle)]
 pub extern "C" fn dnam_wasm_validate_container_with_key(
-    container_ptr: *const u8,
+    container_ptr: usize,
     container_len: usize,
-    dev_id_ptr: *const u8,
+    dev_id_ptr: usize,
     dev_id_len: usize,
-    dev_sec_ptr: *const u8,
+    dev_sec_ptr: usize,
     dev_sec_len: usize,
-    mkt_pk_ptr: *const u8,
+    mkt_pk_ptr: usize,
     mkt_pk_len: usize,
 ) -> i32 {
-    // SAFETY: Caller passes valid byte slices in WASM linear memory.
-    let container_bytes = slice_from_raw(container_ptr, container_len);
-    let dev_id = if dev_id_len == 0 || dev_id_ptr.is_null() {
-        None
-    } else {
-        match str_from_raw(dev_id_ptr, dev_id_len) {
-            Ok(s) => Some(s),
-            Err(msg) => return set_error(msg),
-        }
+    let container_bytes = read_bytes(container_ptr, container_len);
+    let dev_id = match read_opt_str(dev_id_ptr, dev_id_len) {
+        Ok(s) => s,
+        Err(msg) => return set_error(msg),
     };
-    let dev_sec = if dev_sec_len == 0 || dev_sec_ptr.is_null() {
-        None
-    } else {
-        Some(slice_from_raw(dev_sec_ptr, dev_sec_len))
+    let dev_sec = read_opt_bytes(dev_sec_ptr, dev_sec_len);
+    let mkt_pk = match read_opt_str(mkt_pk_ptr, mkt_pk_len) {
+        Ok(s) => s,
+        Err(msg) => return set_error(msg),
     };
-    let mkt_pk = if mkt_pk_len == 0 || mkt_pk_ptr.is_null() {
-        None
-    } else {
-        match str_from_raw(mkt_pk_ptr, mkt_pk_len) {
-            Ok(s) => Some(s),
-            Err(msg) => return set_error(msg),
-        }
-    };
-    match validate_container_with_key_core(container_bytes, dev_id, dev_sec, mkt_pk) {
+    match validate_container_with_key_core(
+        &container_bytes,
+        dev_id.as_deref(),
+        dev_sec.as_deref(),
+        mkt_pk.as_deref(),
+    ) {
         Ok(info) => {
             let p = info.preamble;
             let meta = serde_json::json!({
@@ -101,15 +94,14 @@ pub extern "C" fn dnam_wasm_validate_container_with_key(
 pub extern "C" fn dnam_wasm_build_reference_container(
     supports_freeze: u8,
     inputs: u8,
-    out_mode_ptr: *const u8,
+    out_mode_ptr: usize,
     out_mode_len: usize,
 ) -> i32 {
-    // SAFETY: Caller passes valid UTF-8 slice in WASM linear memory.
-    let mode = match str_from_raw(out_mode_ptr, out_mode_len) {
+    let mode = match read_str(out_mode_ptr, out_mode_len) {
         Ok(s) => s,
         Err(msg) => return set_error(msg),
     };
-    match build_reference_container_core(supports_freeze != 0, inputs, mode) {
+    match build_reference_container_core(supports_freeze != 0, inputs, &mode) {
         Ok(bytes) => set_result(bytes),
         Err(msg) => set_error(msg),
     }
@@ -117,26 +109,21 @@ pub extern "C" fn dnam_wasm_build_reference_container(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn dnam_wasm_build_dnam_container(
-    hdr_ptr: *const u8,
+    hdr_ptr: usize,
     hdr_len: usize,
-    arena_ptr: *const u8,
+    arena_ptr: usize,
     arena_len: usize,
-    enc_ptr: *const u8,
+    enc_ptr: usize,
     enc_len: usize,
     has_signatures: u8,
 ) -> i32 {
-    // SAFETY: Caller passes valid byte slices in WASM linear memory.
-    let hdr_str = match str_from_raw(hdr_ptr, hdr_len) {
+    let hdr_str = match read_str(hdr_ptr, hdr_len) {
         Ok(s) => s,
         Err(msg) => return set_error(msg),
     };
-    let arena = slice_from_raw(arena_ptr, arena_len);
-    let enc_opt = if enc_len == 0 || enc_ptr.is_null() {
-        None
-    } else {
-        Some(slice_from_raw(enc_ptr, enc_len))
-    };
-    match build_dnam_container_core(hdr_str, arena, enc_opt, has_signatures != 0) {
+    let arena = read_bytes(arena_ptr, arena_len);
+    let enc_opt = read_opt_bytes(enc_ptr, enc_len);
+    match build_dnam_container_core(&hdr_str, &arena, enc_opt.as_deref(), has_signatures != 0) {
         Ok(bytes) => set_result(bytes),
         Err(msg) => set_error(msg),
     }
@@ -144,18 +131,17 @@ pub extern "C" fn dnam_wasm_build_dnam_container(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn dnam_wasm_update_header_in_place(
-    container_ptr: *const u8,
+    container_ptr: usize,
     container_len: usize,
-    hdr_ptr: *const u8,
+    hdr_ptr: usize,
     hdr_len: usize,
 ) -> i32 {
-    // SAFETY: Caller passes valid byte slices in WASM linear memory.
-    let container = slice_from_raw(container_ptr, container_len);
-    let hdr_str = match str_from_raw(hdr_ptr, hdr_len) {
+    let container = read_bytes(container_ptr, container_len);
+    let hdr_str = match read_str(hdr_ptr, hdr_len) {
         Ok(s) => s,
         Err(msg) => return set_error(msg),
     };
-    match update_header_in_place_core(container, hdr_str) {
+    match update_header_in_place_core(&container, &hdr_str) {
         Ok(bytes) => set_result(bytes),
         Err(msg) => set_error(msg),
     }
@@ -163,13 +149,12 @@ pub extern "C" fn dnam_wasm_update_header_in_place(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn dnam_wasm_strip_container_to_tier(
-    container_ptr: *const u8,
+    container_ptr: usize,
     container_len: usize,
     max_tier: u8,
 ) -> i32 {
-    // SAFETY: Caller passes valid byte slice in WASM linear memory.
-    let container = slice_from_raw(container_ptr, container_len);
-    match strip_container_to_tier_core(container, max_tier) {
+    let container = read_bytes(container_ptr, container_len);
+    match strip_container_to_tier_core(&container, max_tier) {
         Ok(bytes) => set_result(bytes),
         Err(msg) => set_error(msg),
     }
@@ -177,21 +162,22 @@ pub extern "C" fn dnam_wasm_strip_container_to_tier(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn dnam_wasm_parse_schema_version(
-    ver_ptr: *const u8,
+    ver_ptr: usize,
     ver_len: usize,
-    out4_ptr: *mut u32,
+    out4_ptr: usize,
 ) -> i32 {
-    if out4_ptr.is_null() {
+    if out4_ptr == 0 {
         return set_error("[DNAM-VALIDATION] null out4_ptr".to_string());
     }
-    let ver_str = match str_from_raw(ver_ptr, ver_len) {
+    let ver_str = match read_str(ver_ptr, ver_len) {
         Ok(s) => s,
         Err(msg) => return set_error(msg),
     };
-    match parse_schema_version_core(ver_str) {
+    match parse_schema_version_core(&ver_str) {
         Ok(arr) => {
-            let out = slice_from_raw_mut(out4_ptr, 4);
-            out.copy_from_slice(&arr);
+            if !write_u32_slice(out4_ptr, &arr) {
+                return set_error("[DNAM-VALIDATION] invalid out4_ptr".to_string());
+            }
             0
         }
         Err(msg) => set_error(msg),
@@ -199,40 +185,35 @@ pub extern "C" fn dnam_wasm_parse_schema_version(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn dnam_wasm_crc32c(data_ptr: *const u8, data_len: usize) -> u32 {
-    // SAFETY: Caller passes valid byte slice in WASM linear memory.
-    let data = slice_from_raw(data_ptr, data_len);
-    crc32c_compute_core(data)
+pub extern "C" fn dnam_wasm_crc32c(data_ptr: usize, data_len: usize) -> u32 {
+    let data = read_bytes(data_ptr, data_len);
+    crc32c_compute_core(&data)
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn dnam_wasm_canonicalize_jcs(
-    json_ptr: *const u8,
+    json_ptr: usize,
     json_len: usize,
     strip_mutable: u8,
     reject_floats: u8,
 ) -> i32 {
-    // SAFETY: Caller passes valid UTF-8 slice in WASM linear memory.
-    let json_str = match str_from_raw(json_ptr, json_len) {
+    let json_str = match read_str(json_ptr, json_len) {
         Ok(s) => s,
         Err(msg) => return set_error(msg),
     };
-    match canonicalize_jcs_core(json_str, strip_mutable != 0, reject_floats != 0) {
+    match canonicalize_jcs_core(&json_str, strip_mutable != 0, reject_floats != 0) {
         Ok(s) => set_result(s.into_bytes()),
         Err(msg) => set_error(msg),
     }
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn dnam_wasm_validate_and_normalize_header(
-    hdr_ptr: *const u8,
-    hdr_len: usize,
-) -> i32 {
-    let hdr_str = match str_from_raw(hdr_ptr, hdr_len) {
+pub extern "C" fn dnam_wasm_validate_and_normalize_header(hdr_ptr: usize, hdr_len: usize) -> i32 {
+    let hdr_str = match read_str(hdr_ptr, hdr_len) {
         Ok(s) => s,
         Err(msg) => return set_error(msg),
     };
-    match validate_and_normalize_header_core(hdr_str) {
+    match validate_and_normalize_header_core(&hdr_str) {
         Ok(s) => set_result(s.into_bytes()),
         Err(msg) => set_error(msg),
     }
@@ -240,23 +221,21 @@ pub extern "C" fn dnam_wasm_validate_and_normalize_header(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn dnam_wasm_build_dmu1_frame(
-    json_ptr: *const u8,
+    json_ptr: usize,
     json_len: usize,
     capacity: usize,
 ) -> i32 {
-    // SAFETY: Caller passes valid byte slice in WASM linear memory.
-    let json_bytes = slice_from_raw(json_ptr, json_len);
-    match build_dmu1_frame_core(json_bytes, capacity) {
+    let json_bytes = read_bytes(json_ptr, json_len);
+    match build_dmu1_frame_core(&json_bytes, capacity) {
         Ok(bytes) => set_result(bytes),
         Err(msg) => set_error(msg),
     }
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn dnam_wasm_parse_dmu1_frame(frame_ptr: *const u8, frame_len: usize) -> i32 {
-    // SAFETY: Caller passes valid byte slice in WASM linear memory.
-    let frame = slice_from_raw(frame_ptr, frame_len);
-    match parse_dmu1_frame_core(frame) {
+pub extern "C" fn dnam_wasm_parse_dmu1_frame(frame_ptr: usize, frame_len: usize) -> i32 {
+    let frame = read_bytes(frame_ptr, frame_len);
+    match parse_dmu1_frame_core(&frame) {
         Ok(s) => set_result(s.into_bytes()),
         Err(msg) => set_error(msg),
     }
@@ -264,12 +243,11 @@ pub extern "C" fn dnam_wasm_parse_dmu1_frame(frame_ptr: *const u8, frame_len: us
 
 #[unsafe(no_mangle)]
 pub extern "C" fn dnam_wasm_validate_v2_open_dnam_layout(
-    container_ptr: *const u8,
+    container_ptr: usize,
     container_len: usize,
 ) -> i32 {
-    // SAFETY: Caller passes valid byte slice in WASM linear memory.
-    let container = slice_from_raw(container_ptr, container_len);
-    match validate_v2_open_dnam_layout_core(container) {
+    let container = read_bytes(container_ptr, container_len);
+    match validate_v2_open_dnam_layout_core(&container) {
         Ok(s) => set_result(s.into_bytes()),
         Err(msg) => set_error(msg),
     }
@@ -277,13 +255,12 @@ pub extern "C" fn dnam_wasm_validate_v2_open_dnam_layout(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn dnam_wasm_strip_v2_open_dnam_container(
-    container_ptr: *const u8,
+    container_ptr: usize,
     container_len: usize,
     target_tier: u8,
 ) -> i32 {
-    // SAFETY: Caller passes valid byte slice in WASM linear memory.
-    let container = slice_from_raw(container_ptr, container_len);
-    match strip_v2_open_dnam_container_core(container, target_tier) {
+    let container = read_bytes(container_ptr, container_len);
+    match strip_v2_open_dnam_container_core(&container, target_tier) {
         Ok(bytes) => set_result(bytes),
         Err(msg) => set_error(msg),
     }
@@ -299,15 +276,14 @@ pub extern "C" fn dnam_wasm_build_reference_checkpoint(include_calib_stats: u8) 
 
 #[unsafe(no_mangle)]
 pub extern "C" fn dnam_wasm_verify_stem_arena4_crc32c(
-    arena_ptr: *const u8,
+    arena_ptr: usize,
     arena_len: usize,
     stem_offset: usize,
     stem_len: usize,
     expected_crc32c: u32,
 ) -> i32 {
-    // SAFETY: Caller passes valid byte slice in WASM linear memory.
-    let arena = slice_from_raw(arena_ptr, arena_len);
-    match verify_stem_arena4_crc32c_core(arena, stem_offset, stem_len, expected_crc32c) {
+    let arena = read_bytes(arena_ptr, arena_len);
+    match verify_stem_arena4_crc32c_core(&arena, stem_offset, stem_len, expected_crc32c) {
         Ok(()) => 0,
         Err(msg) => set_error(msg),
     }
@@ -315,26 +291,21 @@ pub extern "C" fn dnam_wasm_verify_stem_arena4_crc32c(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn dnam_wasm_verify_arena5_calib_stats(
-    arena_ptr: *const u8,
+    arena_ptr: usize,
     arena_len: usize,
     arena5_offset: usize,
 ) -> i32 {
-    // SAFETY: Caller passes valid byte slice in WASM linear memory.
-    let arena = slice_from_raw(arena_ptr, arena_len);
-    match verify_arena5_calib_stats_core(arena, arena5_offset) {
+    let arena = read_bytes(arena_ptr, arena_len);
+    match verify_arena5_calib_stats_core(&arena, arena5_offset) {
         Ok(len) => len as i32,
         Err(msg) => set_error(msg),
     }
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn dnam_wasm_validate_v2_dnck_checkpoint(
-    ckpt_ptr: *const u8,
-    ckpt_len: usize,
-) -> i32 {
-    // SAFETY: Caller passes valid byte slice in WASM linear memory.
-    let ckpt = slice_from_raw(ckpt_ptr, ckpt_len);
-    match validate_v2_dnck_checkpoint_core(ckpt) {
+pub extern "C" fn dnam_wasm_validate_v2_dnck_checkpoint(ckpt_ptr: usize, ckpt_len: usize) -> i32 {
+    let ckpt = read_bytes(ckpt_ptr, ckpt_len);
+    match validate_v2_dnck_checkpoint_core(&ckpt) {
         Ok((tier, ends, boundary)) => {
             let val = serde_json::json!({
                 "retainedTier": tier,
@@ -351,13 +322,9 @@ pub extern "C" fn dnam_wasm_validate_v2_dnck_checkpoint(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn dnam_wasm_export_runtime_dnam_from_ckpt(
-    ckpt_ptr: *const u8,
-    ckpt_len: usize,
-) -> i32 {
-    // SAFETY: Caller passes valid byte slice in WASM linear memory.
-    let ckpt = slice_from_raw(ckpt_ptr, ckpt_len);
-    match export_runtime_dnam_from_ckpt_core(ckpt) {
+pub extern "C" fn dnam_wasm_export_runtime_dnam_from_ckpt(ckpt_ptr: usize, ckpt_len: usize) -> i32 {
+    let ckpt = read_bytes(ckpt_ptr, ckpt_len);
+    match export_runtime_dnam_from_ckpt_core(&ckpt) {
         Ok(bytes) => set_result(bytes),
         Err(msg) => set_error(msg),
     }
@@ -370,16 +337,19 @@ pub extern "C" fn dnam_wasm_uplo_u_packed_len(n_dim: usize) -> usize {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn dnam_wasm_pack_uplo_u_f64_into(
-    dense_ptr: *const f64,
+    dense_ptr: usize,
     dense_len: usize,
     n_dim: usize,
-    out_ptr: *mut f64,
+    out_ptr: usize,
     out_len: usize,
 ) -> i32 {
-    // SAFETY: Caller passes valid non-overlapping f64 slices in WASM linear memory.
-    let dense = slice_from_raw(dense_ptr, dense_len);
-    let out = slice_from_raw_mut(out_ptr, out_len);
-    match pack_uplo_u_f64_into_core(dense, n_dim, out) {
+    let dense = read_f64_vec(dense_ptr, dense_len);
+    let Some(res) = with_f64_mut(out_ptr, out_len, |out| {
+        pack_uplo_u_f64_into_core(&dense, n_dim, out)
+    }) else {
+        return set_error("[DNAM-VALIDATION] invalid out_ptr".to_string());
+    };
+    match res {
         Ok(()) => 0,
         Err(msg) => set_error(msg),
     }
@@ -387,16 +357,19 @@ pub extern "C" fn dnam_wasm_pack_uplo_u_f64_into(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn dnam_wasm_unpack_uplo_u_f64_into(
-    packed_ptr: *const f64,
+    packed_ptr: usize,
     packed_len: usize,
     n_tier: usize,
-    out_ptr: *mut f64,
+    out_ptr: usize,
     out_len: usize,
 ) -> i32 {
-    // SAFETY: Caller passes valid non-overlapping f64 slices in WASM linear memory.
-    let packed = slice_from_raw(packed_ptr, packed_len);
-    let out = slice_from_raw_mut(out_ptr, out_len);
-    match unpack_uplo_u_f64_into_core(packed, n_tier, out) {
+    let packed = read_f64_vec(packed_ptr, packed_len);
+    let Some(res) = with_f64_mut(out_ptr, out_len, |out| {
+        unpack_uplo_u_f64_into_core(&packed, n_tier, out)
+    }) else {
+        return set_error("[DNAM-VALIDATION] invalid out_ptr".to_string());
+    };
+    match res {
         Ok(()) => 0,
         Err(msg) => set_error(msg),
     }

@@ -1305,23 +1305,32 @@ class WasmEngineHandle implements NativeEngineHandle {
     rightOut.set(f32After.subarray(roIdx, roIdx + n));
   }
 
-  async processStereoAsync(
+  processStereoAsync(
     leftIn: Float32Array,
     rightIn: Float32Array,
     blockSize?: number,
   ): Promise<readonly [Float32Array, Float32Array]> {
     this.#ensureAudioIdlePtr();
-    this.#busy = true;
-    try {
-      await Promise.resolve();
-      const leftOut = new Float32Array(leftIn.length);
-      const rightOut = new Float32Array(rightIn.length);
-      this.#busy = false;
-      this.processStereo(leftIn, rightIn, leftOut, rightOut, blockSize);
-      return [leftOut, rightOut];
-    } finally {
-      this.#busy = false;
+    if (rightIn.length !== leftIn.length) {
+      throw new DnamError(
+        "ERR_DNAM_VALIDATION",
+        `right_in length (${String(rightIn.length)}) must match left_in (${String(leftIn.length)})`,
+      );
     }
+    const leftSnapshot = leftIn.slice();
+    const rightSnapshot = rightIn.slice();
+    this.#busy = true;
+    return Promise.resolve().then(() => {
+      try {
+        const leftOut = new Float32Array(leftSnapshot.length);
+        const rightOut = new Float32Array(rightSnapshot.length);
+        this.#busy = false;
+        this.processStereo(leftSnapshot, rightSnapshot, leftOut, rightOut, blockSize);
+        return [leftOut, rightOut] as const;
+      } finally {
+        this.#busy = false;
+      }
+    });
   }
 
   telemetryInto(out56: Float64Array): void {

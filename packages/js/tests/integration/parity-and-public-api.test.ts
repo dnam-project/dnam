@@ -10,8 +10,8 @@
  * 4. Real-time FFI overhead & WASM binary size budgets (`verify[sdk.ts.perf.profiling-budgets]`).
  */
 
-import { statSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { readdirSync, readFileSync, statSync } from "node:fs";
+import { dirname, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
@@ -391,5 +391,64 @@ describe("Public API surface, 0-ULP behavioral parity, WASM denormals & performa
     const examplePath = resolve(dir, "../../examples", exampleName);
     const mod = await import(pathToFileURL(examplePath).href);
     expect(mod).toBeDefined();
+  });
+
+  it("enforces zero unsafe blocks, zero raw pointer slices, and forbid(unsafe_code) across Rust SDK bindings", () => {
+    // verify[sdk.ts.runtime.zero-unsafe]
+    const dir = dirname(fileURLToPath(import.meta.url));
+    const jsRustRoot = resolve(dir, "../../rust");
+    const pyRustRoot = resolve(dir, "../../../python/rust");
+    const engineFfiPath = resolve(dir, "../../../engine/src/ffi.rs");
+
+    function collectRsFiles(root: string): string[] {
+      const out: string[] = [];
+      for (const entry of readdirSync(root, { withFileTypes: true })) {
+        const full = resolve(root, entry.name);
+        if (entry.isDirectory()) {
+          out.push(...collectRsFiles(full));
+        } else if (entry.isFile() && entry.name.endsWith(".rs")) {
+          out.push(full);
+        }
+      }
+      return out.sort();
+    }
+
+    const engineFfiSrc = readFileSync(engineFfiPath, "utf8");
+    expect(engineFfiSrc).not.toContain("dnam_wasm_export");
+    expect(engineFfiSrc).not.toContain("dnam_napi_ctor");
+
+    const pyLibSrc = readFileSync(resolve(pyRustRoot, "lib.rs"), "utf8");
+    expect(pyLibSrc).toContain("#![forbid(unsafe_code)]");
+
+    for (const pyFile of collectRsFiles(pyRustRoot)) {
+      const src = readFileSync(pyFile, "utf8");
+      expect(src).not.toMatch(/\bunsafe\s*\{/);
+      expect(src).not.toMatch(/\bunsafe\s+(?:extern\b|fn\b|impl\b|trait\b)/);
+      expect(src).not.toContain("allow(unsafe_code)");
+      expect(src).not.toContain("from_raw_parts");
+    }
+
+    const jsLibSrc = readFileSync(resolve(jsRustRoot, "lib.rs"), "utf8");
+    expect(jsLibSrc).toContain("#![deny(unsafe_code)]");
+    expect(jsLibSrc).toMatch(/#\[forbid\(unsafe_code\)\]\s*pub mod core;/);
+    expect(jsLibSrc).toMatch(/#\[forbid\(unsafe_code\)\]\s*pub mod error;/);
+
+    const jsWasmSrc = readFileSync(resolve(jsRustRoot, "wasm.rs"), "utf8");
+    expect(jsWasmSrc).toMatch(/#\[forbid\(unsafe_code\)\]\s*pub mod abi;/);
+
+    for (const jsFile of collectRsFiles(jsRustRoot)) {
+      const rel = relative(jsRustRoot, jsFile).replaceAll("\\", "/");
+      const src = readFileSync(jsFile, "utf8");
+      expect(src, `${rel} must not contain unsafe blocks`).not.toMatch(/\bunsafe\s*\{/);
+      expect(src, `${rel} must not contain unsafe fn/impl/trait`).not.toMatch(
+        /\bunsafe\s+(?:extern\b|fn\b|impl\b|trait\b)/,
+      );
+      expect(src, `${rel} must not use raw slice::from_raw_parts`).not.toContain("from_raw_parts");
+      if (rel !== "wasm.rs") {
+        expect(src, `${rel} must not contain #[allow(unsafe_code)]`).not.toContain(
+          "allow(unsafe_code)",
+        );
+      }
+    }
   });
 });

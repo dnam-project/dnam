@@ -313,4 +313,185 @@ describe("Engine real-time processing, scopes, async & streaming", () => {
       { numRuns: 25 },
     );
   });
+
+  it.each(["napi", "wasm"] as const)(
+    "enforces processAsync input snapshot soundness under concurrent JS-thread mutation, positional out overload, and ArrayBuffer transfer on %s",
+    async (driverKind) => {
+      // verify[sdk.ts.runtime.zero-unsafe]
+      // verify[sdk.ts.engine.zero-copy-and-async]
+      const driver = driverKind === "napi" ? loadNodeDriverSync() : loadNodeWasmDriverSync();
+      await withDriver(driver, async () => {
+        using model = Model.reference({ inputs: 2, outputMode: "stereo" });
+        using engine = model.createEngine({ sampleRate: 48_000, tier: "lite" });
+
+        const n = 512;
+        const origL = new Float32Array(n);
+        const origR = new Float32Array(n);
+        for (let i = 0; i < n; i++) {
+          origL[i] = Math.sin((2 * Math.PI * i) / 64) * 0.4;
+          origR[i] = Math.cos((2 * Math.PI * i) / 64) * 0.3;
+        }
+
+        engine.reset();
+        const [refL, refR] = engine.process([origL, origR]);
+
+        // 1. Concurrent JS-thread mutation of input buffers while processAsync(input, out) is in flight
+        engine.reset();
+        const mutL = origL.slice();
+        const mutR = origR.slice();
+        const posOutL = new Float32Array(n);
+        const posOutR = new Float32Array(n);
+        const inFlight = engine.processAsync([mutL, mutR], [posOutL, posOutR]);
+        // Immediately clobber caller's input Float32Arrays on the JS main thread while worker runs
+        mutL.fill(999.0);
+        mutR.fill(-999.0);
+        const returnedOut = await inFlight;
+        expect(returnedOut[0]).toBe(posOutL);
+        expect(returnedOut[1]).toBe(posOutR);
+        expect(posOutL).toEqual(refL);
+        expect(posOutR).toEqual(refR);
+
+        // 2. Options { transfer: true } detaches separate input ArrayBuffers and matches reference
+        engine.reset();
+        const xferL = origL.slice();
+        const xferR = origR.slice();
+        const xferPromise = engine.processAsync([xferL, xferR], { transfer: true });
+        expect(xferL.buffer.detached).toBe(true);
+        expect(xferR.buffer.detached).toBe(true);
+        expect(xferL.length).toBe(0);
+        expect(xferR.length).toBe(0);
+        const [xferOutL, xferOutR] = await xferPromise;
+        expect(xferOutL).toEqual(refL);
+        expect(xferOutR).toEqual(refR);
+
+        // 3. Options { transfer: true } with shared underlying ArrayBuffer (leftIn.buffer === rightIn.buffer)
+        engine.reset();
+        const sharedBuf = new ArrayBuffer(n * 2 * 4);
+        const sharedL = new Float32Array(sharedBuf, 0, n);
+        const sharedR = new Float32Array(sharedBuf, n * 4, n);
+        sharedL.set(origL);
+        sharedR.set(origR);
+        const [sharedOutL, sharedOutR] = await engine.processAsync([sharedL, sharedR], {
+          transfer: true,
+        });
+        expect(sharedBuf.detached).toBe(true);
+        expect(sharedOutL).toEqual(refL);
+        expect(sharedOutR).toEqual(refR);
+
+        // 4. Options { transfer: false } preserves input ArrayBuffers
+        engine.reset();
+        const keepL = origL.slice();
+        const keepR = origR.slice();
+        const [keepOutL, keepOutR] = await engine.processAsync([keepL, keepR], {
+          transfer: false,
+        });
+        expect(keepL.buffer.detached).toBe(false);
+        expect(keepR.buffer.detached).toBe(false);
+        expect(keepOutL).toEqual(refL);
+        expect(keepOutR).toEqual(refR);
+
+        // 5. Validation errors for invalid positional `out` channel count or frame length
+        await expect(engine.processAsync([origL, origR], [new Float32Array(n)])).rejects.toThrow(
+          DnamError,
+        );
+        await expect(
+          engine.processAsync([origL, origR], [new Float32Array(n - 1), new Float32Array(n - 1)]),
+        ).rejects.toThrow(DnamError);
+
+        // 6. Pre-dispatch rejection (`ERR_DNAM_BUSY`) with `{ transfer: true }` must NOT detach caller buffers
+        engine.reset();
+        const busyFirst = engine.processAsync([origL, origR]);
+        const busyInL = origL.slice();
+        const busyInR = origR.slice();
+        await expect(
+          engine.processAsync([busyInL, busyInR], { transfer: true }),
+        ).rejects.toMatchObject({ code: "ERR_DNAM_BUSY" });
+        expect(busyInL.buffer.detached).toBe(false);
+        expect(busyInR.buffer.detached).toBe(false);
+        await busyFirst;
+
+        // 7. In-place / output-aliased `{ output: [inL, inR], transfer: true }` preserves output ArrayBuffers
+        engine.reset();
+        const inplaceL = origL.slice();
+        const inplaceR = origR.slice();
+        const [ipOutL, ipOutR] = await engine.processAsync([inplaceL, inplaceR], {
+          output: [inplaceL, inplaceR],
+          transfer: true,
+        });
+        expect(ipOutL).toBe(inplaceL);
+        expect(ipOutR).toBe(inplaceR);
+        expect(inplaceL.buffer.detached).toBe(false);
+        expect(inplaceR.buffer.detached).toBe(false);
+        expect(inplaceL).toEqual(refL);
+        expect(inplaceR).toEqual(refR);
+
+        // 8. Mono model positional `out` overload (`1 -> 1`) and stereo-to-mono (`2 -> 1`) parity
+        using monoModel = Model.reference({ inputs: 1, outputMode: "mono" });
+        using monoEngine = monoModel.createEngine({ sampleRate: 48_000, tier: "lite" });
+        const [monoRef] = monoEngine.process(origL);
+        monoEngine.reset();
+        const monoOut = new Float32Array(n);
+        const [monoRes] = await monoEngine.processAsync(origL, [monoOut]);
+        expect(monoRes).toBe(monoOut);
+        expect(monoOut).toEqual(monoRef);
+
+        using stereoToMonoModel = Model.reference({ inputs: 2, outputMode: "mono" });
+        using stereoToMonoEngine = stereoToMonoModel.createEngine({
+          sampleRate: 48_000,
+          tier: "lite",
+        });
+        const [s2mRef] = stereoToMonoEngine.process([origL, origR]);
+        stereoToMonoEngine.reset();
+        const [s2mAsync] = await stereoToMonoEngine.processAsync([origL, origR]);
+        expect(s2mAsync).toEqual(s2mRef);
+      });
+    },
+  );
+
+  it("property: fast-check verifies processAsync soundness under concurrent input mutation and transfer across arbitrary buffers", async () => {
+    // verify[sdk.ts.runtime.zero-unsafe]
+    using model = Model.reference({ inputs: 2, outputMode: "stereo" });
+    using engine = model.createEngine({ sampleRate: 48_000, tier: "lite" });
+
+    await fc.assert(
+      fc.asyncProperty(
+        fc.array(fc.float({ min: -1.0, max: 1.0, noNaN: true }), { minLength: 16, maxLength: 64 }),
+        fc.boolean(),
+        async (samples, useTransfer) => {
+          const n = samples.length;
+          const origL = new Float32Array(samples);
+          const origR = new Float32Array(n);
+          for (let i = 0; i < n; i++) {
+            origR[i] = -(origL[i] ?? 0) * 0.5;
+          }
+
+          engine.reset();
+          const [syncL, syncR] = engine.process([origL, origR]);
+
+          engine.reset();
+          const asyncInL = origL.slice();
+          const asyncInR = origR.slice();
+          if (useTransfer) {
+            const [outL, outR] = await engine.processAsync([asyncInL, asyncInR], {
+              transfer: true,
+            });
+            expect(asyncInL.buffer.detached).toBe(true);
+            expect(asyncInR.buffer.detached).toBe(true);
+            expect(outL).toEqual(syncL);
+            expect(outR).toEqual(syncR);
+          } else {
+            const outL = new Float32Array(n);
+            const outR = new Float32Array(n);
+            const p = engine.processAsync([asyncInL, asyncInR], [outL, outR]);
+            asyncInL.fill(42.0);
+            asyncInR.fill(-42.0);
+            await p;
+            expect(outL).toEqual(syncL);
+            expect(outR).toEqual(syncR);
+          }
+        },
+      ),
+      { numRuns: 20 },
+    );
+  });
 });

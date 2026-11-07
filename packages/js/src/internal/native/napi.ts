@@ -722,27 +722,35 @@ class NapiEngineHandle implements NativeEngineHandle {
     callNapi(() => this.#ensureAudioIdle().renderOfflineBounce(leftIn, rightIn, leftOut, rightOut));
   }
 
-  async processStereoAsync(
+  processStereoAsync(
     leftIn: Float32Array,
     rightIn: Float32Array,
     blockSize?: number,
   ): Promise<readonly [Float32Array, Float32Array]> {
     const raw = this.#ensureAudioIdle();
     this.#busy = true;
+    let task: Promise<Float32Array[]>;
     try {
-      const task = raw.processStereoAsync(leftIn, rightIn, blockSize);
-      const out = await task;
-      const l = out[0];
-      const r = out[1];
-      if (!l || !r) {
-        throw new DnamError("ERR_DNAM_VALIDATION", "Invalid output from processStereoAsync");
-      }
-      return [l, r];
+      task = raw.processStereoAsync(leftIn, rightIn, blockSize);
     } catch (err) {
-      throw fromNativeError(err);
-    } finally {
       this.#busy = false;
+      throw fromNativeError(err);
     }
+    return task.then(
+      (out) => {
+        this.#busy = false;
+        const l = out[0];
+        const r = out[1];
+        if (!l || !r) {
+          throw new DnamError("ERR_DNAM_VALIDATION", "Invalid output from processStereoAsync");
+        }
+        return [l, r] as const;
+      },
+      (err: unknown) => {
+        this.#busy = false;
+        throw fromNativeError(err);
+      },
+    );
   }
 
   telemetryInto(out56: Float64Array): void {

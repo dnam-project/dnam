@@ -15,7 +15,7 @@ use crate::core::operators::{
     op_t_coercive_step_core, op_t_tank_slice_core, poly_adaa_algebraic_core, poly_adaa_slice_core,
     poly_adaa_step_core, unit_rotor_core, unit_rotor_slice_core,
 };
-use crate::napi::{f64_slice_mut, napi_err};
+use crate::napi::{MutF64Slice, napi_err};
 
 #[napi]
 pub fn catmull_rom_hermite_native(s_m1: f64, s_0: f64, s_1: f64, s_2: f64, mu: f64) -> f64 {
@@ -29,10 +29,9 @@ pub fn catmull_rom_hermite_slice_native(
     s_1: Float64Array,
     s_2: Float64Array,
     mu: Float64Array,
-    mut out: Float64Array,
+    out: MutF64Slice<'_>,
 ) -> Result<()> {
-    let o = f64_slice_mut(&mut out);
-    catmull_rom_hermite_slice_core(&s_m1, &s_0, &s_1, &s_2, &mu, o).map_err(napi_err)
+    catmull_rom_hermite_slice_core(&s_m1, &s_0, &s_1, &s_2, &mu, out).map_err(napi_err)
 }
 
 #[napi]
@@ -52,14 +51,13 @@ pub fn op_t_coercive_step_native(
 #[napi]
 pub fn op_t_tank_slice_native(
     inp: Float64Array,
-    mut out: Float64Array,
+    out: MutF64Slice<'_>,
     g_lin: f64,
     sigma_knee: f64,
     v_ceil: f64,
     r_dc: f64,
 ) -> Result<()> {
-    let o = f64_slice_mut(&mut out);
-    op_t_tank_slice_core(&inp, o, g_lin, sigma_knee, v_ceil, r_dc).map_err(napi_err)
+    op_t_tank_slice_core(&inp, out, g_lin, sigma_knee, v_ceil, r_dc).map_err(napi_err)
 }
 
 #[napi]
@@ -97,7 +95,7 @@ pub fn op_m_modal_step_native(
 #[allow(clippy::too_many_arguments)]
 pub fn op_m_modal_slice_native(
     inp: Float64Array,
-    mut out: Float64Array,
+    out: MutF64Slice<'_>,
     r_low: f64,
     dr_span: f64,
     w_sel: f64,
@@ -110,10 +108,9 @@ pub fn op_m_modal_slice_native(
     z_im: f64,
     reset: bool,
 ) -> Result<Float64Array> {
-    let o = f64_slice_mut(&mut out);
     let state = op_m_modal_slice_core(
         &inp,
-        o,
+        out,
         r_low,
         dr_span,
         w_sel,
@@ -137,9 +134,8 @@ pub fn unit_rotor_native(phi: f64) -> Float64Array {
 }
 
 #[napi]
-pub fn unit_rotor_slice_native(phi: Float64Array, mut out: Float64Array) -> Result<()> {
-    let o = f64_slice_mut(&mut out);
-    unit_rotor_slice_core(&phi, o).map_err(napi_err)
+pub fn unit_rotor_slice_native(phi: Float64Array, out: MutF64Slice<'_>) -> Result<()> {
+    unit_rotor_slice_core(&phi, out).map_err(napi_err)
 }
 
 #[napi]
@@ -168,7 +164,7 @@ pub fn poly_adaa_step_native(
 #[allow(clippy::too_many_arguments)]
 pub fn poly_adaa_slice_native(
     inp: Float64Array,
-    mut out: Float64Array,
+    out: MutF64Slice<'_>,
     b_conv: f64,
     alpha: f64,
     beta: f64,
@@ -179,9 +175,8 @@ pub fn poly_adaa_slice_native(
     m_dc: f64,
     reset: bool,
 ) -> Result<Float64Array> {
-    let o = f64_slice_mut(&mut out);
     let state = poly_adaa_slice_core(
-        &inp, o, b_conv, alpha, beta, delta, r_ac, u_prev, a_prev, m_dc, reset,
+        &inp, out, b_conv, alpha, beta, delta, r_ac, u_prev, a_prev, m_dc, reset,
     )
     .map_err(napi_err)?;
     Ok(Float64Array::new(state.to_vec()))
@@ -200,12 +195,11 @@ pub fn eval_lobatto_basis_native(
 #[napi]
 pub fn eval_lobatto_basis_slice_native(
     u: Float64Array,
-    mut out: Float64Array,
+    out: MutF64Slice<'_>,
     anchors: Float64Array,
     degree: u32,
 ) -> Result<()> {
-    let o = f64_slice_mut(&mut out);
-    eval_lobatto_basis_slice_core(&u, o, &anchors, degree as usize).map_err(napi_err)
+    eval_lobatto_basis_slice_core(&u, out, &anchors, degree as usize).map_err(napi_err)
 }
 
 #[napi]
@@ -223,15 +217,14 @@ pub fn eval_rank4_fm_slice_native(
     n_frames: u32,
     d_dim: u32,
     v_factors_flat: Float64Array,
-    mut out: Float64Array,
+    out: MutF64Slice<'_>,
 ) -> Result<()> {
-    let o = f64_slice_mut(&mut out);
     eval_rank4_fm_slice_core(
         &features_flat,
         n_frames as usize,
         d_dim as usize,
         &v_factors_flat,
-        o,
+        out,
     )
     .map_err(napi_err)
 }
@@ -243,9 +236,8 @@ pub fn eval_chebyshev_lfo_native(cos_phi: f64) -> Float64Array {
 }
 
 #[napi]
-pub fn eval_chebyshev_lfo_slice_native(cos_phi: Float64Array, mut out: Float64Array) -> Result<()> {
-    let o = f64_slice_mut(&mut out);
-    eval_chebyshev_lfo_slice_core(&cos_phi, o).map_err(napi_err)
+pub fn eval_chebyshev_lfo_slice_native(cos_phi: Float64Array, out: MutF64Slice<'_>) -> Result<()> {
+    eval_chebyshev_lfo_slice_core(&cos_phi, out).map_err(napi_err)
 }
 
 #[napi]
@@ -256,11 +248,10 @@ pub fn eval_trust_region_softclip_native(z: f64, mh: f64) -> f64 {
 #[napi]
 pub fn eval_trust_region_softclip_slice_native(
     z: Float64Array,
-    mut out: Float64Array,
+    out: MutF64Slice<'_>,
     mh: f64,
 ) -> Result<()> {
-    let o = f64_slice_mut(&mut out);
-    eval_trust_region_softclip_slice_core(&z, o, mh).map_err(napi_err)
+    eval_trust_region_softclip_slice_core(&z, out, mh).map_err(napi_err)
 }
 
 #[napi]
@@ -270,9 +261,8 @@ pub fn cubic_lagrange_weights_native(mu: f64) -> Float64Array {
 }
 
 #[napi]
-pub fn cubic_lagrange_weights_slice_native(mu: Float64Array, mut out: Float64Array) -> Result<()> {
-    let o = f64_slice_mut(&mut out);
-    cubic_lagrange_weights_slice_core(&mu, o).map_err(napi_err)
+pub fn cubic_lagrange_weights_slice_native(mu: Float64Array, out: MutF64Slice<'_>) -> Result<()> {
+    cubic_lagrange_weights_slice_core(&mu, out).map_err(napi_err)
 }
 
 #[napi]
@@ -288,12 +278,11 @@ pub fn givens_householder_8ch_native(
 #[napi]
 pub fn givens_householder_8ch_slice_native(
     x_flat: Float64Array,
-    mut out: Float64Array,
+    out: MutF64Slice<'_>,
     cos_psi: f64,
     sin_psi: f64,
 ) -> Result<()> {
-    let o = f64_slice_mut(&mut out);
-    givens_householder_8ch_slice_core(&x_flat, o, cos_psi, sin_psi).map_err(napi_err)
+    givens_householder_8ch_slice_core(&x_flat, out, cos_psi, sin_psi).map_err(napi_err)
 }
 
 #[napi]
@@ -312,13 +301,12 @@ pub fn givens_householder_16ch_native(
 #[napi]
 pub fn givens_householder_16ch_slice_native(
     x_flat: Float64Array,
-    mut out: Float64Array,
+    out: MutF64Slice<'_>,
     cos_psi: f64,
     sin_psi: f64,
     cross_cos: Float64Array,
     cross_sin: Float64Array,
 ) -> Result<()> {
-    let o = f64_slice_mut(&mut out);
-    givens_householder_16ch_slice_core(&x_flat, o, cos_psi, sin_psi, &cross_cos, &cross_sin)
+    givens_householder_16ch_slice_core(&x_flat, out, cos_psi, sin_psi, &cross_cos, &cross_sin)
         .map_err(napi_err)
 }

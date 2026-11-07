@@ -57,12 +57,36 @@ export interface ProcessOptions {
 }
 
 /**
- * Options for `engine.processAsync(input, options)`.
+ * Options for `engine.processAsync(input, options)` (`ref[sdk.ts.engine.zero-copy-and-async]`,
+ * `ref[sdk.ts.runtime.zero-unsafe]`).
  */
 export interface ProcessAsyncOptions {
   readonly output?: Float32Array[];
   readonly blockSize?: number;
   readonly signal?: AbortSignal;
+  readonly transfer?: boolean;
+}
+
+function detachInputBuffers(
+  channels: readonly Float32Array[],
+  out: readonly Float32Array[] | undefined,
+): void {
+  const seen = new Set<ArrayBufferLike>();
+  if (out !== undefined) {
+    for (const outCh of out) {
+      seen.add(outCh.buffer);
+    }
+  }
+  for (const ch of channels) {
+    const buf = ch.buffer;
+    if (seen.has(buf)) {
+      continue;
+    }
+    seen.add(buf);
+    if (buf instanceof ArrayBuffer && !buf.detached && typeof buf.transfer === "function") {
+      buf.transfer();
+    }
+  }
 }
 
 /**
@@ -637,28 +661,65 @@ export class Engine<TParams extends ParameterValueMap = Record<string, number | 
 
   /**
    * Processes an `AudioInput` asynchronously on the Node.js libuv worker pool (or microtask in
-   * browsers), honoring `options.signal` (`AbortSignal`) and rejecting concurrent engine access
-   * with `DnamError` (`"ERR_DNAM_BUSY"`, `ref[sdk.ts.engine.zero-copy-and-async]`).
+   * browsers), honoring `options.signal` (`AbortSignal`), optional caller-supplied `out` buffers,
+   * and `{ transfer: true }` input `ArrayBuffer` ownership transfer, while rejecting concurrent
+   * audio processing calls with `DnamError` (`"ERR_DNAM_BUSY"`,
+   * `ref[sdk.ts.engine.zero-copy-and-async]`, `ref[sdk.ts.runtime.zero-unsafe]`).
    */
-  async processAsync(input: AudioInput, options?: ProcessAsyncOptions): Promise<Float32Array[]> {
+  processAsync(input: AudioInput, out?: Float32Array[]): Promise<Float32Array[]>;
+  processAsync(input: AudioInput, options?: ProcessAsyncOptions): Promise<Float32Array[]>;
+  async processAsync(
+    input: AudioInput,
+    optionsOrOut?: ProcessAsyncOptions | Float32Array[],
+  ): Promise<Float32Array[]> {
     const h = this.#ensureHandle();
+    const isPositionalOut = Array.isArray(optionsOrOut);
+    const options = isPositionalOut ? undefined : optionsOrOut;
+    const out = isPositionalOut ? optionsOrOut : options?.output;
     if (options?.signal?.aborted) {
       throw options.signal.reason ?? new DOMException("The operation was aborted.", "AbortError");
     }
     const { channels, frames } = coerceAudioChannels(input);
+    const outChannelsCount = this.outputChannels;
+    if (out !== undefined) {
+      if (out.length !== outChannelsCount) {
+        throw new DnamError(
+          "ERR_DNAM_VALIDATION",
+          `output must have ${String(outChannelsCount)} channel(s), got ${String(out.length)}`,
+        );
+      }
+      for (let c = 0; c < outChannelsCount; c++) {
+        if (out[c]?.length !== frames) {
+          throw new DnamError(
+            "ERR_DNAM_VALIDATION",
+            `output[${String(c)}] length (${String(out[c]?.length)}) must match input frames (${String(frames)})`,
+          );
+        }
+      }
+    }
     const leftIn = channels[0] as Float32Array;
     const rightIn = (channels[1] ?? channels[0]) as Float32Array;
-    const [leftOut, rightOut] = await h.processStereoAsync(leftIn, rightIn, options?.blockSize);
-
-    if (this.outputChannels === 1) {
-      const monoOut = options?.output?.[0] ?? new Float32Array(frames);
-      monoOut.set(leftOut);
-      return [monoOut];
+    const pending = h.processStereoAsync(leftIn, rightIn, options?.blockSize);
+    if (options?.transfer) {
+      detachInputBuffers(channels, out);
     }
-    if (options?.output && options.output.length === 2) {
-      options.output[0]?.set(leftOut);
-      options.output[1]?.set(rightOut);
-      return options.output;
+    const [leftOut, rightOut] = await pending;
+
+    if (outChannelsCount === 1) {
+      const monoOut = out !== undefined ? (out[0] as Float32Array) : leftOut;
+      if (channels.length === 2) {
+        for (let i = 0; i < frames; i++) {
+          monoOut[i] = 0.5 * ((leftOut[i] ?? 0) + (rightOut[i] ?? 0));
+        }
+      } else if (out !== undefined) {
+        monoOut.set(leftOut);
+      }
+      return out !== undefined ? out : [monoOut];
+    }
+    if (out !== undefined) {
+      out[0]?.set(leftOut);
+      out[1]?.set(rightOut);
+      return out;
     }
     return [leftOut, rightOut];
   }

@@ -14,7 +14,7 @@ use crate::core::container::{
     validate_v2_dnck_checkpoint_core, validate_v2_open_dnam_layout_core,
     verify_arena5_calib_stats_core, verify_stem_arena4_crc32c_core,
 };
-use crate::napi::{f64_slice_mut, napi_err};
+use crate::napi::{MutF64Slice, napi_err};
 
 #[napi(object)]
 pub struct NativeValidatedContainer {
@@ -286,18 +286,16 @@ pub fn uplo_u_packed_len_native(n_dim: u32) -> u32 {
 pub fn pack_uplo_u_f64_into_native(
     dense_flat: Float64Array,
     n_dim: u32,
-    mut out_packed: Float64Array,
+    out_packed: MutF64Slice<'_>,
 ) -> Result<()> {
-    let out = f64_slice_mut(&mut out_packed);
-    pack_uplo_u_f64_into_core(&dense_flat, n_dim as usize, out).map_err(napi_err)
+    pack_uplo_u_f64_into_core(&dense_flat, n_dim as usize, out_packed).map_err(napi_err)
 }
 
 #[napi]
 pub fn unpack_uplo_u_f64_into_native(
     packed_u: Float64Array,
     n_tier: u32,
-    mut out_dense: Float64Array,
+    out_dense: MutF64Slice<'_>,
 ) -> Result<()> {
-    let out = f64_slice_mut(&mut out_dense);
-    unpack_uplo_u_f64_into_core(&packed_u, n_tier as usize, out).map_err(napi_err)
+    unpack_uplo_u_f64_into_core(&packed_u, n_tier as usize, out_dense).map_err(napi_err)
 }
