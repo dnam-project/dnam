@@ -100,7 +100,7 @@ DNAM is designed to run anywhere audio lives—from bare-metal embedded DSP boar
 
 | Component | Package | What It Provides | Documentation |
 | :--- | :--- | :--- | :--- |
-| **Embedded & Native DSP Engine** | `dnam-engine` (Rust / C ABI) | Zero-allocation `#![no_std]` real-time engine with `ARM64 NEON`, `ARM SME`, `x86_64 AVX2`, and `WASM SIMD128` backends (`~142–179 ns` per stereo frame at `48 kHz`) for hardware pedalboards (such as Rockchip RK3582 / Darkglass Anagram) and native C/C++/Rust hosts. | [`packages/engine/README.md`](packages/engine/README.md) |
+| **Embedded & Native DSP Engine** | `dnam-engine` (Rust / C ABI) | Zero-allocation `#![no_std]` real-time engine with `ARM64 NEON`, `ARM SME`, `x86_64 AVX2`, and `WASM SIMD128` backends (`~143–179 ns` per stereo frame at `48 kHz`) for hardware pedalboards (such as Rockchip RK3582 / Darkglass Anagram) and native C/C++/Rust hosts. | [`packages/engine/README.md`](packages/engine/README.md) |
 | **WebAudio & Node.js SDK** | `@dnam-project/dnam` | TypeScript SDK providing a real-time browser `AudioWorklet` (`WASM SIMD128`) and native Node.js `N-API` runtime for web tone previews, cloud rendering, and Electron/Tauri apps. | [`packages/js/README.md`](packages/js/README.md) |
 | **Python SDK** | `dnam` | Python 3.15 SDK wrapping the Rust engine for zero-copy NumPy audio rendering, `.dnam` / `.dnam-ckpt` inspection, control-space clamping, and creator provenance signing. | [`packages/python/README.md`](packages/python/README.md) |
 | **PyTorch Trainer** | `dnam-trainer` | Two-Sweep Block-Coordinate Cholesky training pipeline, incremental `.dnam-ckpt` stem expansion, and automatic 3-Phase control-space safety auditing. | [`packages/trainer/README.md`](packages/trainer/README.md) |

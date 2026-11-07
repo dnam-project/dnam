@@ -298,7 +298,7 @@ Reference embedded instance budgets on `1×` ARM Cortex-A76 core (`2.4 GHz`, `20
 
 **Rockchip RK3582 (`Cortex-A76 @ 2.4 GHz`) & LV2 Plugin Overhead Estimation Model:**
 
-To translate standalone desktop `ARM64 NEON` microbenchmark frame times $t_{\text{bench}}(t)$ (`142.54 ns` `Lite`, `160.80 ns` `Full`, `169.62 ns` `Pro`, `179.41 ns` `Ultra` at $f_s = 48\text{ kHz}$, $T_{\text{sample}} = 1 / f_s \approx 20,833.33\text{ ns}$) to practical embedded multi-plugin chains on the **Rockchip RK3582** (`2× Cortex-A76 @ 2.4 GHz` with `64 KB` L1D / `512 KB` L2 per core + `4× Cortex-A55 @ 2.0 GHz`, `3 MB` shared L3), the per-instance frame latency $t_{\text{A76+LV2}}(t, B)$, single-core utilization $u_{\text{core}}(t, B)$, and safe simultaneous instance count $N_{\text{safe}}(t, B)$ for block size $B \in [64, 128]$ are modeled as:
+To translate standalone desktop `ARM64 NEON` microbenchmark frame times $t_{\text{bench}}(t)$ (`143.23 ns` `Lite`, `160.45 ns` `Full`, `172.21 ns` `Pro`, `179.34 ns` `Ultra` at $f_s = 48\text{ kHz}$, $T_{\text{sample}} = 1 / f_s \approx 20,833.33\text{ ns}$) to practical embedded multi-plugin chains on the **Rockchip RK3582** (`2× Cortex-A76 @ 2.4 GHz` with `64 KB` L1D / `512 KB` L2 per core + `4× Cortex-A55 @ 2.0 GHz`, `3 MB` shared L3), the per-instance frame latency $t_{\text{A76+LV2}}(t, B)$, single-core utilization $u_{\text{core}}(t, B)$, and safe simultaneous instance count $N_{\text{safe}}(t, B)$ for block size $B \in [64, 128]$ are modeled as:
 
 $$t_{\text{A76+LV2}}(t, B) = \kappa_{\text{cache}} \left(\alpha_{\text{uarch}}(t) \cdot t_{\text{bench}}(t) + \frac{T_{\text{LV2-block}}}{B}\right), \qquad u_{\text{core}}(t, B) = \frac{t_{\text{A76+LV2}}(t, B)}{T_{\text{sample}}}, \qquad N_{\text{safe}}(t, B) = \left\lfloor \frac{\eta_{\text{RT}}}{u_{\text{core}}(t, B)} \right\rfloor$$
 
@@ -309,10 +309,10 @@ $$t_{\text{A76+LV2}}(t, B) = \kappa_{\text{cache}} \left(\alpha_{\text{uarch}}(t
 
 | Tier Profile | Desktop NEON (`t_bench`) | Est. RK3582 `1× A76` + LV2 (`t_A76+LV2`) | Est. `1× Cortex-A76` CPU / Instance | Est. Safe Instances (`1× A76` @ 80% RT Cap) | Est. Safe Instances (`2× A76` Audio Cores) | Normative Floor (`REQ-6.1` on `1× A76`) |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: |
-| **`Lite` (`64-D, C=4, K=4, M=4`)** | `142.54 ns` (`0.68%`) | `~520–730 ns` | **`2.5% – 3.5%`** | **`22 – 30×`** | `44 – 60×` | **`≥ 10×`** (`≤ 2,083 ns`) |
-| **`Full` (`128-D, C=8, K=8, M=8`)** | `160.80 ns` (`0.77%`) | `~830–1,150 ns` | **`4.0% – 5.5%`** | **`14 – 20×`** | `28 – 40×` | **`≥ 6×`** (`≤ 3,472 ns`) |
-| **`Pro` (`192-D, C=12, K=16, M=8`)** | `169.62 ns` (`0.81%`) | `~1,350–1,875 ns` | **`6.5% – 9.0%`** | **`8 – 12×`** | `16 – 24×` | **`≥ 2×`** (`≤ 10,416 ns`) |
-| **`Ultra` (`256-D, C=16, K=32, M=16`)** | `179.41 ns` (`0.86%`) | `~2,080–2,900 ns` | **`10.0% – 14.0%`** | **`5 – 8×`** | `10 – 16×` | Workstation / `4×` Bounce |
+| **`Lite` (`64-D, C=4, K=4, M=4`)** | `143.23 ns` (`0.69%`) | `~520–730 ns` | **`2.5% – 3.5%`** | **`22 – 30×`** | `44 – 60×` | **`≥ 10×`** (`≤ 2,083 ns`) |
+| **`Full` (`128-D, C=8, K=8, M=8`)** | `160.45 ns` (`0.77%`) | `~830–1,150 ns` | **`4.0% – 5.5%`** | **`14 – 20×`** | `28 – 40×` | **`≥ 6×`** (`≤ 3,472 ns`) |
+| **`Pro` (`192-D, C=12, K=16, M=8`)** | `172.21 ns` (`0.83%`) | `~1,350–1,875 ns` | **`6.5% – 9.0%`** | **`8 – 12×`** | `16 – 24×` | **`≥ 2×`** (`≤ 10,416 ns`) |
+| **`Ultra` (`256-D, C=16, K=32, M=16`)** | `179.34 ns` (`0.86%`) | `~2,080–2,900 ns` | **`10.0% – 14.0%`** | **`5 – 8×`** | `10 – 16×` | Workstation / `4×` Bounce |
 
 **Prior-Art Equivalent-Quality LV2 Instance Comparison on `1× RK3582 Cortex-A76` (`2.4 GHz`, `48 kHz` + LV2 @ `80%` RT Cap):**
 

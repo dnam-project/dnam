@@ -61,16 +61,16 @@ Measured via `moon run python:bench` ([`tests/benchmarks/test_benchmarks.py`](te
 
 | Operation & Tier Profile | Backend | Median Latency | Throughput (`ops/s`) | FFI / Native Overhead |
 | :--- | :--- | ---: | ---: | ---: |
-| **`Engine.process_into` (`Lite`, `128` stereo frames)** | `ARM64 NEON` | **`18.17 µs`** | **`54.3 Kops/s`** | **`1.026x` (`558 ns`)** |
-| **`Engine.process_into` (`Full`, `128` stereo frames)** | `ARM64 NEON` | **`20.75 µs`** | **`45.1 Kops/s`** | **`1.026x` (`<= 1.10x` budget)** |
-| **`Engine.process_into` (`Pro`, `128` stereo frames)** | `ARM64 NEON` | **`21.96 µs`** | **`44.7 Kops/s`** | **`1.026x`** |
-| **`Engine.process_into` (`Ultra`, `128` stereo frames)** | `ARM64 NEON` | **`22.92 µs`** | **`43.0 Kops/s`** | **`1.026x`** |
-| **`Engine.process_planar` (`Full`, `1.0 s` / `48,000` frames)** | `ARM64 NEON` | **`7.57 ms`** | **`132.2x` RT** | **`1.054x`** |
-| **`Engine.controls['gain']` (`get` / `set` slew / `.clamped`)** | `PyO3` | **`174 ns` / `280 ns` / `43 ns`** | **`5.76 M` / `3.58 M` / `23.4 M`** | `0` dict/list allocs |
-| **`ControlSpace.clamp({'gain': 7.5, 'boost': 'on'})`** | `PyO3` | **`3.46 µs`** | **`284.0 Kops/s`** | Pre-compiled `ControlClampDescriptor` |
-| **`Engine.telemetry` Snapshot Readout** | `PyO3` | **`1.54 µs`** | **`640.5 Kops/s`** | Interned `PyDict` + zero-copy `__dict__` |
-| **`Model.from_bytes` (`68 KB`) / `Model.with_header` (`4 KB`)** | `PyO3` | **`44.8 µs` / `42.0 µs`** | **`22.3 K` / `23.8 Kops/s`** | Lazy header parse & fast in-place CRC |
-| **`GramMatrix` `256 x 256` `uplo='U'` Pack + Unpack** | `PyO3` | **`62.50 µs`** | **`15.8 Kops/s`** | Zero-copy `into` slices |
+| **`Engine.process_into` (`Lite`, `128` stereo frames)** | `ARM64 NEON` | **`18.71 µs`** | **`52.2 Kops/s`** | **`1.026x` (`550 ns`)** |
+| **`Engine.process_into` (`Full`, `128` stereo frames)** | `ARM64 NEON` | **`21.00 µs`** | **`46.5 Kops/s`** | **`1.026x` (`<= 1.10x` budget)** |
+| **`Engine.process_into` (`Pro`, `128` stereo frames)** | `ARM64 NEON` | **`22.38 µs`** | **`43.4 Kops/s`** | **`1.026x`** |
+| **`Engine.process_into` (`Ultra`, `128` stereo frames)** | `ARM64 NEON` | **`23.33 µs`** | **`38.4 Kops/s`** | **`1.026x`** |
+| **`Engine.process_planar` (`Full`, `1.0 s` / `48,000` frames)** | `ARM64 NEON` | **`7.91 ms`** | **`126.4x` RT** | **`1.026x`** |
+| **`Engine.controls['gain']` (`get` / `set` slew / `.clamped`)** | `PyO3` | **`246 ns` / `896 ns` / `117 ns`** | **`4.07 M` / `1.12 M` / `8.55 M`** | Lock-free SPSC ring + `AcceptedStateShadow` |
+| **`ControlSpace.clamp({'gain': 7.5, 'boost': 'on'})`** | `PyO3` | **`3.79 µs`** | **`253.0 Kops/s`** | Pre-compiled `ControlClampDescriptor` |
+| **`Engine.telemetry` Snapshot Readout** | `PyO3` | **`1.63 µs`** | **`592.4 Kops/s`** | Wait-free `TelemetryCell` seqlock |
+| **`Model.from_bytes` (`68 KB`) / `Model.with_header` (`4 KB`)** | `PyO3` | **`46.3 µs` / `51.6 µs`** | **`21.6 K` / `19.4 Kops/s`** | Lazy header parse & fast in-place CRC |
+| **`GramMatrix` `256 x 256` `uplo='U'` Pack + Unpack** | `PyO3` | **`63.00 µs`** | **`15.1 Kops/s`** | Zero-copy `into` slices |
 
 ---
 

@@ -28,7 +28,7 @@ const BLOCK_DURATION_US = (128 / 48_000) * 1_000_000; // 2666.67 us
 function measureBlockLatency(sdk, tier, iterations = 2_000) {
   using model = sdk.Model.from(refBytes);
   using engine = model.createEngine({ tier, sampleRate: 48_000 });
-  for (let i = 0; i < 256; i++) {
+  for (let i = 0; i < 2_000; i++) {
     engine.process([inL, inR], { output: [outL, outR] });
   }
   const samplesUs = new Float64Array(iterations);

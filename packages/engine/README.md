@@ -47,17 +47,17 @@ Block-processing APIs establish and restore the audio floating-point environment
 
 ## Measured Real-Time & WCET Benchmark Summary ($48\text{ kHz}$ Stereo, `128`-Sample Blocks)
 
-Measured via `cargo bench -p dnam-engine --bench realtime_wcet` (`2,666.67 µs` per `128`-sample block budget at $48\text{ kHz}$, `33.65 µs` `#![no_std]` container load + `CRC32C` verification; see the [hardware budget requirements](../../docs/specs/architecture/tora_architecture.md#22-hardware--dsp-benchmark-summary)):
+Measured via `cargo bench -p dnam-engine --bench realtime_wcet` (`2,666.67 µs` per `128`-sample block budget at $48\text{ kHz}$, `33.83 µs` `#![no_std]` container load + `CRC32C` verification; see the [hardware budget requirements](../../docs/specs/architecture/tora_architecture.md#22-hardware--dsp-benchmark-summary)):
 
 | Tier & Subsystem Profile | Backend | Latency / Frame | `×` Real-Time | Single-Core CPU | Modulated `P50` Block | Modulated `P99.9` Block | `Max` / `2,666.67 µs` Budget |
 | :--- | :--- | ---: | ---: | ---: | ---: | ---: | ---: |
-| **`Lite` (`C = 4`, `64-D` Bus)** | `ARM64 NEON` | **`142.54 ns`** | **`146.2x`** | **`0.68%`** | `20.75 µs` | `55.96 µs` | **`2.44%`** |
-| **`Full` (`C = 8`, `128-D` Bus)** | `ARM64 NEON` | **`160.80 ns`** | **`129.6x`** | **`0.77%`** | `23.42 µs` | `61.00 µs` | **`2.96%`** |
-| **`Pro` (`C = 12`, `192-D` Bus)** | `ARM64 NEON` | **`169.62 ns`** | **`122.8x`** | **`0.81%`** | `25.21 µs` | `164.08 µs` | **`7.27%`** |
-| **`Ultra` (`C = 16`, `256-D` Bus)** | `ARM64 NEON` | **`179.41 ns`** | **`116.1x`** | **`0.86%`** | `27.58 µs` | `65.33 µs` | **`2.51%`** |
-| **`Ultra` (`C = 16`, `4×` Offline Bounce)** | `ARM64 NEON` | **`740.26 ns`** | **`28.1x`** | **`3.55%`** | — | — | — |
-| **`Full` (`C = 8`, ARM SME)** | `ARM SME` | **`162.06 ns`** | **`128.6x`** | **`0.78%`** | — | — | — |
-| **`Full` (`C = 8`, Scalar Baseline)** | `Scalar` | **`192.12 ns`** | **`108.4x`** | **`0.92%`** | — | — | — |
+| **`Lite` (`C = 4`, `64-D` Bus)** | `ARM64 NEON` | **`143.23 ns`** | **`145.5x`** | **`0.69%`** | `20.75 µs` | `58.29 µs` | **`2.25%`** |
+| **`Full` (`C = 8`, `128-D` Bus)** | `ARM64 NEON` | **`160.45 ns`** | **`129.8x`** | **`0.77%`** | `23.50 µs` | `52.21 µs` | **`2.06%`** |
+| **`Pro` (`C = 12`, `192-D` Bus)** | `ARM64 NEON` | **`172.21 ns`** | **`121.0x`** | **`0.83%`** | `25.12 µs` | `54.62 µs` | **`2.10%`** |
+| **`Ultra` (`C = 16`, `256-D` Bus)** | `ARM64 NEON` | **`179.34 ns`** | **`116.2x`** | **`0.86%`** | `27.62 µs` | `65.75 µs` | **`2.77%`** |
+| **`Ultra` (`C = 16`, `4×` Offline Bounce)** | `ARM64 NEON` | **`734.27 ns`** | **`28.4x`** | **`3.52%`** | — | — | — |
+| **`Full` (`C = 8`, ARM SME)** | `ARM SME` | **`161.98 ns`** | **`128.6x`** | **`0.78%`** | — | — | — |
+| **`Full` (`C = 8`, Scalar Baseline)** | `Scalar` | **`189.23 ns`** | **`110.1x`** | **`0.91%`** | — | — | — |
 
 ---
 
