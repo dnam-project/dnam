@@ -19,7 +19,7 @@ requirements:
 
 # ADR-0012: Idiomatic Python SDK Architecture, Domain-Free Naming, Thin Native Shim & Schema Parity
 
-This record documents the architectural and ergonomic design decisions for **`dnam`** (`packages/python/`), the idiomatic Python 3.14 SDK and `PyO3` (`abi3-py314`) + `rust-numpy` extension wrapping `packages/engine/`, specified normatively in [`../specs/sdks/python_sdk.md`](../specs/sdks/python_sdk.md).
+This record documents the architectural and ergonomic design decisions for **`dnam`** (`packages/python/`), the idiomatic Python SDK and `PyO3` + `rust-numpy` extension wrapping `packages/engine/`, specified normatively in [`../specs/sdks/python_sdk.md`](../specs/sdks/python_sdk.md) (and extended to Python 3.15 `3.15t` free-threading and PEP 803 `cp315-abi3.abi3t` dual-ABI wheels in [`ADR-0014`](0014-python-3-15-free-threading-and-stable-abi-abi3t.md)).
 
 ---
 

@@ -27,7 +27,7 @@ const WORKSPACE_GITIGNORE: &str = "\
 *.dnam-ckpt
 models/*/stems/input.wav
 models/*/renders/
-models/*/reports/*.parquet
+models/*/reports/*.jsonl
 models/*/reports/*.html
 models/*/.dnam-cache/
 .dnam-cache/

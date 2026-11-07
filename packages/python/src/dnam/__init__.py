@@ -1,5 +1,5 @@
-"""`dnam` — Idiomatic Python 3.14 SDK & Zero-Copy NumPy SIMD Engine for Dynamic Neural Audio
-Modeler (`ref[sdk.python.layout.package-namespace]`).
+"""`dnam` — Idiomatic Python 3.15 SDK & Zero-Copy NumPy SIMD Engine for Dynamic Neural Audio
+Modeler (`ref[sdk.python.layout.package-namespace]`, `ref[sdk.python.abi.abi3-abi3t]`).
 """
 
 from dnam import controls, dsp, engine, errors, model, provenance, schema

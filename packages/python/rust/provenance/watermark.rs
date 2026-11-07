@@ -45,15 +45,18 @@ pub fn native_apply_isometric_gauge_watermark<'py>(
     let k_slice = slice_1d(&kappa_64, "kappa_64")?;
     let q_slice = slice_1d(&q_buyer_flat_16, "q_buyer_4x4")?;
 
-    let mut kappa_arr = [1.0_f32; KAUTZ_TOTAL_CHANNELS];
-    kappa_arr.copy_from_slice(k_slice);
-    let mut q_arr = [[0.0_f32; 4]; 4];
-    for r in 0..4 {
-        q_arr[r].copy_from_slice(&q_slice[r * 4..(r + 1) * 4]);
-    }
+    let buf = py.detach(|| -> PyResult<Vec<u8>> {
+        let mut kappa_arr = [1.0_f32; KAUTZ_TOTAL_CHANNELS];
+        kappa_arr.copy_from_slice(k_slice);
+        let mut q_arr = [[0.0_f32; 4]; 4];
+        for r in 0..4 {
+            q_arr[r].copy_from_slice(&q_slice[r * 4..(r + 1) * 4]);
+        }
 
-    let mut buf = arena_bytes.to_vec();
-    apply_isometric_gauge_watermark(&mut buf, &kappa_arr, &q_arr).map_err(dnam_err_to_py)?;
+        let mut buf = arena_bytes.to_vec();
+        apply_isometric_gauge_watermark(&mut buf, &kappa_arr, &q_arr).map_err(dnam_err_to_py)?;
+        Ok(buf)
+    })?;
     Ok(PyBytes::new(py, &buf))
 }
 
@@ -66,7 +69,7 @@ pub fn native_generate_tardos_code<'py>(
     license_id: &str,
 ) -> PyResult<Bound<'py, PyArray1<f32>>> {
     let secret = check_len::<32>(marketplace_secret_32, "marketplace_secret")?;
-    let code = generate_tardos_code_7680(&secret, model_id, license_id);
+    let code = py.detach(|| generate_tardos_code_7680(&secret, model_id, license_id));
     Ok(PyArray1::from_slice(py, &code))
 }
 
@@ -85,17 +88,21 @@ pub fn native_apply_tardos_watermark<'py>(
         )));
     }
     let c_slice = slice_1d(&code_7680, "code_7680")?;
-    let mut code_arr = [1.0_f32; TARDOS_CASCADE_WEIGHTS];
-    code_arr.copy_from_slice(c_slice);
+    let buf = py.detach(|| -> PyResult<Vec<u8>> {
+        let mut code_arr = [1.0_f32; TARDOS_CASCADE_WEIGHTS];
+        code_arr.copy_from_slice(c_slice);
 
-    let mut buf = arena_bytes.to_vec();
-    apply_tardos_watermark_7680(&mut buf, &code_arr, epsilon).map_err(dnam_err_to_py)?;
+        let mut buf = arena_bytes.to_vec();
+        apply_tardos_watermark_7680(&mut buf, &code_arr, epsilon).map_err(dnam_err_to_py)?;
+        Ok(buf)
+    })?;
     Ok(PyBytes::new(py, &buf))
 }
 
 /// Computes the Tardos matched-filter Z-score (`sigma`) of `suspect_arena` against `master_arena` and `code_7680`.
 #[pyfunction]
 pub fn native_score_tardos_watermark<'py>(
+    py: Python<'py>,
     master_arena: &[u8],
     suspect_arena: &[u8],
     code_7680: PyReadonlyArray1<'py, f32>,
@@ -107,10 +114,12 @@ pub fn native_score_tardos_watermark<'py>(
         )));
     }
     let c_slice = slice_1d(&code_7680, "code_7680")?;
-    let mut code_arr = [1.0_f32; TARDOS_CASCADE_WEIGHTS];
-    code_arr.copy_from_slice(c_slice);
+    py.detach(|| {
+        let mut code_arr = [1.0_f32; TARDOS_CASCADE_WEIGHTS];
+        code_arr.copy_from_slice(c_slice);
 
-    score_tardos_watermark_7680(master_arena, suspect_arena, &code_arr).map_err(dnam_err_to_py)
+        score_tardos_watermark_7680(master_arena, suspect_arena, &code_arr).map_err(dnam_err_to_py)
+    })
 }
 
 /// Extracts the prefix-composable `4 × 56-D = 224-D` Gauge-Invariant Structural Hash vector from `arena_bytes`.
@@ -119,7 +128,9 @@ pub fn native_extract_structural_hash<'py>(
     py: Python<'py>,
     arena_bytes: &[u8],
 ) -> PyResult<Bound<'py, PyArray1<f64>>> {
-    let vec224 = extract_structural_hash_224d(arena_bytes).map_err(dnam_err_to_py)?;
+    let vec224 = py
+        .detach(|| extract_structural_hash_224d(arena_bytes))
+        .map_err(dnam_err_to_py)?;
     let tiers = if arena_bytes.len() >= 64_000 {
         4
     } else if arena_bytes.len() >= 36_224 {
@@ -138,6 +149,7 @@ pub fn native_extract_structural_hash<'py>(
 /// Computes the cosine similarity `cos(a, b) in [-1, +1]` between two structural hash vectors.
 #[pyfunction]
 pub fn native_structural_cosine_similarity<'py>(
+    py: Python<'py>,
     a: PyReadonlyArray1<'py, f64>,
     b: PyReadonlyArray1<'py, f64>,
 ) -> PyResult<f64> {
@@ -154,11 +166,13 @@ pub fn native_structural_cosine_similarity<'py>(
     }
     let a_slice = slice_1d(&a, "a")?;
     let b_slice = slice_1d(&b, "b")?;
-    let mut a_arr = [0.0_f64; STRUCTURAL_HASH_DIM];
-    let mut b_arr = [0.0_f64; STRUCTURAL_HASH_DIM];
-    a_arr[..min_len].copy_from_slice(&a_slice[..min_len]);
-    b_arr[..min_len].copy_from_slice(&b_slice[..min_len]);
-    Ok(structural_cosine_similarity(&a_arr, &b_arr))
+    Ok(py.detach(|| {
+        let mut a_arr = [0.0_f64; STRUCTURAL_HASH_DIM];
+        let mut b_arr = [0.0_f64; STRUCTURAL_HASH_DIM];
+        a_arr[..min_len].copy_from_slice(&a_slice[..min_len]);
+        b_arr[..min_len].copy_from_slice(&b_slice[..min_len]);
+        structural_cosine_similarity(&a_arr, &b_arr)
+    }))
 }
 
 /// Derives the license-scoped or shared HMAC-SHA256 watermark seed (64-char hex).
@@ -166,6 +180,7 @@ pub fn native_structural_cosine_similarity<'py>(
 #[pyo3(signature = (key_32, marketplace_pubkey_32, watermark_key_id_16, creator_signed_manifest_sha256_32, model_id_16, watermark_profile_sha256_32, owning_tier, license_id_16 = None, buyer_id_16 = None))]
 #[allow(clippy::too_many_arguments)]
 pub fn native_derive_watermark_seed_hex(
+    py: Python<'_>,
     key_32: &[u8],
     marketplace_pubkey_32: &[u8],
     watermark_key_id_16: &[u8],
@@ -203,10 +218,15 @@ pub fn native_derive_watermark_seed_hex(
             ));
         }
     };
-    let seed =
-        derive_watermark_seed_hmac_sha256(&key, &scope, buyer_pair.as_ref().map(|(l, b)| (l, b)))
-            .map_err(dnam_err_to_py)?;
-    Ok(encode_hex(&seed))
+    py.detach(|| {
+        let seed = derive_watermark_seed_hmac_sha256(
+            &key,
+            &scope,
+            buyer_pair.as_ref().map(|(l, b)| (l, b)),
+        )
+        .map_err(dnam_err_to_py)?;
+        Ok(encode_hex(&seed))
+    })
 }
 
 /// Extracts the Stage III tier-local fingerprint component from `early_fir_128b` and `kautz_modal_bytes`.
@@ -217,9 +237,15 @@ pub fn native_extract_stage3_fingerprint<'py>(
     kautz_modal_bytes: &[u8],
     added_modes: usize,
 ) -> PyResult<Bound<'py, PyArray1<f64>>> {
-    let fp =
-        extract_stage3_tier_fingerprint_component(early_fir_128b, kautz_modal_bytes, added_modes)
-            .map_err(dnam_err_to_py)?;
+    let fp = py
+        .detach(|| {
+            extract_stage3_tier_fingerprint_component(
+                early_fir_128b,
+                kautz_modal_bytes,
+                added_modes,
+            )
+        })
+        .map_err(dnam_err_to_py)?;
     Ok(PyArray1::from_vec(py, fp))
 }
 

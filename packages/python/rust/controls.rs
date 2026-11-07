@@ -25,13 +25,16 @@ pub struct PyControlSpace {
 #[pymethods]
 impl PyControlSpace {
     #[new]
-    pub fn new(header_json: &str) -> PyResult<Self> {
-        let header: DnamJsonHeader = serde_json::from_str(header_json).map_err(validation_err)?;
-        let descriptors = header.compile_clamp_descriptors().map_err(dnam_err_to_py)?;
-        let num_controls = descriptors.len();
-        Ok(Self {
-            descriptors,
-            num_controls,
+    pub fn new(py: Python<'_>, header_json: &str) -> PyResult<Self> {
+        py.detach(|| {
+            let header: DnamJsonHeader =
+                serde_json::from_str(header_json).map_err(validation_err)?;
+            let descriptors = header.compile_clamp_descriptors().map_err(dnam_err_to_py)?;
+            let num_controls = descriptors.len();
+            Ok(Self {
+                descriptors,
+                num_controls,
+            })
         })
     }
 
@@ -41,52 +44,58 @@ impl PyControlSpace {
 
     /// Evaluates 3-Phase control clamping over `raw_numeric_values` in `< 100 ns` without JSON parsing.
     /// Returns `(clamped_numeric, normalized_u, was_clamped, active_clamp_mask)`.
-    pub fn clamp(&self, raw_numeric_values: Vec<f32>) -> (Vec<f32>, Vec<f32>, Vec<bool>, u16) {
-        let n = self.num_controls;
-        let mut active_switches = vec![0_u8; n];
-        let mut clamped_out = vec![0.0_f32; n];
-        let mut norm_out = vec![0.0_f32; n];
-        let mut was_clamped_out = vec![false; n];
-        let mut clamp_mask = 0_u16;
+    pub fn clamp(
+        &self,
+        py: Python<'_>,
+        raw_numeric_values: Vec<f32>,
+    ) -> (Vec<f32>, Vec<f32>, Vec<bool>, u16) {
+        py.detach(|| {
+            let n = self.num_controls;
+            let mut active_switches = vec![0_u8; n];
+            let mut clamped_out = vec![0.0_f32; n];
+            let mut norm_out = vec![0.0_f32; n];
+            let mut was_clamped_out = vec![false; n];
+            let mut clamp_mask = 0_u16;
 
-        // Pass 1: Switch controls first so conditional range rules see active switch states
-        for p in 0..n {
-            let desc = &self.descriptors[p];
-            if desc.ctrl_kind == 1 {
-                let raw_v = raw_numeric_values
-                    .get(p)
-                    .copied()
-                    .unwrap_or(desc.default_val);
-                let (clamped, norm, was_clamped) =
-                    desc.clamp_and_normalize(raw_v, &active_switches);
-                active_switches[p] = (clamped + 0.5) as u8;
-                clamped_out[p] = clamped;
-                norm_out[p] = norm;
-                was_clamped_out[p] = was_clamped;
-                if was_clamped && p < 16 {
-                    clamp_mask |= 1_u16 << p;
+            // Pass 1: Switch controls first so conditional range rules see active switch states
+            for p in 0..n {
+                let desc = &self.descriptors[p];
+                if desc.ctrl_kind == 1 {
+                    let raw_v = raw_numeric_values
+                        .get(p)
+                        .copied()
+                        .unwrap_or(desc.default_val);
+                    let (clamped, norm, was_clamped) =
+                        desc.clamp_and_normalize(raw_v, &active_switches);
+                    active_switches[p] = (clamped + 0.5) as u8;
+                    clamped_out[p] = clamped;
+                    norm_out[p] = norm;
+                    was_clamped_out[p] = was_clamped;
+                    if was_clamped && p < 16 {
+                        clamp_mask |= 1_u16 << p;
+                    }
                 }
             }
-        }
-        // Pass 2: Range controls with switch-conditioned rules active
-        for p in 0..n {
-            let desc = &self.descriptors[p];
-            if desc.ctrl_kind == 0 {
-                let raw_v = raw_numeric_values
-                    .get(p)
-                    .copied()
-                    .unwrap_or(desc.default_val);
-                let (clamped, norm, was_clamped) =
-                    desc.clamp_and_normalize(raw_v, &active_switches);
-                clamped_out[p] = clamped;
-                norm_out[p] = norm;
-                was_clamped_out[p] = was_clamped;
-                if was_clamped && p < 16 {
-                    clamp_mask |= 1_u16 << p;
+            // Pass 2: Range controls with switch-conditioned rules active
+            for p in 0..n {
+                let desc = &self.descriptors[p];
+                if desc.ctrl_kind == 0 {
+                    let raw_v = raw_numeric_values
+                        .get(p)
+                        .copied()
+                        .unwrap_or(desc.default_val);
+                    let (clamped, norm, was_clamped) =
+                        desc.clamp_and_normalize(raw_v, &active_switches);
+                    clamped_out[p] = clamped;
+                    norm_out[p] = norm;
+                    was_clamped_out[p] = was_clamped;
+                    if was_clamped && p < 16 {
+                        clamp_mask |= 1_u16 << p;
+                    }
                 }
             }
-        }
-        (clamped_out, norm_out, was_clamped_out, clamp_mask)
+            (clamped_out, norm_out, was_clamped_out, clamp_mask)
+        })
     }
 }
 
@@ -103,15 +112,18 @@ pub fn native_compute_zoh<'py>(
     tau_ref_train: f32,
     switch_xfade_train: u32,
 ) -> PyResult<Bound<'py, PyDict>> {
-    let zoh = ZohRescaledParams::compute(
-        sample_rate_train_hz,
-        sample_rate_host_hz,
-        r_ac_train,
-        r_dc_train,
-        tau_ref_train,
-        switch_xfade_train,
-    )
-    .map_err(dnam_err_to_py)?;
+    let zoh = py
+        .detach(|| {
+            ZohRescaledParams::compute(
+                sample_rate_train_hz,
+                sample_rate_host_hz,
+                r_ac_train,
+                r_dc_train,
+                tau_ref_train,
+                switch_xfade_train,
+            )
+        })
+        .map_err(dnam_err_to_py)?;
 
     let dict = PyDict::new(py);
     dict.set_item("sample_rate_host_hz", zoh.sample_rate_host_hz)?;
@@ -181,14 +193,17 @@ pub fn native_invert_tempo_calibration<'py>(
     target: f64,
     flush_subnormals: bool,
 ) -> PyResult<Bound<'py, PyDict>> {
-    let res = invert_tempo_physical_calibration(
-        declared_range,
-        safe_range,
-        anchors,
-        target,
-        flush_subnormals,
-    )
-    .ok_or_else(|| validation_err("invalid calibration range or non-finite target"))?;
+    let res = py
+        .detach(|| {
+            invert_tempo_physical_calibration(
+                declared_range,
+                safe_range,
+                anchors,
+                target,
+                flush_subnormals,
+            )
+        })
+        .ok_or_else(|| validation_err("invalid calibration range or non-finite target"))?;
     let dict = PyDict::new(py);
     dict.set_item("physical_f32", res.physical_f32)?;
     dict.set_item("normalized_f32", res.normalized_f32)?;

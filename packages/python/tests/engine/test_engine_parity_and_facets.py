@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import tracemalloc
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -309,6 +310,40 @@ def test_engine_facets_context_managers_zero_copy_and_gil(
     assert len(results) == 4
     for r in results:
         assert r.shape == (2, 256)
+
+
+def test_zero_python_heap_allocations_in_process_into_hot_loop(
+    test_stereo_audio: NDArray[np.float32],
+) -> None:
+    """verify[sdk.python.engine.zero-copy-and-gil]
+    Verifies via `tracemalloc` that steady-state `Engine.process_into` and
+    `Engine.process_planar` calls with pre-allocated buffers do not accumulate Python heap
+    allocations across a 1,000-block real-time loop.
+    """
+    eng = dnam.Engine.reference(sample_rate=48_000, tier="full")
+    out_2d = np.empty_like(test_stereo_audio)
+    l_in = np.ascontiguousarray(test_stereo_audio[0])
+    r_in = np.ascontiguousarray(test_stereo_audio[1])
+    l_out = np.empty_like(l_in)
+    r_out = np.empty_like(r_in)
+
+    # Warm up internal caches before snapshotting Python heap allocations
+    for _ in range(16):
+        eng.process_into(test_stereo_audio, out_2d)
+        eng.process_planar(l_in, r_in, out_left=l_out, out_right=r_out)
+
+    tracemalloc.start()
+    try:
+        before_cur, _ = tracemalloc.get_traced_memory()
+        for _ in range(500):
+            eng.process_into(test_stereo_audio, out_2d)
+            eng.process_planar(l_in, r_in, out_left=l_out, out_right=r_out)
+        after_cur, _ = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+
+    # Net steady-state Python heap growth across 1,000 audio callbacks must be bounded
+    assert (after_cur - before_cur) <= 256
 
 
 @pytest.mark.slow

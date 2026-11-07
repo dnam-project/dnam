@@ -20,6 +20,10 @@ dnam-train \
   --output-ckpt models/b7k_ultra/checkpoint.dnam-ckpt \
   --reports-dir models/b7k_ultra/reports \
   --event-format jsonl
+
+# 4. Linux AMD ROCm 10.0 per-GPU installation (trainer-qualified RDNA 3/3.5/4 & CDNA 2/3/4 GPUs:
+#    gfx1100, gfx1101, gfx1102, gfx1151, gfx1200, gfx1201, gfx1250, gfx90a, gfx942, gfx950)
+uv sync --extra rocm-gfx1201
 ```
 
 ## Architecture Documentation

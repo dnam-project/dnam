@@ -47,13 +47,13 @@ flowchart TD
         C2["r[container.ckpt.*]: .dnam-ckpt (DNCK) & DNCA Cache (specs/containers/checkpoint_and_cache_format.md)"]
         S1["r[sec.jcs/sig/drm.*]: Ed25519 Provenance & .dnam-seal DRM (specs/security/provenance_and_enclave_drm.md)"]
         S2["r[sec.watermark/anticlone/preview.*]: Watermarking & Storefront (specs/security/watermarking_and_marketplace.md)"]
-        K1["r[sdk.python.*]: Python 3.14 SDK & PyO3 Shim (specs/sdks/python_sdk.md)"]
+        K1["r[sdk.python.*]: Python 3.15 SDK & PEP 803 PyO3 Shim (specs/sdks/python_sdk.md)"]
         K2["r[sdk.ts.*]: TypeScript 7 SDK & Dual N-API/WASM Runtime (specs/sdks/typescript_sdk.md)"]
         C1 --> C2 --> S1 --> S2 --> K1 --> K2
     end
 
     subgraph ADRs ["Layer 3: Architectural Decision Records — The 'Why' (docs/adr/)"]
-        A1["ADR-0001..ADR-0013: MADR Design Decisions & Counterexamples (adr/0001..0013-*.md)"]
+        A1["ADR-0001..ADR-0014: MADR Design Decisions & Counterexamples (adr/0001..0014-*.md)"]
     end
 
     G1 --> G2
@@ -128,6 +128,7 @@ flowchart TD
 | **[`adr/0011-end-to-end-stage-wiring-and-arena-slice-topology.md`](adr/0011-end-to-end-stage-wiring-and-arena-slice-topology.md)** | `Accepted` | End-to-end stage wiring, 256-D feature bus slot map (`0..255`), closed-form `theta_0..theta_15` stage modulation laws, and 64B-aligned `tensor_directory` slice schema. |
 | **[`adr/0012-python-sdk-architecture-and-idiomatic-api.md`](adr/0012-python-sdk-architecture-and-idiomatic-api.md)** | `Accepted` | Idiomatic `dnam` Python SDK architecture, domain-free `Model`/`Engine`/`Checkpoint` naming, thin zero-copy PyO3 shim, and Rust-to-Python JCS schema parity. |
 | **[`adr/0013-typescript-sdk-architecture-and-dual-target-runtime.md`](adr/0013-typescript-sdk-architecture-and-dual-target-runtime.md)** | `Accepted` | Idiomatic `@dnam-project/dnam` TypeScript 7 SDK architecture, dual-target `N-API v10` + raw `WASM SIMD128` runtime, `AudioParam`-aligned parameters, and camelCase/JCS schema parity. |
+| **[`adr/0014-python-3-15-free-threading-and-stable-abi-abi3t.md`](adr/0014-python-3-15-free-threading-and-stable-abi-abi3t.md)** | `Accepted` | Python 3.15 (`3.15t` free-threaded dev runtime), PEP 803 dual-ABI (`cp315-abi3.abi3t`) wheels, `#[pymodule(gil_used = false)]`, and ROCm 10.0 per-GPU extras. |
 | **[`templates/requirement_template.md`](templates/requirement_template.md)** · **[`spec_template.md`](templates/spec_template.md)** · **[`adr_template.md`](templates/adr_template.md)** | `Templates` | Canonical authoring templates for `REQ-X.Y` requirements, `r[...]` normative specifications, and MADR `NNNN-*.md` records. |
 
 ---

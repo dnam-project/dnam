@@ -41,32 +41,34 @@ pub fn native_encode_dau1_envelope<'py>(
     buyer_prefixes_hex: Vec<String>,
     marketplace_signature_hex: Option<&str>,
 ) -> PyResult<Bound<'py, PyBytes>> {
-    let creator_pubkey = decode_hex_array::<32>(creator_pubkey_hex).map_err(dnam_err_to_py)?;
-    let master_prefixes = decode_hex_prefixes(&master_prefixes_hex)?;
-    let creator_signature =
-        decode_hex_array::<64>(creator_signature_hex).map_err(dnam_err_to_py)?;
-    let marketplace_pubkey = match marketplace_pubkey_hex {
-        Some(h) => Some(decode_hex_array::<32>(h).map_err(dnam_err_to_py)?),
-        None => None,
-    };
-    let buyer_prefixes = decode_hex_prefixes(&buyer_prefixes_hex)?;
-    let marketplace_signature = match marketplace_signature_hex {
-        Some(h) => Some(decode_hex_array::<64>(h).map_err(dnam_err_to_py)?),
-        None => None,
-    };
-    let env = Dau1Envelope {
-        auth_kind,
-        creator_pubkey,
-        creator_max_tier,
-        master_prefixes,
-        creator_signature,
-        marketplace_pubkey,
-        policy_bytes: policy_bytes.unwrap_or(&[]).to_vec(),
-        buyer_max_tier,
-        buyer_prefixes,
-        marketplace_signature,
-    };
-    let wire = env.to_bytes().map_err(dnam_err_to_py)?;
+    let wire = py.detach(|| -> PyResult<Vec<u8>> {
+        let creator_pubkey = decode_hex_array::<32>(creator_pubkey_hex).map_err(dnam_err_to_py)?;
+        let master_prefixes = decode_hex_prefixes(&master_prefixes_hex)?;
+        let creator_signature =
+            decode_hex_array::<64>(creator_signature_hex).map_err(dnam_err_to_py)?;
+        let marketplace_pubkey = match marketplace_pubkey_hex {
+            Some(h) => Some(decode_hex_array::<32>(h).map_err(dnam_err_to_py)?),
+            None => None,
+        };
+        let buyer_prefixes = decode_hex_prefixes(&buyer_prefixes_hex)?;
+        let marketplace_signature = match marketplace_signature_hex {
+            Some(h) => Some(decode_hex_array::<64>(h).map_err(dnam_err_to_py)?),
+            None => None,
+        };
+        let env = Dau1Envelope {
+            auth_kind,
+            creator_pubkey,
+            creator_max_tier,
+            master_prefixes,
+            creator_signature,
+            marketplace_pubkey,
+            policy_bytes: policy_bytes.unwrap_or(&[]).to_vec(),
+            buyer_max_tier,
+            buyer_prefixes,
+            marketplace_signature,
+        };
+        env.to_bytes().map_err(dnam_err_to_py)
+    })?;
     Ok(PyBytes::new(py, &wire))
 }
 
@@ -76,7 +78,9 @@ pub fn native_decode_dau1_envelope<'py>(
     py: Python<'py>,
     wire_bytes: &[u8],
 ) -> PyResult<Bound<'py, PyDict>> {
-    let env = Dau1Envelope::from_bytes(wire_bytes).map_err(dnam_err_to_py)?;
+    let env = py
+        .detach(|| Dau1Envelope::from_bytes(wire_bytes))
+        .map_err(dnam_err_to_py)?;
     let dict = PyDict::new(py);
     dict.set_item("auth_kind", env.auth_kind)?;
     dict.set_item("creator_pubkey_hex", encode_hex(&env.creator_pubkey))?;
@@ -107,20 +111,24 @@ pub fn native_build_dme1_header<'py>(
     recipient_count: u32,
     ciphertext_length: u64,
 ) -> PyResult<Bound<'py, PyBytes>> {
-    let hdr =
-        build_dme1_header(profile, recipient_count, ciphertext_length).map_err(dnam_err_to_py)?;
+    let hdr = py
+        .detach(|| build_dme1_header(profile, recipient_count, ciphertext_length))
+        .map_err(dnam_err_to_py)?;
     Ok(PyBytes::new(py, &hdr))
 }
 
 /// Validates and parses decrypted `DME1` plaintext against recipient SHA-256 key digests (hex).
 #[pyfunction]
 pub fn native_parse_dme1_plaintext(
+    py: Python<'_>,
     plaintext: &[u8],
     recipient_key_digests_hex: Vec<String>,
 ) -> PyResult<String> {
-    let digests = decode_hex_prefixes(&recipient_key_digests_hex)?;
-    let val = parse_dme1_decrypted_plaintext(plaintext, &digests).map_err(dnam_err_to_py)?;
-    serde_json::to_string(&val).map_err(validation_err)
+    py.detach(|| {
+        let digests = decode_hex_prefixes(&recipient_key_digests_hex)?;
+        let val = parse_dme1_decrypted_plaintext(plaintext, &digests).map_err(dnam_err_to_py)?;
+        serde_json::to_string(&val).map_err(validation_err)
+    })
 }
 
 /// Encodes HPKE recipient key SHA-256 digests (`R = u32le(N) || digest[0..N]`).
@@ -129,17 +137,25 @@ pub fn native_encode_recipient_key_ids<'py>(
     py: Python<'py>,
     key_digests_hex: Vec<String>,
 ) -> PyResult<Bound<'py, PyBytes>> {
-    let digests = decode_hex_prefixes(&key_digests_hex)?;
-    let out = encode_recipient_key_ids(&digests).map_err(dnam_err_to_py)?;
+    let out = py.detach(|| -> PyResult<Vec<u8>> {
+        let digests = decode_hex_prefixes(&key_digests_hex)?;
+        encode_recipient_key_ids(&digests).map_err(dnam_err_to_py)
+    })?;
     Ok(PyBytes::new(py, &out))
 }
 
 /// Parses HPKE recipient key SHA-256 digests (`R = u32le(N) || digest[0..N]`).
 #[pyfunction]
 #[pyo3(signature = (data, max_recipients = 16))]
-pub fn native_parse_recipient_key_ids(data: &[u8], max_recipients: usize) -> PyResult<Vec<String>> {
-    let digests = parse_recipient_key_ids(data, max_recipients).map_err(dnam_err_to_py)?;
-    Ok(digests.iter().map(|d| encode_hex(d)).collect())
+pub fn native_parse_recipient_key_ids(
+    py: Python<'_>,
+    data: &[u8],
+    max_recipients: usize,
+) -> PyResult<Vec<String>> {
+    py.detach(|| {
+        let digests = parse_recipient_key_ids(data, max_recipients).map_err(dnam_err_to_py)?;
+        Ok(digests.iter().map(|d| encode_hex(d)).collect())
+    })
 }
 
 /// Encodes an HPKE slot vector (`S = u32le(N) || (enc[32] || ct_and_tag[48])[0..N]`).
@@ -148,13 +164,15 @@ pub fn native_encode_hpke_slots<'py>(
     py: Python<'py>,
     slots_hex: Vec<(String, String)>,
 ) -> PyResult<Bound<'py, PyBytes>> {
-    let mut slots = Vec::with_capacity(slots_hex.len());
-    for (enc_hex, ct_hex) in slots_hex {
-        let enc = decode_hex_array::<32>(&enc_hex).map_err(dnam_err_to_py)?;
-        let ct = decode_hex_array::<48>(&ct_hex).map_err(dnam_err_to_py)?;
-        slots.push((enc, ct));
-    }
-    let out = encode_hpke_slot_vector(&slots).map_err(dnam_err_to_py)?;
+    let out = py.detach(|| -> PyResult<Vec<u8>> {
+        let mut slots = Vec::with_capacity(slots_hex.len());
+        for (enc_hex, ct_hex) in slots_hex {
+            let enc = decode_hex_array::<32>(&enc_hex).map_err(dnam_err_to_py)?;
+            let ct = decode_hex_array::<48>(&ct_hex).map_err(dnam_err_to_py)?;
+            slots.push((enc, ct));
+        }
+        encode_hpke_slot_vector(&slots).map_err(dnam_err_to_py)
+    })?;
     Ok(PyBytes::new(py, &out))
 }
 
@@ -162,16 +180,19 @@ pub fn native_encode_hpke_slots<'py>(
 #[pyfunction]
 #[pyo3(signature = (data, expected_count, max_recipients = 16))]
 pub fn native_parse_hpke_slots(
+    py: Python<'_>,
     data: &[u8],
     expected_count: usize,
     max_recipients: usize,
 ) -> PyResult<Vec<(String, String)>> {
-    let slots =
-        parse_hpke_slot_vector(data, expected_count, max_recipients).map_err(dnam_err_to_py)?;
-    Ok(slots
-        .iter()
-        .map(|(e, c)| (encode_hex(e), encode_hex(c)))
-        .collect())
+    py.detach(|| {
+        let slots =
+            parse_hpke_slot_vector(data, expected_count, max_recipients).map_err(dnam_err_to_py)?;
+        Ok(slots
+            .iter()
+            .map(|(e, c)| (encode_hex(e), encode_hex(c)))
+            .collect())
+    })
 }
 
 /// Encodes a record directory (`D = u32le(C) || (u64le(offset) || u64le(length))[0..C]`).
@@ -181,14 +202,21 @@ pub fn native_encode_record_directory<'py>(
     maximum_tier: u8,
     records: Vec<(u64, u64)>,
 ) -> PyResult<Bound<'py, PyBytes>> {
-    let out = encode_record_directory(maximum_tier, &records).map_err(dnam_err_to_py)?;
+    let out = py
+        .detach(|| encode_record_directory(maximum_tier, &records))
+        .map_err(dnam_err_to_py)?;
     Ok(PyBytes::new(py, &out))
 }
 
 /// Parses a record directory (`D = u32le(C) || (u64le(offset) || u64le(length))[0..C]`).
 #[pyfunction]
-pub fn native_parse_record_directory(data: &[u8], maximum_tier: u8) -> PyResult<Vec<(u64, u64)>> {
-    parse_record_directory(data, maximum_tier).map_err(dnam_err_to_py)
+pub fn native_parse_record_directory(
+    py: Python<'_>,
+    data: &[u8],
+    maximum_tier: u8,
+) -> PyResult<Vec<(u64, u64)>> {
+    py.detach(|| parse_record_directory(data, maximum_tier))
+        .map_err(dnam_err_to_py)
 }
 
 /// Computes the bounded single-control preview window `[start, end]` (`ref[sec.preview.containment]`).
@@ -204,30 +232,41 @@ pub fn native_compute_preview_window(
 /// Validates that a single-switch preview exposes two distinct options that are observed, active, and safe.
 #[pyfunction]
 pub fn native_validate_preview_switch_options(
+    py: Python<'_>,
     preset: &str,
     alternative: &str,
     observed: Vec<String>,
     active: Vec<String>,
     safe: Vec<String>,
 ) -> PyResult<(String, String)> {
-    let obs_set: BTreeSet<&str> = observed.iter().map(String::as_str).collect();
-    let act_set: BTreeSet<&str> = active.iter().map(String::as_str).collect();
-    let safe_set: BTreeSet<&str> = safe.iter().map(String::as_str).collect();
-    let (p, a) =
-        validate_preview_single_switch_options(preset, alternative, &obs_set, &act_set, &safe_set)
-            .map_err(dnam_err_to_py)?;
-    Ok((p.to_string(), a.to_string()))
+    py.detach(|| {
+        let obs_set: BTreeSet<&str> = observed.iter().map(String::as_str).collect();
+        let act_set: BTreeSet<&str> = active.iter().map(String::as_str).collect();
+        let safe_set: BTreeSet<&str> = safe.iter().map(String::as_str).collect();
+        let (p, a) = validate_preview_single_switch_options(
+            preset,
+            alternative,
+            &obs_set,
+            &act_set,
+            &safe_set,
+        )
+        .map_err(dnam_err_to_py)?;
+        Ok((p.to_string(), a.to_string()))
+    })
 }
 
 /// Validates `license_tier` and that `royalty_splits_json` sums to `10,000` bps (`100%`).
 #[pyfunction]
 pub fn native_validate_royalty_splits(
+    py: Python<'_>,
     license_tier: &str,
     royalty_splits_json: &str,
 ) -> PyResult<()> {
-    let splits: Vec<RoyaltySplit> =
-        serde_json::from_str(royalty_splits_json).map_err(validation_err)?;
-    validate_license_tier_and_royalty_splits(license_tier, &splits).map_err(dnam_err_to_py)
+    py.detach(|| {
+        let splits: Vec<RoyaltySplit> =
+            serde_json::from_str(royalty_splits_json).map_err(validation_err)?;
+        validate_license_tier_and_royalty_splits(license_tier, &splits).map_err(dnam_err_to_py)
+    })
 }
 
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {

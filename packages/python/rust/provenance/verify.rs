@@ -24,24 +24,25 @@ pub fn native_verify_container_provenance<'py>(
     device_secret_32: Option<&[u8]>,
     trusted_marketplace_pubkey_hex: Option<&str>,
 ) -> PyResult<Bound<'py, PyDict>> {
-    let header: DnamJsonHeader = serde_json::from_str(header_json).map_err(validation_err)?;
-    let mut crypto = RustCryptoProvider::new();
-    if let (Some(id), Some(sec)) = (device_id_hash, device_secret_32) {
-        let sec_arr: &[u8; 32] = sec.try_into().map_err(|_| {
-            validation_err(format!(
-                "device_secret_32 must be 32 bytes, got {}",
-                sec.len()
-            ))
-        })?;
-        crypto = crypto.with_device_key(id, *sec_arr);
-    }
-    if let Some(mkt_pk_hex) = trusted_marketplace_pubkey_hex {
-        let mkt_pk = decode_hex_array::<32>(mkt_pk_hex).map_err(dnam_err_to_py)?;
-        crypto = crypto.with_marketplace_pubkey(mkt_pk);
-    }
-    let status =
+    let status = py.detach(|| -> PyResult<VerificationStatus> {
+        let header: DnamJsonHeader = serde_json::from_str(header_json).map_err(validation_err)?;
+        let mut crypto = RustCryptoProvider::new();
+        if let (Some(id), Some(sec)) = (device_id_hash, device_secret_32) {
+            let sec_arr: &[u8; 32] = sec.try_into().map_err(|_| {
+                validation_err(format!(
+                    "device_secret_32 must be 32 bytes, got {}",
+                    sec.len()
+                ))
+            })?;
+            crypto = crypto.with_device_key(id, *sec_arr);
+        }
+        if let Some(mkt_pk_hex) = trusted_marketplace_pubkey_hex {
+            let mkt_pk = decode_hex_array::<32>(mkt_pk_hex).map_err(dnam_err_to_py)?;
+            crypto = crypto.with_marketplace_pubkey(mkt_pk);
+        }
         verify_container_provenance(&header, has_signatures_flag, plaintext_arena, &crypto)
-            .map_err(dnam_err_to_py)?;
+            .map_err(dnam_err_to_py)
+    })?;
 
     let dict = PyDict::new(py);
     match status {
@@ -83,10 +84,17 @@ pub fn native_verify_container_provenance<'py>(
 
 /// Enforces the creator-signed `DistributionPolicy` in `header_json` against `active_profile`.
 #[pyfunction]
-pub fn native_enforce_distribution_policy(header_json: &str, active_profile: &str) -> PyResult<()> {
-    let header: DnamJsonHeader = serde_json::from_str(header_json).map_err(validation_err)?;
-    let profile = DnamProtectionProfile::from_str_name(active_profile).map_err(dnam_err_to_py)?;
-    enforce_distribution_policy(&header, profile).map_err(dnam_err_to_py)
+pub fn native_enforce_distribution_policy(
+    py: Python<'_>,
+    header_json: &str,
+    active_profile: &str,
+) -> PyResult<()> {
+    py.detach(|| {
+        let header: DnamJsonHeader = serde_json::from_str(header_json).map_err(validation_err)?;
+        let profile =
+            DnamProtectionProfile::from_str_name(active_profile).map_err(dnam_err_to_py)?;
+        enforce_distribution_policy(&header, profile).map_err(dnam_err_to_py)
+    })
 }
 
 /// Evaluates the 3-stage anti-cloning revocation policy (`ref[sec.anticlone.three-stage-gate]`).

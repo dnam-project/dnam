@@ -89,7 +89,12 @@ def tank_slice(
 ) -> NDArray[np.float64]:
     """Processes a 1D `float64` audio slice through the reference Op-T coercive tank loop."""
     inp = coerce_f64_1d(signal, name="signal")
-    target = out if out is not None else np.empty(inp.shape[0], dtype=np.float64)
+    if out is not None:
+        if np.shares_memory(inp, out):
+            inp = inp.copy()
+        target = out
+    else:
+        target = np.empty(inp.shape[0], dtype=np.float64)
     native_op_t_tank_slice(
         inp,
         target,

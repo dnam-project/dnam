@@ -20,47 +20,55 @@ fn check_len<const N: usize>(bytes: &[u8], name: &str) -> PyResult<[u8; N]> {
 
 /// Computes the preset-safe RFC 8785 JCS `immutable_header_sha256` hex digest over `header_json`.
 #[pyfunction]
-pub fn native_immutable_header_sha256(header_json: &str) -> PyResult<String> {
-    let header: DnamJsonHeader = serde_json::from_str(header_json).map_err(validation_err)?;
-    let digest = compute_immutable_header_sha256(&header).map_err(dnam_err_to_py)?;
-    Ok(encode_hex(&digest))
+pub fn native_immutable_header_sha256(py: Python<'_>, header_json: &str) -> PyResult<String> {
+    py.detach(|| {
+        let header: DnamJsonHeader = serde_json::from_str(header_json).map_err(validation_err)?;
+        let digest = compute_immutable_header_sha256(&header).map_err(dnam_err_to_py)?;
+        Ok(encode_hex(&digest))
+    })
 }
 
 /// Computes the lowercase hex SHA-256 digest of `data`.
 #[pyfunction]
-pub fn native_sha256_hex(data: &[u8]) -> String {
-    encode_hex(&sha256_digest(data))
+pub fn native_sha256_hex(py: Python<'_>, data: &[u8]) -> String {
+    py.detach(|| encode_hex(&sha256_digest(data)))
 }
 
 /// Computes the lowercase hex HMAC-SHA256 digest of `message` under `key_32`.
 #[pyfunction]
-pub fn native_hmac_sha256_hex(key_32: &[u8], message: &[u8]) -> PyResult<String> {
+pub fn native_hmac_sha256_hex(py: Python<'_>, key_32: &[u8], message: &[u8]) -> PyResult<String> {
     let key = check_len::<32>(key_32, "key_32")?;
-    Ok(encode_hex(&hmac_sha256(&key, message)))
+    Ok(py.detach(|| encode_hex(&hmac_sha256(&key, message))))
 }
 
 /// Derives the 64-character lowercase hex `Ed25519` public key from a 32-byte secret key seed.
 #[pyfunction]
-pub fn native_ed25519_pubkey_hex(seed_32: &[u8]) -> PyResult<String> {
+pub fn native_ed25519_pubkey_hex(py: Python<'_>, seed_32: &[u8]) -> PyResult<String> {
     let seed = check_len::<32>(seed_32, "seed_32")?;
-    let pk = RustCryptoProvider::ed25519_pubkey_from_seed(&seed);
-    Ok(encode_hex(&pk))
+    Ok(py.detach(|| {
+        let pk = RustCryptoProvider::ed25519_pubkey_from_seed(&seed);
+        encode_hex(&pk)
+    }))
 }
 
 /// Signs `message` using a 32-byte `Ed25519` secret key seed, returning the 128-character hex signature.
 #[pyfunction]
-pub fn native_ed25519_sign_hex(seed_32: &[u8], message: &[u8]) -> PyResult<String> {
+pub fn native_ed25519_sign_hex(py: Python<'_>, seed_32: &[u8], message: &[u8]) -> PyResult<String> {
     let seed = check_len::<32>(seed_32, "seed_32")?;
-    let sig = RustCryptoProvider::ed25519_sign(&seed, message);
-    Ok(encode_hex(&sig))
+    Ok(py.detach(|| {
+        let sig = RustCryptoProvider::ed25519_sign(&seed, message);
+        encode_hex(&sig)
+    }))
 }
 
 /// Derives the 64-character lowercase hex `X25519` public key from a 32-byte secret key.
 #[pyfunction]
-pub fn native_x25519_pubkey_hex(secret_32: &[u8]) -> PyResult<String> {
+pub fn native_x25519_pubkey_hex(py: Python<'_>, secret_32: &[u8]) -> PyResult<String> {
     let secret = check_len::<32>(secret_32, "secret_32")?;
-    let pk = RustCryptoProvider::x25519_pubkey_from_secret(&secret);
-    Ok(encode_hex(&pk))
+    Ok(py.detach(|| {
+        let pk = RustCryptoProvider::x25519_pubkey_from_secret(&secret);
+        encode_hex(&pk)
+    }))
 }
 
 /// Builds the canonical `Ed25519` creator signing message (`immutable_header_sha256 || master_arena_sha256`).
@@ -70,9 +78,12 @@ pub fn native_build_creator_signing_message<'py>(
     immutable_header_sha256_hex: &str,
     master_arena_sha256_hex: &str,
 ) -> PyResult<Bound<'py, PyBytes>> {
-    let hdr_sha = decode_hex_array::<32>(immutable_header_sha256_hex).map_err(dnam_err_to_py)?;
-    let arena_sha = decode_hex_array::<32>(master_arena_sha256_hex).map_err(dnam_err_to_py)?;
-    let msg = build_creator_signing_message(&hdr_sha, &arena_sha);
+    let msg = py.detach(|| -> PyResult<_> {
+        let hdr_sha =
+            decode_hex_array::<32>(immutable_header_sha256_hex).map_err(dnam_err_to_py)?;
+        let arena_sha = decode_hex_array::<32>(master_arena_sha256_hex).map_err(dnam_err_to_py)?;
+        Ok(build_creator_signing_message(&hdr_sha, &arena_sha))
+    })?;
     Ok(PyBytes::new(py, &msg))
 }
 
@@ -84,11 +95,15 @@ pub fn native_build_marketplace_signing_message<'py>(
     master_arena_sha256_hex: &str,
     receipt_json: &str,
 ) -> PyResult<Bound<'py, PyBytes>> {
-    let hdr_sha = decode_hex_array::<32>(immutable_header_sha256_hex).map_err(dnam_err_to_py)?;
-    let arena_sha = decode_hex_array::<32>(master_arena_sha256_hex).map_err(dnam_err_to_py)?;
-    let receipt: MarketplaceReceipt = serde_json::from_str(receipt_json).map_err(validation_err)?;
-    let msg = build_marketplace_receipt_signing_message(&hdr_sha, &arena_sha, &receipt)
-        .map_err(dnam_err_to_py)?;
+    let msg = py.detach(|| -> PyResult<Vec<u8>> {
+        let hdr_sha =
+            decode_hex_array::<32>(immutable_header_sha256_hex).map_err(dnam_err_to_py)?;
+        let arena_sha = decode_hex_array::<32>(master_arena_sha256_hex).map_err(dnam_err_to_py)?;
+        let receipt: MarketplaceReceipt =
+            serde_json::from_str(receipt_json).map_err(validation_err)?;
+        build_marketplace_receipt_signing_message(&hdr_sha, &arena_sha, &receipt)
+            .map_err(dnam_err_to_py)
+    })?;
     Ok(PyBytes::new(py, &msg))
 }
 
@@ -96,6 +111,7 @@ pub fn native_build_marketplace_signing_message<'py>(
 /// returning the serialized JSON string of `OemDeviceCertificate`.
 #[pyfunction]
 pub fn native_sign_oem_device_cert(
+    py: Python<'_>,
     oem_seed_32: &[u8],
     oem_vendor: &str,
     model_code: &str,
@@ -104,30 +120,35 @@ pub fn native_sign_oem_device_cert(
 ) -> PyResult<String> {
     let seed = check_len::<32>(oem_seed_32, "oem_seed_32")?;
     let pk_x25519 = check_len::<32>(pubkey_x25519_32, "pubkey_x25519_32")?;
-    let cert = RustCryptoProvider::sign_oem_device_certificate(
-        &seed,
-        oem_vendor,
-        model_code,
-        device_id_hash,
-        &pk_x25519,
-    )
-    .map_err(dnam_err_to_py)?;
-    serde_json::to_string(&cert).map_err(validation_err)
+    py.detach(|| {
+        let cert = RustCryptoProvider::sign_oem_device_certificate(
+            &seed,
+            oem_vendor,
+            model_code,
+            device_id_hash,
+            &pk_x25519,
+        )
+        .map_err(dnam_err_to_py)?;
+        serde_json::to_string(&cert).map_err(validation_err)
+    })
 }
 
 /// Verifies an `OemDeviceCertificate` JSON against a trusted 64-character hex OEM `Ed25519` public key,
 /// returning the verified 64-character lowercase hex `pubkey_x25519`.
 #[pyfunction]
 pub fn native_verify_oem_device_cert(
+    py: Python<'_>,
     cert_json: &str,
     trusted_oem_pubkey_hex: &str,
 ) -> PyResult<String> {
-    let cert: OemDeviceCertificate = serde_json::from_str(cert_json).map_err(validation_err)?;
-    let oem_pk = decode_hex_array::<32>(trusted_oem_pubkey_hex).map_err(dnam_err_to_py)?;
-    let crypto = RustCryptoProvider::default();
-    let pk_x25519 =
-        verify_oem_device_certificate(&cert, &oem_pk, &crypto).map_err(dnam_err_to_py)?;
-    Ok(encode_hex(&pk_x25519))
+    py.detach(|| {
+        let cert: OemDeviceCertificate = serde_json::from_str(cert_json).map_err(validation_err)?;
+        let oem_pk = decode_hex_array::<32>(trusted_oem_pubkey_hex).map_err(dnam_err_to_py)?;
+        let crypto = RustCryptoProvider::default();
+        let pk_x25519 =
+            verify_oem_device_certificate(&cert, &oem_pk, &crypto).map_err(dnam_err_to_py)?;
+        Ok(encode_hex(&pk_x25519))
+    })
 }
 
 /// Builds the domain-separated V2 OEM device certificate signing message (`"DNAM-OEM-CERT-V2"`).
@@ -156,10 +177,13 @@ pub fn native_build_oem_cert_v2_signing_message<'py>(
         Some(e) => check_len::<32>(e, "attestation_evidence_sha256_32")?,
         None => [0u8; 32],
     };
-    let msg = build_oem_cert_v2_signing_message(
-        oem_vendor, model_code, &dev_id, &pk, &iss_pk, assurance, &pol, &ev,
-    )
-    .map_err(dnam_err_to_py)?;
+    let msg = py
+        .detach(|| {
+            build_oem_cert_v2_signing_message(
+                oem_vendor, model_code, &dev_id, &pk, &iss_pk, assurance, &pol, &ev,
+            )
+        })
+        .map_err(dnam_err_to_py)?;
     Ok(PyBytes::new(py, &msg))
 }
 

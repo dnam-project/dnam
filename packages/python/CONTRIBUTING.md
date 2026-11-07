@@ -1,6 +1,6 @@
 # Contributing to `dnam` Python SDK (`packages/python/`)
 
-This guide covers architecture, layout conventions, FFI zero-copy rules, static typing (`pyrefly`), parity-first testing, and **Scalene** performance profiling standards for **`dnam`** ([`README.md`](README.md)), specified in [`docs/specs/sdks/python_sdk.md`](../../docs/specs/sdks/python_sdk.md) and [`ADR-0012`](../../docs/adr/0012-python-sdk-architecture-and-idiomatic-api.md).
+This guide covers architecture, layout conventions, PEP 803 dual-ABI (`cp315-abi3.abi3t`) free-threading rules, FFI zero-copy rules, static typing (`pyrefly`), parity-first testing, and PEP 799 (`profiling.sampling` / `tracemalloc`) performance profiling standards for **`dnam`** ([`README.md`](README.md)), specified in [`docs/specs/sdks/python_sdk.md`](../../docs/specs/sdks/python_sdk.md), [`ADR-0012`](../../docs/adr/0012-python-sdk-architecture-and-idiomatic-api.md), and [`ADR-0014`](../../docs/adr/0014-python-3-15-free-threading-and-stable-abi-abi3t.md).
 
 All contributions must also comply with the root [`CONTRIBUTING.md`](../../CONTRIBUTING.md) and [`CLA.md`](../../CLA.md) (`git commit -s`).
 
@@ -34,7 +34,7 @@ packages/python/
     ├── conftest.py, test_public_api.py
     ├── strategies/          # Hypothesis strategies split by domain
     ├── model/, engine/, controls/, schema/, provenance/, dsp/
-    └── benchmarks/          # pytest-benchmark suite (test_benchmarks.py) & Scalene workload (profile_sdk.py)
+    └── benchmarks/          # pytest-benchmark suite (test_benchmarks.py) & PEP 799 workload (profile_sdk.py)
 └── examples/                # 5 runnable SDK demonstrations (realtime_audio_and_bounce.py,
                              # controls_presets_and_tempo.py, model_slimming_and_checkpoint.py,
                              # marketplace_provenance_and_watermark.py, reference_dsp_operators.py)
@@ -43,7 +43,7 @@ packages/python/
 ### Test, Benchmark & Example Placement
 
 - **Unit, Property & Parity Tests (`tests/<subpackage>/`):** Place subpackage tests in [`tests/model/`](tests/model/), [`tests/engine/`](tests/engine/), [`tests/controls/`](tests/controls/), [`tests/schema/`](tests/schema/), [`tests/provenance/`](tests/provenance/), and [`tests/dsp/`](tests/dsp/), using Hypothesis strategies from [`tests/strategies/`](tests/strategies/).
-- **Benchmarks & Profiling (`tests/benchmarks/`):** Place `pytest-benchmark` suites in [`tests/benchmarks/test_benchmarks.py`](tests/benchmarks/test_benchmarks.py) and the standalone **Scalene** profiling workload in [`tests/benchmarks/profile_sdk.py`](tests/benchmarks/profile_sdk.py).
+- **Benchmarks & Profiling (`tests/benchmarks/`):** Place `pytest-benchmark` suites in [`tests/benchmarks/test_benchmarks.py`](tests/benchmarks/test_benchmarks.py) and the standalone PEP 799 (`profiling.sampling` / `profiling.tracing`) workload in [`tests/benchmarks/profile_sdk.py`](tests/benchmarks/profile_sdk.py).
 - **Runnable Examples (`examples/`):** Place self-contained runnable API demonstrations in [`examples/realtime_audio_and_bounce.py`](examples/realtime_audio_and_bounce.py), [`examples/controls_presets_and_tempo.py`](examples/controls_presets_and_tempo.py), [`examples/model_slimming_and_checkpoint.py`](examples/model_slimming_and_checkpoint.py), [`examples/marketplace_provenance_and_watermark.py`](examples/marketplace_provenance_and_watermark.py), and [`examples/reference_dsp_operators.py`](examples/reference_dsp_operators.py) (smoke-tested automatically by [`tests/test_public_api.py`](tests/test_public_api.py)).
 
 ---
@@ -70,13 +70,14 @@ packages/python/
 
 ---
 
-## 3. Testing, Coverage (≥ 95%), Benchmarking & Scalene Profiling
+## 3. Testing, Coverage (≥ 95%), Benchmarking & PEP 799 Profiling
 
 Run all commands from the monorepo root via `moon`:
 
 ```bash
-# 1. Run all python quality gates (format-check, lint, typecheck, build, test)
+# 1. Run all python quality gates (format-check, lint, typecheck, build, test) & dual-ABI wheel check
 moon check python
+moon run python:wheel-check
 
 # 2. Run the exhaustive cross-product parity matrix (@pytest.mark.slow)
 moon run python:test-full
@@ -87,14 +88,13 @@ moon run python:coverage
 # 4. Run calibrated pytest-benchmark suite (enforces <= 1.10x native FFI budget)
 moon run python:bench
 
-# 5. Profile Python vs. native C/Rust CPU, memory allocations & copy volume with Scalene
+# 5. Profile Python vs. native Rust CPU & call stacks with stdlib PEP 799 (profiling.sampling / tracing)
 moon run python:profile
-uv run --no-sync scalene run --profile-all -o scalene-profile.json \
-  packages/python/tests/benchmarks/profile_sdk.py
-uv run --no-sync scalene view --cli scalene-profile.json
+uv run --no-sync python -m profiling.sampling run --native --mode cpu --flamegraph \
+  -o target/profile_sdk.html packages/python/tests/benchmarks/profile_sdk.py
 ```
 
-> **Note on Scalene & PyTorch Kineto in the Shared Workspace `.venv`:** Because `packages/trainer` installs `torch` in the shared workspace `.venv`, standalone Scalene scripts targeting `dnam` stub `sys.modules["torch"] = ModuleType("torch")` (as done in [`tests/benchmarks/profile_sdk.py`](tests/benchmarks/profile_sdk.py)) or pass `--cpu-only` so Scalene does not activate PyTorch's Kineto autograd profiler.
+> **Note on `profiling.sampling` (`Tachyon`) & `tracemalloc`:** On macOS and Windows, `python -m profiling.sampling` reads target process memory and may require elevated privileges or developer entitlements (`moon run python:profile` automatically falls back to `python -m profiling.tracing`). Steady-state Python heap zero-allocation checks run inside `pytest` via stdlib `tracemalloc`, while native Rust zero-allocation checks run via `hotpath-alloc`.
 
 ---
 

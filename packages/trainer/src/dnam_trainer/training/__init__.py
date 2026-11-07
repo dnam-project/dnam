@@ -75,10 +75,10 @@ from dnam_trainer.training.surrogate_delay import (
 )
 from dnam_trainer.training.telemetry import (
     TrainingStepRecord,
-    build_training_telemetry_df,
+    build_training_telemetry_rows,
     plot_esr_convergence_chart,
     save_telemetry_html_report,
-    save_telemetry_parquet,
+    save_telemetry_jsonl,
 )
 from dnam_trainer.training.windowing import (
     CausalBsplineWindowSchedule,
@@ -124,7 +124,7 @@ __all__ = [
     "build_orthogonal_fft_windows",
     "build_signed_dnam_containers",
     "build_stage_window_grids",
-    "build_training_telemetry_df",
+    "build_training_telemetry_rows",
     "build_uniform_windows",
     "compute_segmentation_window_stats",
     "compute_stem_sufficient_statistics",
@@ -147,7 +147,7 @@ __all__ = [
     "resolve_stem_audio_pcm",
     "rglru_soa_byte_offset",
     "save_telemetry_html_report",
-    "save_telemetry_parquet",
+    "save_telemetry_jsonl",
     "segment_regimes_dp",
     "setup_accelerator_environment",
     "sign_header_with_creator_key",

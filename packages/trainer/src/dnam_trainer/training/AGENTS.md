@@ -12,7 +12,7 @@
 - [`kronecker_head.py`](kronecker_head.py): Partitioned SVD control projector, 3-band `bESR` Gram stats, Dual-Ridge `float64` Kronecker solver, and `.dnam-ckpt` resume.
 - [`wav_io.py`](wav_io.py): 16/24/32-bit PCM & 32-bit IEEE-754 float WAV I/O.
 - [`arena.py`](arena.py): 64B-aligned `Arena 0..4` weight/checkpoint layout & `Ed25519` container builder.
-- [`telemetry.py`](telemetry.py): Polars + Altair `bESR` convergence Parquet & HTML reports.
+- [`telemetry.py`](telemetry.py): JSONL + Altair `bESR` convergence `telemetry.jsonl` & HTML reports.
 - [`pipeline.py`](pipeline.py) & [`backends.py`](backends.py): `DnamTriPhysicsModel`, 4-Stage `DnamTrainer`, and local/remote backends.
 
 ## 2. Canonical Specifications & Guides

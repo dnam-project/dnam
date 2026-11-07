@@ -7,7 +7,7 @@ name = "dnam-trainer"
 version = "0.1.0"
 description = "PyTorch 4-Stage Differentiable Trainer, Multi-Model Project Manager & Capture Pipeline for Dynamic Neural Audio Modeler (DNAM)"
 readme = "README.md"
-requires-python = ">=3.14"
+requires-python = ">=3.15"
 license = { text = "LicenseRef-DNAM-1.0.0" }
 dependencies = [
     "dnam",
@@ -15,7 +15,6 @@ dependencies = [
     "pydantic>=2.10.0",
     "cyclopts>=5.0.0",
     "torch>=2.6.0",
-    "polars>=1.20.0",
     "altair>=5.5.0",
 ]
 
@@ -24,17 +23,22 @@ audio = [
     "sounddevice>=0.5.0",
 ]
 rocm = [
-    "rocm; sys_platform == 'linux'",
-    "rocm-sdk-core; sys_platform == 'linux'",
-    "rocm-sdk-libraries; sys_platform == 'linux'",
-    "rocm-sdk-device-gfx1201; sys_platform == 'linux'",
-    "amd-torch-device-gfx12-0; sys_platform == 'linux'",
-    "amd-torch-device-gfx1201; sys_platform == 'linux'",
-    "triton; sys_platform == 'linux'",
+    "rocm[libraries]==10.0.*; sys_platform == 'linux'",
+    "rocm-sdk-core==10.0.*; sys_platform == 'linux'",
+    "rocm-sdk-libraries==10.0.*; sys_platform == 'linux'",
+    "triton-rocm~=3.9.0; sys_platform == 'linux'",
 ]
-tpu = [
-    "torch-tpu; sys_platform == 'linux'",
-]
+rocm-gfx1100 = ["dnam-trainer[rocm]", "rocm-sdk-device-gfx1100==10.0.*; sys_platform == 'linux'"]
+rocm-gfx1101 = ["dnam-trainer[rocm]", "rocm-sdk-device-gfx1101==10.0.*; sys_platform == 'linux'"]
+rocm-gfx1102 = ["dnam-trainer[rocm]", "rocm-sdk-device-gfx1102==10.0.*; sys_platform == 'linux'"]
+rocm-gfx1151 = ["dnam-trainer[rocm]", "rocm-sdk-device-gfx1151==10.0.*; sys_platform == 'linux'"]
+rocm-gfx1200 = ["dnam-trainer[rocm]", "rocm-sdk-device-gfx1200==10.0.*; sys_platform == 'linux'"]
+rocm-gfx1201 = ["dnam-trainer[rocm]", "rocm-sdk-device-gfx1201==10.0.*; sys_platform == 'linux'"]
+rocm-gfx1250 = ["dnam-trainer[rocm]", "rocm-sdk-device-gfx1250==10.0.*; sys_platform == 'linux'"]
+rocm-gfx90a = ["dnam-trainer[rocm]", "rocm-sdk-device-gfx90a==10.0.*; sys_platform == 'linux'"]
+rocm-gfx942 = ["dnam-trainer[rocm]", "rocm-sdk-device-gfx942==10.0.*; sys_platform == 'linux'"]
+rocm-gfx950 = ["dnam-trainer[rocm]", "rocm-sdk-device-gfx950==10.0.*; sys_platform == 'linux'"]
+tpu = []
 
 [project.scripts]
 dnam-train = "dnam_trainer.cli:main"

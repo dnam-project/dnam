@@ -94,22 +94,88 @@ def test_engine_process_into_ffi_overhead_within_1_10x_budget(
         native.process_stereo_2d(audio, out, None)
         eng.process_into(audio, out)
 
-    iters = 5_000
-    t0 = time.perf_counter_ns()
-    for _ in range(iters):
-        native.process_stereo_2d(audio, out, None)
-    t_native = time.perf_counter_ns() - t0
+    iters = 2_000
+    native_rounds: list[int] = []
+    sdk_rounds: list[int] = []
+    for _ in range(5):
+        t0 = time.perf_counter_ns()
+        for _ in range(iters):
+            native.process_stereo_2d(audio, out, None)
+        native_rounds.append(time.perf_counter_ns() - t0)
 
-    t1 = time.perf_counter_ns()
-    for _ in range(iters):
-        eng.process_into(audio, out)
-    t_sdk = time.perf_counter_ns() - t1
+        t1 = time.perf_counter_ns()
+        for _ in range(iters):
+            eng.process_into(audio, out)
+        sdk_rounds.append(time.perf_counter_ns() - t1)
 
+    t_native = min(native_rounds)
+    t_sdk = min(sdk_rounds)
     ratio = t_sdk / max(t_native, 1)
     assert ratio <= 1.10, (
         f"SDK process_into overhead ratio {ratio:.4f}x exceeds 1.10x budget "
         f"(sdk={t_sdk / iters:.1f} ns vs native={t_native / iters:.1f} ns)"
     )
+
+
+def test_bench_parallel_multi_thread_engine_scaling(
+    benchmark: BenchmarkFixture,
+    reference_model: dnam.Model,
+) -> None:
+    """verify[sdk.python.engine.free-threading]
+    Benchmarks 4 independent `Engine` instances rendering stereo blocks in parallel across 4 OS
+    threads via `py.detach` and verifies `sys._is_gil_enabled() is False` + multi-thread scaling.
+    """
+    import sys
+    import sysconfig
+    from concurrent.futures import ThreadPoolExecutor
+
+    if sysconfig.get_config_var("Py_GIL_DISABLED") == 1:
+        is_gil_enabled = getattr(sys, "_is_gil_enabled", None)
+        assert callable(is_gil_enabled)
+        assert is_gil_enabled() is False
+
+    num_threads = 4
+    blocks_per_task = 16
+    engines = [
+        dnam.Engine(reference_model, sample_rate=48_000, tier=Tier.FULL) for _ in range(num_threads)
+    ]
+    inputs = [np.zeros((2, 1024), dtype=np.float32) for _ in range(num_threads)]
+    outputs = [np.empty((2, 1024), dtype=np.float32) for _ in range(num_threads)]
+
+    def _render_one(idx: int) -> None:
+        eng = engines[idx]
+        inp = inputs[idx]
+        out = outputs[idx]
+        for _ in range(blocks_per_task):
+            eng.process_into(inp, out)
+
+    with ThreadPoolExecutor(max_workers=num_threads) as pool:
+        for _ in range(3):
+            list(pool.map(_render_one, range(num_threads)))
+
+        seq_times: list[int] = []
+        par_times: list[int] = []
+        for _ in range(5):
+            t0 = time.perf_counter_ns()
+            for idx in range(num_threads):
+                _render_one(idx)
+            seq_times.append(time.perf_counter_ns() - t0)
+
+            t1 = time.perf_counter_ns()
+            list(pool.map(_render_one, range(num_threads)))
+            par_times.append(time.perf_counter_ns() - t1)
+
+        def _parallel_batch() -> None:
+            list(pool.map(_render_one, range(num_threads)))
+
+        benchmark(_parallel_batch)
+
+    speedup = min(seq_times) / max(min(par_times), 1)
+    assert speedup >= 1.25, (
+        f"Expected parallel 4-thread speedup >= 1.25x, got {speedup:.2f}x "
+        f"(seq={min(seq_times) / 1e6:.2f} ms vs par={min(par_times) / 1e6:.2f} ms)"
+    )
+    assert outputs[0].shape == (2, 1024)
 
 
 # ---------------------------------------------------------------------------

@@ -31,15 +31,19 @@ pub fn native_pack_uplo_u_f64<'py>(
         )));
     }
     let slice = slice_1d(&dense_flat, "dense_flat")?;
-    let packed_len = uplo_u_packed_len(n_dim);
-    let mut out = vec![0.0_f64; packed_len];
-    pack_uplo_u_f64(slice, n_dim, &mut out);
+    let out = py.detach(|| {
+        let packed_len = uplo_u_packed_len(n_dim);
+        let mut out = vec![0.0_f64; packed_len];
+        pack_uplo_u_f64(slice, n_dim, &mut out);
+        out
+    });
     Ok(PyArray1::from_vec(py, out))
 }
 
 /// Zero-copy in-place packing of a flattened row-major $N \times N$ symmetric matrix into `out_packed`.
 #[pyfunction]
 pub fn native_pack_uplo_u_f64_into<'py>(
+    py: Python<'py>,
     dense_flat: PyReadonlyArray1<'py, f64>,
     n_dim: usize,
     mut out_packed: PyReadwriteArray1<'py, f64>,
@@ -60,7 +64,7 @@ pub fn native_pack_uplo_u_f64_into<'py>(
     }
     let slice = slice_1d(&dense_flat, "dense_flat")?;
     let out_slice = slice_1d_mut(&mut out_packed, "out_packed")?;
-    pack_uplo_u_f64(slice, n_dim, out_slice);
+    py.detach(|| pack_uplo_u_f64(slice, n_dim, out_slice));
     Ok(())
 }
 
@@ -79,14 +83,18 @@ pub fn native_unpack_uplo_u_f64<'py>(
         )));
     }
     let slice = slice_1d(&packed_u, "packed_u")?;
-    let mut out = vec![0.0_f64; n_tier * n_tier];
-    unpack_uplo_u_f64(slice, n_tier, &mut out);
+    let out = py.detach(|| {
+        let mut out = vec![0.0_f64; n_tier * n_tier];
+        unpack_uplo_u_f64(slice, n_tier, &mut out);
+        out
+    });
     Ok(PyArray1::from_vec(py, out))
 }
 
 /// Zero-copy unpacking of a `LAPACK uplo='U'` buffer directly into a 2D `(n_tier, n_tier)` NumPy array.
 #[pyfunction]
 pub fn native_unpack_uplo_u_f64_into<'py>(
+    py: Python<'py>,
     packed_u: PyReadonlyArray1<'py, f64>,
     n_tier: usize,
     mut out_dense: PyReadwriteArray2<'py, f64>,
@@ -106,7 +114,7 @@ pub fn native_unpack_uplo_u_f64_into<'py>(
     }
     let slice = slice_1d(&packed_u, "packed_u")?;
     let out_slice = slice_2d_mut(&mut out_dense, "out_dense")?;
-    unpack_uplo_u_f64(slice, n_tier, out_slice);
+    py.detach(|| unpack_uplo_u_f64(slice, n_tier, out_slice));
     Ok(())
 }
 

@@ -31,9 +31,12 @@ pub fn native_chacha20_xor_arena<'py>(
 ) -> PyResult<Bound<'py, PyBytes>> {
     let key = check_len::<32>(key_32, "key_32")?;
     let nonce = check_len::<12>(nonce_12, "nonce_12")?;
-    let mut buf = arena_bytes.to_vec();
-    chacha20_xor_arena_blocks(&mut buf, &key, &nonce, start_block_counter)
-        .map_err(dnam_err_to_py)?;
+    let buf = py.detach(|| -> PyResult<Vec<u8>> {
+        let mut buf = arena_bytes.to_vec();
+        chacha20_xor_arena_blocks(&mut buf, &key, &nonce, start_block_counter)
+            .map_err(dnam_err_to_py)?;
+        Ok(buf)
+    })?;
     Ok(PyBytes::new(py, &buf))
 }
 
@@ -41,6 +44,7 @@ pub fn native_chacha20_xor_arena<'py>(
 /// returning the lowercase hex `wrapped_cek`.
 #[pyfunction]
 pub fn native_wrap_device_cek_hex(
+    py: Python<'_>,
     ephemeral_secret_32: &[u8],
     device_pubkey_32: &[u8],
     device_id_hash: &str,
@@ -49,9 +53,11 @@ pub fn native_wrap_device_cek_hex(
     let eph = check_len::<32>(ephemeral_secret_32, "ephemeral_secret_32")?;
     let dev_pk = check_len::<32>(device_pubkey_32, "device_pubkey_32")?;
     let cek = check_len::<32>(cek_32, "cek_32")?;
-    let wrapped = RustCryptoProvider::wrap_device_cek(&eph, &dev_pk, device_id_hash, &cek)
-        .map_err(dnam_err_to_py)?;
-    Ok(encode_hex(&wrapped))
+    py.detach(|| {
+        let wrapped = RustCryptoProvider::wrap_device_cek(&eph, &dev_pk, device_id_hash, &cek)
+            .map_err(dnam_err_to_py)?;
+        Ok(encode_hex(&wrapped))
+    })
 }
 
 /// Seals an inner `.dnam` container into a 64-byte aligned `.dnam-seal` (`b"DNSL"`) hardware-bound envelope.
@@ -67,35 +73,37 @@ pub fn native_seal_container<'py>(
     cek_32: &[u8],
     nonce_12: &[u8],
 ) -> PyResult<Bound<'py, PyBytes>> {
-    let certs: Vec<OemDeviceCertificate> =
-        serde_json::from_str(recipient_certs_json).map_err(validation_err)?;
-    let oem_map: BTreeMap<String, String> =
-        serde_json::from_str(trusted_oem_pubkeys_json).map_err(validation_err)?;
-    let mut trusted_owned: Vec<(String, [u8; 32])> = Vec::with_capacity(oem_map.len());
-    for (vendor, pk_hex) in oem_map {
-        let pk = decode_hex_array::<32>(&pk_hex).map_err(dnam_err_to_py)?;
-        trusted_owned.push((vendor, pk));
-    }
-    let trusted_refs: Vec<(&str, [u8; 32])> = trusted_owned
-        .iter()
-        .map(|(v, pk)| (v.as_str(), *pk))
-        .collect();
-
     let mkt_seed = check_len::<32>(marketplace_seed_32, "marketplace_seed_32")?;
     let eph_sec = check_len::<32>(ephemeral_secret_32, "ephemeral_secret_32")?;
     let cek = check_len::<32>(cek_32, "cek_32")?;
     let nonce = check_len::<12>(nonce_12, "nonce_12")?;
 
-    let sealed = seal_dnam_container(
-        inner_dnam_bytes,
-        &certs,
-        &trusted_refs,
-        &mkt_seed,
-        &eph_sec,
-        &cek,
-        &nonce,
-    )
-    .map_err(dnam_err_to_py)?;
+    let sealed = py.detach(|| -> PyResult<Vec<u8>> {
+        let certs: Vec<OemDeviceCertificate> =
+            serde_json::from_str(recipient_certs_json).map_err(validation_err)?;
+        let oem_map: BTreeMap<String, String> =
+            serde_json::from_str(trusted_oem_pubkeys_json).map_err(validation_err)?;
+        let mut trusted_owned: Vec<(String, [u8; 32])> = Vec::with_capacity(oem_map.len());
+        for (vendor, pk_hex) in oem_map {
+            let pk = decode_hex_array::<32>(&pk_hex).map_err(dnam_err_to_py)?;
+            trusted_owned.push((vendor, pk));
+        }
+        let trusted_refs: Vec<(&str, [u8; 32])> = trusted_owned
+            .iter()
+            .map(|(v, pk)| (v.as_str(), *pk))
+            .collect();
+
+        seal_dnam_container(
+            inner_dnam_bytes,
+            &certs,
+            &trusted_refs,
+            &mkt_seed,
+            &eph_sec,
+            &cek,
+            &nonce,
+        )
+        .map_err(dnam_err_to_py)
+    })?;
     Ok(PyBytes::new(py, &sealed))
 }
 
@@ -110,16 +118,18 @@ pub fn native_unseal_container<'py>(
     device_secret_32: Option<&[u8]>,
     trusted_marketplace_pubkey_hex: Option<&str>,
 ) -> PyResult<Bound<'py, PyBytes>> {
-    let mut crypto = RustCryptoProvider::new();
-    if let (Some(id), Some(sec)) = (device_id_hash, device_secret_32) {
-        let sec_arr = check_len::<32>(sec, "device_secret_32")?;
-        crypto = crypto.with_device_key(id, sec_arr);
-    }
-    if let Some(mkt_pk_hex) = trusted_marketplace_pubkey_hex {
-        let mkt_pk = decode_hex_array::<32>(mkt_pk_hex).map_err(dnam_err_to_py)?;
-        crypto = crypto.with_marketplace_pubkey(mkt_pk);
-    }
-    let unsealed = unseal_dnam_container(sealed_bytes, &crypto).map_err(dnam_err_to_py)?;
+    let unsealed = py.detach(|| -> PyResult<Vec<u8>> {
+        let mut crypto = RustCryptoProvider::new();
+        if let (Some(id), Some(sec)) = (device_id_hash, device_secret_32) {
+            let sec_arr = check_len::<32>(sec, "device_secret_32")?;
+            crypto = crypto.with_device_key(id, sec_arr);
+        }
+        if let Some(mkt_pk_hex) = trusted_marketplace_pubkey_hex {
+            let mkt_pk = decode_hex_array::<32>(mkt_pk_hex).map_err(dnam_err_to_py)?;
+            crypto = crypto.with_marketplace_pubkey(mkt_pk);
+        }
+        unseal_dnam_container(sealed_bytes, &crypto).map_err(dnam_err_to_py)
+    })?;
     Ok(PyBytes::new(py, &unsealed))
 }
 

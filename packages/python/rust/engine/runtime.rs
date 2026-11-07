@@ -19,108 +19,146 @@ fn parse_subdivision(subdivision: Option<&str>) -> PyResult<Option<TempoSubdivis
 
 impl PyEngine {
     pub(crate) fn reload_impl(
-        &mut self,
+        &self,
+        py: Python<'_>,
         container_bytes: &[u8],
         tier: Option<u8>,
         sample_rate_hz: Option<u32>,
     ) -> PyResult<()> {
-        let target_tier = tier.map_or_else(|| self.inner.tier(), Tier::from_u8);
-        let target_sr = sample_rate_hz.unwrap_or_else(|| self.inner.sample_rate_hz());
-        self.inner
-            .reload_model_in_place_owned(container_bytes, target_tier, target_sr)
-            .map_err(dnam_err_to_py)
+        py.detach(|| {
+            let mut inner = self.lock_inner();
+            let target_tier = tier.map_or_else(|| inner.tier(), Tier::from_u8);
+            let target_sr = sample_rate_hz.unwrap_or_else(|| inner.sample_rate_hz());
+            inner.reload_model_in_place_owned(container_bytes, target_tier, target_sr)
+        })
+        .map_err(dnam_err_to_py)
     }
 
-    pub(crate) fn set_sample_rate_impl(&mut self, sample_rate_hz: u32) -> PyResult<()> {
-        self.inner
-            .set_sample_rate(sample_rate_hz)
+    pub(crate) fn set_sample_rate_impl(&self, py: Python<'_>, sample_rate_hz: u32) -> PyResult<()> {
+        py.detach(|| self.lock_inner().set_sample_rate(sample_rate_hz))
             .map_err(dnam_err_to_py)
     }
 
     #[inline]
-    pub(crate) fn clamped_control_value_impl(&self, ctrl_idx: usize) -> PyResult<f32> {
-        self.inner
-            .clamped_control_values()
-            .get(ctrl_idx)
-            .copied()
-            .ok_or_else(|| {
-                control_err(format!(
-                    "control index {ctrl_idx} out of bounds (num_controls={})",
-                    self.inner.num_controls()
-                ))
-            })
+    pub(crate) fn clamped_control_value_impl(
+        &self,
+        py: Python<'_>,
+        ctrl_idx: usize,
+    ) -> PyResult<f32> {
+        let (opt_val, num_controls) = py.detach(|| {
+            let inner = self.lock_inner();
+            (
+                inner.clamped_control_values().get(ctrl_idx).copied(),
+                inner.num_controls(),
+            )
+        });
+        opt_val.ok_or_else(|| {
+            control_err(format!(
+                "control index {ctrl_idx} out of bounds (num_controls={num_controls})"
+            ))
+        })
     }
 
-    pub(crate) fn set_control_value_impl(&mut self, ctrl_idx: usize, value: f32) -> PyResult<()> {
-        if ctrl_idx >= self.inner.num_controls() {
+    pub(crate) fn set_control_value_impl(
+        &self,
+        py: Python<'_>,
+        ctrl_idx: usize,
+        value: f32,
+    ) -> PyResult<()> {
+        let err_num = py.detach(|| {
+            let mut inner = self.lock_inner();
+            let num_controls = inner.num_controls();
+            if ctrl_idx >= num_controls {
+                Some(num_controls)
+            } else {
+                inner.set_control_value(ctrl_idx, value);
+                None
+            }
+        });
+        if let Some(num_controls) = err_num {
             return Err(control_err(format!(
-                "control index {ctrl_idx} out of bounds (num_controls={})",
-                self.inner.num_controls()
+                "control index {ctrl_idx} out of bounds (num_controls={num_controls})"
             )));
         }
-        self.inner.set_control_value(ctrl_idx, value);
         Ok(())
     }
 
     pub(crate) fn set_control_immediate_impl(
-        &mut self,
+        &self,
+        py: Python<'_>,
         ctrl_idx: usize,
         value: f32,
     ) -> PyResult<()> {
-        if ctrl_idx >= self.inner.num_controls() {
+        let err_num = py.detach(|| {
+            let mut inner = self.lock_inner();
+            let num_controls = inner.num_controls();
+            if ctrl_idx >= num_controls {
+                Some(num_controls)
+            } else {
+                inner.set_control_immediate(ctrl_idx, value);
+                None
+            }
+        });
+        if let Some(num_controls) = err_num {
             return Err(control_err(format!(
-                "control index {ctrl_idx} out of bounds (num_controls={})",
-                self.inner.num_controls()
+                "control index {ctrl_idx} out of bounds (num_controls={num_controls})"
             )));
         }
-        self.inner.set_control_immediate(ctrl_idx, value);
         Ok(())
     }
 
     pub(crate) fn set_controls_immediate_batch_impl(
-        &mut self,
+        &self,
+        py: Python<'_>,
         updates: &[(usize, f32)],
     ) -> PyResult<()> {
-        let num_controls = self.inner.num_controls();
-        for &(ctrl_idx, _) in updates {
-            if ctrl_idx >= num_controls {
-                return Err(control_err(format!(
-                    "control index {ctrl_idx} out of bounds (num_controls={num_controls})"
-                )));
+        let err_pair = py.detach(|| {
+            let mut inner = self.lock_inner();
+            let num_controls = inner.num_controls();
+            for &(ctrl_idx, _) in updates {
+                if ctrl_idx >= num_controls {
+                    return Some((ctrl_idx, num_controls));
+                }
             }
+            if let Some((&(last_idx, last_val), init)) = updates.split_last() {
+                for &(idx, val) in init {
+                    inner.set_control_value(idx, val);
+                }
+                inner.set_control_immediate(last_idx, last_val);
+            }
+            None
+        });
+        if let Some((ctrl_idx, num_controls)) = err_pair {
+            return Err(control_err(format!(
+                "control index {ctrl_idx} out of bounds (num_controls={num_controls})"
+            )));
         }
-        let Some((&(last_idx, last_val), init)) = updates.split_last() else {
-            return Ok(());
-        };
-        for &(idx, val) in init {
-            self.inner.set_control_value(idx, val);
-        }
-        self.inner.set_control_immediate(last_idx, last_val);
         Ok(())
     }
 
     pub(crate) fn sync_tempo_impl(
-        &mut self,
+        &self,
+        py: Python<'_>,
         bpm: f32,
         subdivision: Option<&str>,
         fold_octave: bool,
     ) -> PyResult<usize> {
         let sub = parse_subdivision(subdivision)?;
-        Ok(self.inner.sync_tempo(bpm, sub, fold_octave))
+        Ok(py.detach(|| self.lock_inner().sync_tempo(bpm, sub, fold_octave)))
     }
 
     pub(crate) fn register_tap_tempo_impl(
-        &mut self,
+        &self,
+        py: Python<'_>,
         subdivision: Option<&str>,
         fold_octave: bool,
     ) -> PyResult<(f32, usize)> {
         let sub = parse_subdivision(subdivision)?;
-        Ok(self.inner.register_tap_tempo(sub, fold_octave))
+        Ok(py.detach(|| self.lock_inner().register_tap_tempo(sub, fold_octave)))
     }
 
-    pub(crate) fn apply_preset_impl(&mut self, preset_id: &str) -> PyResult<()> {
-        self.inner
-            .apply_preset(preset_id)
+    pub(crate) fn apply_preset_impl(&self, py: Python<'_>, preset_id: &str) -> PyResult<()> {
+        py.detach(|| self.lock_inner().apply_preset(preset_id))
             .map_err(|e| control_err(format!("{e}")))
     }
 }

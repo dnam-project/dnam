@@ -43,7 +43,7 @@ DNAM is organized as a multi-language workspace across `docs/`, `packages/*`, an
 
 ## 3. Workspace Setup, Local Development & Verification Commands
 
-DNAM uses **`mise`** ([`mise.toml`](mise.toml)) to provision toolchains and **`moon`** ([`.moon/workspace.yml`](.moon/workspace.yml)) to orchestrate and cache tasks across **`cargo`** (Rust 2024 edition, `1.99+`), **`uv`** (Python `3.14`), and **`pnpm`** (Node.js `24` / `26` LTS):
+DNAM uses **`mise`** ([`mise.toml`](mise.toml)) to provision toolchains and **`moon`** ([`.moon/workspace.yml`](.moon/workspace.yml)) to orchestrate and cache tasks across **`cargo`** (Rust 2024 edition, `1.99+`), **`uv`** (Python `3.15t` free-threaded dev runtime, `uv >= 0.13.7`), and **`pnpm`** (Node.js `24` / `26` LTS):
 
 ### 3.1 Setup & Local Development (CLI, Desktop Studio UI & React Cosmos)
 

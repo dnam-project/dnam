@@ -1,8 +1,12 @@
-"""Standalone Scalene CPU/memory/copy profiling driver for the `dnam` Python SDK.
+"""Standalone PEP 799 (`profiling.sampling` / `profiling.tracing`) CPU & native call-stack
+profiling driver for the `dnam` Python SDK.
 
 Run via:
   moon run python:profile
-  uv run --no-sync scalene run --cli packages/python/tests/benchmarks/profile_sdk.py
+  uv run --no-sync python -m profiling.sampling run --native --mode cpu \
+      --flamegraph -o target/profile_sdk.html \
+      packages/python/tests/benchmarks/profile_sdk.py
+  uv run --no-sync python -m profiling.tracing packages/python/tests/benchmarks/profile_sdk.py
 """
 
 from __future__ import annotations

@@ -30,6 +30,7 @@ pub fn native_catmull_rom_hermite(s_m1: f64, s_0: f64, s_1: f64, s_2: f64, mu: f
 /// Vectorized 4-tap Catmull-Rom cubic Hermite evaluation over 1D `f64` slices.
 #[pyfunction]
 pub fn native_catmull_rom_hermite_slice<'py>(
+    py: Python<'py>,
     s_m1: PyReadonlyArray1<'py, f64>,
     s_0: PyReadonlyArray1<'py, f64>,
     s_1: PyReadonlyArray1<'py, f64>,
@@ -49,9 +50,11 @@ pub fn native_catmull_rom_hermite_slice<'py>(
     let s2 = slice_1d(&s_2, "s_2")?;
     let m = slice_1d(&mu, "mu")?;
     let o = slice_1d_mut(&mut out, "out")?;
-    for i in 0..n {
-        o[i] = catmull_rom_hermite_f64(sm1[i], s0[i], s1[i], s2[i], m[i]);
-    }
+    py.detach(|| {
+        for i in 0..n {
+            o[i] = catmull_rom_hermite_f64(sm1[i], s0[i], s1[i], s2[i], m[i]);
+        }
+    });
     Ok(())
 }
 
@@ -81,6 +84,7 @@ pub fn native_op_t_coercive_step(
 /// Processes a contiguous `f64` slice through the reference Op-T coercive tank loop.
 #[pyfunction]
 pub fn native_op_t_tank_slice<'py>(
+    py: Python<'py>,
     input: PyReadonlyArray1<'py, f64>,
     mut output: PyReadwriteArray1<'py, f64>,
     g_lin: f64,
@@ -95,7 +99,7 @@ pub fn native_op_t_tank_slice<'py>(
     }
     let inp = slice_1d(&input, "input")?;
     let out = slice_1d_mut(&mut output, "output")?;
-    op_t_tank_slice_f64(inp, out, g_lin, sigma_knee, v_ceil, r_dc);
+    py.detach(|| op_t_tank_slice_f64(inp, out, g_lin, sigma_knee, v_ceil, r_dc));
     Ok(())
 }
 
@@ -139,6 +143,7 @@ pub fn native_op_m_modal_step(
 #[pyfunction]
 #[allow(clippy::too_many_arguments)]
 pub fn native_op_m_modal_slice<'py>(
+    py: Python<'py>,
     input: PyReadonlyArray1<'py, f64>,
     mut output: PyReadwriteArray1<'py, f64>,
     r_low: f64,
@@ -160,26 +165,29 @@ pub fn native_op_m_modal_slice<'py>(
     }
     let inp = slice_1d(&input, "input")?;
     let out = slice_1d_mut(&mut output, "output")?;
-    if reset {
-        z_re = 0.0;
-        z_im = 0.0;
-    }
-    for (&x, y) in inp.iter().zip(out.iter_mut()) {
-        *y = op_m_modal_step_f64(
-            x,
-            r_low,
-            dr_span,
-            w_sel,
-            b_gamma_norm,
-            c_real,
-            c_imag,
-            u_rot_cos,
-            u_rot_sin,
-            &mut z_re,
-            &mut z_im,
-        );
-    }
-    Ok((z_re, z_im))
+    let (next_re, next_im) = py.detach(|| {
+        if reset {
+            z_re = 0.0;
+            z_im = 0.0;
+        }
+        for (&x, y) in inp.iter().zip(out.iter_mut()) {
+            *y = op_m_modal_step_f64(
+                x,
+                r_low,
+                dr_span,
+                w_sel,
+                b_gamma_norm,
+                c_real,
+                c_imag,
+                u_rot_cos,
+                u_rot_sin,
+                &mut z_re,
+                &mut z_im,
+            );
+        }
+        (z_re, z_im)
+    });
+    Ok((next_re, next_im))
 }
 
 /// Quadrant-reduced contractive unit-circle rotor returning `(cos_theta, sin_theta)`.
@@ -191,6 +199,7 @@ pub fn native_unit_rotor(phi: f32) -> (f32, f32) {
 /// Vectorized unit-circle rotor evaluation over a 1D `f64` slice into `(2, N)`.
 #[pyfunction]
 pub fn native_unit_rotor_slice<'py>(
+    py: Python<'py>,
     phi: PyReadonlyArray1<'py, f64>,
     mut out: PyReadwriteArray2<'py, f64>,
 ) -> PyResult<()> {
@@ -200,12 +209,14 @@ pub fn native_unit_rotor_slice<'py>(
     if out_slice.len() != 2 * n {
         return Err(validation_err("unit_rotor output shape must be (2, N)"));
     }
-    let (cos_row, sin_row) = out_slice.split_at_mut(n);
-    for (i, &p_val) in p_slice.iter().enumerate() {
-        let (c, s) = algebraic_unit_rotor(p_val as f32);
-        cos_row[i] = f64::from(c);
-        sin_row[i] = f64::from(s);
-    }
+    py.detach(|| {
+        let (cos_row, sin_row) = out_slice.split_at_mut(n);
+        for (i, &p_val) in p_slice.iter().enumerate() {
+            let (c, s) = algebraic_unit_rotor(p_val as f32);
+            cos_row[i] = f64::from(c);
+            sin_row[i] = f64::from(s);
+        }
+    });
     Ok(())
 }
 
@@ -245,6 +256,7 @@ pub fn native_poly_adaa_step(
 #[pyfunction]
 #[allow(clippy::too_many_arguments)]
 pub fn native_poly_adaa_slice<'py>(
+    py: Python<'py>,
     input: PyReadonlyArray1<'py, f64>,
     mut output: PyReadwriteArray1<'py, f64>,
     b_conv: f64,
@@ -265,25 +277,28 @@ pub fn native_poly_adaa_slice<'py>(
     let inp = slice_1d(&input, "input")?;
     let out = slice_1d_mut(&mut output, "output")?;
 
-    if reset {
-        let u_rest = (b_conv * (2.0 / 3.0)).clamp(-1.0, 1.0);
-        let u2 = u_rest * u_rest;
-        let g_rest = beta * u_rest * (1.5 - 0.5 * u2) + delta * (u2 - u2 * u2);
-        u_prev = u_rest;
-        a_prev = g_rest;
-        m_dc = g_rest;
-    }
-    for (&x, y) in inp.iter().zip(out.iter_mut()) {
-        let u_curr = ((x + b_conv) * (2.0 / 3.0)).clamp(-1.0, 1.0);
-        let a_curr = poly_adaa_algebraic_f64(u_prev, u_curr, beta, delta);
-        let y_nl = 0.875 * a_curr + 0.125 * a_prev;
-        let m_dc_curr = r_ac * m_dc + (1.0 - r_ac) * y_nl;
-        u_prev = u_curr;
-        a_prev = a_curr;
-        m_dc = m_dc_curr;
-        *y = alpha * x + (y_nl - m_dc_curr);
-    }
-    Ok((u_prev, a_prev, m_dc))
+    let (next_u, next_a, next_m) = py.detach(|| {
+        if reset {
+            let u_rest = (b_conv * (2.0 / 3.0)).clamp(-1.0, 1.0);
+            let u2 = u_rest * u_rest;
+            let g_rest = beta * u_rest * (1.5 - 0.5 * u2) + delta * (u2 - u2 * u2);
+            u_prev = u_rest;
+            a_prev = g_rest;
+            m_dc = g_rest;
+        }
+        for (&x, y) in inp.iter().zip(out.iter_mut()) {
+            let u_curr = ((x + b_conv) * (2.0 / 3.0)).clamp(-1.0, 1.0);
+            let a_curr = poly_adaa_algebraic_f64(u_prev, u_curr, beta, delta);
+            let y_nl = 0.875 * a_curr + 0.125 * a_prev;
+            let m_dc_curr = r_ac * m_dc + (1.0 - r_ac) * y_nl;
+            u_prev = u_curr;
+            a_prev = a_curr;
+            m_dc = m_dc_curr;
+            *y = alpha * x + (y_nl - m_dc_curr);
+        }
+        (u_prev, a_prev, m_dc)
+    });
+    Ok((next_u, next_a, next_m))
 }
 
 // ============================================================================
@@ -299,6 +314,7 @@ pub fn native_eval_lobatto_basis(u: f64, anchors: [f64; 3], degree: usize) -> [f
 /// Vectorized Node-Anchored Newton/Lobatto basis evaluation over a 1D `f64` slice into `(N, 3)`.
 #[pyfunction]
 pub fn native_eval_lobatto_basis_slice<'py>(
+    py: Python<'py>,
     u: PyReadonlyArray1<'py, f64>,
     mut out: PyReadwriteArray2<'py, f64>,
     anchors: [f64; 3],
@@ -310,15 +326,18 @@ pub fn native_eval_lobatto_basis_slice<'py>(
     if out_rows.len() != u_slice.len() {
         return Err(validation_err("LobattoBasis output shape must be (N, 3)"));
     }
-    for (&u_val, row) in u_slice.iter().zip(out_rows.iter_mut()) {
-        *row = eval_newton_lobatto_basis_f64(u_val, anchors, degree);
-    }
+    py.detach(|| {
+        for (&u_val, row) in u_slice.iter().zip(out_rows.iter_mut()) {
+            *row = eval_newton_lobatto_basis_f64(u_val, anchors, degree);
+        }
+    });
     Ok(())
 }
 
 /// Rank-4 Factorization Machine interaction evaluation (`ref[dsp.ctrl.accum.anova-fm]`).
 #[pyfunction]
 pub fn native_eval_rank4_fm<'py>(
+    py: Python<'py>,
     features: PyReadonlyArray1<'py, f64>,
     v_factors_flat: PyReadonlyArray1<'py, f64>,
 ) -> PyResult<[f64; 4]> {
@@ -333,7 +352,7 @@ pub fn native_eval_rank4_fm<'py>(
     let feat = slice_1d(&features, "features")?;
     let vf_slice = slice_1d(&v_factors_flat, "v_factors")?;
     let (v_rows, _) = vf_slice.as_chunks::<4>();
-    Ok(eval_rank4_fm_interaction_f64(feat, v_rows))
+    Ok(py.detach(|| eval_rank4_fm_interaction_f64(feat, v_rows)))
 }
 
 /// 4-Harmonic Chebyshev LFO polynomial evaluation (`ref[dsp.op-n.ctrl.chebyshev-lfo]`).
@@ -345,6 +364,7 @@ pub fn native_eval_chebyshev_lfo(cos_phi: f64) -> [f64; 4] {
 /// Vectorized 4-Harmonic Chebyshev LFO evaluation over a 1D `f64` slice into `(N, 4)`.
 #[pyfunction]
 pub fn native_eval_chebyshev_lfo_slice<'py>(
+    py: Python<'py>,
     cos_phi: PyReadonlyArray1<'py, f64>,
     mut out: PyReadwriteArray2<'py, f64>,
 ) -> PyResult<()> {
@@ -354,9 +374,11 @@ pub fn native_eval_chebyshev_lfo_slice<'py>(
     if out_rows.len() != c_slice.len() {
         return Err(validation_err("chebyshev_lfo output shape must be (N, 4)"));
     }
-    for (&c_val, row) in c_slice.iter().zip(out_rows.iter_mut()) {
-        *row = eval_chebyshev_lfo_4harm_f64(c_val);
-    }
+    py.detach(|| {
+        for (&c_val, row) in c_slice.iter().zip(out_rows.iter_mut()) {
+            *row = eval_chebyshev_lfo_4harm_f64(c_val);
+        }
+    });
     Ok(())
 }
 
@@ -369,6 +391,7 @@ pub fn native_eval_trust_region_softclip(z: f64, mh: f64) -> f64 {
 /// Vectorized cubic trust-region soft-clipper over a 1D `f64` slice.
 #[pyfunction]
 pub fn native_eval_trust_region_softclip_slice<'py>(
+    py: Python<'py>,
     z: PyReadonlyArray1<'py, f64>,
     mut out: PyReadwriteArray1<'py, f64>,
     mh: f64,
@@ -380,9 +403,11 @@ pub fn native_eval_trust_region_softclip_slice<'py>(
             "trust_region_softclip input and output lengths must match",
         ));
     }
-    for (&z_val, y_out) in z_slice.iter().zip(out_slice.iter_mut()) {
-        *y_out = eval_trust_region_softclip_f64(z_val, mh);
-    }
+    py.detach(|| {
+        for (&z_val, y_out) in z_slice.iter().zip(out_slice.iter_mut()) {
+            *y_out = eval_trust_region_softclip_f64(z_val, mh);
+        }
+    });
     Ok(())
 }
 
@@ -399,6 +424,7 @@ pub fn native_cubic_lagrange_weights(mu: f64) -> [f64; 4] {
 /// Vectorized 4-tap Cubic Lagrange weights over a 1D `f64` slice into `(N, 4)`.
 #[pyfunction]
 pub fn native_cubic_lagrange_weights_slice<'py>(
+    py: Python<'py>,
     mu: PyReadonlyArray1<'py, f64>,
     mut out: PyReadwriteArray2<'py, f64>,
 ) -> PyResult<()> {
@@ -410,9 +436,11 @@ pub fn native_cubic_lagrange_weights_slice<'py>(
             "cubic_lagrange_weights output shape must be (N, 4)",
         ));
     }
-    for (&m, row) in mu_slice.iter().zip(out_rows.iter_mut()) {
-        *row = cubic_lagrange_weights_f64(m);
-    }
+    py.detach(|| {
+        for (&m, row) in mu_slice.iter().zip(out_rows.iter_mut()) {
+            *row = cubic_lagrange_weights_f64(m);
+        }
+    });
     Ok(())
 }
 

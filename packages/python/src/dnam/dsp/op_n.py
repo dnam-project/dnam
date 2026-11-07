@@ -78,7 +78,12 @@ def poly_adaa_slice(
     next_a_prev, next_m_dc)`.
     """
     inp = coerce_f64_1d(signal, name="signal")
-    target = out if out is not None else np.empty(inp.shape[0], dtype=np.float64)
+    if out is not None:
+        if np.shares_memory(inp, out):
+            inp = inp.copy()
+        target = out
+    else:
+        target = np.empty(inp.shape[0], dtype=np.float64)
     nu, na, nm = native_poly_adaa_slice(
         inp,
         target,

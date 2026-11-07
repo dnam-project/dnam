@@ -52,31 +52,35 @@ pub fn render_reference_stereo<'py>(
     let l_in = slice_1d(&left_in, "left_in")?;
     let r_in = slice_1d(&right_in, "right_in")?;
     let backend_enum = parse_backend_kind(backend)?;
-    let mut eng = DynamicDnamEngine::from_bytes_with_backend(
-        container_bytes,
-        Tier::from_u8(tier),
-        sample_rate_hz,
-        backend_enum,
-    )
-    .map_err(dnam_err_to_py)?;
-    if reset {
-        eng.reset_to_dc_equilibrium();
-    }
-    let mut l_out = vec![0.0_f32; n];
-    let mut r_out = vec![0.0_f32; n];
-    let chunk = block_size.unwrap_or(n).max(1);
-    if chunk >= n {
-        eng.process_block(l_in, r_in, &mut l_out, &mut r_out);
-    } else {
-        for (((li, ri), lo), ro) in l_in
-            .chunks(chunk)
-            .zip(r_in.chunks(chunk))
-            .zip(l_out.chunks_mut(chunk))
-            .zip(r_out.chunks_mut(chunk))
-        {
-            eng.process_block(li, ri, lo, ro);
-        }
-    }
+    let (l_out, r_out) = py
+        .detach(|| {
+            let mut eng = DynamicDnamEngine::from_bytes_with_backend(
+                container_bytes,
+                Tier::from_u8(tier),
+                sample_rate_hz,
+                backend_enum,
+            )?;
+            if reset {
+                eng.reset_to_dc_equilibrium();
+            }
+            let mut l_out = vec![0.0_f32; n];
+            let mut r_out = vec![0.0_f32; n];
+            let chunk = block_size.unwrap_or(n).max(1);
+            if chunk >= n {
+                eng.process_block(l_in, r_in, &mut l_out, &mut r_out);
+            } else {
+                for (((li, ri), lo), ro) in l_in
+                    .chunks(chunk)
+                    .zip(r_in.chunks(chunk))
+                    .zip(l_out.chunks_mut(chunk))
+                    .zip(r_out.chunks_mut(chunk))
+                {
+                    eng.process_block(li, ri, lo, ro);
+                }
+            }
+            Ok((l_out, r_out))
+        })
+        .map_err(dnam_err_to_py)?;
     PyArray2::from_vec2(py, &[l_out, r_out]).map_err(validation_err)
 }
 
@@ -97,30 +101,34 @@ pub fn render_reference_mono_to_stereo<'py>(
     let n = mono_in.len();
     let m_in = slice_1d(&mono_in, "mono_in")?;
     let backend_enum = parse_backend_kind(backend)?;
-    let mut eng = DynamicDnamEngine::from_bytes_with_backend(
-        container_bytes,
-        Tier::from_u8(tier),
-        sample_rate_hz,
-        backend_enum,
-    )
-    .map_err(dnam_err_to_py)?;
-    if reset {
-        eng.reset_to_dc_equilibrium();
-    }
-    let mut l_out = vec![0.0_f32; n];
-    let mut r_out = vec![0.0_f32; n];
-    let chunk = block_size.unwrap_or(n).max(1);
-    if chunk >= n {
-        eng.process_mono_to_stereo(m_in, &mut l_out, &mut r_out);
-    } else {
-        for ((mi, lo), ro) in m_in
-            .chunks(chunk)
-            .zip(l_out.chunks_mut(chunk))
-            .zip(r_out.chunks_mut(chunk))
-        {
-            eng.process_mono_to_stereo(mi, lo, ro);
-        }
-    }
+    let (l_out, r_out) = py
+        .detach(|| {
+            let mut eng = DynamicDnamEngine::from_bytes_with_backend(
+                container_bytes,
+                Tier::from_u8(tier),
+                sample_rate_hz,
+                backend_enum,
+            )?;
+            if reset {
+                eng.reset_to_dc_equilibrium();
+            }
+            let mut l_out = vec![0.0_f32; n];
+            let mut r_out = vec![0.0_f32; n];
+            let chunk = block_size.unwrap_or(n).max(1);
+            if chunk >= n {
+                eng.process_mono_to_stereo(m_in, &mut l_out, &mut r_out);
+            } else {
+                for ((mi, lo), ro) in m_in
+                    .chunks(chunk)
+                    .zip(l_out.chunks_mut(chunk))
+                    .zip(r_out.chunks_mut(chunk))
+                {
+                    eng.process_mono_to_stereo(mi, lo, ro);
+                }
+            }
+            Ok((l_out, r_out))
+        })
+        .map_err(dnam_err_to_py)?;
     PyArray2::from_vec2(py, &[l_out, r_out]).map_err(validation_err)
 }
 
@@ -141,25 +149,29 @@ pub fn render_reference_mono<'py>(
     let n = mono_in.len();
     let m_in = slice_1d(&mono_in, "mono_in")?;
     let backend_enum = parse_backend_kind(backend)?;
-    let mut eng = DynamicDnamEngine::from_bytes_with_backend(
-        container_bytes,
-        Tier::from_u8(tier),
-        sample_rate_hz,
-        backend_enum,
-    )
-    .map_err(dnam_err_to_py)?;
-    if reset {
-        eng.reset_to_dc_equilibrium();
-    }
-    let mut m_out = vec![0.0_f32; n];
-    let chunk = block_size.unwrap_or(n).max(1);
-    if chunk >= n {
-        eng.process_mono(m_in, &mut m_out);
-    } else {
-        for (mi, mo) in m_in.chunks(chunk).zip(m_out.chunks_mut(chunk)) {
-            eng.process_mono(mi, mo);
-        }
-    }
+    let m_out = py
+        .detach(|| {
+            let mut eng = DynamicDnamEngine::from_bytes_with_backend(
+                container_bytes,
+                Tier::from_u8(tier),
+                sample_rate_hz,
+                backend_enum,
+            )?;
+            if reset {
+                eng.reset_to_dc_equilibrium();
+            }
+            let mut m_out = vec![0.0_f32; n];
+            let chunk = block_size.unwrap_or(n).max(1);
+            if chunk >= n {
+                eng.process_mono(m_in, &mut m_out);
+            } else {
+                for (mi, mo) in m_in.chunks(chunk).zip(m_out.chunks_mut(chunk)) {
+                    eng.process_mono(mi, mo);
+                }
+            }
+            Ok(m_out)
+        })
+        .map_err(dnam_err_to_py)?;
     Ok(PyArray1::from_vec(py, m_out))
 }
 

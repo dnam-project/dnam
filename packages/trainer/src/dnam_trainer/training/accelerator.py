@@ -17,6 +17,7 @@ Enforces:
 from __future__ import annotations
 
 import gc
+import importlib.metadata
 import os
 import time
 from typing import Literal
@@ -32,6 +33,22 @@ PlannerMode = Literal["STREAMED", "RESIDENT", "RESIDENT_BATCHED"]
 
 _GIB: int = 1024 * 1024 * 1024
 _MIB: int = 1024 * 1024
+
+SUPPORTED_ROCM_ARCHES: frozenset[str] = frozenset(
+    {
+        "gfx1100",
+        "gfx1101",
+        "gfx1102",
+        "gfx1151",
+        "gfx1200",
+        "gfx1201",
+        "gfx1250",
+        "gfx90a",
+        "gfx942",
+        "gfx950",
+    }
+)
+MIN_ROCM_VRAM_BYTES: int = 11 * _GIB
 
 
 class ProbeResult(StrictModel):
@@ -74,6 +91,45 @@ def is_tpu_available() -> bool:
 def is_rocm_available() -> bool:
     """Returns `True` if AMD ROCm HIP runtime is active and a GPU is available."""
     return getattr(torch.version, "hip", None) is not None and torch.cuda.is_available()
+
+
+def validate_rocm_device(device_index: int = 0) -> str:
+    """Validates that the active ROCm GPU architecture meets trainer hardware requirements
+    (`SUPPORTED_ROCM_ARCHES`, `>= 12 GB` VRAM) and has its `rocm-sdk-device-<arch>` runtime
+    package installed.
+    """
+    get_props = getattr(torch.cuda, "get_device_properties", None)
+    if not callable(get_props):
+        return ""
+    props = get_props(device_index)
+    raw_arch = str(getattr(props, "gcnArchName", "")).strip()
+    arch = raw_arch.split(":", 1)[0].strip()
+    if not arch:
+        return ""
+    if arch not in SUPPORTED_ROCM_ARCHES:
+        supported = ", ".join(sorted(SUPPORTED_ROCM_ARCHES))
+        raise ValueError(
+            f"ROCm GPU architecture '{arch}' does not meet the DNAM trainer hardware "
+            "requirements (native bfloat16 WMMA/MFMA matrix cores, strict IEEE-754 fp32, "
+            f"and AOTriton support). Supported ROCm architectures: {supported}."
+        )
+    pkg_name = f"rocm-sdk-device-{arch}"
+    try:
+        importlib.metadata.distribution(pkg_name)
+    except importlib.metadata.PackageNotFoundError as exc:
+        raise ValueError(
+            f"Missing ROCm device runtime package '{pkg_name}' for detected GPU '{arch}'. "
+            f"Install it with: `uv sync --extra rocm-{arch}`."
+        ) from exc
+
+    total_mem = int(getattr(props, "total_memory", 0) or 0)
+    if 0 < total_mem < MIN_ROCM_VRAM_BYTES:
+        vram_gib = total_mem / _GIB
+        raise ValueError(
+            f"ROCm GPU '{arch}' has {vram_gib:.1f} GiB total memory, which is below the "
+            "12 GB minimum VRAM requirement needed for the trainer's >= 8 GiB streaming budget."
+        )
+    return arch
 
 
 def is_cuda_available() -> bool:
@@ -502,6 +558,9 @@ def resolve_accelerator_runtime(
     else:
         raise ValueError(f"Unsupported accelerator device '{requested_device}'.")
 
+    if resolved_kind == "rocm":
+        validate_rocm_device(0)
+
     configure_precision_backends(resolved_kind)
 
     device = torch.device(torch_dev_str)
@@ -581,6 +640,8 @@ def assert_32bit_device_tensor(tensor: Tensor) -> None:
 
 
 __all__ = [
+    "MIN_ROCM_VRAM_BYTES",
+    "SUPPORTED_ROCM_ARCHES",
     "AcceleratorRuntime",
     "ContractionDtypeName",
     "DeviceKind",
@@ -597,4 +658,5 @@ __all__ = [
     "is_rocm_available",
     "is_tpu_available",
     "resolve_accelerator_runtime",
+    "validate_rocm_device",
 ]

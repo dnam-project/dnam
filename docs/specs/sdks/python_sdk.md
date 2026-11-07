@@ -1,8 +1,8 @@
 ---
 id: spec.sdks.python
-title: "Python SDK (dnam): Idiomatic Python 3.14 Interface, Zero-Copy PyO3 Shim & Parity Contract"
+title: "Python SDK (dnam): Idiomatic Python 3.15 Interface, PEP 803 Dual-ABI (abi3.abi3t) PyO3 Shim & Parity Contract"
 status: canonical
-version: "2.0.0"
+version: "2.1.0"
 domain: sdks
 rule_prefixes:
   - "r[sdk.python."
@@ -22,11 +22,12 @@ adrs:
   - ADR-0010
   - ADR-0011
   - ADR-0012
+  - ADR-0014
 ---
 
-# Python SDK (`dnam`): Idiomatic Python 3.14 Interface, Zero-Copy PyO3 Shim & Parity Contract
+# Python SDK (`dnam`): Idiomatic Python 3.15 Interface, PEP 803 Dual-ABI (`abi3.abi3t`) PyO3 Shim & Parity Contract
 
-This specification defines the normative architecture, module organization, public API semantics, FFI zero-copy invariants, and Rust-to-Python parity contracts for **`dnam`** ([`packages/python/`](../../../packages/python/README.md)), the idiomatic Python 3.14 SDK wrapping `packages/engine/` ([`../architecture/tora_architecture.md`](../architecture/tora_architecture.md)). For the design rationale and rejected alternatives, see [`../../adr/0012-python-sdk-architecture-and-idiomatic-api.md`](../../adr/0012-python-sdk-architecture-and-idiomatic-api.md).
+This specification defines the normative architecture, module organization, public API semantics, PEP 803 dual-ABI (`cp315-abi3.abi3t`) free-threading invariants, FFI zero-copy rules, and Rust-to-Python parity contracts for **`dnam`** ([`packages/python/`](../../../packages/python/README.md)), the idiomatic Python 3.15 SDK wrapping `packages/engine/` ([`../architecture/tora_architecture.md`](../architecture/tora_architecture.md)). For the design rationale and rejected alternatives, see [`../../adr/0012-python-sdk-architecture-and-idiomatic-api.md`](../../adr/0012-python-sdk-architecture-and-idiomatic-api.md) and [`../../adr/0014-python-3-15-free-threading-and-stable-abi-abi3t.md`](../../adr/0014-python-3-15-free-threading-and-stable-abi-abi3t.md).
 
 ---
 
@@ -38,7 +39,7 @@ This specification defines the normative architecture, module organization, publ
 
 ```mermaid
 flowchart LR
-    subgraph PySDK ["dnam Python 3.14 SDK (packages/python/src/dnam/)"]
+    subgraph PySDK ["dnam Python 3.15 SDK (packages/python/src/dnam/)"]
         Top["dnam: Model, Engine, Checkpoint, Tier, Backend, errors"]
         Mod["dnam.model: Model, Checkpoint, Preamble, GramMatrix, crc32c"]
         Eng["dnam.engine: Engine, Controls, Presets, Tempo, Telemetry"]
@@ -75,6 +76,14 @@ flowchart LR
 
 1. **Explicit `__all__` & Docstrings:** Every public module (`dnam`, `dnam.errors`, `dnam.model`, `dnam.engine`, `dnam.controls`, `dnam.schema`, `dnam.provenance`, `dnam.dsp`) declares an explicit `__all__` list, and every symbol exported in `__all__` carries a non-empty docstring.
 2. **PEP 561 & Stub Lockstep:** `packages/python/src/dnam/py.typed` and `packages/python/src/dnam/_native.pyi` provide complete static type annotations for all native classes and functions, passing `pyrefly check` with zero `# type: ignore` or `# pyrefly: ignore` suppressions (`ref[repo.code.type-safety-and-imports]`).
+
+### 1.3 Python `>=3.15` Floor, Free-Threaded `3.15t` Dev Runtime & PEP 803 `cp315-abi3.abi3t` Wheel
+
+`r[sdk.python.abi.abi3-abi3t]`
+
+1. **Minimum Interpreter Floor (`>=3.15`) & Free-Threaded Default (`3.15t`):** Both `dnam` (`packages/python/`) and `dnam-trainer` (`packages/trainer/`) require `requires-python = ">=3.15"`, with `3.15t` (`Py_GIL_DISABLED = 1`) as the canonical development interpreter.
+2. **Single Dual-ABI Wheel (`cp315-abi3.abi3t`):** `packages/python/Cargo.toml` compiles `dnam._native` with `pyo3` features `["extension-module", "abi3-py315", "abi3t-py315"]` via `maturin >= 1.16`, emitting a single `cp315-abi3.abi3t` wheel containing `_native.abi3t.so` (Unix) or `_native.abi3t.pyd` (Windows) that loads natively on both GIL-enabled Python `3.15+` and free-threaded Python `3.15t+` (`ADR-0014`).
+3. **Explicit Free-Threading Declaration (`gil_used = false`):** `packages/python/rust/lib.rs` annotates the root extension with `#[pymodule(gil_used = false)]` (`Py_mod_gil = Py_MOD_GIL_NOT_USED`). Importing `dnam` or `dnam_trainer` on a free-threaded `3.15t` interpreter must never re-enable the GIL (`sys._is_gil_enabled() is False`).
 
 ---
 
@@ -136,8 +145,8 @@ flowchart LR
 `r[sdk.python.engine.zero-copy-and-gil]`
 
 1. **Zero Duplicated Engine Math in `packages/python/rust/`:** `PyEngine` wraps `dnam_engine::DynamicDnamEngine<'static>` directly and delegates all sample-rate ZOH rescaling (`ref[dsp.zoh.ctrl-stride]`), control clamping, preset loading, and block rendering to `DynamicDnamEngine` without re-computing `ZohRescaledParams` or stage parameters in the binding crate.
-2. **Zero-Allocation `process_into` & `process_planar`:** When the caller supplies pre-allocated C-contiguous `float32` input and `out=` buffers (`process(audio, out=...)`, `process_into(audio, out)`, or `process_planar(left, right, out_left=..., out_right=...)`), the SDK borrows the underlying memory slices directly via `rust-numpy` without allocating intermediate audio arrays.
-3. **Unconditional GIL Release (`py.detach`):** Every native audio block call (`process_stereo`, `process_stereo_in_place`, `process_stereo_2d`, `process_mono_to_stereo`, `process_mono_to_stereo_2d`, `process_mono`, and `render_offline_bounce`) releases the Python Global Interpreter Lock via `py.detach(|| ...)` while holding exclusive `&mut self` access to `DynamicDnamEngine`.
+2. **Zero-Allocation `process_into` & `process_planar` with Checked `rust-numpy` Borrows:** When the caller supplies pre-allocated C-contiguous `float32` input and `out=` buffers (`process(audio, out=...)`, `process_into(audio, out)`, or `process_planar(left, right, out_left=..., out_right=...)`), the SDK borrows the underlying memory slices directly via `rust-numpy`'s checked borrow tracker without allocating intermediate audio arrays or accumulating steady-state Python heap allocations.
+3. **Unconditional Runtime Detach (`py.detach`):** Every native audio block call (`process_stereo`, `process_stereo_in_place`, `process_stereo_2d`, `process_mono_to_stereo`, `process_mono_to_stereo_2d`, `process_mono`, and `render_offline_bounce`) detaches from the Python runtime via `py.detach(|| ...)` (releasing the GIL on `3.15` and allowing concurrent stop-the-world cyclic GC on `3.15t`) while holding exclusive access to `DynamicDnamEngine`.
 
 ### 3.2 `pedalboard`-Compatible Callable & Bit-Identical Rust Parity
 
@@ -146,6 +155,14 @@ flowchart LR
 1. **`Engine.__call__` Signature & Topologies:** `engine(audio, sample_rate=None, *, buffer_size=8192, reset=True)` processes 1D `(N,)` mono, 2D `(1, N)` mono, or 2D `(2, N)` stereo inputs across all four model I/O topologies (`1->1`, `2->1`, `1->2`, `2->2`, `ref[arch.topology.signal-flow]`), updating `engine.sample_rate` if `sample_rate` is provided, resetting to analytical DC equilibrium (`ref[dsp.op-n.commuted.dc-equilibrium]`) before rendering when `reset=True`, and streaming in chunks of `buffer_size` frames.
 2. **Offline Bounce (`engine.bounce`):** `engine.bounce(audio, *, maximize_tier=True)` executes $4\times$ linear-phase polyphase oversampling with automatic `12`-sample PDC lead-in stripping (`ref[arch.bounce.oversampling]`).
 3. **Bit-Identical Parity with Native Rust:** Across all tiers (`Lite`, `Full`, `Pro`, `Ultra`), backends (`Scalar`, `Neon`, `ArmSme`, `X86Simd`), sample rates (`44.1–192 kHz`), topologies, and block sizes, `engine.process(...)` and `engine(audio, sample_rate, reset=...)` produce `float32` samples bit-identical (`0 ULP`) to invoking `DynamicDnamEngine` directly in Rust.
+
+### 3.3 Thread-Safe Frozen `PyEngine`, Atomic Reload & Free-Threaded Concurrency
+
+`r[sdk.python.engine.free-threading]`
+
+1. **Frozen `#[pyclass(frozen)]` with Detached Lock Acquisition:** `PyEngine` is declared `#[pyclass(module = "dnam._native", frozen)]` and synchronizes internal state via a Rust `std::sync::Mutex<DynamicDnamEngine<'static>>` acquired strictly inside `py.detach(|| ...)` after extracting and validating Python/NumPy buffer slices. Concurrent calls to a shared `Engine` instance across OS threads never raise `PyBorrowMutError`, never hold the GIL while waiting for the engine lock on standard `3.15`, and never block stop-the-world cyclic garbage collection (`gc.collect()`) on free-threaded `3.15t`.
+2. **Atomic `_EngineState` Swap on `Engine.reload`:** The Python `Engine` wrapper bundles its active `Model`, `PyEngine`, `ControlSpace`, preset map, and control caches into a coherent `_EngineState` snapshot swapped atomically under a reentrant lock (`threading.RLock`) during `Engine.reload(...)`, ensuring concurrent reader, control, telemetry, and audio threads never observe torn state (`_model` out of sync with `_native` or control caches).
+3. **Detached Heavy Native Operations:** Non-trivial container validation/building, checkpoint verification/export, `uplo='U'` Gram matrix packing/unpacking, 3-Phase control clamping, provenance signing/sealing/verification/watermarking, and vectorized `dnam.dsp` slice kernels execute inside `py.detach(|| ...)` so multi-threaded Python workloads scale across CPU cores without runtime contention.
 
 ---
 

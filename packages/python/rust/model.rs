@@ -171,35 +171,40 @@ pub fn native_validate_container<'py>(
     device_secret_32: Option<&[u8]>,
     trusted_marketplace_pubkey_hex: Option<&str>,
 ) -> PyResult<Bound<'py, PyDict>> {
-    let mut crypto = RustCryptoProvider::new();
-    if let (Some(id), Some(sec)) = (device_id_hash, device_secret_32) {
-        let sec_arr: &[u8; 32] = sec.try_into().map_err(|_| {
-            validation_err(format!(
-                "device_secret_32 must be 32 bytes, got {}",
-                sec.len()
-            ))
-        })?;
-        crypto = crypto.with_device_key(id, *sec_arr);
-    }
-    if let Some(mkt_pk_hex) = trusted_marketplace_pubkey_hex {
-        let mkt_pk = decode_hex_array::<32>(mkt_pk_hex).map_err(dnam_err_to_py)?;
-        crypto = crypto.with_marketplace_pubkey(mkt_pk);
-    }
-    let view = DnamContainerView::from_bytes(container_bytes, &crypto).map_err(dnam_err_to_py)?;
-    let p = &view.preamble;
-    let is_unsealed = container_bytes.len() >= 64
-        && (container_bytes[0..4] == *b"DNAM" || container_bytes[0..4] == *b"DNCK");
-    let header_end = 64 + (p.json_header_byte_len as usize);
-    let header_json_cow = if is_unsealed && header_end <= container_bytes.len() {
-        match core::str::from_utf8(&container_bytes[64..header_end]) {
-            Ok(s) => std::borrow::Cow::Borrowed(s),
-            Err(_) => std::borrow::Cow::Owned(
-                serde_json::to_string(&view.header).map_err(validation_err)?,
-            ),
+    let (view, is_unsealed, header_json_cow) = py.detach(|| -> PyResult<_> {
+        let mut crypto = RustCryptoProvider::new();
+        if let (Some(id), Some(sec)) = (device_id_hash, device_secret_32) {
+            let sec_arr: &[u8; 32] = sec.try_into().map_err(|_| {
+                validation_err(format!(
+                    "device_secret_32 must be 32 bytes, got {}",
+                    sec.len()
+                ))
+            })?;
+            crypto = crypto.with_device_key(id, *sec_arr);
         }
-    } else {
-        std::borrow::Cow::Owned(serde_json::to_string(&view.header).map_err(validation_err)?)
-    };
+        if let Some(mkt_pk_hex) = trusted_marketplace_pubkey_hex {
+            let mkt_pk = decode_hex_array::<32>(mkt_pk_hex).map_err(dnam_err_to_py)?;
+            crypto = crypto.with_marketplace_pubkey(mkt_pk);
+        }
+        let view =
+            DnamContainerView::from_bytes(container_bytes, &crypto).map_err(dnam_err_to_py)?;
+        let p = &view.preamble;
+        let is_unsealed = container_bytes.len() >= 64
+            && (container_bytes[0..4] == *b"DNAM" || container_bytes[0..4] == *b"DNCK");
+        let header_end = 64 + (p.json_header_byte_len as usize);
+        let header_json_cow = if is_unsealed && header_end <= container_bytes.len() {
+            match core::str::from_utf8(&container_bytes[64..header_end]) {
+                Ok(s) => std::borrow::Cow::Borrowed(s),
+                Err(_) => std::borrow::Cow::Owned(
+                    serde_json::to_string(&view.header).map_err(validation_err)?,
+                ),
+            }
+        } else {
+            std::borrow::Cow::Owned(serde_json::to_string(&view.header).map_err(validation_err)?)
+        };
+        Ok((view, is_unsealed, header_json_cow))
+    })?;
+    let p = &view.preamble;
 
     let dict = PyDict::new(py);
     let magic_str = core::str::from_utf8(&p.magic).unwrap_or("DNAM");
@@ -277,25 +282,28 @@ pub fn native_build_container<'py>(
     plaintext_arena_crc_source: Option<&[u8]>,
     encrypted_arena: bool,
 ) -> PyResult<Bound<'py, PyBytes>> {
-    let mut header: DnamJsonHeader = serde_json::from_str(header_json).map_err(validation_err)?;
-    header.validate().map_err(dnam_err_to_py)?;
+    let container = py.detach(|| -> PyResult<Vec<u8>> {
+        let mut header: DnamJsonHeader =
+            serde_json::from_str(header_json).map_err(validation_err)?;
+        header.validate().map_err(dnam_err_to_py)?;
 
-    let mut stored_arena = arena_bytes.to_vec();
-    if !encrypted_arena
-        && stored_arena.len() >= 9_024
-        && !header.controls_schema.is_empty()
-        && stored_arena[8_512..8_516] == [0, 0, 0, 0]
-        && let Ok(descriptors) = header.compile_clamp_descriptors()
-    {
-        for (idx, desc) in descriptors.iter().take(8).enumerate() {
-            let off = 8_512 + idx * 64;
-            stored_arena[off..off + 64].copy_from_slice(&desc.to_bytes());
+        let mut stored_arena = arena_bytes.to_vec();
+        if !encrypted_arena
+            && stored_arena.len() >= 9_024
+            && !header.controls_schema.is_empty()
+            && stored_arena[8_512..8_516] == [0, 0, 0, 0]
+            && let Ok(descriptors) = header.compile_clamp_descriptors()
+        {
+            for (idx, desc) in descriptors.iter().take(8).enumerate() {
+                let off = 8_512 + idx * 64;
+                stored_arena[off..off + 64].copy_from_slice(&desc.to_bytes());
+            }
         }
-    }
 
-    let crc_src = plaintext_arena_crc_source.unwrap_or(&stored_arena);
-    let container = build_dnam_container(&mut header, crc_src, &stored_arena, encrypted_arena)
-        .map_err(dnam_err_to_py)?;
+        let crc_src = plaintext_arena_crc_source.unwrap_or(&stored_arena);
+        build_dnam_container(&mut header, crc_src, &stored_arena, encrypted_arena)
+            .map_err(dnam_err_to_py)
+    })?;
     Ok(PyBytes::new(py, &container))
 }
 
@@ -308,13 +316,14 @@ pub fn native_build_reference_container<'py>(
     supports_freeze: bool,
     is_checkpoint: bool,
 ) -> PyResult<Bound<'py, PyBytes>> {
-    let mut header = DnamJsonHeader::default_reference();
-    if is_checkpoint {
-        header.container_kind = "dnam-ckpt".to_string();
-    }
-    let arena = populate_reference_controls_and_arena(&mut header, supports_freeze)?;
-    let container =
-        build_dnam_container(&mut header, &arena, &arena, false).map_err(dnam_err_to_py)?;
+    let container = py.detach(|| -> PyResult<Vec<u8>> {
+        let mut header = DnamJsonHeader::default_reference();
+        if is_checkpoint {
+            header.container_kind = "dnam-ckpt".to_string();
+        }
+        let arena = populate_reference_controls_and_arena(&mut header, supports_freeze)?;
+        build_dnam_container(&mut header, &arena, &arena, false).map_err(dnam_err_to_py)
+    })?;
     Ok(PyBytes::new(py, &container))
 }
 
@@ -325,11 +334,14 @@ pub fn native_update_header_in_place<'py>(
     container_bytes: &[u8],
     updated_header_json: &str,
 ) -> PyResult<Bound<'py, PyBytes>> {
-    let updated_header: DnamJsonHeader =
-        serde_json::from_str(updated_header_json).map_err(validation_err)?;
-    updated_header.validate().map_err(dnam_err_to_py)?;
-    let mut buf = container_bytes.to_vec();
-    update_header_in_place(&mut buf, &updated_header).map_err(dnam_err_to_py)?;
+    let buf = py.detach(|| -> PyResult<Vec<u8>> {
+        let updated_header: DnamJsonHeader =
+            serde_json::from_str(updated_header_json).map_err(validation_err)?;
+        updated_header.validate().map_err(dnam_err_to_py)?;
+        let mut buf = container_bytes.to_vec();
+        update_header_in_place(&mut buf, &updated_header).map_err(dnam_err_to_py)?;
+        Ok(buf)
+    })?;
     Ok(PyBytes::new(py, &buf))
 }
 
@@ -340,13 +352,16 @@ pub fn native_update_header_in_place_fast<'py>(
     container_bytes: &[u8],
     updated_header_json: &str,
 ) -> PyResult<(Bound<'py, PyBytes>, u32, u32)> {
-    let updated_header: DnamJsonHeader =
-        serde_json::from_str(updated_header_json).map_err(validation_err)?;
-    updated_header.validate().map_err(dnam_err_to_py)?;
-    let mut buf = container_bytes.to_vec();
-    update_header_in_place(&mut buf, &updated_header).map_err(dnam_err_to_py)?;
-    let json_len = u32::from_le_bytes([buf[16], buf[17], buf[18], buf[19]]);
-    let hdr_crc = u32::from_le_bytes([buf[60], buf[61], buf[62], buf[63]]);
+    let (buf, json_len, hdr_crc) = py.detach(|| -> PyResult<(Vec<u8>, u32, u32)> {
+        let updated_header: DnamJsonHeader =
+            serde_json::from_str(updated_header_json).map_err(validation_err)?;
+        updated_header.validate().map_err(dnam_err_to_py)?;
+        let mut buf = container_bytes.to_vec();
+        update_header_in_place(&mut buf, &updated_header).map_err(dnam_err_to_py)?;
+        let json_len = u32::from_le_bytes([buf[16], buf[17], buf[18], buf[19]]);
+        let hdr_crc = u32::from_le_bytes([buf[60], buf[61], buf[62], buf[63]]);
+        Ok((buf, json_len, hdr_crc))
+    })?;
     Ok((PyBytes::new(py, &buf), json_len, hdr_crc))
 }
 
@@ -358,16 +373,16 @@ pub fn native_strip_container_to_tier<'py>(
     container_bytes: &[u8],
     max_tier: u8,
 ) -> PyResult<Bound<'py, PyBytes>> {
-    if container_bytes.len() >= 8
-        && &container_bytes[0..4] == b"DNAM"
-        && u16::from_le_bytes([container_bytes[4], container_bytes[5]]) == 2
-    {
-        let stripped =
-            strip_v2_open_dnam_container(container_bytes, max_tier).map_err(dnam_err_to_py)?;
-        return Ok(PyBytes::new(py, &stripped));
-    }
-    let tier = Tier::from_u8(max_tier);
-    let stripped = strip_container_to_tier(container_bytes, tier).map_err(dnam_err_to_py)?;
+    let stripped = py.detach(|| -> PyResult<Vec<u8>> {
+        if container_bytes.len() >= 8
+            && &container_bytes[0..4] == b"DNAM"
+            && u16::from_le_bytes([container_bytes[4], container_bytes[5]]) == 2
+        {
+            return strip_v2_open_dnam_container(container_bytes, max_tier).map_err(dnam_err_to_py);
+        }
+        let tier = Tier::from_u8(max_tier);
+        strip_container_to_tier(container_bytes, tier).map_err(dnam_err_to_py)
+    })?;
     Ok(PyBytes::new(py, &stripped))
 }
 
@@ -377,7 +392,9 @@ pub fn native_validate_v2_open_layout<'py>(
     py: Python<'py>,
     container_bytes: &[u8],
 ) -> PyResult<Bound<'py, PyDict>> {
-    let layout = validate_v2_open_dnam_layout(container_bytes).map_err(dnam_err_to_py)?;
+    let layout = py
+        .detach(|| validate_v2_open_dnam_layout(container_bytes))
+        .map_err(dnam_err_to_py)?;
     let dict = PyDict::new(py);
     dict.set_item("protection_profile", layout.protection_profile)?;
     dict.set_item("auth_kind", layout.auth_kind)?;
@@ -398,17 +415,20 @@ pub fn native_validate_v2_open_layout<'py>(
 #[pyfunction]
 #[pyo3(signature = (json_str, project_immutable = false, reject_floats = false))]
 pub fn native_serialize_jcs(
+    py: Python<'_>,
     json_str: &str,
     project_immutable: bool,
     reject_floats: bool,
 ) -> PyResult<String> {
-    let parsed: serde_json::Value = serde_json::from_str(json_str).map_err(validation_err)?;
-    let val = if project_immutable {
-        project_immutable_header_value(&parsed).map_err(dnam_err_to_py)?
-    } else {
-        parsed
-    };
-    serialize_jcs_value(&val, reject_floats).map_err(dnam_err_to_py)
+    py.detach(|| {
+        let parsed: serde_json::Value = serde_json::from_str(json_str).map_err(validation_err)?;
+        let val = if project_immutable {
+            project_immutable_header_value(&parsed).map_err(dnam_err_to_py)?
+        } else {
+            parsed
+        };
+        serialize_jcs_value(&val, reject_floats).map_err(dnam_err_to_py)
+    })
 }
 
 /// Builds a 64B-aligned `DMU1` mutable trailer frame from `mutable_json_bytes` and `capacity`.
@@ -418,21 +438,25 @@ pub fn native_build_dmu1_frame<'py>(
     mutable_json_bytes: &[u8],
     capacity: usize,
 ) -> PyResult<Bound<'py, PyBytes>> {
-    let frame = build_dmu1_mutable_frame(mutable_json_bytes, capacity).map_err(dnam_err_to_py)?;
+    let frame = py
+        .detach(|| build_dmu1_mutable_frame(mutable_json_bytes, capacity))
+        .map_err(dnam_err_to_py)?;
     Ok(PyBytes::new(py, &frame))
 }
 
 /// Validates and parses a 64B-aligned `DMU1` mutable trailer frame, returning its canonical JSON string.
 #[pyfunction]
-pub fn native_parse_dmu1_frame(frame_bytes: &[u8]) -> PyResult<String> {
-    let val = parse_and_validate_dmu1_frame(frame_bytes).map_err(dnam_err_to_py)?;
-    serde_json::to_string(&val).map_err(validation_err)
+pub fn native_parse_dmu1_frame(py: Python<'_>, frame_bytes: &[u8]) -> PyResult<String> {
+    py.detach(|| {
+        let val = parse_and_validate_dmu1_frame(frame_bytes).map_err(dnam_err_to_py)?;
+        serde_json::to_string(&val).map_err(validation_err)
+    })
 }
 
 /// Computes the Castagnoli `CRC32C` checksum over `data` using hardware `CRC32C` instructions when available.
 #[pyfunction]
-pub fn native_crc32c(data: &[u8]) -> u32 {
-    crc32c_compute(data)
+pub fn native_crc32c(py: Python<'_>, data: &[u8]) -> u32 {
+    py.detach(|| crc32c_compute(data))
 }
 
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {

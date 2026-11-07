@@ -1,6 +1,6 @@
-# `dnam` — Idiomatic Python 3.14 SDK for Dynamic Neural Audio Modeler (DNAM)
+# `dnam` — Idiomatic Python 3.15 SDK for Dynamic Neural Audio Modeler (DNAM)
 
-**`dnam`** provides an idiomatic, strictly typed Python 3.14 SDK and a zero-copy `PyO3` (`abi3-py314`) + `rust-numpy` SIMD runtime wrapping the **Dynamic Neural Audio Modeler (DNAM / TORA)** Rust engine ([`packages/engine/`](../engine/README.md), specified in [`docs/specs/sdks/python_sdk.md`](../../docs/specs/sdks/python_sdk.md) and [`ADR-0012`](../../docs/adr/0012-python-sdk-architecture-and-idiomatic-api.md)).
+**`dnam`** provides an idiomatic, strictly typed Python 3.15 (`3.15` & free-threaded `3.15t`) SDK and a zero-copy `PyO3` (`cp315-abi3.abi3t`, `gil_used = false`) + `rust-numpy` SIMD runtime wrapping the **Dynamic Neural Audio Modeler (DNAM / TORA)** Rust engine ([`packages/engine/`](../engine/README.md), specified in [`docs/specs/sdks/python_sdk.md`](../../docs/specs/sdks/python_sdk.md), [`ADR-0012`](../../docs/adr/0012-python-sdk-architecture-and-idiomatic-api.md), and [`ADR-0014`](../../docs/adr/0014-python-3-15-free-threading-and-stable-abi-abi3t.md)).
 
 ---
 
@@ -57,7 +57,7 @@ assert lite_model.max_tier == dnam.Tier.LITE
 
 ## Measured Python SDK & FFI Benchmark Summary (`48 kHz` Stereo)
 
-Measured via `moon run python:bench` ([`tests/benchmarks/test_benchmarks.py`](tests/benchmarks/test_benchmarks.py)) and profiled with **Scalene** ([`tests/benchmarks/profile_sdk.py`](tests/benchmarks/profile_sdk.py)):
+Measured via `moon run python:bench` ([`tests/benchmarks/test_benchmarks.py`](tests/benchmarks/test_benchmarks.py)) and profiled with PEP 799 **`profiling.sampling`** (`Tachyon`) / `profiling.tracing` ([`tests/benchmarks/profile_sdk.py`](tests/benchmarks/profile_sdk.py)):
 
 | Operation & Tier Profile | Backend | Median Latency | Throughput (`ops/s`) | FFI / Native Overhead |
 | :--- | :--- | ---: | ---: | ---: |
@@ -74,23 +74,23 @@ Measured via `moon run python:bench` ([`tests/benchmarks/test_benchmarks.py`](te
 
 ---
 
-## Running Tests, Coverage, Benchmarks & Scalene Profiling
+## Running Tests, Coverage, Benchmarks & PEP 799 Profiling
 
 ```bash
-# 1. Quality gates, unit/property tests, exhaustive matrix & >= 95% coverage
+# 1. Quality gates, unit/property tests, exhaustive matrix, dual-ABI wheel check & >= 95% coverage
 moon check python
 moon run python:test
 moon run python:test-full
+moon run python:wheel-check
 moon run python:coverage
 
 # 2. Calibrated pytest-benchmark suite (enforces <= 1.10x native FFI budget)
 moon run python:bench
 
-# 3. CPU, memory & copy-volume profiling with Scalene
+# 3. CPU & native call-stack profiling with stdlib PEP 799 (profiling.sampling / profiling.tracing)
 moon run python:profile
-uv run --no-sync scalene run --profile-all -o scalene-profile.json \
-  packages/python/tests/benchmarks/profile_sdk.py
-uv run --no-sync scalene view --cli scalene-profile.json
+uv run --no-sync python -m profiling.sampling run --native --mode cpu --flamegraph \
+  -o target/profile_sdk.html packages/python/tests/benchmarks/profile_sdk.py
 
 # 4. Runnable API Examples (packages/python/examples/)
 uv run --no-sync python packages/python/examples/realtime_audio_and_bounce.py
@@ -100,4 +100,4 @@ uv run --no-sync python packages/python/examples/marketplace_provenance_and_wate
 uv run --no-sync python packages/python/examples/reference_dsp_operators.py
 ```
 
-API demonstrations live in [`examples/`](examples/). See the [contributing guide](CONTRIBUTING.md#3-testing-coverage--95-benchmarking--scalene-profiling) for detailed FFI optimization and profiling rules.
+API demonstrations live in [`examples/`](examples/). See the [contributing guide](CONTRIBUTING.md#3-testing-coverage--95-benchmarking--pep-799-profiling) for detailed FFI optimization and profiling rules.

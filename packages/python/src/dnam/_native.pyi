@@ -180,9 +180,9 @@ class PyEngine:
     def render_offline_bounce(
         self,
         left_in: NDArray[np.float32],
-        right_in: NDArray[np.float32],
-        left_out: NDArray[np.float32],
-        right_out: NDArray[np.float32],
+        right_in: NDArray[np.float32] | None,
+        stereo_out: NDArray[np.float32],
+        maximize_tier: bool | None = None,
     ) -> None: ...
     def process_stereo(
         self,
@@ -226,6 +226,11 @@ class PyEngine:
         self,
         mono_in: NDArray[np.float32],
         mono_out: NDArray[np.float32],
+        buffer_size: int | None = None,
+    ) -> None: ...
+    def process_mono_in_place(
+        self,
+        mono_io: NDArray[np.float32],
         buffer_size: int | None = None,
     ) -> None: ...
     def telemetry(self) -> dict[str, object]: ...

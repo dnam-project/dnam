@@ -285,7 +285,7 @@ def test_dnam_train_worker_cli_status_train_and_ckpt_resume(
     assert any(e.event_type == "training_complete" for e in events)
     assert out_dnam.is_file()
     assert out_ckpt.is_file()
-    assert (reports_dir / "telemetry.parquet").is_file()
+    assert (reports_dir / "telemetry.jsonl").is_file()
     assert (reports_dir / "telemetry.html").is_file()
     assert (reports_dir / "audit_report.json").is_file()
     assert res_json.is_file()

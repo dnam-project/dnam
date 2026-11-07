@@ -1013,6 +1013,10 @@ reason = "Python SDK (packages/python) contract verified by Python test suite"
 scope = "out-of-scope"
 reason = "Python SDK (packages/python) contract verified by Python test suite"
 
+[rules."sdk.python.abi.abi3-abi3t"]
+scope = "out-of-scope"
+reason = "Python SDK (packages/python) contract verified by Python test suite"
+
 [rules."sdk.python.api.core-types"]
 scope = "out-of-scope"
 reason = "Python SDK (packages/python) contract verified by Python test suite"
@@ -1034,6 +1038,10 @@ scope = "out-of-scope"
 reason = "Python SDK (packages/python) contract verified by Python test suite"
 
 [rules."sdk.python.engine.pedalboard-call"]
+scope = "out-of-scope"
+reason = "Python SDK (packages/python) contract verified by Python test suite"
+
+[rules."sdk.python.engine.free-threading"]
 scope = "out-of-scope"
 reason = "Python SDK (packages/python) contract verified by Python test suite"
 

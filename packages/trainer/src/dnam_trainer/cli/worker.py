@@ -25,9 +25,9 @@ from dnam_trainer.schema import (
 from dnam_trainer.training.backends import get_training_backend
 from dnam_trainer.training.hardware import resolve_hardware_profile
 from dnam_trainer.training.telemetry import (
-    build_training_telemetry_df,
+    build_training_telemetry_rows,
     save_telemetry_html_report,
-    save_telemetry_parquet,
+    save_telemetry_jsonl,
 )
 
 
@@ -220,9 +220,9 @@ def run_worker_job(
     if reports_dir is not None:
         rep_dir = Path(reports_dir)
         rep_dir.mkdir(parents=True, exist_ok=True)
-        df = build_training_telemetry_df(result.telemetry)
-        save_telemetry_parquet(df, rep_dir / "telemetry.parquet")
-        save_telemetry_html_report(df, rep_dir / "telemetry.html", model_id=result.model_id)
+        rows = build_training_telemetry_rows(result.telemetry)
+        save_telemetry_jsonl(rows, rep_dir / "telemetry.jsonl")
+        save_telemetry_html_report(rows, rep_dir / "telemetry.html", model_id=result.model_id)
         (rep_dir / "audit_report.json").write_text(
             result.audit_report.model_dump_json(indent=2),
             encoding="utf-8",

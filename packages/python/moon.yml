@@ -11,7 +11,7 @@ tags:
 
 project:
   name: "dnam-python"
-  description: "Idiomatic Python 3.14 interface & zero-copy PyO3 NumPy SIMD engine bindings for DNAM"
+  description: "Idiomatic Python 3.15 interface & zero-copy PyO3 (abi3.abi3t) NumPy SIMD engine bindings for DNAM"
 
 dependsOn:
   - "engine"
@@ -219,14 +219,9 @@ tasks:
 
   profile:
     type: "run"
-    command: "uv"
-    args:
-      - "run"
-      - "--no-sync"
-      - "scalene"
-      - "run"
-      - "--cpu-only"
-      - "packages/python/tests/benchmarks/profile_sdk.py"
+    script: >-
+      uv run --no-sync python -m profiling.sampling run --mode cpu -o target/profile_sdk.pstats packages/python/tests/benchmarks/profile_sdk.py
+      || uv run --no-sync python -m profiling.tracing -o target/profile_sdk.pstats packages/python/tests/benchmarks/profile_sdk.py
     deps:
       - "~:build"
     inputs:
@@ -241,3 +236,60 @@ tasks:
       runInCI: false
     tags:
       - "profile"
+
+  wheel:
+    type: "build"
+    command: "uv"
+    args:
+      - "run"
+      - "--no-sync"
+      - "--python"
+      - "3.15t"
+      - "maturin"
+      - "build"
+      - "--release"
+      - "--manifest-path"
+      - "packages/python/Cargo.toml"
+      - "--out"
+      - "target/wheels"
+    deps:
+      - "~:build"
+    inputs:
+      - "Cargo.toml"
+      - "pyproject.toml"
+      - "rust/**/*"
+      - "src/**/*.py"
+      - "src/**/*.pyi"
+      - "/Cargo.toml"
+      - "/Cargo.lock"
+      - "/packages/engine/Cargo.toml"
+      - "/packages/engine/src/**/*"
+    options:
+      runFromWorkspaceRoot: true
+      mutex: "cargo"
+    tags:
+      - "build"
+      - "wheel"
+
+  wheel-check:
+    type: "run"
+    command: "uv"
+    args:
+      - "run"
+      - "--no-sync"
+      - "pytest"
+      - "packages/python/tests/test_public_api.py"
+      - "-m"
+      - "wheel"
+    deps:
+      - "~:wheel"
+    inputs:
+      - "pyproject.toml"
+      - "src/**/*"
+      - "tests/test_public_api.py"
+    options:
+      runFromWorkspaceRoot: true
+      cache: false
+    tags:
+      - "quality"
+      - "wheel"

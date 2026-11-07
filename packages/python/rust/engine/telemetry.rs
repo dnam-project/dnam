@@ -8,24 +8,44 @@ use super::{PyEngine, backend_kind_str};
 
 impl PyEngine {
     pub(crate) fn telemetry_impl<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
-        let snap = self.inner.telemetry_snapshot();
-        let zoh = self.inner.zoh();
-        let (bypassed, trails_enabled) = self.inner.bypass_state();
+        let (
+            snap,
+            zoh,
+            (bypassed, trails_enabled),
+            effective_tier,
+            backend_str,
+            sample_rate_hz,
+            supports_freeze,
+            stereo_width,
+            current_bpm,
+            num_ctrl,
+        ) = py.detach(|| {
+            let inner = self.lock_inner();
+            (
+                inner.telemetry_snapshot(),
+                *inner.zoh(),
+                inner.bypass_state(),
+                inner.effective_tier() as u8,
+                backend_kind_str(inner.backend_kind()),
+                inner.sample_rate_hz(),
+                inner.supports_freeze(),
+                inner.stereo_width(),
+                inner.current_bpm(),
+                inner.num_controls().min(16),
+            )
+        });
 
         let dict = PyDict::new(py);
-        dict.set_item(intern!(py, "active_tier"), snap.active_tier)?;
-        dict.set_item(
-            intern!(py, "backend"),
-            backend_kind_str(self.inner.backend_kind()),
-        )?;
-        dict.set_item(intern!(py, "sample_rate_hz"), self.inner.sample_rate_hz())?;
+        dict.set_item(intern!(py, "active_tier"), effective_tier)?;
+        dict.set_item(intern!(py, "backend"), backend_str)?;
+        dict.set_item(intern!(py, "sample_rate_hz"), sample_rate_hz)?;
         dict.set_item(intern!(py, "stereo_out"), snap.stereo_out != 0)?;
         dict.set_item(intern!(py, "bypassed"), bypassed)?;
         dict.set_item(intern!(py, "trails_enabled"), trails_enabled)?;
         dict.set_item(intern!(py, "is_frozen"), snap.is_frozen != 0)?;
-        dict.set_item(intern!(py, "supports_freeze"), self.inner.supports_freeze())?;
-        dict.set_item(intern!(py, "stereo_width"), self.inner.stereo_width())?;
-        dict.set_item(intern!(py, "current_bpm"), self.inner.current_bpm())?;
+        dict.set_item(intern!(py, "supports_freeze"), supports_freeze)?;
+        dict.set_item(intern!(py, "stereo_width"), stereo_width)?;
+        dict.set_item(intern!(py, "current_bpm"), current_bpm)?;
         dict.set_item(intern!(py, "active_clamp_mask"), snap.active_clamp_mask)?;
         dict.set_item(
             intern!(py, "control_decimation_host"),
@@ -71,7 +91,7 @@ impl PyEngine {
         )?;
         dict.set_item(
             intern!(py, "clamped_controls"),
-            snap.clamped_controls.to_vec(),
+            snap.clamped_controls[..num_ctrl].to_vec(),
         )?;
         dict.set_item(
             intern!(py, "overflow_or_saturation_flags"),

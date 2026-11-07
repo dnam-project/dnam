@@ -243,6 +243,7 @@ def test_accelerator_runtime_methods_and_mocked_devices(
 
     monkeypatch.setattr(accel_mod, "is_tpu_available", lambda: False)
     monkeypatch.setattr(accel_mod, "is_rocm_available", lambda: True)
+    monkeypatch.setattr(accel_mod, "validate_rocm_device", lambda _idx=0: "gfx1201")
     assert resolve_accelerator_runtime("auto", force_reprobe=True).kind == "rocm"
     assert resolve_accelerator_runtime("rocm", force_reprobe=True).kind == "rocm"
 
@@ -279,3 +280,71 @@ def test_accelerator_runtime_methods_and_mocked_devices(
         rt_mps_fb = resolve_accelerator_runtime("cpu", force_reprobe=True)
         rt_mps_fb.kind = "mps"
         assert rt_mps_fb.current_allocated_bytes() == 2048
+
+
+def test_validate_rocm_device_checks_arch_package_and_vram(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import importlib.metadata
+
+    import dnam_trainer.training.accelerator as accel_mod
+    from dnam_trainer.training.accelerator import SUPPORTED_ROCM_ARCHES, validate_rocm_device
+
+    assert "gfx1201" in SUPPORTED_ROCM_ARCHES
+    assert "gfx1030" not in SUPPORTED_ROCM_ARCHES
+    assert "gfx1010" not in SUPPORTED_ROCM_ARCHES
+
+    class _Props:
+        def __init__(self, gcn_arch: str, total_mem: int) -> None:
+            self.gcnArchName = gcn_arch
+            self.total_memory = total_mem
+
+    # 1. Supported arch + installed package + 16 GiB VRAM succeeds
+    monkeypatch.setattr(
+        accel_mod.torch.cuda,
+        "get_device_properties",
+        lambda _idx: _Props("gfx1201:sramecc-:xnack-", 16 * (1024**3)),
+    )
+    monkeypatch.setattr(importlib.metadata, "distribution", lambda _pkg: object())
+    assert validate_rocm_device(0) == "gfx1201"
+
+    # 2. Empty arch returns ""
+    monkeypatch.setattr(
+        accel_mod.torch.cuda,
+        "get_device_properties",
+        lambda _idx: _Props("", 16 * (1024**3)),
+    )
+    assert validate_rocm_device(0) == ""
+
+    # 3. Unsupported arch fails fast naming supported architectures
+    monkeypatch.setattr(
+        accel_mod.torch.cuda,
+        "get_device_properties",
+        lambda _idx: _Props("gfx1030:xnack-", 16 * (1024**3)),
+    )
+    with pytest.raises(ValueError, match="does not meet the DNAM trainer hardware requirements"):
+        validate_rocm_device(0)
+
+    # 4. Missing rocm-sdk-device-<arch> package fails fast naming uv sync --extra rocm-<arch>
+    monkeypatch.setattr(
+        accel_mod.torch.cuda,
+        "get_device_properties",
+        lambda _idx: _Props("gfx1201", 16 * (1024**3)),
+    )
+
+    def _missing_dist(pkg: str) -> object:
+        raise importlib.metadata.PackageNotFoundError(pkg)
+
+    monkeypatch.setattr(importlib.metadata, "distribution", _missing_dist)
+    with pytest.raises(ValueError, match="uv sync --extra rocm-gfx1201"):
+        validate_rocm_device(0)
+
+    # 5. Insufficient VRAM (< 12 GB) fails fast
+    monkeypatch.setattr(importlib.metadata, "distribution", lambda _pkg: object())
+    monkeypatch.setattr(
+        accel_mod.torch.cuda,
+        "get_device_properties",
+        lambda _idx: _Props("gfx1102", 8 * (1024**3)),
+    )
+    with pytest.raises(ValueError, match="12 GB minimum VRAM requirement"):
+        validate_rocm_device(0)

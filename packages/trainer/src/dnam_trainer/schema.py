@@ -372,7 +372,7 @@ class TrainingConfig(StrictModel):
 
 
 class TrainingTelemetryRow(StrictModel):
-    """Single stage/epoch telemetry record persisted to `telemetry.parquet` and `telemetry.html`."""
+    """Single stage/epoch telemetry record persisted to `telemetry.jsonl` and `telemetry.html`."""
 
     stage: int = Field(ge=1, le=4)
     epoch: int = Field(ge=0)
