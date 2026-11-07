@@ -66,7 +66,7 @@ def seal_model(
     envelope.
     """
     inner_bytes = inner_model.to_bytes() if isinstance(inner_model, Model) else inner_model
-    certs_json = json.dumps([c.model_dump(mode="json") for c in recipient_certificates])
+    certs_json = json.dumps([c.to_dict() for c in recipient_certificates])
     oem_json = json.dumps(dict(trusted_oem_pubkeys))
     return native_seal_container(
         inner_bytes,

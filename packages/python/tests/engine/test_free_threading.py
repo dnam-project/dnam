@@ -30,8 +30,8 @@ def test_shared_engine_concurrent_threads_no_borrow_mut_error(
         name="Crunch Lead",
         controls={"gain": 8.0, "boost": "on"},
     )
-    alt_header = reference_model.header.model_copy(
-        update={"presets": [*reference_model.header.presets, extra_preset]}
+    alt_header = reference_model.header.replace(
+        presets=[*reference_model.header.presets, extra_preset]
     )
     alt_model = reference_model.with_header(alt_header)
 
@@ -256,10 +256,11 @@ def test_partial_and_cross_channel_overlap_and_mono_in_place(
         eng.process_planar(l_buf, l_buf, out_left=l_buf, out_right=r_buf)
 
     # 1->1 mono output model: exact 1D and (1, N) in-place works, partial overlap raises
-    mono_io = reference_model.header.io_config.model_copy(
-        update={"inputs": 1, "output_mode": "mono"}
+    mono_io = reference_model.header.io_config.replace(
+        inputs=1,
+        output_mode="mono",
     )
-    mono_hdr = reference_model.header.model_copy(update={"io_config": mono_io})
+    mono_hdr = reference_model.header.replace(io_config=mono_io)
     mono_model = dnam.Model.build(mono_hdr, reference_model.arena_bytes)
     eng_mono = dnam.Engine(mono_model, sample_rate=48_000, tier=Tier.FULL)
 

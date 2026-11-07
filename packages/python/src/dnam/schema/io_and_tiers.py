@@ -7,9 +7,7 @@ from __future__ import annotations
 from enum import StrEnum
 from typing import Literal
 
-from pydantic import Field
-
-from dnam.schema._base import StrictModel
+from dnam.schema._base import StrictModel, strict_field
 
 
 class BlendMode(StrEnum):
@@ -26,7 +24,7 @@ class ModelCapabilities(StrictModel):
     """
 
     blend_mode: BlendMode = BlendMode.NONE
-    default_blend: float = Field(default=1.0, ge=0.0, le=1.0)
+    default_blend: float = strict_field(default=1.0, ge=0.0, le=1.0)
     wet_polarity_inverted: bool = False
     supports_trails: bool = False
     tempo_sync_capable: bool = False
@@ -62,10 +60,10 @@ class IoConfig(StrictModel):
 
     inputs: Literal[1, 2] = 2
     output_mode: Literal["stereo", "mono"] = "stereo"
-    latency_samples: int = Field(default=0, ge=0)
-    tail_time_ms: float = Field(default=0.0, ge=0.0)
-    capabilities: ModelCapabilities = Field(default_factory=ModelCapabilities)
-    leveling: LevelingConfig = Field(default_factory=LevelingConfig)
+    latency_samples: int = strict_field(default=0, ge=0)
+    tail_time_ms: float = strict_field(default=0.0, ge=0.0)
+    capabilities: ModelCapabilities = strict_field(default_factory=ModelCapabilities)
+    leveling: LevelingConfig = strict_field(default_factory=LevelingConfig)
 
 
 class TierProfile(StrictModel):
@@ -73,17 +71,17 @@ class TierProfile(StrictModel):
     `Ultra`).
     """
 
-    feature_bus_dim: int = Field(default=0, ge=0)
-    channels: int = Field(ge=1, le=64)
-    early_fir_taps: int = Field(default=0, ge=0)
-    kautz_modes: int = Field(ge=0)
-    tank_lines: int = Field(ge=0)
-    head_svd_rank: int = Field(default=4, ge=1, le=16)
+    feature_bus_dim: int = strict_field(default=0, ge=0)
+    channels: int = strict_field(ge=1, le=64)
+    early_fir_taps: int = strict_field(default=0, ge=0)
+    kautz_modes: int = strict_field(default=0, ge=0)
+    tank_lines: int = strict_field(ge=0)
+    head_svd_rank: int = strict_field(default=4, ge=1, le=16)
     loudness_lufs: float = -20.5
     output_trim_db: float = 0.0
     validation_esr_db: float = 0.0
-    arena_end_byte_offset: int = Field(ge=0)
-    prefix_crc32c: int = Field(default=0, ge=0)
+    arena_end_byte_offset: int = strict_field(ge=0)
+    prefix_crc32c: int = strict_field(default=0, ge=0)
 
 
 def _default_pro_tier_profile() -> TierProfile:
@@ -107,5 +105,5 @@ class SlimmableTiersConfig(StrictModel):
 
     lite: TierProfile
     full: TierProfile
-    pro: TierProfile = Field(default_factory=_default_pro_tier_profile)
+    pro: TierProfile = strict_field(default_factory=_default_pro_tier_profile)
     ultra: TierProfile

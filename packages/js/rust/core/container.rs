@@ -324,119 +324,11 @@ pub fn canonicalize_jcs_core(
     serialize_jcs_value(&projected, reject_floats).map_err(|e| format_tagged_dnam_error(&e))
 }
 
-const USER_DICT_KEYS: &[&str] = &[
-    "user_metadata",
-    "controls",
-    "controls_meta",
-    "conditional_min",
-    "conditional_max",
-    "conditional_physical_anchors",
-    "scale_labels",
-    "option_labels",
-];
-
-const OPTIONAL_SKIP_KEYS: &[&str] = &[
-    "stems_registry",
-    "audit_report",
-    "distribution_policy",
-    "tier_arena_sha256",
-    "buyer_tier_arena_sha256",
-    "extracted_physics",
-    "calibration",
-    "lobatto_physical_anchors",
-    "conditional_physical_anchors",
-    "tempo_sync_default_subdivision",
-    "packing",
-    "feature_dim",
-    "packed_len",
-    "shape",
-];
-
-fn check_no_unknown_keys(
-    input: &serde_json::Value,
-    normalized: &serde_json::Value,
-    parent_key: Option<&str>,
-) -> Result<(), String> {
-    if let Some(pk) = parent_key
-        && USER_DICT_KEYS.contains(&pk)
-    {
-        return Ok(());
-    }
-    match (input, normalized) {
-        (serde_json::Value::Object(in_map), serde_json::Value::Object(norm_map)) => {
-            if parent_key == Some("tensor_directory") {
-                for (k, v_in) in in_map {
-                    if let Some(v_norm) = norm_map.get(k) {
-                        check_no_unknown_keys(v_in, v_norm, None)?;
-                    }
-                }
-                return Ok(());
-            }
-            for (k, v_in) in in_map {
-                if let Some(v_norm) = norm_map.get(k) {
-                    check_no_unknown_keys(v_in, v_norm, Some(k.as_str()))?;
-                } else if !OPTIONAL_SKIP_KEYS.contains(&k.as_str()) {
-                    return Err(validation_err(format!("Unknown schema field '{k}'")));
-                }
-            }
-            Ok(())
-        }
-        (serde_json::Value::Array(in_arr), serde_json::Value::Array(norm_arr)) => {
-            for (v_in, v_norm) in in_arr.iter().zip(norm_arr.iter()) {
-                check_no_unknown_keys(v_in, v_norm, None)?;
-            }
-            Ok(())
-        }
-        _ => Ok(()),
-    }
-}
-
 /// Validates and normalizes a snake_case `DnamJsonHeader` JSON string using Rust `serde` and
 /// `DnamJsonHeader::validate()`, rejecting unknown fields and returning canonical wire JSON.
 pub fn validate_and_normalize_header_core(header_json: &str) -> Result<String, String> {
-    let input_val: serde_json::Value =
-        serde_json::from_str(header_json).map_err(|e| validation_err(e.to_string()))?;
-    let mut header: DnamJsonHeader =
-        serde_json::from_value(input_val.clone()).map_err(|e| validation_err(e.to_string()))?;
-    for ctrl in &mut header.controls_schema {
-        if ctrl.kind == ControlKind::Range
-            && let Some(f) = ctrl.default.as_f64()
-        {
-            ctrl.default = serde_json::Value::from(f);
-        }
-    }
-    let range_ids: Vec<String> = header
-        .controls_schema
-        .iter()
-        .filter(|c| c.kind == ControlKind::Range)
-        .map(|c| c.id.clone())
-        .collect();
-    for preset in &mut header.presets {
-        for (k, v) in &mut preset.controls {
-            if range_ids.contains(k)
-                && let Some(f) = v.as_f64()
-            {
-                *v = serde_json::Value::from(f);
-            }
-        }
-    }
-    if let Some(stems) = &mut header.stems_registry {
-        for stem in stems {
-            for (k, v) in &mut stem.controls_meta {
-                if range_ids.contains(k)
-                    && let Some(f) = v.as_f64()
-                {
-                    *v = serde_json::Value::from(f);
-                }
-            }
-        }
-    }
-    header
-        .validate()
-        .map_err(|e| format_tagged_dnam_error(&e))?;
-    let norm_val = serde_json::to_value(&header).map_err(|e| validation_err(e.to_string()))?;
-    check_no_unknown_keys(&input_val, &norm_val, None)?;
-    serde_json::to_string(&header).map_err(|e| validation_err(e.to_string()))
+    DnamJsonHeader::validate_and_normalize_json_str(header_json)
+        .map_err(|e| format_tagged_dnam_error(&e))
 }
 
 pub fn build_dmu1_frame_core(
@@ -593,37 +485,7 @@ pub fn validate_v2_dnck_checkpoint_core(
 }
 
 pub fn export_runtime_dnam_from_ckpt_core(ckpt_bytes: &[u8]) -> Result<Vec<u8>, String> {
-    if ckpt_bytes.len() >= 8
-        && &ckpt_bytes[0..4] == b"DNCK"
-        && u16::from_le_bytes([ckpt_bytes[4], ckpt_bytes[5]]) == 2
-    {
-        return export_runtime_dnam_from_ckpt(ckpt_bytes).map_err(|e| format_tagged_dnam_error(&e));
-    }
-    let crypto = RustCryptoProvider::new();
-    let view = DnamContainerView::from_bytes(ckpt_bytes, &crypto)
-        .map_err(|e| format_tagged_dnam_error(&e))?;
-    if view.preamble.magic != *b"DNCK" {
-        return Err(
-            "[DNAM-CONTAINER] exportRuntimeDnamFromCkpt requires a .dnam-ckpt (DNCK) container"
-                .to_string(),
-        );
-    }
-    let mut runtime_header = view.header.clone();
-    runtime_header.version = "1.0.0".to_string();
-    runtime_header.container_kind = "dnam".to_string();
-    runtime_header.stems_registry = None;
-    runtime_header.audit_report = None;
-    runtime_header
-        .tensor_directory
-        .retain(|_, entry| entry.arena < 4);
-    runtime_header.metadata.signatures = None;
-    let full_arena = view.arena_storage.as_bytes();
-    let runtime_end = (view.preamble.arena_offset_ultra_end() as usize)
-        .max(ARENA_OFFSET_ULTRA_END as usize)
-        .min(full_arena.len());
-    let runtime_arena = &full_arena[..runtime_end];
-    build_dnam_container(&mut runtime_header, runtime_arena, runtime_arena, false)
-        .map_err(|e| format_tagged_dnam_error(&e))
+    export_runtime_dnam_from_ckpt(ckpt_bytes).map_err(|e| format_tagged_dnam_error(&e))
 }
 
 #[inline]

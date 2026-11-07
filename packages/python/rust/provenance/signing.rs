@@ -187,6 +187,55 @@ pub fn native_build_oem_cert_v2_signing_message<'py>(
     Ok(PyBytes::new(py, &msg))
 }
 
+/// Signs a `DnamJsonHeader` and `master_arena` using the creator's 32-byte `Ed25519` seed in Rust,
+/// returning the updated canonical wire JSON header string (`ref[sec.sig.prefix-delegation]`).
+#[pyfunction]
+#[pyo3(signature = (header_json, master_arena, creator_seed_32, signer_id, include_tier_prefixes = true))]
+pub fn native_sign_creator_header(
+    py: Python<'_>,
+    header_json: &str,
+    master_arena: &[u8],
+    creator_seed_32: &[u8],
+    signer_id: &str,
+    include_tier_prefixes: bool,
+) -> PyResult<String> {
+    let seed = check_len::<32>(creator_seed_32, "creator_seed_32")?;
+    py.detach(|| {
+        dnam_engine::provenance::sign_creator_header_json(
+            header_json,
+            master_arena,
+            &seed,
+            signer_id,
+            include_tier_prefixes,
+        )
+        .map_err(dnam_err_to_py)
+    })
+}
+
+/// Signs a `MarketplaceReceipt` and attaches it to a creator-signed `DnamJsonHeader` in Rust,
+/// returning the updated canonical wire JSON header string (`ref[sec.sig.prefix-delegation]`).
+#[pyfunction]
+pub fn native_sign_marketplace_receipt(
+    py: Python<'_>,
+    header_json: &str,
+    buyer_arena: &[u8],
+    marketplace_seed_32: &[u8],
+    spec_json: &str,
+) -> PyResult<String> {
+    let seed = check_len::<32>(marketplace_seed_32, "marketplace_seed_32")?;
+    py.detach(|| {
+        let spec: dnam_engine::provenance::MarketplaceReceiptSigningSpec =
+            serde_json::from_str(spec_json).map_err(validation_err)?;
+        dnam_engine::provenance::sign_marketplace_receipt_json(
+            header_json,
+            buyer_arena,
+            &seed,
+            spec,
+        )
+        .map_err(dnam_err_to_py)
+    })
+}
+
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(native_immutable_header_sha256, m)?)?;
     m.add_function(wrap_pyfunction!(native_sha256_hex, m)?)?;
@@ -199,6 +248,8 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
         native_build_marketplace_signing_message,
         m
     )?)?;
+    m.add_function(wrap_pyfunction!(native_sign_creator_header, m)?)?;
+    m.add_function(wrap_pyfunction!(native_sign_marketplace_receipt, m)?)?;
     m.add_function(wrap_pyfunction!(native_sign_oem_device_cert, m)?)?;
     m.add_function(wrap_pyfunction!(native_verify_oem_device_cert, m)?)?;
     m.add_function(wrap_pyfunction!(

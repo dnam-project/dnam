@@ -459,6 +459,39 @@ pub fn native_crc32c(py: Python<'_>, data: &[u8]) -> u32 {
     py.detach(|| crc32c_compute(data))
 }
 
+/// Validates and normalizes a `DnamJsonHeader` JSON string in Rust, rejecting unknown schema fields
+/// and returning canonical wire JSON.
+#[pyfunction]
+pub fn native_validate_and_normalize_header(py: Python<'_>, header_json: &str) -> PyResult<String> {
+    py.detach(|| DnamJsonHeader::validate_and_normalize_json_str(header_json))
+        .map_err(dnam_err_to_py)
+}
+
+/// Parses a semantic schema version string (`"major.minor.patch"` or `"major.minor"`) in Rust,
+/// returning `(major, minor, patch, is_supported)`.
+#[pyfunction]
+pub fn native_parse_schema_version(version_str: &str) -> PyResult<(u16, u16, u16, bool)> {
+    let v = dnam_engine::schema::SchemaVersion::parse(version_str).map_err(dnam_err_to_py)?;
+    Ok((v.major, v.minor, v.patch, v.is_supported()))
+}
+
+/// Normalizes a Stage 4 allpass delay array (`8` or `16` elements) to `16` elements using the
+/// canonical prime defaults in `dnam-engine`.
+#[pyfunction]
+pub fn native_normalize_allpass_delays(delays: Vec<u16>) -> PyResult<Vec<u16>> {
+    if delays.len() != 8 && delays.len() != 16 {
+        return Err(validation_err(format!(
+            "allpass_delays_samples must contain 8 or 16 elements, got {}",
+            delays.len()
+        )));
+    }
+    let mut out = dnam_engine::schema::stages::default_allpass_delays();
+    for (i, &val) in delays.iter().enumerate() {
+        out[i] = val;
+    }
+    Ok(out.to_vec())
+}
+
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(native_validate_container, m)?)?;
     m.add_function(wrap_pyfunction!(native_build_container, m)?)?;
@@ -471,6 +504,9 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(native_build_dmu1_frame, m)?)?;
     m.add_function(wrap_pyfunction!(native_parse_dmu1_frame, m)?)?;
     m.add_function(wrap_pyfunction!(native_crc32c, m)?)?;
+    m.add_function(wrap_pyfunction!(native_validate_and_normalize_header, m)?)?;
+    m.add_function(wrap_pyfunction!(native_parse_schema_version, m)?)?;
+    m.add_function(wrap_pyfunction!(native_normalize_allpass_delays, m)?)?;
     checkpoint::register(m)?;
     gram::register(m)?;
     Ok(())

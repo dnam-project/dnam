@@ -53,44 +53,27 @@ impl ControlSpaceCore {
         clamped_out: &mut [f32],
         norm_out: &mut [f32],
     ) -> u32 {
-        let n = self.num_controls.min(clamped_out.len()).min(norm_out.len());
+        let n = self
+            .num_controls
+            .min(clamped_out.len())
+            .min(norm_out.len())
+            .min(256);
+        let mut raw_buf = [0.0_f32; 256];
+        for p in 0..n {
+            raw_buf[p] = raw_numeric_values
+                .get(p)
+                .copied()
+                .unwrap_or(self.descriptors[p].default_val);
+        }
         let mut active_switches = [0_u8; 256];
-        let mut was_clamped_mask = 0_u32;
-
-        for p in 0..n {
-            let desc = &self.descriptors[p];
-            if desc.ctrl_kind == 1 {
-                let raw_v = raw_numeric_values
-                    .get(p)
-                    .copied()
-                    .unwrap_or(desc.default_val);
-                let (clamped, norm, was_clamped) =
-                    desc.clamp_and_normalize(raw_v, &active_switches[..n]);
-                active_switches[p] = (clamped + 0.5) as u8;
-                clamped_out[p] = clamped;
-                norm_out[p] = norm;
-                if was_clamped && p < 32 {
-                    was_clamped_mask |= 1_u32 << p;
-                }
-            }
-        }
-        for p in 0..n {
-            let desc = &self.descriptors[p];
-            if desc.ctrl_kind == 0 {
-                let raw_v = raw_numeric_values
-                    .get(p)
-                    .copied()
-                    .unwrap_or(desc.default_val);
-                let (clamped, norm, was_clamped) =
-                    desc.clamp_and_normalize(raw_v, &active_switches[..n]);
-                clamped_out[p] = clamped;
-                norm_out[p] = norm;
-                if was_clamped && p < 32 {
-                    was_clamped_mask |= 1_u32 << p;
-                }
-            }
-        }
-        was_clamped_mask
+        u32::from(ControlClampDescriptor::clamp_and_normalize_all(
+            &self.descriptors,
+            n,
+            &raw_buf[..n],
+            clamped_out,
+            norm_out,
+            &mut active_switches[..n],
+        ))
     }
 
     pub fn clamp(&self, raw_numeric_values: &[f32]) -> (Vec<f32>, Vec<f32>, Vec<bool>, u16) {

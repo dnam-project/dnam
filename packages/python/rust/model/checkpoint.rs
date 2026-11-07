@@ -4,11 +4,9 @@
 use std::collections::BTreeMap;
 
 use dnam_engine::container::{
-    ARENA_OFFSET_ULTRA_END, DnamContainerView, build_dnam_container, crc32c_compute,
-    export_runtime_dnam_from_ckpt, validate_v2_dnck_checkpoint, verify_ckpt_arena5_calib_stats,
-    verify_ckpt_stem_arena4_crc32c,
+    build_dnam_container, crc32c_compute, export_runtime_dnam_from_ckpt,
+    validate_v2_dnck_checkpoint, verify_ckpt_arena5_calib_stats, verify_ckpt_stem_arena4_crc32c,
 };
-use dnam_engine::provenance::RustCryptoProvider;
 use dnam_engine::schema::{
     AuditReport, DnamJsonHeader, ExtractedPhysics, StemProvenance, StemRegistryEntry,
     TensorSliceEntry,
@@ -17,7 +15,7 @@ use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict};
 
 use super::populate_reference_controls_and_arena;
-use crate::{dnam_err_to_py, validation_err};
+use crate::dnam_err_to_py;
 
 /// Synthesizes a reference `.dnam-ckpt` (`DNCK`) container with a verified `Arena 4` stem record
 /// and an optional `Arena 5` (`DNCA`) calibration statistics record.
@@ -163,39 +161,9 @@ pub fn native_export_runtime_dnam_from_ckpt<'py>(
     py: Python<'py>,
     ckpt_bytes: &[u8],
 ) -> PyResult<Bound<'py, PyBytes>> {
-    let exported = py.detach(|| -> PyResult<Vec<u8>> {
-        if ckpt_bytes.len() >= 8
-            && &ckpt_bytes[0..4] == b"DNCK"
-            && u16::from_le_bytes([ckpt_bytes[4], ckpt_bytes[5]]) == 2
-        {
-            return export_runtime_dnam_from_ckpt(ckpt_bytes).map_err(dnam_err_to_py);
-        }
-
-        let crypto = RustCryptoProvider::new();
-        let view = DnamContainerView::from_bytes(ckpt_bytes, &crypto).map_err(dnam_err_to_py)?;
-        if view.preamble.magic != *b"DNCK" {
-            return Err(validation_err(
-                "native_export_runtime_dnam_from_ckpt requires a .dnam-ckpt (DNCK) container",
-            ));
-        }
-
-        let mut header = view.header.clone();
-        header.version = "1.0.0".to_string();
-        header.container_kind = "dnam".to_string();
-        header.stems_registry = None;
-        header.audit_report = None;
-        header.tensor_directory.retain(|_, entry| entry.arena < 4);
-        header.metadata.signatures = None;
-
-        let full_arena = view.arena_storage.as_bytes();
-        let runtime_end = (view.preamble.arena_offset_ultra_end() as usize)
-            .max(ARENA_OFFSET_ULTRA_END as usize)
-            .min(full_arena.len());
-        let runtime_arena = &full_arena[..runtime_end];
-
-        build_dnam_container(&mut header, runtime_arena, runtime_arena, false)
-            .map_err(dnam_err_to_py)
-    })?;
+    let exported = py
+        .detach(|| export_runtime_dnam_from_ckpt(ckpt_bytes))
+        .map_err(dnam_err_to_py)?;
     Ok(PyBytes::new(py, &exported))
 }
 

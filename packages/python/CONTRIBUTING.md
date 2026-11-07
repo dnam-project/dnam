@@ -20,7 +20,7 @@ packages/python/
 │   ├── model/               # Model, Checkpoint, Preamble, GramMatrix, crc32c
 │   ├── engine/              # Engine + Controls, Presets, Tempo, Telemetry facets
 │   ├── controls/            # ControlSpace, ClampResult, ZohParams, tempo inversion
-│   ├── schema/              # File-for-file Pydantic v2 StrictModel mirror of engine/src/schema/
+│   ├── schema/              # File-for-file frozen slotted dataclass StrictModel mirror of engine/src/schema/
 │   ├── provenance/          # Verify, Sign, Seal (DNSL), Marketplace (DAU1/DME1), Watermark
 │   └── dsp/                 # Vectorized TORA reference kernels (op_t, op_m, op_n, control_bus, mixing)
 ├── rust/
@@ -64,7 +64,7 @@ packages/python/
 4. **Strict Static Typing (`pyrefly`, Zero Suppressions) & Fast `StrictModel` Construction:**
    - Update [`src/dnam/_native.pyi`](src/dnam/_native.pyi) in lockstep with any change in `rust/`.
    - Never use `# type: ignore` or `# pyrefly: ignore` (`ref[repo.code.type-safety-and-imports]`).
-   - Keep `StrictModel.__pydantic_custom_init__ = False` so `DnamJsonHeader.from_json` validates nested models directly inside Rust `pydantic_core`, and use `StrictModel._construct_trusted_dict(...)` (reusing the per-class `_trusted_fields_set`) when constructing models from pre-validated Rust dictionaries on hot paths (`Engine.telemetry`, `ControlSpace.clamp`, `Model.from_bytes`).
+   - Delegate header validation and normalization in `DnamJsonHeader` to `dnam-engine` (`native_validate_and_normalize_header`), and use `StrictModel._construct_trusted_dict(...)` on slotted frozen dataclasses when constructing models from pre-validated Rust dictionaries on hot paths (`Engine.telemetry`, `ControlSpace.clamp`, `Model.from_bytes`).
 5. **Parity-First Verification Without Golden Binaries:**
    - Verify audio rendering against `dnam._native._testing.render_reference_*`, schema serialization against `dnam._native._testing.reference_header_json`, and exception mapping against `dnam._native._testing.error_variant_names`.
    - Cite the verified `r[sdk.python.*]` rules in test docstrings via `verify[sdk.python.*]`.

@@ -92,10 +92,11 @@ def test_engine_mono_to_stereo_and_mono_bit_identical_to_rust_reference(
     np.testing.assert_array_equal(py_m2s.view(np.uint32), rust_m2s.view(np.uint32))
 
     # Build a 1->1 mono output model and verify mono parity
-    mono_io = reference_model.header.io_config.model_copy(
-        update={"inputs": 1, "output_mode": "mono"}
+    mono_io = reference_model.header.io_config.replace(
+        inputs=1,
+        output_mode="mono",
     )
-    mono_hdr = reference_model.header.model_copy(update={"io_config": mono_io})
+    mono_hdr = reference_model.header.replace(io_config=mono_io)
     mono_model = dnam.Model.build(mono_hdr, reference_model.arena_bytes)
     eng_mono = dnam.Engine(mono_model, sample_rate=48_000, tier=tier, backend="scalar")
     py_mono_1d = eng_mono(mono, 48_000, buffer_size=32, reset=True)

@@ -1,4 +1,4 @@
-"""Pydantic v2 `StrictModel` schema mirror of `dnam-engine::schema`
+"""Declarative frozen slotted `StrictModel` schema mirror of `dnam-engine::schema`
 (`ref[sdk.python.schema.rust-parity]`).
 """
 

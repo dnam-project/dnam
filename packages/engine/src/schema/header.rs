@@ -545,6 +545,130 @@ impl DnamJsonHeader {
         }
         None
     }
+
+    /// Parses, normalizes numeric range defaults/presets/stems, validates structural invariants,
+    /// rejects unknown schema fields, and serializes a [`DnamJsonHeader`] to canonical wire JSON.
+    pub fn validate_and_normalize_json_str(header_json: &str) -> Result<String, DnamError> {
+        let input_val: serde_json::Value = serde_json::from_str(header_json)
+            .map_err(|e| DnamError::InvalidJsonHeader(alloc::format!("{e}")))?;
+        let mut header: Self = serde_json::from_value(input_val.clone())
+            .map_err(|e| DnamError::SchemaValidationError(alloc::format!("{e}")))?;
+        for ctrl in &mut header.controls_schema {
+            if ctrl.kind == ControlKind::Range
+                && let Some(f) = ctrl.default.as_f64()
+            {
+                ctrl.default = serde_json::Value::from(f);
+            }
+        }
+        let range_ids: Vec<String> = header
+            .controls_schema
+            .iter()
+            .filter(|c| c.kind == ControlKind::Range)
+            .map(|c| c.id.clone())
+            .collect();
+        for preset in &mut header.presets {
+            for (k, v) in &mut preset.controls {
+                if range_ids.contains(k)
+                    && let Some(f) = v.as_f64()
+                {
+                    *v = serde_json::Value::from(f);
+                }
+            }
+        }
+        if let Some(stems) = &mut header.stems_registry {
+            for stem in stems {
+                for (k, v) in &mut stem.controls_meta {
+                    if range_ids.contains(k)
+                        && let Some(f) = v.as_f64()
+                    {
+                        *v = serde_json::Value::from(f);
+                    }
+                }
+            }
+        }
+        header.validate()?;
+        let norm_val = serde_json::to_value(&header)
+            .map_err(|e| DnamError::InvalidJsonHeader(alloc::format!("{e}")))?;
+        check_no_unknown_header_keys(&input_val, &norm_val, None)?;
+        serde_json::to_string(&header)
+            .map_err(|e| DnamError::InvalidJsonHeader(alloc::format!("{e}")))
+    }
+}
+
+const USER_DICT_KEYS: &[&str] = &[
+    "user_metadata",
+    "controls",
+    "controls_meta",
+    "conditional_min",
+    "conditional_max",
+    "conditional_physical_anchors",
+    "scale_labels",
+    "option_labels",
+];
+
+fn is_skipped_optional_field(
+    parent_key: Option<&str>,
+    key: &str,
+    v_in: &serde_json::Value,
+) -> bool {
+    match (parent_key, key) {
+        (None, "stems_registry" | "audit_report")
+        | (Some("metadata"), "distribution_policy")
+        | (Some("signatures"), "tier_arena_sha256")
+        | (Some("marketplace_receipt"), "buyer_tier_arena_sha256")
+        | (Some("controls_schema"), "calibration")
+        | (Some("calibration"), "lobatto_physical_anchors" | "tempo_sync_default_subdivision")
+        | (Some("stems_registry"), "extracted_physics")
+        | (
+            Some("tensor_directory_entry" | "g_audio_uplo_u_f64" | "c_audio_tier_f64"),
+            "packing" | "feature_dim" | "packed_len" | "shape",
+        ) => v_in.is_null(),
+        (Some("calibration"), "conditional_physical_anchors") => {
+            v_in.as_object().is_some_and(serde_json::Map::is_empty)
+        }
+        _ => false,
+    }
+}
+
+fn check_no_unknown_header_keys(
+    input: &serde_json::Value,
+    normalized: &serde_json::Value,
+    parent_key: Option<&str>,
+) -> Result<(), DnamError> {
+    if let Some(pk) = parent_key
+        && USER_DICT_KEYS.contains(&pk)
+    {
+        return Ok(());
+    }
+    match (input, normalized) {
+        (serde_json::Value::Object(in_map), serde_json::Value::Object(norm_map)) => {
+            if parent_key == Some("tensor_directory") {
+                for (k, v_in) in in_map {
+                    if let Some(v_norm) = norm_map.get(k) {
+                        check_no_unknown_header_keys(v_in, v_norm, Some("tensor_directory_entry"))?;
+                    }
+                }
+                return Ok(());
+            }
+            for (k, v_in) in in_map {
+                if let Some(v_norm) = norm_map.get(k) {
+                    check_no_unknown_header_keys(v_in, v_norm, Some(k.as_str()))?;
+                } else if !is_skipped_optional_field(parent_key, k.as_str(), v_in) {
+                    return Err(DnamError::SchemaValidationError(alloc::format!(
+                        "Unknown schema field '{k}'"
+                    )));
+                }
+            }
+            Ok(())
+        }
+        (serde_json::Value::Array(in_arr), serde_json::Value::Array(norm_arr)) => {
+            for (v_in, v_norm) in in_arr.iter().zip(norm_arr.iter()) {
+                check_no_unknown_header_keys(v_in, v_norm, parent_key)?;
+            }
+            Ok(())
+        }
+        _ => Ok(()),
+    }
 }
 
 #[cfg(test)]
@@ -712,5 +836,31 @@ mod tests {
         assert!(SchemaVersion::parse("1.b.0").is_err());
         assert!(SchemaVersion::parse("1.0.c").is_err());
         assert_eq!(SchemaVersion::V1_0_0.as_semver_string(), "1.0.0");
+
+        let norm_json = DnamJsonHeader::validate_and_normalize_json_str(minimal_json).unwrap();
+        assert!(norm_json.contains("\"version\":\"1.0.0\""));
+        assert!(DnamJsonHeader::validate_and_normalize_json_str("not json").is_err());
+        let bad_unknown = minimal_json.replace(
+            "\"metadata\": {",
+            "\"unknown_root_field\": 123, \"metadata\": {",
+        );
+        assert!(DnamJsonHeader::validate_and_normalize_json_str(&bad_unknown).is_err());
+
+        // Misplaced optional field ("shape" inside "stage1_pre" or "distribution_policy" at root) must fail
+        let bad_misplaced =
+            minimal_json.replace("\"stage1_pre\": {}", "\"stage1_pre\": {\"shape\": \"bad\"}");
+        assert!(DnamJsonHeader::validate_and_normalize_json_str(&bad_misplaced).is_err());
+        let bad_root_opt = minimal_json.replace(
+            "\"metadata\": {",
+            "\"distribution_policy\": null, \"metadata\": {",
+        );
+        assert!(DnamJsonHeader::validate_and_normalize_json_str(&bad_root_opt).is_err());
+
+        // Explicit null on valid skip_serializing_if fields must succeed
+        let ok_explicit_nulls = minimal_json.replace(
+            "\"metadata\": {",
+            "\"stems_registry\": null, \"audit_report\": null, \"metadata\": {\"distribution_policy\": null,",
+        );
+        assert!(DnamJsonHeader::validate_and_normalize_json_str(&ok_explicit_nulls).is_ok());
     }
 }

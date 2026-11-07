@@ -117,9 +117,40 @@ pub fn native_evaluate_anticlone_policy(
     }
 }
 
+/// Evaluates `DistributionPolicy::is_profile_allowed` in Rust.
+#[pyfunction]
+pub fn native_is_profile_allowed(allowed_profiles: Vec<String>, profile: &str) -> PyResult<bool> {
+    let mut parsed_allowed = Vec::with_capacity(allowed_profiles.len());
+    for p in &allowed_profiles {
+        parsed_allowed.push(DnamProtectionProfile::from_str_name(p).map_err(dnam_err_to_py)?);
+    }
+    let target = DnamProtectionProfile::from_str_name(profile).map_err(dnam_err_to_py)?;
+    let policy = dnam_engine::schema::DistributionPolicy {
+        allowed_protection_profiles: parsed_allowed,
+        allowed_oem_vendors: Vec::new(),
+    };
+    Ok(policy.is_profile_allowed(target))
+}
+
+/// Evaluates `DistributionPolicy::is_oem_device_allowed` in Rust.
+#[pyfunction]
+pub fn native_is_oem_device_allowed(
+    allowed_oem_vendors: Vec<String>,
+    oem_vendor: &str,
+    model_code: &str,
+) -> bool {
+    let policy = dnam_engine::schema::DistributionPolicy {
+        allowed_protection_profiles: Vec::new(),
+        allowed_oem_vendors,
+    };
+    policy.is_oem_device_allowed(oem_vendor, model_code)
+}
+
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(native_verify_container_provenance, m)?)?;
     m.add_function(wrap_pyfunction!(native_enforce_distribution_policy, m)?)?;
     m.add_function(wrap_pyfunction!(native_evaluate_anticlone_policy, m)?)?;
+    m.add_function(wrap_pyfunction!(native_is_profile_allowed, m)?)?;
+    m.add_function(wrap_pyfunction!(native_is_oem_device_allowed, m)?)?;
     Ok(())
 }

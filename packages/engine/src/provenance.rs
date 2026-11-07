@@ -51,8 +51,6 @@ pub use provider::{
     CryptoProvider, DefaultCryptoProvider, OpenArenaCryptoProvider, VerificationStatus,
 };
 pub use sha256::{decode_hex_array, encode_hex, sha256_digest};
-#[cfg(feature = "crypto")]
-pub use verify::seal_dnam_container;
 pub use verify::{
     DNSL_MAGIC, DnamSealEnvelopePreamble, DnamSealRecipientSlot, FLAG_SEAL_CHACHA20_FULL,
     MAX_SEAL_RECIPIENTS, build_creator_signing_message, build_marketplace_receipt_signing_message,
@@ -60,6 +58,11 @@ pub use verify::{
     compute_immutable_header_sha256_for_version, enforce_distribution_policy,
     project_immutable_header_for_schema_version, unseal_dnam_container,
     verify_container_provenance, verify_oem_device_certificate,
+};
+#[cfg(feature = "crypto")]
+pub use verify::{
+    MarketplaceReceiptSigningSpec, seal_dnam_container, sign_creator_header_json,
+    sign_marketplace_receipt_json,
 };
 pub use watermark::{
     apply_isometric_gauge_watermark, apply_tardos_watermark_7680, extract_structural_hash_224d,

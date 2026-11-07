@@ -296,16 +296,16 @@ class Model:
         """Updates the JSON header in-place within the 4 KB page boundary without touching the
         arena.
         """
-        fast_json = updated_header.model_dump_json(by_alias=True)
+        fast_json = updated_header.to_json()
         new_bytes, json_len, hdr_crc = native_update_header_in_place_fast(
             self._container_bytes,
             fast_json,
         )
         canonical_json = new_bytes[64 : 64 + json_len].decode("utf-8")
-        p_dict = dict(self._preamble.__dict__)
-        p_dict["json_header_byte_len"] = json_len
-        p_dict["header_crc32c"] = hdr_crc
-        new_preamble = Preamble._construct_trusted_dict(p_dict)
+        new_preamble = self._preamble.replace(
+            json_header_byte_len=json_len,
+            header_crc32c=hdr_crc,
+        )
         return Model(
             new_bytes,
             preamble=new_preamble,

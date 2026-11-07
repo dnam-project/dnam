@@ -61,18 +61,16 @@ def test_model_load_save_header_edit_and_tier_stripping(
         description="Added in-place",
         controls={"gain": 8.0, "boost": "on"},
     )
-    updated_hdr = reference_model.header.model_copy(
-        update={
-            "presets": [*reference_model.header.presets, new_preset],
-            "user_metadata": {"author_tag": "studio"},
-        }
+    updated_hdr = reference_model.header.replace(
+        presets=[*reference_model.header.presets, new_preset],
+        user_metadata={"author_tag": "studio"},
     )
     edited = reference_model.with_header(updated_hdr)
     assert "crunch_lead" in edited.presets
     assert edited.header.user_metadata["author_tag"] == "studio"
 
     # Oversized header (> 4 KB) fails with ContainerError
-    huge_hdr = reference_model.header.model_copy(update={"user_metadata": {"blob": "x" * 6000}})
+    huge_hdr = reference_model.header.replace(user_metadata={"blob": "x" * 6000})
     with pytest.raises(ContainerError):
         reference_model.with_header(huge_hdr)
 
@@ -104,7 +102,7 @@ def test_model_corruption_and_preview_rejection(reference_model: dnam.Model) -> 
     # Model.build validation
     built = dnam.Model.build(reference_model.header, reference_model.arena_bytes)
     assert built.name == reference_model.name
-    ckpt_hdr = reference_model.header.model_copy(update={"container_kind": "dnam-ckpt"})
+    ckpt_hdr = reference_model.header.replace(container_kind="dnam-ckpt")
     with pytest.raises(ValidationError):
         dnam.Model.build(ckpt_hdr, reference_model.arena_bytes)
 

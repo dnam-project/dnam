@@ -240,8 +240,8 @@ def test_bench_model_from_bytes_and_with_header(
     """
     raw = reference_model.to_bytes()
     new_preset = PresetDef(id="lead", name="Lead", controls={"gain": 7.0, "boost": "on"})
-    updated_hdr = reference_model.header.model_copy(
-        update={"presets": [*reference_model.header.presets, new_preset]}
+    updated_hdr = reference_model.header.replace(
+        presets=[*reference_model.header.presets, new_preset]
     )
 
     def _load_and_edit() -> dnam.Model:

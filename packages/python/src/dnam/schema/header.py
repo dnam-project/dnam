@@ -5,15 +5,18 @@
 from __future__ import annotations
 
 import json
-from typing import Literal, Self
+from dataclasses import field
+from typing import Literal, Self, cast
 
-from pydantic import Field
-
-from dnam._native import native_serialize_jcs
+from dnam._native import (
+    native_parse_schema_version,
+    native_serialize_jcs,
+    native_validate_and_normalize_header,
+)
 from dnam.errors import ValidationError
-from dnam.schema._base import StrictModel
+from dnam.schema._base import StrictModel, strict_field
 from dnam.schema.checkpoint import AuditReport, StemRegistryEntry
-from dnam.schema.controls import ControlSchemaDef, JsonValue, PresetDef
+from dnam.schema.controls import ControlKind, ControlSchemaDef, JsonValue, PresetDef
 from dnam.schema.io_and_tiers import IoConfig, SlimmableTiersConfig
 from dnam.schema.signatures import (
     DatasetProvenance,
@@ -34,27 +37,15 @@ from dnam.schema.stages import (
 class SchemaVersion(StrictModel):
     """Semantic version (`major.minor.patch`) of the `.dnam` and `.dnam-ckpt` container schema."""
 
-    major: int = Field(default=1, ge=0, le=65535)
-    minor: int = Field(default=0, ge=0, le=65535)
-    patch: int = Field(default=0, ge=0, le=65535)
+    major: int = strict_field(default=1, ge=0, le=65535)
+    minor: int = strict_field(default=0, ge=0, le=65535)
+    patch: int = strict_field(default=0, ge=0, le=65535)
 
     @classmethod
     def parse(cls, version_str: str) -> SchemaVersion:
         """Parses a semantic version string (`'major.minor.patch'` or `'major.minor'`)."""
-        parts = version_str.strip().split(".")
-        if len(parts) not in (2, 3):
-            raise ValidationError(
-                f"Invalid schema version '{version_str}': expected 'major.minor.patch'"
-            )
-        try:
-            major = int(parts[0])
-            minor = int(parts[1])
-            patch = int(parts[2]) if len(parts) == 3 else 0
-        except ValueError:
-            raise ValidationError(
-                f"Invalid numeric segments in schema version '{version_str}'"
-            ) from None
-        return cls(major=major, minor=minor, patch=patch)
+        major, minor, patch, _ = native_parse_schema_version(version_str)
+        return cls._construct_trusted(major=major, minor=minor, patch=patch)
 
     @property
     def semver(self) -> str:
@@ -64,7 +55,8 @@ class SchemaVersion(StrictModel):
     @property
     def is_supported(self) -> bool:
         """Returns `True` if this schema version is supported by the engine (`1.0`..`1.1`)."""
-        return self.major == 1 and self.minor <= 1
+        _, _, _, supported = native_parse_schema_version(self.semver)
+        return supported
 
 
 class ModelMetadata(StrictModel):
@@ -76,70 +68,9 @@ class ModelMetadata(StrictModel):
     license: str | None = None
     created_at: str
     input_reference_dbfs: float = -20.5
-    provenance: DatasetProvenance = Field(default_factory=DatasetProvenance)
+    provenance: DatasetProvenance = strict_field(default_factory=DatasetProvenance)
     distribution_policy: DistributionPolicy | None = None
     signatures: ModelSignatures | None = None
-
-
-def _prune_rust_skip_serializing_if(raw: dict[str, object]) -> dict[str, object]:
-    """Removes optional keys that Rust `serde` marks with `skip_serializing_if` when `None` or
-    empty.
-    """
-    if raw.get("stems_registry") is None:
-        raw.pop("stems_registry", None)
-    else:
-        stems = raw["stems_registry"]
-        if isinstance(stems, list):
-            for stem in stems:
-                if isinstance(stem, dict):
-                    if stem.get("extracted_physics") is None:
-                        stem.pop("extracted_physics", None)
-                    for slice_key in ("g_audio_uplo_u_f64", "c_audio_tier_f64"):
-                        sl = stem.get(slice_key)
-                        if isinstance(sl, dict):
-                            for opt_k in ("packing", "feature_dim", "packed_len", "shape"):
-                                if sl.get(opt_k) is None:
-                                    sl.pop(opt_k, None)
-
-    if raw.get("audit_report") is None:
-        raw.pop("audit_report", None)
-
-    meta = raw.get("metadata")
-    if isinstance(meta, dict):
-        if meta.get("distribution_policy") is None:
-            meta.pop("distribution_policy", None)
-        sigs = meta.get("signatures")
-        if isinstance(sigs, dict):
-            if sigs.get("tier_arena_sha256") is None:
-                sigs.pop("tier_arena_sha256", None)
-            rcpt = sigs.get("marketplace_receipt")
-            if isinstance(rcpt, dict) and rcpt.get("buyer_tier_arena_sha256") is None:
-                rcpt.pop("buyer_tier_arena_sha256", None)
-
-    ctrls = raw.get("controls_schema")
-    if isinstance(ctrls, list):
-        for ctrl in ctrls:
-            if isinstance(ctrl, dict):
-                cal = ctrl.get("calibration")
-                if cal is None:
-                    ctrl.pop("calibration", None)
-                elif isinstance(cal, dict):
-                    if cal.get("lobatto_physical_anchors") is None:
-                        cal.pop("lobatto_physical_anchors", None)
-                    if not cal.get("conditional_physical_anchors"):
-                        cal.pop("conditional_physical_anchors", None)
-                    if cal.get("tempo_sync_default_subdivision") is None:
-                        cal.pop("tempo_sync_default_subdivision", None)
-
-    tdir = raw.get("tensor_directory")
-    if isinstance(tdir, dict):
-        for sl in tdir.values():
-            if isinstance(sl, dict):
-                for opt_k in ("packing", "feature_dim", "packed_len", "shape"):
-                    if sl.get(opt_k) is None:
-                        sl.pop(opt_k, None)
-
-    return raw
 
 
 class DnamJsonHeader(StrictModel):
@@ -150,22 +81,44 @@ class DnamJsonHeader(StrictModel):
     version: str = "1.0.0"
     container_kind: Literal["dnam", "dnam-ckpt", "preview"] = "dnam"
     architecture: str = "DNAM_TORA"
-    sample_rate_train_hz: int = Field(default=48_000, ge=44_100, le=192_000)
+    sample_rate_train_hz: int = strict_field(default=48_000, ge=44_100, le=96_000)
     metadata: ModelMetadata
-    user_metadata: dict[str, JsonValue] = Field(default_factory=dict)
-    io_config: IoConfig = Field(default_factory=IoConfig)
+    user_metadata: dict[str, JsonValue] = strict_field(default_factory=dict)
+    io_config: IoConfig = strict_field(default_factory=IoConfig)
     slimmable_tiers: SlimmableTiersConfig
-    controls_schema: list[ControlSchemaDef] = Field(default_factory=list)
-    presets: list[PresetDef] = Field(default_factory=list)
-    control_bus: ControlBusConfig = Field(default_factory=ControlBusConfig)
-    stage0_router: RouterConfig = Field(default_factory=RouterConfig)
-    stage1_pre: Stage1PreFxConfig = Field(default_factory=Stage1PreFxConfig)
-    stage2_cascade: Stage2CascadeConfig = Field(default_factory=Stage2CascadeConfig)
-    stage3_cabinet: Stage3CabinetKautzConfig = Field(default_factory=Stage3CabinetKautzConfig)
-    stage4_tank: Stage4SpatialTankConfig = Field(default_factory=Stage4SpatialTankConfig)
-    tensor_directory: dict[str, TensorSliceEntry] = Field(default_factory=dict)
+    controls_schema: list[ControlSchemaDef] = strict_field(default_factory=list)
+    presets: list[PresetDef] = strict_field(default_factory=list)
+    control_bus: ControlBusConfig = strict_field(default_factory=ControlBusConfig)
+    stage0_router: RouterConfig = strict_field(default_factory=RouterConfig)
+    stage1_pre: Stage1PreFxConfig = strict_field(default_factory=Stage1PreFxConfig)
+    stage2_cascade: Stage2CascadeConfig = strict_field(default_factory=Stage2CascadeConfig)
+    stage3_cabinet: Stage3CabinetKautzConfig = strict_field(
+        default_factory=Stage3CabinetKautzConfig
+    )
+    stage4_tank: Stage4SpatialTankConfig = strict_field(default_factory=Stage4SpatialTankConfig)
+    tensor_directory: dict[str, TensorSliceEntry] = strict_field(default_factory=dict)
     stems_registry: list[StemRegistryEntry] | None = None
     audit_report: AuditReport | None = None
+
+    _cached_json: str | None = field(default=None, init=False, repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        range_ids = {c.id for c in self.controls_schema if c.kind == ControlKind.RANGE}
+        if range_ids:
+            for preset in self.presets:
+                for k, v in preset.controls.items():
+                    if k in range_ids and type(v) is int:
+                        preset.controls[k] = float(v)
+            if self.stems_registry is not None:
+                for stem in self.stems_registry:
+                    for k, v in stem.controls_meta.items():
+                        if k in range_ids and type(v) is int:
+                            stem.controls_meta[k] = float(v)
+        if self._cached_json is None:
+            raw_json = super().to_json(by_alias=True)
+            canonical = native_validate_and_normalize_header(raw_json)
+            object.__setattr__(self, "_cached_json", canonical)
 
     @property
     def schema_version(self) -> SchemaVersion:
@@ -173,25 +126,34 @@ class DnamJsonHeader(StrictModel):
         return SchemaVersion.parse(self.version)
 
     @classmethod
-    def from_json(cls, json_str: str | bytes) -> Self:
+    def from_json(cls, json_data: str | bytes | bytearray | memoryview) -> Self:
         """Parses and validates a UTF-8 JSON header string or byte buffer."""
         try:
-            return cls.model_validate_json(json_str)
+            raw_str = json_data if isinstance(json_data, str) else bytes(json_data).decode("utf-8")
         except Exception as exc:
             raise ValidationError(f"Invalid DnamJsonHeader JSON: {exc}") from None
+        canonical = native_validate_and_normalize_header(raw_str)
+        raw_dict: dict[str, object] = json.loads(canonical)
+        raw_dict.setdefault("stems_registry", None)
+        raw_dict.setdefault("audit_report", None)
+        m = cls._construct_trusted_dict(raw_dict)
+        object.__setattr__(m, "_cached_json", canonical)
+        StrictModel.__post_init__(m)
+        return m
 
     def to_rust_dict(self) -> dict[str, object]:
         """Dumps the header into a dictionary matching Rust `serde_json` field names and
         `skip_serializing_if` rules.
         """
-        dumped = self.model_dump(mode="json", by_alias=True)
-        return _prune_rust_skip_serializing_if(dumped)
+        return cast(dict[str, object], json.loads(self.to_json(by_alias=True)))
 
-    def to_json(self) -> str:
+    def to_json(self, *, by_alias: bool = True) -> str:
         """Serializes the header to compact JSON matching Rust `DnamJsonHeader` wire
         representation.
         """
-        return json.dumps(self.to_rust_dict(), separators=(",", ":"), ensure_ascii=False)
+        if by_alias and self._cached_json is not None:
+            return self._cached_json
+        return super().to_json(by_alias=by_alias)
 
     def to_jcs(self, *, project_immutable: bool = False) -> str:
         """Serializes the header via RFC 8785 JCS (`ref[sdk.python.schema.rust-parity]`)."""

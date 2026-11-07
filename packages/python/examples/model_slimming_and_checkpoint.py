@@ -32,11 +32,9 @@ def main() -> None:
         description="Added in-place without touching tensor arena",
         controls={"gain": 4.0, "boost": "off"},
     )
-    updated_header = model.header.model_copy(
-        update={
-            "presets": [*model.header.presets, new_preset],
-            "user_metadata": {"favorite": True},
-        }
+    updated_header = model.header.replace(
+        presets=[*model.header.presets, new_preset],
+        user_metadata={"favorite": True},
     )
     edited_model = model.with_header(updated_header)
     print(

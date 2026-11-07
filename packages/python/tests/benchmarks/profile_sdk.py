@@ -52,7 +52,7 @@ def run_controls_and_telemetry_hotpaths(eng: dnam.Engine, space: dnam.ControlSpa
 def run_model_and_gram_hotpaths(model: dnam.Model) -> None:
     """Profiles `Model.from_bytes`, `Model.with_header`, and `GramMatrix` `uplo='U'` packing."""
     raw = model.to_bytes()
-    updated_hdr = model.header.model_copy(update={"user_metadata": {"tag": "fast"}})
+    updated_hdr = model.header.replace(user_metadata={"tag": "fast"})
     mat = np.eye(256, dtype=np.float64)
     gram = dnam.GramMatrix.from_dense(mat)
 

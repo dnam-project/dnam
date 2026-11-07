@@ -233,6 +233,51 @@ impl ControlClampDescriptor {
         [psi1, psi2, psi3]
     }
 
+    /// Evaluates two-pass (`switch` then `range`) conditional clamping and normalization across
+    /// `num_controls` controls (`ref[dsp.ctrl.range.normalize-clamp]`), updating `clamped_values`,
+    /// `normalized_values`, and `active_switch_options` in place and returning the 16-bit
+    /// `active_clamp_mask`.
+    pub fn clamp_and_normalize_all(
+        descriptors: &[Self],
+        num_controls: usize,
+        raw_values: &[f32],
+        clamped_values: &mut [f32],
+        normalized_values: &mut [f32],
+        active_switch_options: &mut [u8],
+    ) -> u16 {
+        let mut clamp_mask: u16 = 0;
+        let n = num_controls
+            .min(descriptors.len())
+            .min(raw_values.len())
+            .min(clamped_values.len())
+            .min(normalized_values.len())
+            .min(active_switch_options.len());
+        for p in 0..n {
+            if descriptors[p].ctrl_kind == 1 {
+                let (clamped, u_norm, was_clamped) =
+                    descriptors[p].clamp_and_normalize(raw_values[p], active_switch_options);
+                clamped_values[p] = clamped;
+                normalized_values[p] = u_norm;
+                active_switch_options[p] = (clamped + 0.5) as u8;
+                if was_clamped && p < 16 {
+                    clamp_mask |= 1_u16 << p;
+                }
+            }
+        }
+        for p in 0..n {
+            if descriptors[p].ctrl_kind == 0 {
+                let (clamped, u_norm, was_clamped) =
+                    descriptors[p].clamp_and_normalize(raw_values[p], active_switch_options);
+                clamped_values[p] = clamped;
+                normalized_values[p] = u_norm;
+                if was_clamped && p < 16 {
+                    clamp_mask |= 1_u16 << p;
+                }
+            }
+        }
+        clamp_mask
+    }
+
     /// Evaluates two-pass (`switch` then `range`) conditional clamping across `num_controls`
     /// controls (`ref[dsp.ctrl.range.normalize-clamp]`), updating `clamped_values` and
     /// `active_switch_options` in place and returning the 16-bit `active_clamp_mask`.
@@ -243,34 +288,16 @@ impl ControlClampDescriptor {
         clamped_values: &mut [f32],
         active_switch_options: &mut [u8],
     ) -> u16 {
-        let mut clamp_mask: u16 = 0;
-        let n = num_controls
-            .min(descriptors.len())
-            .min(raw_values.len())
-            .min(clamped_values.len())
-            .min(active_switch_options.len());
-        for p in 0..n {
-            if descriptors[p].ctrl_kind == 1 {
-                let (clamped, _, was_clamped) =
-                    descriptors[p].clamp_and_normalize(raw_values[p], active_switch_options);
-                clamped_values[p] = clamped;
-                active_switch_options[p] = (clamped + 0.5) as u8;
-                if was_clamped && p < 16 {
-                    clamp_mask |= 1_u16 << p;
-                }
-            }
-        }
-        for p in 0..n {
-            if descriptors[p].ctrl_kind == 0 {
-                let (clamped, _, was_clamped) =
-                    descriptors[p].clamp_and_normalize(raw_values[p], active_switch_options);
-                clamped_values[p] = clamped;
-                if was_clamped && p < 16 {
-                    clamp_mask |= 1_u16 << p;
-                }
-            }
-        }
-        clamp_mask
+        let mut norm_scratch = [0.0_f32; 256];
+        let n = num_controls.min(256);
+        Self::clamp_and_normalize_all(
+            descriptors,
+            n,
+            raw_values,
+            clamped_values,
+            &mut norm_scratch[..n],
+            active_switch_options,
+        )
     }
 }
 
@@ -321,6 +348,45 @@ mod tests {
         d_cond.cond_rules[0].bound_val = 7.0;
         let (clamped_v2, _, _) = d_cond.clamp_and_normalize(1.0, &sw_opts);
         assert_eq!(clamped_v2, 5.0);
+
+        let d_sw = ControlClampDescriptor {
+            ctrl_kind: 1,
+            lobatto_degree: 2,
+            active_options_mask: 0b0011,
+            default_val: 0.0,
+            safe_min_base: 0.0,
+            safe_max_base: 2.0,
+            scale_norm: 1.0,
+            offset_norm: 0.0,
+            anchor_nodes_norm: [0.0; 3],
+            _reserved: 0,
+            cond_rules: [ConditionalClampRule::empty(); 3],
+        };
+        let descs = [d_cond, d_sw];
+        let raw = [8.0_f32, 2.0_f32];
+        let mut clamped = [0.0_f32; 2];
+        let mut norm = [0.0_f32; 2];
+        let mut sw = [0u8; 2];
+        let mask = ControlClampDescriptor::clamp_and_normalize_all(
+            &descs,
+            2,
+            &raw,
+            &mut clamped,
+            &mut norm,
+            &mut sw,
+        );
+        assert_eq!(mask, 0b0010);
+        assert_eq!(sw[1], 0);
+        assert_eq!(clamped[0], 8.0);
+        let mask2 = ControlClampDescriptor::clamp_all_controls(
+            &descs,
+            2,
+            &[8.0_f32, 1.0_f32],
+            &mut clamped,
+            &mut sw,
+        );
+        assert_eq!(mask2, 0b0001);
+        assert_eq!(clamped[0], 7.0);
     }
 
     proptest! {

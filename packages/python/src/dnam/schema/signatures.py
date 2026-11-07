@@ -4,13 +4,21 @@ watermarking schemas (`ref[sdk.python.schema.rust-parity]`).
 
 from __future__ import annotations
 
+from dataclasses import field
 from enum import StrEnum
 
 import numpy as np
 from numpy.typing import NDArray
-from pydantic import Field, PrivateAttr
 
-from dnam.schema._base import StrictModel
+from dnam._native import (
+    native_is_oem_device_allowed,
+    native_is_profile_allowed,
+)
+from dnam.schema._base import StrictModel, strict_field
+
+
+def _empty_f32() -> NDArray[np.float32]:
+    return np.empty(0, dtype=np.float32)
 
 
 class DnamProtectionProfile(StrEnum):
@@ -28,29 +36,24 @@ class DistributionPolicy(StrictModel):
     (`metadata.distribution_policy`).
     """
 
-    allowed_protection_profiles: list[DnamProtectionProfile] = Field(default_factory=list)
-    allowed_oem_vendors: list[str] = Field(default_factory=list)
+    allowed_protection_profiles: list[DnamProtectionProfile] = strict_field(default_factory=list)
+    allowed_oem_vendors: list[str] = strict_field(default_factory=list)
 
     def is_profile_allowed(self, profile: DnamProtectionProfile | str) -> bool:
         """Returns `True` if `profile` is permitted by `allowed_protection_profiles`."""
         prof = DnamProtectionProfile(profile)
-        return not self.allowed_protection_profiles or prof in self.allowed_protection_profiles
+        return native_is_profile_allowed(
+            [p.value for p in self.allowed_protection_profiles],
+            prof.value,
+        )
 
     def is_oem_device_allowed(self, oem_vendor: str, model_code: str) -> bool:
         """Returns `True` if `(oem_vendor, model_code)` is permitted by `allowed_oem_vendors`."""
-        if not self.allowed_oem_vendors:
-            return True
-        for pattern in self.allowed_oem_vendors:
-            if ":" in pattern:
-                pat_vendor, pat_model = pattern.split(":", 1)
-                if (
-                    pat_vendor.lower() == oem_vendor.lower()
-                    and pat_model.lower() == model_code.lower()
-                ):
-                    return True
-            elif pattern.lower() == oem_vendor.lower():
-                return True
-        return False
+        return native_is_oem_device_allowed(
+            list(self.allowed_oem_vendors),
+            oem_vendor,
+            model_code,
+        )
 
 
 class OemDeviceCertificate(StrictModel):
@@ -68,7 +71,7 @@ class DatasetProvenance(StrictModel):
 
     dataset_manifest_sha256: str = ""
     config_recipe_sha256: str | None = None
-    epochs_trained: int = Field(default=0, ge=0)
+    epochs_trained: int = strict_field(default=0, ge=0)
 
 
 class CreatorSignature(StrictModel):
@@ -93,7 +96,7 @@ class RoyaltySplit(StrictModel):
 
     recipient_id: str
     role: str
-    share_bps: int = Field(ge=1, le=10000)
+    share_bps: int = strict_field(ge=1, le=10000)
 
 
 class MarketplaceReceipt(StrictModel):
@@ -111,8 +114,8 @@ class MarketplaceReceipt(StrictModel):
     encryption_mode: str = "none"
     arena_nonce_96: str | None = None
     ephemeral_pubkey_x25519: str | None = None
-    authorized_devices: list[AuthorizedDevice] = Field(default_factory=list)
-    royalty_splits: list[RoyaltySplit] = Field(default_factory=list)
+    authorized_devices: list[AuthorizedDevice] = strict_field(default_factory=list)
+    royalty_splits: list[RoyaltySplit] = strict_field(default_factory=list)
     receipt_sig_ed25519: str
 
 
@@ -129,12 +132,12 @@ class ModelSignatures(StrictModel):
 class WatermarkParams(StrictModel):
     """Parameters for Dual-Mechanism Buyer Watermarking (Isometric Gauge + Coupled Tardos-7680)."""
 
-    kappa_64: tuple[float, ...] = Field(
+    kappa_64: tuple[float, ...] = strict_field(
         default_factory=lambda: tuple(1.0 for _ in range(64)),
         min_length=64,
         max_length=64,
     )
-    q_buyer_4x4: tuple[tuple[float, float, float, float], ...] = Field(
+    q_buyer_4x4: tuple[tuple[float, float, float, float], ...] = strict_field(
         default=(
             (1.0, 0.0, 0.0, 0.0),
             (0.0, 1.0, 0.0, 0.0),
@@ -144,14 +147,27 @@ class WatermarkParams(StrictModel):
         min_length=4,
         max_length=4,
     )
-    tardos_epsilon: float = Field(default=1.5e-3, gt=0.0, le=0.05)
+    tardos_epsilon: float = strict_field(default=1.5e-3, gt=0.0, le=0.05)
 
-    _kappa_arr: NDArray[np.float32] = PrivateAttr()
-    _q_flat_arr: NDArray[np.float32] = PrivateAttr()
+    _kappa_arr: NDArray[np.float32] = field(
+        default_factory=_empty_f32, init=False, repr=False, compare=False
+    )
+    _q_flat_arr: NDArray[np.float32] = field(
+        default_factory=_empty_f32, init=False, repr=False, compare=False
+    )
 
-    def model_post_init(self, __context: object, /) -> None:
-        self._kappa_arr = np.asarray(self.kappa_64, dtype=np.float32, order="C")
-        self._q_flat_arr = np.asarray(self.q_buyer_4x4, dtype=np.float32, order="C").reshape(16)
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        object.__setattr__(
+            self,
+            "_kappa_arr",
+            np.asarray(self.kappa_64, dtype=np.float32, order="C"),
+        )
+        object.__setattr__(
+            self,
+            "_q_flat_arr",
+            np.asarray(self.q_buyer_4x4, dtype=np.float32, order="C").reshape(16),
+        )
 
     def cached_f32_arrays(self) -> tuple[NDArray[np.float32], NDArray[np.float32]]:
         """Returns pre-allocated C-contiguous `(kappa_64, q_buyer_flat_16)` `float32` arrays."""

@@ -6,6 +6,11 @@ from __future__ import annotations
 
 from enum import StrEnum
 
+from dnam._native import (
+    native_subdivision_beat_multiplier,
+    native_subdivision_delay_ms_at_bpm,
+    native_subdivision_lfo_hz_at_bpm,
+)
 from dnam.errors import ValidationError
 from dnam.schema._base import StrictModel
 
@@ -41,31 +46,15 @@ class TempoSubdivision(StrEnum):
     @property
     def beat_multiplier(self) -> float:
         """Quarter-note beat multiplier for this subdivision."""
-        multipliers: dict[TempoSubdivision, float] = {
-            TempoSubdivision.HALF_DOTTED: 3.0,
-            TempoSubdivision.HALF: 2.0,
-            TempoSubdivision.HALF_TRIPLET: 4.0 / 3.0,
-            TempoSubdivision.QUARTER_DOTTED: 1.5,
-            TempoSubdivision.QUARTER: 1.0,
-            TempoSubdivision.QUARTER_TRIPLET: 2.0 / 3.0,
-            TempoSubdivision.EIGHTH_DOTTED: 0.75,
-            TempoSubdivision.EIGHTH: 0.5,
-            TempoSubdivision.EIGHTH_TRIPLET: 1.0 / 3.0,
-            TempoSubdivision.SIXTEENTH_DOTTED: 0.375,
-            TempoSubdivision.SIXTEENTH: 0.25,
-            TempoSubdivision.SIXTEENTH_TRIPLET: 1.0 / 6.0,
-        }
-        return multipliers[self]
+        return float(native_subdivision_beat_multiplier(self.value))
 
     def delay_ms_at_bpm(self, bpm: float) -> float:
         """Target delay time in milliseconds at `bpm` (clamped to `[20.0, 400.0]` BPM)."""
-        safe_bpm = min(max(float(bpm), 20.0), 400.0)
-        return (60_000.0 / safe_bpm) * self.beat_multiplier
+        return float(native_subdivision_delay_ms_at_bpm(self.value, float(bpm)))
 
     def lfo_hz_at_bpm(self, bpm: float) -> float:
         """Target LFO modulation rate in Hz at `bpm` (clamped to `[20.0, 400.0]` BPM)."""
-        safe_bpm = min(max(float(bpm), 20.0), 400.0)
-        return safe_bpm / (60.0 * self.beat_multiplier)
+        return float(native_subdivision_lfo_hz_at_bpm(self.value, float(bpm)))
 
 
 class TempoSyncResolution(StrictModel):

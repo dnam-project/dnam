@@ -234,18 +234,12 @@ class ControlSpace:
 
     def to_physical(self, control_id: str, normalized_gesture: float) -> float:
         """Maps a normalized UI gesture `t in [0.0, 1.0]` to physical value."""
-        ctrl = self._schema_proxy.get(control_id)
-        if ctrl is None:
-            raise ControlError(f"Unknown control ID: '{control_id}'")
-        lo, hi = ctrl.declared_range or (0.0, 10.0)
-        return ctrl.ui_hints.normalized_to_physical(normalized_gesture, lo, hi)
+        idx = self.index_of(control_id)
+        return float(self._native.to_physical(idx, float(normalized_gesture)))
 
     def to_normalized(self, control_id: str, physical_value: float) -> float:
         """
         Maps a physical value `x in [x_min, x_max]` to normalized UI gesture `t in [0.0, 1.0]`.
         """
-        ctrl = self._schema_proxy.get(control_id)
-        if ctrl is None:
-            raise ControlError(f"Unknown control ID: '{control_id}'")
-        lo, hi = ctrl.declared_range or (0.0, 10.0)
-        return ctrl.ui_hints.physical_to_normalized(physical_value, lo, hi)
+        idx = self.index_of(control_id)
+        return float(self._native.to_normalized(idx, float(physical_value)))

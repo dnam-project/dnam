@@ -89,9 +89,7 @@ def test_creator_and_marketplace_signing_and_tamper_detection(
         name="User Fav",
         controls={"gain": 6.0},
     )
-    edited_hdr = signed_model.header.model_copy(
-        update={"presets": [*signed_model.header.presets, added_preset]}
-    )
+    edited_hdr = signed_model.header.replace(presets=[*signed_model.header.presets, added_preset])
     assert immutable_header_sha256(edited_hdr) == immutable_header_sha256(signed_hdr)
     edited_model = signed_model.with_header(edited_hdr)
     assert edited_model.verification == VerificationStatus.CREATOR_VERIFIED
@@ -117,8 +115,8 @@ def test_creator_and_marketplace_signing_and_tamper_detection(
     assert mkt_report.license_id == "lic-001"
 
     # Tampering with immutable header field (name) fails verification with ProvenanceError
-    tampered_meta = mkt_hdr.metadata.model_copy(update={"name": "Tampered"})
-    tampered_hdr = mkt_hdr.model_copy(update={"metadata": tampered_meta})
+    tampered_meta = mkt_hdr.metadata.replace(name="Tampered")
+    tampered_hdr = mkt_hdr.replace(metadata=tampered_meta)
     with pytest.raises(ProvenanceError):
         verify_model(
             tampered_hdr,
@@ -274,14 +272,12 @@ def test_dau1_dme1_hpke_preview_and_distribution_policy(
             [RoyaltySplit(recipient_id="a", role="amp", share_bps=5_000)],
         )
 
-    restricted_meta = reference_model.header.metadata.model_copy(
-        update={
-            "distribution_policy": DistributionPolicy(
-                allowed_protection_profiles=[DnamProtectionProfile.ENCLAVE_SEALED]
-            )
-        }
+    restricted_meta = reference_model.header.metadata.replace(
+        distribution_policy=DistributionPolicy(
+            allowed_protection_profiles=[DnamProtectionProfile.ENCLAVE_SEALED]
+        )
     )
-    restricted_hdr = reference_model.header.model_copy(update={"metadata": restricted_meta})
+    restricted_hdr = reference_model.header.replace(metadata=restricted_meta)
     with pytest.raises(ProvenanceError):
         enforce_distribution_policy(restricted_hdr, "open")
     enforce_distribution_policy(restricted_hdr, "enclave_sealed")

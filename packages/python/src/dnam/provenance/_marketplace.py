@@ -7,8 +7,6 @@ from __future__ import annotations
 import json
 from collections.abc import Sequence
 
-from pydantic import Field
-
 from dnam._native import (
     native_build_dme1_header,
     native_compute_preview_window,
@@ -24,22 +22,22 @@ from dnam._native import (
     native_validate_preview_switch_options,
     native_validate_royalty_splits,
 )
-from dnam.schema._base import StrictModel
+from dnam.schema._base import StrictModel, strict_field
 from dnam.schema.signatures import RoyaltySplit
 
 
 class Dau1Manifest(StrictModel):
     """Open `DAU1` Authentication Envelope (`ref[sec.sig.dau1-envelope]`)."""
 
-    auth_kind: int = Field(ge=0, le=1)
+    auth_kind: int = strict_field(ge=0, le=1)
     creator_pubkey_hex: str
-    creator_max_tier: int = Field(ge=0, le=3)
+    creator_max_tier: int = strict_field(ge=0, le=3)
     master_prefixes_hex: list[str]
     creator_signature_hex: str
     marketplace_pubkey_hex: str | None = None
     policy_bytes: bytes = b""
-    buyer_max_tier: int | None = Field(default=None, ge=0, le=3)
-    buyer_prefixes_hex: list[str] = Field(default_factory=list)
+    buyer_max_tier: int | None = strict_field(default=None, ge=0, le=3)
+    buyer_prefixes_hex: list[str] = strict_field(default_factory=list)
     marketplace_signature_hex: str | None = None
 
     def to_bytes(self) -> bytes:
@@ -196,5 +194,5 @@ def validate_royalty_splits(
     splits: Sequence[RoyaltySplit],
 ) -> None:
     """Validates `license_tier` and that `splits` sum to `10,000` bps (`100%`)."""
-    splits_json = json.dumps([s.model_dump(mode="json") for s in splits])
+    splits_json = json.dumps([s.to_dict() for s in splits])
     native_validate_royalty_splits(license_tier, splits_json)

@@ -375,6 +375,166 @@ pub use super::seal::seal_dnam_container;
 
 pub use super::seal::unseal_dnam_container;
 
+/// Specification for signing and attaching a [`MarketplaceReceipt`] to a creator-signed
+/// [`DnamJsonHeader`] (`ref[sec.sig.prefix-delegation]`).
+#[cfg(feature = "crypto")]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct MarketplaceReceiptSigningSpec {
+    #[serde(alias = "marketplaceId")]
+    pub marketplace_id: String,
+    #[serde(alias = "licenseId")]
+    pub license_id: String,
+    #[serde(alias = "buyerHash")]
+    pub buyer_hash: String,
+    #[serde(alias = "licenseTier")]
+    pub license_tier: String,
+    #[serde(default, alias = "issuedAt")]
+    pub issued_at: Option<String>,
+    #[serde(default, alias = "encryptionMode")]
+    pub encryption_mode: Option<String>,
+    #[serde(default, alias = "arenaNonce96")]
+    pub arena_nonce_96: Option<String>,
+    #[serde(default, alias = "ephemeralPubkeyX25519")]
+    pub ephemeral_pubkey_x25519: Option<String>,
+    #[serde(default, alias = "authorizedDevices")]
+    pub authorized_devices: Vec<crate::schema::AuthorizedDevice>,
+    #[serde(default, alias = "royaltySplits")]
+    pub royalty_splits: Vec<crate::schema::RoyaltySplit>,
+    #[serde(default, alias = "includeBuyerTierPrefixes")]
+    pub include_buyer_tier_prefixes: bool,
+}
+
+/// Signs a [`DnamJsonHeader`] JSON string and `master_arena` using the creator's 32-byte `Ed25519`
+/// seed, returning the updated canonical wire JSON header string (`ref[sec.sig.prefix-delegation]`).
+#[cfg(feature = "crypto")]
+pub fn sign_creator_header_json(
+    header_json: &str,
+    master_arena: &[u8],
+    creator_seed_32: &[u8; 32],
+    signer_id: &str,
+    include_tier_prefixes: bool,
+) -> Result<String, DnamError> {
+    use crate::container::{
+        ARENA_OFFSET_FULL_END, ARENA_OFFSET_LITE_END, ARENA_OFFSET_PRO_END, ARENA_OFFSET_ULTRA_END,
+    };
+    use crate::provenance::RustCryptoProvider;
+    use crate::schema::{CreatorSignature, ModelSignatures};
+
+    let mut header: DnamJsonHeader = serde_json::from_str(header_json)
+        .map_err(|e| DnamError::InvalidJsonHeader(alloc::format!("{e}")))?;
+    let hdr_sha_bytes = compute_immutable_header_sha256(&header)?;
+    let arena_sha_bytes = sha256_digest(master_arena);
+    let pubkey = RustCryptoProvider::ed25519_pubkey_from_seed(creator_seed_32);
+    let msg = build_creator_signing_message(&hdr_sha_bytes, &arena_sha_bytes);
+    let sig = RustCryptoProvider::ed25519_sign(creator_seed_32, &msg);
+
+    let tier_arena_sha256 =
+        if include_tier_prefixes && master_arena.len() >= ARENA_OFFSET_ULTRA_END as usize {
+            Some([
+                encode_hex(&sha256_digest(
+                    &master_arena[..ARENA_OFFSET_LITE_END as usize],
+                )),
+                encode_hex(&sha256_digest(
+                    &master_arena[..ARENA_OFFSET_FULL_END as usize],
+                )),
+                encode_hex(&sha256_digest(
+                    &master_arena[..ARENA_OFFSET_PRO_END as usize],
+                )),
+                encode_hex(&sha256_digest(
+                    &master_arena[..ARENA_OFFSET_ULTRA_END as usize],
+                )),
+            ])
+        } else {
+            None
+        };
+
+    header.metadata.signatures = Some(ModelSignatures {
+        immutable_header_sha256: encode_hex(&hdr_sha_bytes),
+        master_arena_sha256: encode_hex(&arena_sha_bytes),
+        tier_arena_sha256,
+        creator_signature: CreatorSignature {
+            signer_id: String::from(signer_id),
+            pubkey_ed25519: encode_hex(&pubkey),
+            sig_ed25519: encode_hex(&sig),
+        },
+        marketplace_receipt: None,
+    });
+    serde_json::to_string(&header).map_err(|e| DnamError::InvalidJsonHeader(alloc::format!("{e}")))
+}
+
+/// Signs a [`MarketplaceReceipt`] and attaches it to a creator-signed [`DnamJsonHeader`] JSON
+/// string, returning the updated canonical wire JSON header string (`ref[sec.sig.prefix-delegation]`).
+#[cfg(feature = "crypto")]
+pub fn sign_marketplace_receipt_json(
+    header_json: &str,
+    buyer_arena: &[u8],
+    marketplace_seed_32: &[u8; 32],
+    spec: MarketplaceReceiptSigningSpec,
+) -> Result<String, DnamError> {
+    use crate::container::{
+        ARENA_OFFSET_FULL_END, ARENA_OFFSET_LITE_END, ARENA_OFFSET_PRO_END, ARENA_OFFSET_ULTRA_END,
+    };
+    use crate::provenance::RustCryptoProvider;
+
+    let mut header: DnamJsonHeader = serde_json::from_str(header_json)
+        .map_err(|e| DnamError::InvalidJsonHeader(alloc::format!("{e}")))?;
+    let sigs = header.metadata.signatures.as_mut().ok_or_else(|| {
+        DnamError::SchemaValidationError(String::from(
+            "sign_marketplace_receipt requires a creator-signed header",
+        ))
+    })?;
+
+    let hdr_sha = decode_hex_array::<32>(&sigs.immutable_header_sha256)?;
+    let master_sha = decode_hex_array::<32>(&sigs.master_arena_sha256)?;
+    let buyer_arena_sha256 = encode_hex(&sha256_digest(buyer_arena));
+
+    let buyer_tier_arena_sha256 = if spec.include_buyer_tier_prefixes
+        && buyer_arena.len() >= ARENA_OFFSET_ULTRA_END as usize
+    {
+        Some([
+            encode_hex(&sha256_digest(
+                &buyer_arena[..ARENA_OFFSET_LITE_END as usize],
+            )),
+            encode_hex(&sha256_digest(
+                &buyer_arena[..ARENA_OFFSET_FULL_END as usize],
+            )),
+            encode_hex(&sha256_digest(
+                &buyer_arena[..ARENA_OFFSET_PRO_END as usize],
+            )),
+            encode_hex(&sha256_digest(
+                &buyer_arena[..ARENA_OFFSET_ULTRA_END as usize],
+            )),
+        ])
+    } else {
+        None
+    };
+
+    let mut receipt = MarketplaceReceipt {
+        marketplace_id: spec.marketplace_id,
+        license_id: spec.license_id,
+        buyer_hash: spec.buyer_hash,
+        license_tier: spec.license_tier,
+        issued_at: spec
+            .issued_at
+            .unwrap_or_else(|| String::from("2026-11-04T00:00:00Z")),
+        buyer_arena_sha256,
+        buyer_tier_arena_sha256,
+        encryption_mode: spec.encryption_mode.unwrap_or_else(|| String::from("none")),
+        arena_nonce_96: spec.arena_nonce_96,
+        ephemeral_pubkey_x25519: spec.ephemeral_pubkey_x25519,
+        authorized_devices: spec.authorized_devices,
+        royalty_splits: spec.royalty_splits,
+        receipt_sig_ed25519: String::new(),
+    };
+
+    let msg = build_marketplace_receipt_signing_message(&hdr_sha, &master_sha, &receipt)?;
+    let sig = RustCryptoProvider::ed25519_sign(marketplace_seed_32, &msg);
+    receipt.receipt_sig_ed25519 = encode_hex(&sig);
+    sigs.marketplace_receipt = Some(receipt);
+
+    serde_json::to_string(&header).map_err(|e| DnamError::InvalidJsonHeader(alloc::format!("{e}")))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -552,6 +712,48 @@ mod tests {
             assert!(v1.ensure_matches_preamble(1, 1).is_err());
             assert!(SchemaVersion::parse("invalid").is_err());
             assert!(SchemaVersion::parse("1.0.0.1").is_err());
+
+            // Test sign_creator_header_json and sign_marketplace_receipt_json
+            let base_hdr = DnamJsonHeader::default_reference();
+            let base_json = serde_json::to_string(&base_hdr).unwrap();
+            let signed_creator_json =
+                sign_creator_header_json(&base_json, &full_arena, &seed, "creator-1", true)
+                    .unwrap();
+            let mkt_seed = [22u8; 32];
+            let mkt_pk = RustCryptoProvider::ed25519_pubkey_from_seed(&mkt_seed);
+            let signed_mkt_json = sign_marketplace_receipt_json(
+                &signed_creator_json,
+                &full_arena,
+                &mkt_seed,
+                MarketplaceReceiptSigningSpec {
+                    marketplace_id: String::from("mkt-1"),
+                    license_id: String::from("lic-1"),
+                    buyer_hash: encode_hex(&[0xBB; 32]),
+                    license_tier: String::from("pro"),
+                    issued_at: None,
+                    encryption_mode: None,
+                    arena_nonce_96: None,
+                    ephemeral_pubkey_x25519: None,
+                    authorized_devices: alloc::vec![],
+                    royalty_splits: alloc::vec![],
+                    include_buyer_tier_prefixes: true,
+                },
+            )
+            .unwrap();
+            let signed_mkt_hdr: DnamJsonHeader = serde_json::from_str(&signed_mkt_json).unwrap();
+            let mkt_crypto = RustCryptoProvider::new().with_marketplace_pubkey(mkt_pk);
+            let mkt_status =
+                verify_container_provenance(&signed_mkt_hdr, true, &full_arena, &mkt_crypto)
+                    .unwrap();
+            assert_eq!(
+                mkt_status,
+                VerificationStatus::MarketplaceVerified {
+                    signer_id: String::from("creator-1"),
+                    marketplace_id: String::from("mkt-1"),
+                    license_id: String::from("lic-1"),
+                    license_tier: String::from("pro"),
+                }
+            );
         }
     }
 }

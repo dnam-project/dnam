@@ -1550,10 +1550,30 @@ pub fn validate_v2_dnck_checkpoint(data: &[u8]) -> Result<(u8, Vec<usize>, usize
     Ok((tier as u8, issued_ends, boundary))
 }
 
-/// Exports the retained tier of a validated v2.0 `.dnam-ckpt` container into a standalone v2.0
-/// `.dnam` runtime container using the zero-copy template in `shared_checkpoint_binary`
-/// (`ref[container.ckpt.export-template]`, `ref[container.ckpt.declarative-no-pickle]`).
+/// Exports the retained tier of a validated `.dnam-ckpt` (`DNCK`) container into a standalone
+/// `.dnam` runtime container (`ref[container.ckpt.export-template]`, `ref[container.ckpt.declarative-no-pickle]`).
 pub fn export_runtime_dnam_from_ckpt(data: &[u8]) -> Result<Vec<u8>, DnamError> {
+    if data.len() >= 8 && &data[0..4] == b"DNCK" && u16::from_le_bytes([data[4], data[5]]) == 1 {
+        use super::{ARENA_OFFSET_ULTRA_END, DnamContainerView, build_dnam_container};
+        use crate::provenance::OpenArenaCryptoProvider;
+
+        let view = DnamContainerView::from_bytes(data, &OpenArenaCryptoProvider)?;
+        let mut header = view.header.clone();
+        header.version = "1.0.0".to_string();
+        header.container_kind = "dnam".to_string();
+        header.stems_registry = None;
+        header.audit_report = None;
+        header.tensor_directory.retain(|_, entry| entry.arena < 4);
+        header.metadata.signatures = None;
+
+        let full_arena = view.arena_storage.as_bytes();
+        let runtime_end = (view.preamble.arena_offset_ultra_end() as usize)
+            .max(ARENA_OFFSET_ULTRA_END as usize)
+            .min(full_arena.len());
+        let runtime_arena = &full_arena[..runtime_end];
+        return build_dnam_container(&mut header, runtime_arena, runtime_arena, false);
+    }
+
     let (tier, ends, boundary) = validate_v2_dnck_checkpoint(data)?;
     let shared_offset = u64::from_le_bytes(data[64 + 16..64 + 24].try_into().unwrap()) as usize;
     let shared_length = u64::from_le_bytes(data[64 + 24..64 + 32].try_into().unwrap()) as usize;
