@@ -15,6 +15,7 @@ requirements:
   - REQ-8.8
 adrs:
   - ADR-0008
+  - ADR-0017
 ---
 
 # `.dnam-ckpt` Checkpoint Schema, `uplo='U'` Packing, `Arena 5` (`DNCA`) & `.dnam-cache`
@@ -142,6 +143,8 @@ On a target-only `C` refresh ([`../training/iterative_resume_and_caching.md` §1
 
 ## 4. Portable Calibration Data (`DNCA`) & Workspace `.dnam-cache` Sidecar
 
-1. `r[container.dnca.inpc]` **Per-Input Calibration Records (`INPC`):** Keyed by input PCM and sample rate; store input segmentation and Stage II basis Grams.
-2. `r[container.dnca.stmc]` **Per-Stem Calibration Records (`STMC`):** Keyed by paired input/target PCM; store sub-sample alignment, noise-floor evidence, band energies, and Stage III independent L/R FIR + shared-pole modal extractions.
-3. `r[container.dnca.dnce-sidecar]` **Workspace Sidecars (`models/<id>/.dnam-cache/*.dnce`):** Gitignored, 64-byte-aligned memory-mappable local cache files (`16 GB` default quota, zero persisted full-length feature trajectories).
+1. `r[container.dnca.inpc]` **Per-Input Calibration Records (`INPC`):** Keyed by input PCM and sample rate; store input segmentation, Stage II basis Grams (`640 B` header/metadata), and the `250 ms` (`12,000`-frame at `48 kHz`) `fp16` dry coreset (`24,640 B` mono for $C = 1$ or `48,640 B` stereo for $C = 2$, exact multiple of `64 B`).
+2. `r[container.dnca.stmc]` **Per-Stem Calibration Records (`STMC`):** Keyed by paired input/target PCM; store sub-sample alignment, noise-floor evidence, band energies, Stage III independent L/R FIR + shared-pole modal extractions (`704 B` header/metadata), and the `250 ms` (`12,000`-frame at `48 kHz`) `fp16` residual coreset (`24,704 B` mono for $C = 1$ or `48,704 B` stereo for $C = 2$, exact multiple of `64 B`).
+3. `r[container.dnca.dnce-sidecar]` **Workspace Sidecars (`models/<id>/.dnam-cache/*.dnce`):** Gitignored, 64-byte-aligned memory-mappable local cache files (`v2.0`, `16 GB` default quota, zero persisted full-length feature trajectories).
+4. `r[container.dnca.coreset-fp16]` **64B-Aligned `fp16` Coreset Slices (`12,000` Frames = `250 ms` at `48 kHz`):** Stores `12,000` high-leverage coreset frames (`250 ms` at `48 kHz`) per stem in IEEE-754 binary16 (`fp16`) precision (`24,000 B` mono for $C = 1$ or `48,000 B` stereo for $C = 2$, inside `64 B`-aligned `INPC` `24,640 B`/`48,640 B` and `STMC` `24,704 B`/`48,704 B` records) inside `Arena 5` (`DNCA`, [`ADR-0008`](../../adr/0008-per-stem-kronecker-statistics-and-wide-gram.md), [`ADR-0017`](../../adr/0017-pure-rust-analytical-varpro-solver-and-planar-decoupling.md)).
+

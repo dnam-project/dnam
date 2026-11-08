@@ -1,0 +1,32 @@
+[package]
+name = "dnam-trainer"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Pure-Rust Analytical Variable-Projection (VarPro) Two-Sweep System-Identification Trainer for DNAM"
+
+[lints]
+workspace = true
+
+[dependencies]
+clap.workspace = true
+dnam-engine = { workspace = true, features = ["std"] }
+ndarray.workspace = true
+realfft.workspace = true
+serde = { workspace = true, features = ["std", "derive"] }
+serde_json = { workspace = true, features = ["std"] }
+sha2.workspace = true
+
+[dev-dependencies]
+criterion.workspace = true
+proptest.workspace = true
+
+[[bin]]
+name = "dnam-train"
+path = "src/bin/dnam_train.rs"
+
+[[bench]]
+name = "bench_trainer"
+harness = false

@@ -19,7 +19,7 @@ adrs:
 
 # Self-Similar 3 kHz Dual-Rate Control Plane & Parametric Control Bus
 
-This specification defines the **nominal 3 kHz Dual-Rate Control Plane** ([`packages/engine/src/control/`](../../../packages/engine/README.md), [`packages/trainer/src/dnam_trainer/training/`](../../../packages/trainer/README.md)), shared control descriptors and packed tier-local `CP1` `f32` projection slices, exact-integer sufficient-statistic accumulation, outward-checked trust-region clipping, tier-aware `16 × 16` + `16 × 4` stage dispatch, division-free linear micro-ramping, and `20–400 BPM` tempo synchronization across 12 rhythmic subdivisions ([`tora_architecture.md`](../architecture/tora_architecture.md), [`REQ-2.5`](../../requirements/system_goals_and_requirements.md)). For R&D counterexamples and derivations, see [`../../adr/0007-exact-integer-control-bus-and-tempo-inversion.md`](../../adr/0007-exact-integer-control-bus-and-tempo-inversion.md) and [`../../adr/0015-realtime-host-concurrency-spsc-and-telemetry-seqlock.md`](../../adr/0015-realtime-host-concurrency-spsc-and-telemetry-seqlock.md).
+This specification defines the **nominal 3 kHz Dual-Rate Control Plane** ([`packages/engine/src/control/`](../../../packages/engine/README.md), [`packages/trainer/src/`](../../../packages/trainer/README.md)), shared control descriptors and packed tier-local `CP1` `f32` projection slices, exact-integer sufficient-statistic accumulation, outward-checked trust-region clipping, tier-aware `16 × 16` + `16 × 4` stage dispatch, division-free linear micro-ramping, and `20–400 BPM` tempo synchronization across 12 rhythmic subdivisions ([`tora_architecture.md`](../architecture/tora_architecture.md), [`REQ-2.5`](../../requirements/system_goals_and_requirements.md)). For R&D counterexamples and derivations, see [`../../adr/0007-exact-integer-control-bus-and-tempo-inversion.md`](../../adr/0007-exact-integer-control-bus-and-tempo-inversion.md) and [`../../adr/0015-realtime-host-concurrency-spsc-and-telemetry-seqlock.md`](../../adr/0015-realtime-host-concurrency-spsc-and-telemetry-seqlock.md).
 
 ---
 
@@ -146,7 +146,7 @@ $$\hat{y}(\mathbf{u}) = w_0 + \sum_{p=1}^P \mathbf{w}_p^\top \boldsymbol{\psi}_p
 
 `r[dsp.ctrl.switch.option-contributors]`
 
-For a discrete switch $q$ with declared reference option, each represented non-reference option $o$ is a separate `k = 1` contributor $\boldsymbol{\psi}_{q,o}(\sigma_q) = [0, 0, 0, \mathbf{1}(\sigma_q = o)]^\top$ ([`../containers/dnam_binary_format.md` §2.4](../containers/dnam_binary_format.md#packed-control-projection-profile)).
+For a discrete switch $q$ with declared default reference option (`default_val`), each represented non-reference option $o$ is a separate `k = 1` contributor $\psi_{q,o}(\sigma_q) = \mathbf{1}(\sigma_q = o)$ (`0.0` at the reference option) per `ref[container.dnam.cp1-profile]` ([`../containers/dnam_binary_format.md` §2.4](../containers/dnam_binary_format.md#packed-control-projection-profile)).
 
 ##### Conditional Batch Safety
 

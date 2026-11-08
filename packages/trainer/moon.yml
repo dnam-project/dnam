@@ -1,30 +1,33 @@
 $schema: "https://moonrepo.dev/schemas/project.json"
 
 id: "trainer"
-language: "python"
-layer: "application"
-stack: "backend"
+language: "rust"
+layer: "library"
+stack: "systems"
 tags:
-  - "python"
-  - "pytorch"
+  - "rust"
+  - "dsp"
   - "trainer"
+  - "ml"
+  - "cli"
 
 project:
   name: "dnam-trainer"
-  description: "PyTorch 4-Stage Differentiable Trainer and headless dnam-train worker for DNAM"
+  description: "Pure-Rust Analytical Variable-Projection (VarPro) Two-Sweep System-Identification Trainer for DNAM"
 
 dependsOn:
-  - "python"
+  - "engine"
 
 tasks:
   cli:
-    command: "uv"
+    command: "cargo"
     args:
       - "run"
-      - "--no-sync"
+      - "--package"
+      - "dnam-trainer"
+      - "--bin"
       - "dnam-train"
-    deps:
-      - "python:build"
+      - "--"
     preset: "utility"
     options:
       runFromWorkspaceRoot: true
@@ -33,167 +36,167 @@ tasks:
 
   format:
     type: "run"
-    command: "uv"
+    command: "cargo"
     args:
-      - "run"
-      - "--no-sync"
-      - "ruff"
-      - "format"
-      - "packages/trainer"
-    deps:
-      - "python:build"
+      - "fmt"
+      - "--package"
+      - "dnam-trainer"
     options:
-      runFromWorkspaceRoot: true
       cache: false
       runInCI: false
     tags:
       - "format"
 
   format-check:
-    command: "uv"
+    command: "cargo"
     args:
-      - "run"
-      - "--no-sync"
-      - "ruff"
-      - "format"
+      - "fmt"
+      - "--package"
+      - "dnam-trainer"
+      - "--"
       - "--check"
-      - "packages/trainer"
-    deps:
-      - "python:build"
     inputs:
-      - "pyproject.toml"
+      - "Cargo.toml"
       - "src/**/*"
       - "tests/**/*"
-      - "/pyproject.toml"
-      - "/uv.lock"
-    options:
-      runFromWorkspaceRoot: true
+      - "benches/**/*"
+      - "/Cargo.toml"
     tags:
       - "quality"
       - "format"
 
   lint:
-    command: "uv"
+    command: "cargo"
     args:
-      - "run"
-      - "--no-sync"
-      - "ruff"
-      - "check"
-      - "packages/trainer"
-    deps:
-      - "python:build"
+      - "clippy"
+      - "--package"
+      - "dnam-trainer"
+      - "--all-targets"
+      - "--all-features"
+      - "--"
+      - "-D"
+      - "warnings"
     inputs:
-      - "pyproject.toml"
+      - "Cargo.toml"
       - "src/**/*"
       - "tests/**/*"
-      - "/pyproject.toml"
-      - "/uv.lock"
+      - "benches/**/*"
+      - "/Cargo.toml"
+      - "/Cargo.lock"
+      - "/packages/engine/Cargo.toml"
+      - "/packages/engine/src/**/*"
     options:
-      runFromWorkspaceRoot: true
+      mutex: "cargo"
     tags:
       - "quality"
       - "lint"
 
   typecheck:
-    command: "uv"
+    command: "cargo"
     args:
-      - "run"
-      - "--no-sync"
-      - "pyrefly"
       - "check"
-      - "--min-severity=warn"
-      - "packages/trainer"
-    deps:
-      - "python:build"
+      - "--package"
+      - "dnam-trainer"
+      - "--all-targets"
+      - "--all-features"
     inputs:
-      - "pyproject.toml"
+      - "Cargo.toml"
       - "src/**/*"
       - "tests/**/*"
-      - "/pyproject.toml"
-      - "/uv.lock"
-      - "/packages/python/src/**/*"
+      - "benches/**/*"
+      - "/Cargo.toml"
+      - "/Cargo.lock"
+      - "/packages/engine/Cargo.toml"
+      - "/packages/engine/src/**/*"
     options:
-      runFromWorkspaceRoot: true
+      mutex: "cargo"
     tags:
       - "quality"
       - "typecheck"
 
   build:
     type: "build"
-    command: "noop"
-    deps:
-      - "python:build"
+    command: "cargo"
+    args:
+      - "build"
+      - "--package"
+      - "dnam-trainer"
+      - "--release"
+    inputs:
+      - "Cargo.toml"
+      - "src/**/*"
+      - "/Cargo.toml"
+      - "/Cargo.lock"
+      - "/packages/engine/Cargo.toml"
+      - "/packages/engine/src/**/*"
+    options:
+      mutex: "cargo"
+      outputStyle: "buffer-only-failure"
     tags:
       - "build"
 
   test:
-    command: "uv"
+    command: "cargo"
     args:
-      - "run"
-      - "--no-sync"
-      - "pytest"
-      - "packages/trainer/tests"
-    deps:
-      - "python:build"
+      - "test"
+      - "--package"
+      - "dnam-trainer"
+      - "--all-features"
     inputs:
-      - "pyproject.toml"
+      - "Cargo.toml"
       - "src/**/*"
       - "tests/**/*"
-      - "/pyproject.toml"
-      - "/uv.lock"
-      - "/packages/python/src/**/*"
+      - "/Cargo.toml"
+      - "/Cargo.lock"
+      - "/packages/engine/Cargo.toml"
+      - "/packages/engine/src/**/*"
     options:
-      runFromWorkspaceRoot: true
+      mutex: "cargo"
     tags:
       - "test"
 
   coverage:
     type: "run"
-    command: "uv"
+    command: "cargo"
     args:
-      - "run"
-      - "--no-sync"
-      - "pytest"
-      - "packages/trainer/tests"
-      - "--cov=dnam_trainer"
-      - "--cov-report=term-missing"
-      - "--cov-fail-under=95"
-    deps:
-      - "python:build"
+      - "llvm-cov"
+      - "--package"
+      - "dnam-trainer"
+      - "--all-features"
+      - "--fail-under-lines"
+      - "95"
     inputs:
-      - "pyproject.toml"
+      - "Cargo.toml"
       - "src/**/*"
       - "tests/**/*"
-      - "/pyproject.toml"
-      - "/uv.lock"
-      - "/packages/python/src/**/*"
+      - "/Cargo.toml"
+      - "/Cargo.lock"
+      - "/packages/engine/Cargo.toml"
+      - "/packages/engine/src/**/*"
     options:
-      runFromWorkspaceRoot: true
+      mutex: "cargo"
       runInCI: "skip"
     tags:
       - "coverage"
 
   bench:
     type: "run"
-    command: "uv"
+    command: "cargo"
     args:
-      - "run"
-      - "--no-sync"
-      - "pytest"
-      - "packages/trainer/tests/test_benchmarks.py"
-      - "--benchmark-enable"
-    deps:
-      - "python:build"
+      - "bench"
+      - "--package"
+      - "dnam-trainer"
     inputs:
-      - "pyproject.toml"
+      - "Cargo.toml"
       - "src/**/*"
-      - "tests/**/*"
-      - "/pyproject.toml"
-      - "/uv.lock"
-      - "/packages/python/src/**/*"
+      - "benches/**/*"
+      - "/Cargo.toml"
+      - "/Cargo.lock"
+      - "/packages/engine/Cargo.toml"
+      - "/packages/engine/src/**/*"
     options:
-      runFromWorkspaceRoot: true
       cache: false
+      mutex: "cargo"
       runInCI: false
     tags:
       - "bench"

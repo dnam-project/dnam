@@ -188,8 +188,6 @@ tasks:
       - "test"
       - "--package"
       - "dnam-studio"
-    deps:
-      - "python:build"
     inputs:
       - "Cargo.toml"
       - "build.rs"

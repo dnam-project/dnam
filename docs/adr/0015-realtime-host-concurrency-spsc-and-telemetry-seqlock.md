@@ -8,7 +8,6 @@ superseded_by: null
 specs:
   - "../specs/architecture/tora_architecture.md"
   - "../specs/dsp/parametric_control_bus.md"
-  - "../specs/sdks/python_sdk.md"
   - "../specs/sdks/typescript_sdk.md"
 requirements:
   - REQ-2.1
@@ -19,13 +18,13 @@ requirements:
 
 # ADR-0015: Real-Time Host Concurrency: 3-Lane SPSC Control Ingress, `AcceptedStateShadow`, Wait-Free Telemetry Seqlock & Safe Engine Swap
 
-This record documents the architectural decision to introduce `dnam_engine::host` (`packages/engine/src/host.rs`) as a `#![no_std]` + `alloc`, 100% safe Rust (`#[forbid(unsafe_code)]`) real-time concurrency layer providing a **3-Lane SPSC Control Ingress (`SpscControlRing`)**, **synchronous producer-side validation and state shadowing (`AcceptedStateShadow`)**, a **wait-free `AtomicU64` seqlock (`TelemetryCell`)**, a **ping-pong non-blocking hot swap (`RealtimeEngineSwap`)**, and a unified **`DnamHostHandle`** shared across the Rust engine, Python 3.15 (`3.15t`) SDK (`packages/python/`), and TypeScript 7 (`N-API v10` / `WASM`) SDK (`packages/js/`), specified normatively in [`../specs/architecture/tora_architecture.md`](../specs/architecture/tora_architecture.md), [`../specs/dsp/parametric_control_bus.md`](../specs/dsp/parametric_control_bus.md), [`../specs/sdks/python_sdk.md`](../specs/sdks/python_sdk.md), and [`../specs/sdks/typescript_sdk.md`](../specs/sdks/typescript_sdk.md).
+This record documents the architectural decision to introduce `dnam_engine::host` (`packages/engine/src/host.rs`) as a `#![no_std]` + `alloc`, 100% safe Rust (`#[forbid(unsafe_code)]`) real-time concurrency layer providing a **3-Lane SPSC Control Ingress (`SpscControlRing`)**, **synchronous producer-side validation and state shadowing (`AcceptedStateShadow`)**, a **wait-free `AtomicU64` seqlock (`TelemetryCell`)**, a **ping-pong non-blocking hot swap (`RealtimeEngineSwap`)**, and a unified **`DnamHostHandle`** shared across the Rust engine, desktop Studio (`packages/studio/`), and TypeScript 7 (`N-API v10` / `WASM`) SDK (`packages/js/`), specified normatively in [`../specs/architecture/tora_architecture.md`](../specs/architecture/tora_architecture.md), [`../specs/dsp/parametric_control_bus.md`](../specs/dsp/parametric_control_bus.md), and [`../specs/sdks/typescript_sdk.md`](../specs/sdks/typescript_sdk.md).
 
 ---
 
 ## 1. Context & Problem Statement
 
-Following [`ADR-0014`](0014-python-3-15-free-threading-and-stable-abi-abi3t.md), wrapping `DynamicDnamEngine<'static>` inside a single coarse-grained `Mutex<DynamicDnamEngine<'static>>` guaranteed memory safety under free-threaded Python `3.15t` (`Py_GIL_DISABLED = 1`), but left four real-time host concurrency bottlenecks across Python, Node.js (`processAsync`), and plugin hosts:
+Wrapping `DynamicDnamEngine<'static>` inside a single coarse-grained `Mutex<DynamicDnamEngine<'static>>` guaranteed memory safety across multi-threaded hosts, but left four real-time host concurrency bottlenecks across `dnam-engine`, desktop Studio (`packages/studio/`), Node.js / WebAudio (`packages/js/`, `processAsync`), and plugin hosts:
 
 | Previous Formulation | Failure Mechanism | Real-Time or Host Concurrency Consequence |
 | :--- | :--- | :--- |
@@ -51,5 +50,5 @@ Following [`ADR-0014`](0014-python-3-15-free-threading-and-stable-abi-abi3t.md),
 
 1. **Zero-`unsafe` Real-Time Host Layer (`packages/engine/src/host.rs`):**
    - `packages/engine/src/lib.rs` declares `#[forbid(unsafe_code)] pub mod host;`, and every submodule (`host/telemetry.rs`, `host/spsc.rs`, `host/swap.rs`, `host/handle.rs`) compiles with `#![forbid(unsafe_code)]` on both native targets and `wasm32-unknown-unknown`.
-2. **Non-Blocking Control & Telemetry Across Python (`3.15t`) and TypeScript (`N-API v10` / `WASM`):**
-   - In `packages/python/rust/engine.rs` and `packages/js/rust/core/engine.rs`, `PyEngine` and `EngineCore` wrap `DnamHostHandle`. Control mutations (`set_control_value`, `apply_preset`, `sync_tempo`, `set_bypass`, `set_freeze`, `set_tier`, etc.) acquire only the lightweight `Mutex<ControlProducer>` (nanoseconds), and `telemetry` reads `TelemetryReader` wait-free (`0` locks), completing in `< 5 ms` even while another thread executes a long multi-block `process` or `bounce` render.
+2. **Non-Blocking Control & Telemetry Across `dnam-engine`, `packages/studio`, and `packages/js` (`N-API v10` / `WASM`):**
+   - Across `dnam-engine` (`DnamHostHandle`), `packages/studio` (desktop Studio and CLI host), and `packages/js/rust/core/engine.rs` (`EngineCore`), control mutations (`set_control_value`, `apply_preset`, `sync_tempo`, `set_bypass`, `set_freeze`, `set_tier`, etc.) acquire only the lightweight `Mutex<ControlProducer>` (nanoseconds), and `telemetry` reads `TelemetryReader` wait-free (`0` locks), completing in `< 5 ms` even while another thread executes a long multi-block `process` or `bounce` render.

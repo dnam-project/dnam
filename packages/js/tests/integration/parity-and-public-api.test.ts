@@ -397,7 +397,6 @@ describe("Public API surface, 0-ULP behavioral parity, WASM denormals & performa
     // verify[sdk.ts.runtime.zero-unsafe]
     const dir = dirname(fileURLToPath(import.meta.url));
     const jsRustRoot = resolve(dir, "../../rust");
-    const pyRustRoot = resolve(dir, "../../../python/rust");
     const engineFfiPath = resolve(dir, "../../../engine/src/ffi.rs");
 
     function collectRsFiles(root: string): string[] {
@@ -416,17 +415,6 @@ describe("Public API surface, 0-ULP behavioral parity, WASM denormals & performa
     const engineFfiSrc = readFileSync(engineFfiPath, "utf8");
     expect(engineFfiSrc).not.toContain("dnam_wasm_export");
     expect(engineFfiSrc).not.toContain("dnam_napi_ctor");
-
-    const pyLibSrc = readFileSync(resolve(pyRustRoot, "lib.rs"), "utf8");
-    expect(pyLibSrc).toContain("#![forbid(unsafe_code)]");
-
-    for (const pyFile of collectRsFiles(pyRustRoot)) {
-      const src = readFileSync(pyFile, "utf8");
-      expect(src).not.toMatch(/\bunsafe\s*\{/);
-      expect(src).not.toMatch(/\bunsafe\s+(?:extern\b|fn\b|impl\b|trait\b)/);
-      expect(src).not.toContain("allow(unsafe_code)");
-      expect(src).not.toContain("from_raw_parts");
-    }
 
     const jsLibSrc = readFileSync(resolve(jsRustRoot, "lib.rs"), "utf8");
     expect(jsLibSrc).toContain("#![deny(unsafe_code)]");

@@ -13,6 +13,7 @@ requirements:
   - REQ-7.3
 adrs:
   - ADR-0002
+  - ADR-0016
 ---
 
 # Hardware Capture, Universal Excitation & Multi-Regime Latency Alignment

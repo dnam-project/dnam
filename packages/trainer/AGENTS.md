@@ -1,18 +1,23 @@
-# `packages/trainer/` — PyTorch Trainer & Headless Worker (`dnam_trainer`)
+# `packages/trainer/` — Pure-Rust Analytical `VarPro` Two-Sweep Trainer Guide
 
-**`dnam-trainer`** implements the 4-Stage PyTorch Trainer, `.dnam-ckpt` SVD-Kronecker Solver, 3-Phase Control Audit, and headless `dnam-train` worker invoked by `packages/studio` (`dnam train` and Tauri Desktop Studio).
+**`dnam-trainer`** (`packages/trainer/`) is the 100% pure-Rust (`#![forbid(unsafe_code)]`) Analytical Variable-Projection (`VarPro`) Two-Sweep Block-Coordinate Cholesky training crate for **DNAM**, sharing the exact `#![no_std]` + `alloc` DSP operators (`Op-T`, `Op-M`, `Op-N`), `3 kHz` Parametric Control Bus, `uplo='U'` Gram packer, and `.dnam`/`.dnam-ckpt` container format with [`dnam-engine`](../engine/README.md).
 
-## 1. Module Routing Map
+Read [`CONTRIBUTING.md`](CONTRIBUTING.md) and [`README.md`](README.md) before editing.
 
-| Module | Responsibility | Scoped `AGENTS.md` / Canonical Spec |
+## 1. Commands (`moon`)
+
+```bash
+moon check trainer            # Run format-check, lint (clippy), typecheck, build, and test
+moon run trainer:test         # Run Rust unit, proptest, and integration suites
+moon run trainer:coverage     # Enforce >= 95% line coverage via cargo llvm-cov
+moon run trainer:bench        # Run Criterion solver throughput benchmarks
+moon run trainer:cli -- --help
+```
+
+## 2. Submodule & Documentation Routing Map
+
+| Submodule / Directory | Scoped Guide & Files | Canonical Specification (SSOT) |
 | :--- | :--- | :--- |
-| [`schema.py`](src/dnam_trainer/schema.py), [`events.py`](src/dnam_trainer/events.py) | Pydantic v2 contracts (`StemAudioRef`) & JSONL/SSE events | [`dnam_binary_format.md`](../../docs/specs/containers/dnam_binary_format.md) |
-| [`dsp/`](src/dnam_trainer/dsp/) | Differentiable `PolyADAA`, `SelectiveRgLru` & `ModulatedUfdn` | [`dsp/AGENTS.md`](src/dnam_trainer/dsp/AGENTS.md) |
-| [`control/`](src/dnam_trainer/control/) | Lobatto HDMR, Rank-4 FM & 3-Phase Audit | [`control/AGENTS.md`](src/dnam_trainer/control/AGENTS.md) |
-| [`training/`](src/dnam_trainer/training/) | Runtime, Surrogate Delay, `float64` Kronecker solver, `wav_io` & `TrainingBackend` | [`training/AGENTS.md`](src/dnam_trainer/training/AGENTS.md) |
-| [`cli/`](src/dnam_trainer/cli/) | Headless `dnam-train` JSON-job & JSONL/SSE worker CLI | [`cli/AGENTS.md`](src/dnam_trainer/cli/AGENTS.md) |
-| [`tests/`](tests/) | 1:1 mirrored unit, Hypothesis, guardrail, verification & benchmark tests | [`tests/AGENTS.md`](tests/AGENTS.md) |
-
-## 2. Verification
-
-See [`CONTRIBUTING.md`](CONTRIBUTING.md) for strict typing (`pyrefly`), coverage (≥ 95%), and precision rules.
+| **Crate Root & CLI (`src/`)** | [`src/AGENTS.md`](src/AGENTS.md), [`src/lib.rs`](src/lib.rs), [`src/bin/dnam_train.rs`](src/bin/dnam_train.rs) | [`four_stage_pipeline.md`](../../docs/specs/training/four_stage_pipeline.md), [`iterative_resume_and_caching.md`](../../docs/specs/training/iterative_resume_and_caching.md) |
+| **Analytical Solver & Stages (`src/solver/`)** | [`src/solver/AGENTS.md`](src/solver/AGENTS.md), [`src/solver.rs`](src/solver.rs), [`src/solver/stages.rs`](src/solver/stages.rs) | [`control_space_audit.md`](../../docs/specs/training/control_space_audit.md), [`checkpoint_and_cache_format.md`](../../docs/specs/containers/checkpoint_and_cache_format.md) |
+| **Integration & Spec Tests (`tests/`)** | [`tests/AGENTS.md`](tests/AGENTS.md), [`tests/trainer_spec_verification.rs`](tests/trainer_spec_verification.rs) | [`psychoacoustic_quality_and_tiers.md`](../../docs/specs/architecture/psychoacoustic_quality_and_tiers.md), [`capture_and_alignment.md`](../../docs/specs/training/capture_and_alignment.md) |

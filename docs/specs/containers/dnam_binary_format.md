@@ -20,8 +20,8 @@ adrs:
 
 DNAM defines four companion **64-byte cache-line and SIMD-aligned Hybrid Binary Container formats** engineered for zero-copy hardware loading ([`REQ-5.1`, `REQ-5.6`](../../requirements/system_goals_and_requirements.md#6-goal-5--single-run-slimmable-multi-tier-architecture-lite--full--pro--ultra), [`REQ-8.1`, `REQ-8.8`](../../requirements/system_goals_and_requirements.md#9-goal-8--model-provenance-hardware-drm-forensic-watermarking--marketplace-security), [`ADR-0009`](../../adr/0009-jcs-prefix-signing-hpke-and-preview-containment.md)):
 
-1. `r[container.dnam.formats]` **`.dnam` (Magic `b"DNAM"`, Version `2.0`):** Runtime deployment model with a 64B preamble, 128B directory, RFC 8785 JCS immutable header, shared binary descriptors, `DAU1`/`DAI1` authentication envelope, four nested tier payloads (`Arena 0..3`: `Lite ⊂ Full ⊂ Pro ⊂ Ultra`), and a growable `DMU1`/`DME1` + `DMUE` mutable suffix.
-2. **`.dnam-ckpt` (Magic `b"DNCK"`, Version `2.0`):** Single-file iterative training checkpoint organizing runtime weights, `uplo='U'` `Arena 4` sufficient statistics, and `DNCA` `Arena 5` calibration records into truncatable tier bundles ([`checkpoint_and_cache_format.md`](checkpoint_and_cache_format.md)).
+1. `r[container.dnam.formats]` **`.dnam` (Magic `b"DNAM"`, Version `2.0`):** Runtime deployment model with a 64B preamble, 128B directory, RFC 8785 JCS immutable header, Region 4 `shared_extent` (`P * 64 B` `ControlClampDescriptor` table + overflow `CP1` contributor stream), `DAU1`/`DAI1` authentication envelope, four nested tier payloads (`Arena 0..3`: `Lite ⊂ Full ⊂ Pro ⊂ Ultra`), and a growable `DMU1`/`DME1` + `DMUE` mutable suffix.
+2. **`.dnam-ckpt` (Magic `b"DNCK"`, Version `2.0`) & `.dnam-cache/*.dnce` (`v2.0`):** Single-file iterative training checkpoint organizing runtime weights, `uplo='U'` `Arena 4` sufficient statistics (`S1C1` + `DCA1`), and `DNCA` `Arena 5` calibration records (`24 KB` / `48 KB` `fp16` coresets) into truncatable tier bundles alongside workspace `.dnam-cache/*.dnce` (`v2.0`) sidecars ([`checkpoint_and_cache_format.md`](checkpoint_and_cache_format.md)).
 3. **`.dnam-seal` (Magic `b"DNSL"`, Version `2.0`):** Opaque 64-byte-aligned OEM hardware-enclave wrapper (`DnamProtectionProfile::EnclaveSealed`, `DSA1` manifest; see [`../security/provenance_and_enclave_drm.md` §3](../security/provenance_and_enclave_drm.md#3-pillar-2-hardware-enclave--oem-drm-oemdevicecertificate-attestation--dnam-seal-bdnsl-wrapper)).
 4. **`.dnam-prev`:** Dedicated `Lite`-only storefront auditioning container that physically omits `Full`, `Pro`, and `Ultra` payloads ([`../security/watermarking_and_marketplace.md` §3](../security/watermarking_and_marketplace.md#3-commercial-storefront-platform-auditioning-royalty-splits--storefront-metadata)).
 
@@ -37,7 +37,7 @@ flowchart LR
         direction TB
         P["Region 1 (0..63, 64 B): Fixed Preamble<br/>Magic DNAM, Version 2.0, Profile, AuthKind, MaxTier, Train SR"]
         D["Region 2 (64..191, 128 B): Directory<br/>u64 Offsets & Lengths + 4 Original Tier Ends"]
-        H["Region 3 (192..): RFC 8785 JCS Immutable Header<br/>+ Shared Binary + DAU1/DAI1 Auth Envelope"]
+        H["Region 3 (192..): RFC 8785 JCS Immutable Header<br/>+ Region 4 shared_extent + DAU1/DAI1 Auth Envelope"]
         P --> D --> H
     end
 
@@ -73,7 +73,8 @@ flowchart LR
 +-----------------------------------------------------------------------+ 0x00C0 (Byte 192, 64B-aligned)
 | 3. Canonical RFC 8785 JCS Immutable JSON Header + Zero Pad to 64 B    |
 +-----------------------------------------------------------------------+ shared_binary_offset (64B-aligned)
-| 4. Shared Binary Descriptors (ControlClampDescriptor) + Zero Pad      |
+| 4. Shared Binary Descriptors (shared_extent: P * 64B ControlClamp-    |
+|    Descriptor Table + Overflow CP1 Stream) + Zero Pad to 64 B         |
 +-----------------------------------------------------------------------+ authentication_envelope_offset (64B)
 | 5. Authentication Envelope (DAU1 Open / DAI1 Protected) + Zero Pad    |
 +=======================================================================+ tier_start (64B-aligned)
@@ -94,7 +95,7 @@ flowchart LR
 
 `r[container.dnam.preamble-directory]`
 
-All integer fields are unsigned little-endian. Every binary region start (`shared_binary_offset`, `authentication_envelope_offset`, `tier_start`, and each issued `original_tier_ends[t]`) is `64 B`-aligned, strictly ordered, and checked against `u64` overflow before allocation. Header `slimmable_tiers.*.arena_end_byte_offset` and `tensor_directory.*.byte_offset` values are relative to `tier_start` so lower-tier buyer issuances retain the creator-signed immutable header unmodified.
+All integer fields are unsigned little-endian. Every binary region start (`shared_binary_offset`, `authentication_envelope_offset`, `tier_start`, and each issued `original_tier_ends[t]`) is `64 B`-aligned, strictly ordered, and checked against `u64` overflow before allocation (`validate_v2_dnam_layout_no_alloc`). Region 4 (`shared_extent`) packs the `P * 64 B` `ControlClampDescriptor` table followed by any overflow `CP1` contributor stream (`ADR-0007`). Header `slimmable_tiers.*.arena_end_byte_offset` and `tensor_directory.*.byte_offset` values are relative to `tier_start` so lower-tier buyer issuances retain the creator-signed immutable header unmodified.
 
 ### 1.2 Open `.dnam` Structural Layout
 
@@ -133,7 +134,7 @@ Protected containers replace `DMU1` with the HPKE-wrapped `DME1` frame using the
 | `control_user_metadata` | Object mapping signed `control_id` strings to open metadata objects. |
 | `stem_user_metadata` | Object mapping signed checkpoint `stem_id` strings to open metadata objects. |
 
-Loading a partial preset restores signed defaults for all omitted controls at the effective tier before overlaying the preset's assignments and applying whole-batch conditional clamping ([`../dsp/parametric_control_bus.md` §2.4.1](../dsp/parametric_control_bus.md#conditional-batch-safety)).
+On container load, the loader validates the `DMU1`/`DME1` CRC-32C and `DMUE` footer and merges mutable `presets`, `user_metadata`, `control_user_metadata`, and `stem_user_metadata` over the signed immutable header view without modifying the authenticated prefix bytes. Loading a partial preset restores signed defaults for all omitted controls at the effective tier before overlaying the preset's assignments and applying whole-batch conditional clamping ([`../dsp/parametric_control_bus.md` §2.4.1](../dsp/parametric_control_bus.md#conditional-batch-safety)).
 
 ---
 

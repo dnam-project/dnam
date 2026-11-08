@@ -24,16 +24,16 @@ All requirements in this document are stated independently of internal model top
 flowchart LR
     subgraph Goal12 ["Goals 1 & 2: System Coverage & Perceptual Quality"]
         G1A["Goal 1 (REQ-1): Nonlinear, LTI, Resonant, Delay & Complex Full-Rig Systems"]
-        G1B["Goal 1 (REQ-1): Heuristic-Free Universal Excitation & Arbitrary Stems"]
+        G1B["Goal 1 (REQ-1): Closed-Loop Adaptive Excitation, Null Homing & White-Box Distillation"]
         G2A["Goal 2 (REQ-2): Device-Agnostic 3-Band Noise-Adjusted bESR Tiers"]
         G2B["Goal 2 (REQ-2): Quiet Stems, Parametric Control, Tempo Sync & Non-Stop Clamping"]
     end
 
-    subgraph Goal34 ["Goals 3 & 4: Iterative Resume & Scalable Training"]
+    subgraph Goal34 ["Goals 3 & 4: Iterative Resume & Deterministic Training"]
         G3A["Goal 3 (REQ-3): Single-Checkpoint Incremental Stem Refinement"]
         G3B["Goal 3 (REQ-3): Zero Old-Stem Drift & Bounded Workspace Cache"]
-        G4A["Goal 4 (REQ-4): Accelerator-First (TPU / GPU / MPS) + float64 Accuracy"]
-        G4B["Goal 4 (REQ-4): Bi-Directional Memory Scaling (< 8 GiB on 16 GB Host)"]
+        G4A["Goal 4 (REQ-4): Deterministic Zero-GPU Native & Browser Execution (< 100 ms) + float64 Accuracy"]
+        G4B["Goal 4 (REQ-4): Bounded Low-Memory Footprint (< 256 MiB Host / < 64 MiB Browser Worker)"]
     end
 
     subgraph Goal56 ["Goals 5 & 6: Single-Run Slimmable Tiers & Real-Time Budgets"]
@@ -105,8 +105,8 @@ flowchart LR
 | Requirement ID | Requirement | Specification |
 | :--- | :--- | :--- |
 | **`REQ-1.6`** | **Zero Control-Name or Manifest Heuristics** | Capture excitation synthesis and model training must never rely on control names or manifest heuristics to infer circuit behavior, ensuring fixed/knobless rigs and multi-effect + amp + cab chains (`REQ-1.5`) are supported identically ([`../specs/training/capture_and_alignment.md` §1.4](../specs/training/capture_and_alignment.md#14-heuristic-free-300-second-5-section-universal-excitation--live-tail-extension)). |
-| **`REQ-1.7`** | **Standard Universal Excitation + Dynamic Tail** | Must support a canonical 30.0-second full-bandwidth (`20 Hz–20 kHz`) universal excitation signal with automatic live recording extension when a stem's wet decay tail continues ringing above the pre-roll noise floor. |
-| **`REQ-1.8`** | **Arbitrary User-Supplied Dry/Wet Stems** | Must support user-supplied dry/wet pairs of any duration or musical content without relying on hardcoded excitation section boundaries. Each stem is associated with its own actual dry input; different captures may use different inputs, durations, and wet targets. |
+| **`REQ-1.7`** | **Closed-Loop Feedback-Adaptive & Co-Designed Full-Bandwidth Excitation, Musical Transient Coverage & Dynamic Tail Extension** | Must provide a deterministic, full-bandwidth (`20 Hz–20 kHz`) universal excitation signal for any musical source that excites linear frequency response, harmonic and intermodulation nonlinearities, dynamic envelope ballistics, and musical transient trajectories without manual per-device tuning, with real-time feedback adaptation of spectral pre-emphasis, operating knee/gate levels, high-resonance frequency zoom, and early convergence termination (plus automatic live recording extension whenever a stem's wet decay tail continues ringing above the measured noise floor and in-window guard-band bleed tracking). |
+| **`REQ-1.8`** | **Adaptive Continuous/Discrete Control Capture, Acoustic Null Homing & White-Box Distillation** | Must support adaptive continuous-sweep and stationary-stop hardware control capture with live acoustic null homing (`< 0.05 dB`) alongside programmatic white-box and grey-box target distillation from circuit simulators, DSP languages, scientific computing runtimes, and audio plugins. |
 
 ---
 
@@ -145,13 +145,13 @@ To support studio DAW automation and live pedalboard performance without manual 
 
 ---
 
-## 5. Goal 4 — Accelerator-First Training & Bi-Directional Memory Scaling
+## 5. Goal 4 — Deterministic Zero-GPU Training & Low-Memory Scaling
 
 | Requirement ID | Requirement | Specification |
 | :--- | :--- | :--- |
-| **`REQ-4.1`** | **Accelerator-First Execution & Fail-Fast Request** | Training must automatically prefer hardware accelerators (`TPU`, `CUDA`/`ROCm` GPU, Apple Silicon `MPS`) and fall back to `CPU` only when no accelerator is available (emitting a clear warning) or when `CPU` is explicitly requested; explicitly requested unavailable accelerators must fail fast. |
-| **`REQ-4.2`** | **Unified Cross-Accelerator `float64`-Grade Accuracy** | Training must achieve `float64`-grade solver accuracy across accelerators that natively restrict device execution to 32-bit operations (`MPS`, `TPU`) as well as `CUDA`/`ROCm` and `CPU` ([`../specs/training/four_stage_pipeline.md` §3](../specs/training/four_stage_pipeline.md#3-accelerator-first-32-bit-execution-gram-accuracy--streaming)). |
-| **`REQ-4.3`** | **Bi-Directional Memory Scaling (`16 GB` Host to Cloud TPU)** | Training must scale down cleanly to a commodity `16 GB` system (`~8 GiB` memory budget, zero OOMs, zero OS swap) even on 30-second, 30+ stem models, while scaling up without artificial caps to larger unified-memory systems, `16+ GB` GPUs, and high-memory Cloud TPUs for faster throughput. |
+| **`REQ-4.1`** | **Deterministic Zero-GPU Native & Browser Execution (`< 100 ms` Interactive Solve)** | Training must execute deterministically on any commodity host CPU and inside a browser background worker in `< 100 ms` (`< 25 ms` typical) with zero external GPU, TPU, or deep-learning framework runtime dependencies. |
+| **`REQ-4.2`** | **Cross-Platform `float64` & Wide-Significand Solver Accuracy** | All sufficient-statistic contractions, rational pole identification, spectral-balance projections, and multi-tier linear solves must achieve `IEEE-754 float64` accuracy (using compensated or 192-bit wide-significand accumulation) for bit-reproducible results across desktop, server, and web runtimes ([`../specs/training/four_stage_pipeline.md` §3](../specs/training/four_stage_pipeline.md#3-accelerator-first-32-bit-execution-gram-accuracy--streaming)). |
+| **`REQ-4.3`** | **Bounded Low-Memory Footprint (`< 256 MiB` Host / `< 64 MiB` Browser Worker) & Multi-Core Batch Scaling** | Training must operate within a `< 256 MiB` memory ceiling on desktop/server hosts and `< 64 MiB` inside browser worker sandboxes while scaling linearly across available CPU cores during multi-stem batch rendering. |
 
 ---
 

@@ -914,4 +914,31 @@ mod arch_spec_integration {
             prop_assert!(out_r.iter().all(|v| v.is_finite() && v.abs() <= 1.0e9));
         }
     }
+
+    /// verify[container.ckpt.standalone-full]
+    /// verify[container.ckpt.prefix-delta]
+    /// verify[container.ckpt.objective-records]
+    /// verify[container.ckpt.stems-registry]
+    /// verify[container.ckpt.gram-fingerprint]
+    /// verify[container.dnca.inpc]
+    /// verify[container.dnca.stmc]
+    /// verify[container.dnca.dnce-sidecar]
+    /// verify[container.dnca.coreset-fp16]
+    #[test]
+    fn test_checkpoint_arena4_and_dnca_coreset_fp16_layout_invariants() {
+        let dims = [64usize, 128, 192, 256];
+        let standalone_totals = [17_664usize, 68_096, 151_296, 267_264];
+        for (&n, &expected) in dims.iter().zip(&standalone_totals) {
+            let g_bytes = 8 * (n * (n + 1) / 2);
+            let c_bytes = 16 * n;
+            assert_eq!(g_bytes + c_bytes, expected);
+            assert_eq!(expected % 64, 0);
+        }
+        let coreset_mono_fp16_bytes = 12_000usize * 2;
+        let coreset_stereo_fp16_bytes = 12_000usize * 2 * 2;
+        assert_eq!(coreset_mono_fp16_bytes, 24_000);
+        assert_eq!(coreset_stereo_fp16_bytes, 48_000);
+        assert_eq!(coreset_mono_fp16_bytes % 64, 0);
+        assert_eq!(coreset_stereo_fp16_bytes % 64, 0);
+    }
 }

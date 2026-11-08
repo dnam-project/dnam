@@ -1,55 +1,50 @@
 $schema: "https://moonrepo.dev/schemas/project.json"
 
 id: "tests"
-language: "python"
-layer: "automation"
+language: "typescript"
+layer: "application"
 stack: "systems"
 tags:
-  - "python"
+  - "typescript"
   - "tests"
   - "guardrails"
 
 project:
-  name: "dnam-tests"
-  description: "Monorepo-wide documentation, specification, clamp registry, and progressive-disclosure guardrail tests for DNAM"
+  name: "dnam-workspace-tests"
+  description: "Workspace-wide architecture, documentation, and specification guardrail tests for DNAM"
 
-dependsOn:
-  - "python"
+dependsOn: []
 
 tasks:
   format:
     type: "run"
-    command: "uv"
+    command: "pnpm"
     args:
-      - "run"
-      - "--no-sync"
-      - "ruff"
+      - "exec"
+      - "biome"
       - "format"
+      - "--write"
       - "tests"
-    deps:
-      - "python:build"
     options:
-      runFromWorkspaceRoot: true
       cache: false
+      runFromWorkspaceRoot: true
       runInCI: false
     tags:
       - "format"
 
   format-check:
-    command: "uv"
+    command: "pnpm"
     args:
-      - "run"
-      - "--no-sync"
-      - "ruff"
+      - "exec"
+      - "biome"
       - "format"
-      - "--check"
       - "tests"
-    deps:
-      - "python:build"
     inputs:
-      - "**/*"
-      - "/pyproject.toml"
-      - "/uv.lock"
+      - "*.ts"
+      - "*.json"
+      - "/biome.json"
+      - "/package.json"
+      - "/pnpm-lock.yaml"
     options:
       runFromWorkspaceRoot: true
     tags:
@@ -57,19 +52,18 @@ tasks:
       - "format"
 
   lint:
-    command: "uv"
+    command: "pnpm"
     args:
-      - "run"
-      - "--no-sync"
-      - "ruff"
+      - "exec"
+      - "biome"
       - "check"
       - "tests"
-    deps:
-      - "python:build"
     inputs:
-      - "**/*"
-      - "/pyproject.toml"
-      - "/uv.lock"
+      - "*.ts"
+      - "*.json"
+      - "/biome.json"
+      - "/package.json"
+      - "/pnpm-lock.yaml"
     options:
       runFromWorkspaceRoot: true
     tags:
@@ -77,20 +71,18 @@ tasks:
       - "lint"
 
   typecheck:
-    command: "uv"
+    command: "pnpm"
     args:
-      - "run"
-      - "--no-sync"
-      - "pyrefly"
-      - "check"
-      - "--min-severity=warn"
-      - "tests"
-    deps:
-      - "python:build"
+      - "exec"
+      - "tsc"
+      - "-p"
+      - "tests/tsconfig.json"
+      - "--noEmit"
     inputs:
-      - "**/*"
-      - "/pyproject.toml"
-      - "/uv.lock"
+      - "*.ts"
+      - "tsconfig.json"
+      - "/package.json"
+      - "/pnpm-lock.yaml"
     options:
       runFromWorkspaceRoot: true
     tags:
@@ -99,33 +91,51 @@ tasks:
 
   build:
     type: "build"
-    command: "noop"
-    deps:
-      - "python:build"
+    command: "pnpm"
+    args:
+      - "exec"
+      - "tsc"
+      - "-p"
+      - "tests/tsconfig.json"
+      - "--noEmit"
+    inputs:
+      - "*.ts"
+      - "tsconfig.json"
+      - "/package.json"
+      - "/pnpm-lock.yaml"
+    options:
+      outputStyle: "buffer-only-failure"
+      runFromWorkspaceRoot: true
     tags:
       - "build"
 
   test:
-    command: "uv"
+    command: "pnpm"
     args:
+      - "exec"
+      - "vitest"
       - "run"
-      - "--no-sync"
-      - "pytest"
-      - "tests"
-    deps:
-      - "python:build"
+      - "tests/test_guardrails.test.ts"
     inputs:
-      - "**/*"
+      - "*.ts"
+      - "tsconfig.json"
       - "/AGENTS.md"
-      - "/README.md"
       - "/CONTRIBUTING.md"
+      - "/README.md"
       - "/CLA.md"
+      - "/LICENSE"
+      - "/Cargo.toml"
+      - "/package.json"
+      - "/pnpm-lock.yaml"
+      - "/biome.json"
       - "/docs/**/*.md"
-      - "/packages/**/*.md"
-      - "/packages/python/src/**/*.py"
-      - "/packages/trainer/src/**/*.py"
-      - "/pyproject.toml"
-      - "/uv.lock"
+      - "/packages/**/AGENTS.md"
+      - "/packages/**/CONTRIBUTING.md"
+      - "/packages/**/README.md"
+      - "/packages/engine/spec_scope.toml"
+      - "/packages/**/*.rs"
+      - "/packages/**/*.ts"
+      - "/packages/**/*.tsx"
     options:
       runFromWorkspaceRoot: true
     tags:

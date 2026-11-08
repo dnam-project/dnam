@@ -1,16 +1,14 @@
-# DNAM Trainer Test Suite Guide (`packages/trainer/tests/`)
+# `packages/trainer/tests/` — Specification Verification & Integration Suite Guide
 
-1:1 mirrored unit, property-based (`hypothesis`), worker CLI, integration (`Tests 6–8H`), guardrail, and benchmark test suite for `dnam_trainer`.
+**`packages/trainer/tests/`** contains cross-cutting Rust integration and `proptest!` suites verifying the Two-Sweep system-identification pipeline, `uplo='U'` `.dnam-ckpt` / `DNCA` `fp16` coreset invariants, Non-Stop 3-Phase Control-Space Audit bounds, and `Noise-Subtracted B-ESR` quality metrics.
 
-## 1. Test Directory Map
+## 1. Test Suite Map
 
-| Path | Scope |
-| :--- | :--- |
-| [`test_guardrails.py`](test_guardrails.py) | Trainer-package AST & device-precision guardrails (`ref[repo.code.type-safety-and-imports]`, `ref[train.gram.device-32bit]`, `ref[train.gram.window-streaming]`; see [`tests/AGENTS.md`](../../../tests/AGENTS.md) for monorepo guardrails). |
-| [`test_schema_and_events.py`](test_schema_and_events.py) | Pydantic v2 validation (`TrainingStem`, `StemAudioRef`, `TrainingJobRequest`, `CaptureEvent`, `TrainingEvent`). |
-| [`dsp/`](dsp/) | `test_poly_adaa.py`, `test_selective_rglru.py`, `test_modulated_ufdn.py`. |
-| [`control/`](control/) | `test_basis.py` (Lobatto HDMR & Rank-4 FM), `test_audit.py` (3-Phase audit). |
-| [`training/`](training/) | `test_accelerator.py`, `test_hardware.py`, `test_numerics.py`, `test_no_64bit.py`, `test_windowing.py`, `test_calib_cache.py`, `test_quiet_stems.py`, `test_streaming.py`, `test_metrics_and_cascade.py`, `test_surrogate_delay.py` (`Test 6`), `test_kronecker_head.py`, `test_arena.py`, `test_telemetry.py`, `test_pipeline.py`, `test_backends.py`. |
-| [`cli/`](cli/) | `test_train_worker_cli.py` (`dnam-train` headless worker across `jsonl`, `sse`, `rich`, `--status-json`, and `.dnam-ckpt` resume). |
-| [`integration/test_dnam_verification.py`](integration/test_dnam_verification.py) | End-to-end verification of `Tests 6–8I` from [`four_stage_pipeline.md`](../../../docs/specs/training/four_stage_pipeline.md). |
-| [`test_benchmarks.py`](test_benchmarks.py) | `pytest-benchmark` throughput gates for Phase-1 audit, Kronecker `float64` solve, and associative scans. |
+| Test File | Verified Specification Domains (`verify[...]`) | Canonical Specification (SSOT) |
+| :--- | :--- | :--- |
+| [`trainer_spec_verification.rs`](trainer_spec_verification.rs) | `arch.isomorphism.*`, `qual.besr.*`, `qual.eval.*`, `qual.companion.*`, `qual.tiers.*`, `container.ckpt.*`, `container.dnca.*`, `dsp.op-m.*`, `dsp.op-n.*`, `dsp.ctrl.*`, `train.capture.*`, `train.audit.*`, `train.pipeline.*`, `train.gram.*`, `train.resume.*`, `train.cache.*`, `train.cloud.*`. | [`four_stage_pipeline.md`](../../../docs/specs/training/four_stage_pipeline.md), [`control_space_audit.md`](../../../docs/specs/training/control_space_audit.md), [`psychoacoustic_quality_and_tiers.md`](../../../docs/specs/architecture/psychoacoustic_quality_and_tiers.md), [`checkpoint_and_cache_format.md`](../../../docs/specs/containers/checkpoint_and_cache_format.md) |
+
+## 2. Testing Rules
+
+- **Zero `docs/` Markdown Parsing (`ref[repo.docs.spec-rules-and-adrs]`):** Never read or parse Markdown files from `docs/` in unit or integration tests; cite verified rules via `// verify[<id>]` comments.
+- **Property-Based Testing:** Combine deterministic boundary/vector assertions with `proptest!` sweeps across parameter and signal domains.

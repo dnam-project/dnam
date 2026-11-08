@@ -3,9 +3,6 @@
     "moonrepo.moon-console",
     "rust-lang.rust-analyzer",
     "biomejs.biome",
-    "charliermarsh.ruff",
-    "meta.pyrefly",
-    "ms-python.python",
     "vitest.explorer",
     "ms-playwright.playwright"
   ]

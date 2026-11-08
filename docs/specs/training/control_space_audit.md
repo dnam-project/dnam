@@ -17,7 +17,7 @@ adrs:
 
 # Non-Stop 3-Phase Control-Space Audit & Automatic Clamping
 
-Because neural audio training runs unattended across multi-stem captures, **DNAM never blocks or pauses training on user confirmation prompts** ([`REQ-2.4`, `REQ-7.1`, `REQ-7.2`](../../requirements/system_goals_and_requirements.md)). The **Non-Stop 3-Phase Control-Space Audit & Automatic Clamping Pipeline** enforces all stability, control-range, and numeric bounds across [`packages/trainer/src/dnam_trainer/control/audit.py`](../../../packages/trainer/README.md) and [`packages/engine/src/control/bus.rs`](../../../packages/engine/README.md) automatically.
+Because neural audio training runs unattended across multi-stem captures, **DNAM never blocks or pauses training on user confirmation prompts** ([`REQ-2.4`, `REQ-7.1`, `REQ-7.2`](../../requirements/system_goals_and_requirements.md)). The **Non-Stop 3-Phase Control-Space Audit & Automatic Clamping Pipeline** enforces all stability, control-range, and numeric bounds across [`packages/trainer/src/solver/stages.rs`](../../../packages/trainer/README.md) and [`packages/engine/src/control/bus.rs`](../../../packages/engine/README.md) automatically.
 
 ```mermaid
 flowchart TD

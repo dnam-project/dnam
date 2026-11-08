@@ -12,4 +12,3 @@ slsa = true
 
 [tools]
 "aqua:moonrepo/moon" = "2.6.4"
-uv = "0.13.7"

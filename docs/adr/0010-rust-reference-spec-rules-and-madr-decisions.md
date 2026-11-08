@@ -21,7 +21,7 @@ This record justifies the three-layer documentation hierarchy (`docs/requirement
 
 ## 1. Context & Problem Statement
 
-As DNAM scales across Rust (`packages/engine/`), Python (`packages/python/`, `packages/trainer/`), WebAssembly (`packages/js/`), and Tauri/React (`packages/studio/`, `packages/ui/`), mixing high-level system requirements ("the what"), normative mathematical/wire specifications ("the how"), historical R&D derivations ("the why"), and ad-hoc prefix registries (`CL-XX`, `G-XX`, `Test X`) created four maintenance hazards:
+As DNAM scales across Rust (`packages/engine/`, `packages/trainer/`), WebAssembly (`packages/js/`), and Tauri/React (`packages/studio/`, `packages/ui/`), mixing high-level system requirements ("the what"), normative mathematical/wire specifications ("the how"), historical R&D derivations ("the why"), and ad-hoc prefix registries (`CL-XX`, `G-XX`, `Test X`) created four maintenance hazards:
 
 1. **Conflated Requirements and Implementation Specs:** Embedding wire field names or algorithm choices in system requirements prevented evaluating alternative implementations against implementation-agnostic goals.
 2. **Verbose Rationale in Normative Specs:** Including lengthy "Why Naive Approach X Fails" derivations inside normative specs obscured the exact equations and bit-level contracts needed by engine and trainer implementers.

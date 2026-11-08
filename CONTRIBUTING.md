@@ -32,9 +32,8 @@ DNAM is organized as a multi-language workspace across `docs/`, `packages/*`, an
 | :--- | :--- | :--- | :--- |
 | **Specification Manual (`docs/`)** | `docs/` | [`docs/index.md`](docs/index.md) | [`docs/CONTRIBUTING.md`](docs/CONTRIBUTING.md) |
 | **Rust SIMD Engine (`dnam-engine`)** | `packages/engine/` | [`packages/engine/AGENTS.md`](packages/engine/AGENTS.md) | [`packages/engine/CONTRIBUTING.md`](packages/engine/CONTRIBUTING.md) |
-| **Python SDK (`dnam`)** | `packages/python/` | [`packages/python/AGENTS.md`](packages/python/AGENTS.md) | [`packages/python/CONTRIBUTING.md`](packages/python/CONTRIBUTING.md) |
 | **TypeScript / WebAudio SDK (`@dnam-project/dnam`)** | `packages/js/` | [`packages/js/AGENTS.md`](packages/js/AGENTS.md) | [`packages/js/CONTRIBUTING.md`](packages/js/CONTRIBUTING.md) |
-| **PyTorch Two-Sweep Trainer (`dnam_trainer`)** | `packages/trainer/` | [`packages/trainer/AGENTS.md`](packages/trainer/AGENTS.md) | [`packages/trainer/CONTRIBUTING.md`](packages/trainer/CONTRIBUTING.md) |
+| **Pure-Rust Two-Sweep Trainer (`dnam-trainer`)** | `packages/trainer/` | [`packages/trainer/AGENTS.md`](packages/trainer/AGENTS.md) | [`packages/trainer/CONTRIBUTING.md`](packages/trainer/CONTRIBUTING.md) |
 | **Design System & Visualizers (`@dnam-project/ui`)** | `packages/ui/` | [`packages/ui/AGENTS.md`](packages/ui/AGENTS.md) | [`packages/ui/CONTRIBUTING.md`](packages/ui/CONTRIBUTING.md) |
 | **CLI & Desktop Studio (`@dnam-project/studio`)** | `packages/studio/` | [`packages/studio/AGENTS.md`](packages/studio/AGENTS.md) | [`packages/studio/CONTRIBUTING.md`](packages/studio/CONTRIBUTING.md) |
 | **Project Guardrail Suite (`dnam-tests`)** | `tests/` | [`tests/AGENTS.md`](tests/AGENTS.md) | [`docs/CONTRIBUTING.md`](docs/CONTRIBUTING.md) |
@@ -43,18 +42,18 @@ DNAM is organized as a multi-language workspace across `docs/`, `packages/*`, an
 
 ## 3. Workspace Setup, Local Development & Verification Commands
 
-DNAM uses **`mise`** ([`mise.toml`](mise.toml)) to provision toolchains and **`moon`** ([`.moon/workspace.yml`](.moon/workspace.yml)) to orchestrate and cache tasks across **`cargo`** (Rust 2024 edition, `1.99+`), **`uv`** (Python `3.15t` free-threaded dev runtime, `uv >= 0.13.7`), and **`pnpm`** (Node.js `24` / `26` LTS):
+DNAM uses **`mise`** ([`mise.toml`](mise.toml)) to provision toolchains and **`moon`** ([`.moon/workspace.yml`](.moon/workspace.yml)) to orchestrate and cache tasks across **`cargo`** (Rust 2024 edition) and **`pnpm`** (Node.js `24` / `26` LTS):
 
 ### 3.1 Setup & Local Development (CLI, Desktop Studio UI & React Cosmos)
 
 ```bash
-# Install pinned toolchains (moon, uv, node, pnpm, python, rust)
+# Install pinned toolchains (moon, node, pnpm, rust)
 mise install
 
 # Run the unified `dnam` CLI (`init`, `model`, `capture`, `train`, `inspect`, `studio`)
 moon run studio:cli -- --help
 
-# Run the Python Two-Sweep Cholesky trainer worker CLI (`dnam-train`)
+# Run the pure-Rust Two-Sweep VarPro / Cholesky trainer worker CLI (`dnam-train`)
 moon run trainer:cli -- --help
 
 # Launch the Desktop Studio UI in browser dev mode (Vite HMR at http://localhost:1420)
@@ -70,12 +69,12 @@ moon run ui:dev
 ### 3.2 Quality Gates, Tests & Benchmarks
 
 ```bash
-# Run the unified moon DAG across all Rust, Python, JS/TS packages, and project guardrails
+# Run the unified moon DAG across all Rust, JS/TS packages, and project guardrails
 moon check --all        # format-check, lint, typecheck, build, test
 moon run :build
 moon run :test
 moon run :lint
-moon run :format        # auto-format all Rust, Python, and TS/CSS files
+moon run :format        # auto-format all Rust and TS/CSS files
 moon run :format-check
 moon run :typecheck
 moon run :coverage      # >= 95% coverage across all packages
@@ -84,7 +83,6 @@ moon run studio:test-e2e
 
 # Check a single project via moon
 moon check engine
-moon check python
 moon check trainer
 moon check js
 moon check ui
@@ -106,17 +104,17 @@ moon check tests
 4. **Fail-Fast Validation:**
    - Never silently substitute default controls, sample rates, or tensor shapes when loading `.dnam` or `.dnam-ckpt` containers; return or raise explicit, typed diagnostic errors (`DnamError`).
 5. **Safe-Rust-First & Strict `#[allow(unsafe_code)]` Discipline (`ref[repo.code.type-safety-and-imports]`):**
-   - Never be lazy and reach for `#[allow(unsafe_code)]` or `unsafe` (`UnsafeCell`, `AtomicPtr`, raw pointer casts, or `get_unchecked`) when a 100% safe Rust design exists (such as `AtomicU64` word arrays for lock-free SPSC rings and seqlocks, ping-pong slot indices, disjoint struct field borrows, `zerocopy::transmute!`, or checked `rust-numpy` / `napi` buffer views).
+   - Never be lazy and reach for `#[allow(unsafe_code)]` or `unsafe` (`UnsafeCell`, `AtomicPtr`, raw pointer casts, or `get_unchecked`) when a 100% safe Rust design exists (such as `AtomicU64` word arrays for lock-free SPSC rings and seqlocks, ping-pong slot indices, disjoint struct field borrows, `zerocopy::transmute!`, or checked `napi` buffer views).
    - `#[allow(unsafe_code)]` may **only** be used when **(a)** it is strictly unavoidable at a hardware/OS intrinsic or C-ABI boundary (`packages/engine/src/{math,types,memory,ffi}.rs`), or **(b)** benchmarks prove that the safe Rust version causes a high performance impact on a real-time hot path **and** the `unsafe` version can be formally guaranteed sound with an explicit `// SAFETY:` proof.
-   - All language SDK and application Rust crates (`packages/python/rust/`, `packages/js/rust/`, `packages/studio/rust/`) and all algorithmic/host modules in `packages/engine/src/` (`operators`, `stages`, `control`, `container`, `provenance`, `schema`, `engine`, `dynamic`, `host`) must remain 100% safe Rust with zero `#[allow(unsafe_code)]`.
-6. **Zero Duplicated Engine Logic in Language SDKs (`packages/python/`, `packages/js/`):**
-   - Language SDKs (`dnam` and `@dnam-project/dnam`) and their FFI shims (`packages/python/rust/`, `packages/js/rust/`) must **never** reimplement DSP math, ZOH rescaling, 3-Phase control clamping, Lobatto calibration inversion, schema validation, RFC 8785 JCS canonicalization, or provenance signature assembly in Python or TypeScript (`ref[sdk.python.engine.zero-copy-and-gil]`, `ref[sdk.ts.runtime.dual-target-drivers]`).
+   - All language SDK and application Rust crates (`packages/js/rust/`, `packages/studio/rust/`, `packages/trainer/`) and all algorithmic/host modules in `packages/engine/src/` (`operators`, `stages`, `control`, `container`, `provenance`, `schema`, `engine`, `dynamic`, `host`) must remain 100% safe Rust with zero `#[allow(unsafe_code)]`.
+6. **Zero Duplicated Engine Logic in Language SDKs (`packages/js/`):**
+   - Language SDKs (`@dnam-project/dnam`) and their FFI shims (`packages/js/rust/`) must **never** reimplement DSP math, ZOH rescaling, 3-Phase control clamping, Lobatto calibration inversion, schema validation, RFC 8785 JCS canonicalization, or provenance signature assembly in TypeScript (`ref[sdk.ts.runtime.dual-target-drivers]`).
    - Delegate 100% of domain logic to `dnam-engine` in Rust; keep SDK host-language layers strictly focused on idiomatic ergonomics, casing/type coercion, and zero-copy buffer/handle lifecycles.
-7. **Property-Based Testing (`proptest!` / `hypothesis` / `fast-check`), TDD, Coverage (≥ 95%) & Benchmarks:**
-   - **Mandatory `proptest!` / `hypothesis` / `fast-check` Usage:** Use `proptest!` in Rust unit (`#[cfg(test)]` inside `src/**`) and integration (`tests/*`) test suites, `hypothesis` in Python test suites, and `fast-check` (`fc.assert(fc.property(...))`) in TypeScript test suites wherever possible to verify algebraic identities, ULP/rounding bounds, state stability, wire-format roundtrips, and cross-tier/cross-driver equivalence over arbitrary input domains rather than relying solely on fixed hand-picked examples.
+7. **Property-Based Testing (`proptest!` / `fast-check`), TDD, Coverage (≥ 95%) & Benchmarks:**
+   - **Mandatory `proptest!` / `fast-check` Usage:** Use `proptest!` in Rust unit (`#[cfg(test)]` inside `src/**`) and integration (`tests/*`) test suites and `fast-check` (`fc.assert(fc.property(...))`) in TypeScript test suites wherever possible to verify algebraic identities, ULP/rounding bounds, state stability, wire-format roundtrips, and cross-tier/cross-driver equivalence over arbitrary input domains rather than relying solely on fixed hand-picked examples.
    - Write a failing unit or property-based regression test before fixing a bug.
-   - Unit, property, and integration tests must cite canonical `r[...]` spec rules via `verify[...]` and must **never** read or parse Markdown text blocks from `docs/` (only [`tests/test_guardrails.py`](tests/test_guardrails.py) reads `docs/` to verify references and registries).
-   - Maintain ≥ 95% test coverage in Rust (`cargo llvm-cov`), Python (`pytest --cov`), and TypeScript (`vitest run --coverage`), and verify zero performance regressions with `cargo bench`, `pytest-benchmark`, and `vitest bench`.
+   - Unit, property, and integration tests must cite canonical `r[...]` spec rules via `verify[...]` and must **never** read or parse Markdown text blocks from `docs/` (only [`tests/test_guardrails.test.ts`](tests/test_guardrails.test.ts) reads `docs/` to verify references and registries).
+   - Maintain ≥ 95% test coverage in Rust (`cargo llvm-cov`) and TypeScript (`vitest run --coverage`), and verify zero performance regressions with `cargo bench` and `vitest bench`.
 
 ---
 
@@ -130,12 +128,12 @@ DNAM enforces a **Progressive-Disclosure Documentation Architecture** and a **Si
    - Loaded into the agent context window on every turn.
    - Contains **only** the project summary, global `moon` + `mise` tooling rules, core cross-cutting invariants, and the top-level Progressive Disclosure & Codebase Discovery Map.
 2. **Tier 2 — Scoped Package & Subsystem `AGENTS.md` Files (`< 2,500` bytes each):**
-   - Located in package/test roots (e.g., [`packages/engine/AGENTS.md`](packages/engine/AGENTS.md), [`packages/trainer/AGENTS.md`](packages/trainer/AGENTS.md), [`packages/studio/AGENTS.md`](packages/studio/AGENTS.md), [`tests/AGENTS.md`](tests/AGENTS.md)) and multi-module subsystem directories (e.g., [`packages/engine/src/operators/AGENTS.md`](packages/engine/src/operators/AGENTS.md), [`packages/trainer/src/dnam_trainer/training/AGENTS.md`](packages/trainer/src/dnam_trainer/training/AGENTS.md)).
+   - Located in package/test roots (e.g., [`packages/engine/AGENTS.md`](packages/engine/AGENTS.md), [`packages/trainer/AGENTS.md`](packages/trainer/AGENTS.md), [`packages/studio/AGENTS.md`](packages/studio/AGENTS.md), [`tests/AGENTS.md`](tests/AGENTS.md)) and multi-module subsystem directories (e.g., [`packages/engine/src/operators/AGENTS.md`](packages/engine/src/operators/AGENTS.md), [`packages/trainer/src/solver/AGENTS.md`](packages/trainer/src/solver/AGENTS.md)).
    - Act **strictly as routing tables** (`Module / File` $\to$ `Responsibility` $\to$ `Canonical Spec / Contributing Guide`).
 3. **Offloading Rule (Never Wordsmith `AGENTS.md` to Fit Byte Budgets):**
    - When an `AGENTS.md` file approaches its byte budget as new modules are added, **do not** try to compress or reword implementation details inside `AGENTS.md`. Instead, offload non-routing information to its canonical destination:
      - **System requirements (`REQ-*`), normative specifications (`r[...]`), psychoacoustic metrics (`bESR`), stability clamps, and MADR rationales (`ADR-NNNN`)** $\to$ Offload to [`docs/`](docs/index.md) using the templates in [`docs/templates/`](docs/templates/spec_template.md) (see [§5.2](#52-single-source-of-truth-ssot-documentation-map) and [`docs/CONTRIBUTING.md`](docs/CONTRIBUTING.md)).
-     - **Package architecture invariants, compiler/runtime flags (`#[forbid(unsafe_code)]`, `zerocopy`, `torch.autocast`, `pyrefly`), workbench setup, and verification commands (`moon check <pkg>`)** $\to$ Offload to `packages/<pkg>/CONTRIBUTING.md`.
+     - **Package architecture invariants, compiler/runtime flags (`#[forbid(unsafe_code)]`, `zerocopy`, `faer`), workbench setup, and verification commands (`moon check <pkg>`)** $\to$ Offload to `packages/<pkg>/CONTRIBUTING.md`.
      - **Public API examples and CLI command/flag references** $\to$ Offload to `packages/<pkg>/README.md`.
      - **Root landing page ([`README.md`](README.md))** $\to$ Keep tailored for DNAM's target audience (musicians, tone creators, and producers first, with a concise overview for hardware OEMs and plugin/SDK integrators); developer setup, `moon` commands, and internal DSP/spec details belong in [`CONTRIBUTING.md`](CONTRIBUTING.md), `packages/<pkg>/README.md`, and [`docs/`](docs/index.md).
      - **Directory-level module growth** $\to$ Delegate file-level routing rows to a subsystem `AGENTS.md` (e.g., `src/<subsystem>/AGENTS.md`) and link the subsystem from the parent `packages/<pkg>/AGENTS.md`.

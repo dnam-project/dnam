@@ -1,7 +1,7 @@
 [workspace]
 resolver = "3"
-members = ["packages/engine", "packages/python", "packages/js", "packages/studio"]
-default-members = ["packages/engine", "packages/studio"]
+members = ["packages/engine", "packages/trainer", "packages/js", "packages/studio"]
+default-members = ["packages/engine", "packages/trainer", "packages/studio"]
 
 [workspace.package]
 version = "0.1.0"
@@ -12,6 +12,7 @@ repository = "https://github.com/dnam-project/dnam"
 
 [workspace.dependencies]
 dnam-engine = { path = "packages/engine", default-features = true }
+dnam-trainer = { path = "packages/trainer", default-features = false }
 serde = { version = "1.0", default-features = false, features = ["derive", "alloc"] }
 serde_json = { version = "1.0", default-features = false, features = ["alloc"] }
 toml = "0.8"
@@ -30,8 +31,6 @@ zerocopy = { version = "0.8", default-features = false, features = ["derive", "s
 criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
 hotpath = "0.31"
 proptest = "1.6"
-pyo3 = { version = "0.30", features = ["extension-module", "abi3-py315", "abi3t-py315"] }
-numpy = "0.30"
 napi = { version = "3.15", default-features = false, features = ["napi10", "compat-mode"] }
 napi-derive = "3.6"
 napi-build = "2.6"

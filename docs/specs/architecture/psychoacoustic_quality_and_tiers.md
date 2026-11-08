@@ -13,6 +13,7 @@ requirements:
   - REQ-5.2
 adrs:
   - ADR-0003
+  - ADR-0016
 ---
 
 # Psychoacoustic Quality Standard (`bESR`) & 4-Tier Benchmarks

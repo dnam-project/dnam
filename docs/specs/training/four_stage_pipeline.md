@@ -16,11 +16,13 @@ requirements:
 adrs:
   - ADR-0002
   - ADR-0008
+  - ADR-0017
+  - ADR-0018
 ---
 
 # Two-Sweep Block-Coordinate Cholesky Training Pipeline & Accelerator Numerics
 
-This specification defines the **Two-Sweep Block-Coordinate Cholesky Training Pipeline** and the **Accelerator-First 32-Bit Device Streaming + `float64`-Grade Gram Contraction + Batched Host-`float64` Solver Architecture** of **Dynamic Neural Audio Modeler (DNAM)** ([`packages/engine/`](../../../packages/engine/README.md), [`packages/trainer/src/dnam_trainer/training/`](../../../packages/trainer/README.md), [`tora_architecture.md`](../architecture/tora_architecture.md), [`ADR-0008`](../../adr/0008-per-stem-kronecker-statistics-and-wide-gram.md)).
+This specification defines the **Two-Sweep Block-Coordinate Cholesky Training Pipeline** and the **Accelerator-First 32-Bit Device Streaming + `float64`-Grade Gram Contraction + Batched Host-`float64` Solver Architecture** of **Dynamic Neural Audio Modeler (DNAM)** ([`packages/engine/`](../../../packages/engine/README.md), [`packages/trainer/src/`](../../../packages/trainer/README.md), [`tora_architecture.md`](../architecture/tora_architecture.md), [`ADR-0008`](../../adr/0008-per-stem-kronecker-statistics-and-wide-gram.md), [`ADR-0017`](../../adr/0017-pure-rust-analytical-varpro-solver-and-planar-decoupling.md)).
 
 For hardware capture and sub-sample latency alignment, see [`capture_and_alignment.md`](capture_and_alignment.md). For stem expansion and caching, see [`iterative_resume_and_caching.md`](iterative_resume_and_caching.md). For the Non-Stop 3-Phase Control-Space Audit and registry, see [`control_space_audit.md`](control_space_audit.md).
 

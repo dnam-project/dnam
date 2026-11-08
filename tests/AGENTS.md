@@ -2,7 +2,7 @@
 
 Top-level guardrail suite (`moon check tests`) enforcing [`project_and_documentation_quality.md`](../docs/specs/architecture/project_and_documentation_quality.md) (`r[repo.*]`) and [`system_goals_and_requirements.md`](../docs/requirements/system_goals_and_requirements.md) (`REQ-1.1`–`REQ-8.8`).
 
-## 1. Guardrail Test Routing Map ([`test_guardrails.py`](test_guardrails.py))
+## 1. Guardrail Test Routing Map ([`test_guardrails.test.ts`](test_guardrails.test.ts))
 
 | Test Function | Spec Rule Referenced | Enforced Invariant |
 | :--- | :--- | :--- |

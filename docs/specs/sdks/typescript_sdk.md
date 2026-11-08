@@ -23,6 +23,7 @@ adrs:
   - ADR-0011
   - ADR-0013
   - ADR-0015
+  - ADR-0018
 ---
 
 # TypeScript SDK (`@dnam-project/dnam`): Idiomatic TypeScript 7 Interface, Dual-Target N-API v10 + WASM SIMD128 Runtime & WebAudio Contract
@@ -172,7 +173,7 @@ flowchart LR
 
 `r[sdk.ts.runtime.zero-unsafe]`
 
-1. **Zero `unsafe` Blocks & Module-Level `#[forbid(unsafe_code)]`:** `packages/python/rust/lib.rs` enforces `#![forbid(unsafe_code)]` at the crate root, and `packages/js/rust/lib.rs` enforces `#![deny(unsafe_code)]` at the crate root (allowing only `#[napi]` proc-macro expansion and narrow `#[allow(unsafe_code)]` for Rust 2024 `#[unsafe(no_mangle)]` C-ABI symbol export attributes in `packages/js/rust/wasm/`) while enforcing `#[forbid(unsafe_code)]` on `core`, `error`, and `wasm::abi`, with zero `unsafe { ... }` blocks, zero raw-pointer slice dereferences, and zero `unsafe impl Send` anywhere in `packages/js/rust/` or `packages/python/rust/`.
+1. **Zero `unsafe` Blocks & Module-Level `#[forbid(unsafe_code)]`:** `packages/js/rust/lib.rs` enforces `#![deny(unsafe_code)]` at the crate root (allowing only `#[napi]` proc-macro expansion and narrow `#[allow(unsafe_code)]` for Rust 2024 `#[unsafe(no_mangle)]` C-ABI symbol export attributes in `packages/js/rust/wasm/`) while enforcing `#[forbid(unsafe_code)]` on `core`, `error`, and `wasm::abi`, with zero `unsafe { ... }` blocks, zero raw-pointer slice dereferences, and zero `unsafe impl Send` anywhere in `packages/js/rust/`.
 2. **Safe WASM Linear-Memory Arena & Handle Tables:** `packages/js/rust/wasm/abi.rs` (`#[forbid(unsafe_code)]`) manages 64-byte-aligned `CacheLine64` allocations and `EngineCore` / `ControlSpaceCore` instances via safe thread-local handle tables and `zerocopy` (`FromBytes` / `IntoBytes`) byte-slice conversions with `split_at_mut` disjoint multi-slice borrowing for zero-allocation audio processing.
 3. **Aliasing-Free `processAsync` Snapshot & `ArrayBuffer` Ownership Transfer:** `StereoProcessTask` (`packages/js/rust/napi/engine.rs`) and `WasmEngineHandle.processStereoAsync` snapshot caller input `Float32Array` channels on the main thread before dispatching asynchronous worker execution so concurrent JS-thread mutations to caller input buffers never race with or alias worker memory. `engine.processAsync` supports both `engine.processAsync(input, out)` and `engine.processAsync(input, { output, transfer, blockSize, signal })`, detaching the caller's input `ArrayBuffer`(s) via `ArrayBuffer.prototype.transfer()` when `{ transfer: true }` is specified.
 

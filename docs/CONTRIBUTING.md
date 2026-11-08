@@ -14,7 +14,7 @@ Every document in [`docs/`](index.md) has a strict engineering role separating *
 | :--- | :--- |
 | **1. Strict Separation of What, How & Why** | • **Requirements (`docs/requirements/`, `REQ-1.1`–`REQ-8.8`):** Define **what** the system must achieve (implementation-agnostic goals, physical coverage, hardware budgets, and security guarantees).<br/>• **Normative Specifications (`docs/specs/`, `r[...]`):** Define **how** the TORA architecture implements those requirements (equations, algorithms, wire layouts, state machines, stability bounds, and repo quality rules). Never clog `docs/specs/` with narrative "Why Naive X Fails" essays.<br/>• **Architectural Decision Records (`docs/adr/NNNN-*.md`):** Define **why** a formulation or layout was chosen over alternative candidates, including counterexamples and superseded prototypes. |
 | **2. Distinct `r[...]` Definitions, `ref[...]` Cross-References & `verify[...]` Test Citations (`ref[repo.docs.spec-rules-and-adrs]`)** | • **Rule Definition (`` `r[<domain>.<subdomain>.<rule>]` ``):** Appears **exactly once** across the entire repository, exclusively inside `docs/specs/**/*.md` at the rule's authoritative definition site.<br/>• **Rule Cross-Reference (`ref[<domain>.<subdomain>.<rule>]`):** Used for cross-references to that rule across ADRs (`docs/adr/`), docs, and implementation code (`packages/`).<br/>• **Test Verification Citation (`verify[<domain>.<subdomain>.<rule>]`):** Used in test suites (`tests/`, `packages/**/tests/`) to declare that a test verifies that specification rule. Every `ref[<id>]` and `verify[<id>]` must resolve to an existing `r[<id>]` definition, and `test_spec_rules_verified_in_tests` reports any `r[<id>]` rules in `docs/specs/` not yet cited by a test. |
-| **3. Zero Spec-Text Parsing in Unit / Reference Tests (`ref[repo.docs.spec-rules-and-adrs]`)** | Unit, integration, and arithmetic reference tests must **never** read or parse Markdown text blocks from `docs/`. Only the guardrail suite ([`tests/test_guardrails.py`](../tests/test_guardrails.py)) may read `docs/` files to validate registries, `r[...]` rule uniqueness, math syntax, and link integrity. |
+| **3. Zero Spec-Text Parsing in Unit / Reference Tests (`ref[repo.docs.spec-rules-and-adrs]`)** | Unit, integration, and arithmetic reference tests must **never** read or parse Markdown text blocks from `docs/`. Only the guardrail suite ([`tests/test_guardrails.test.ts`](../tests/test_guardrails.test.ts)) may read `docs/` files to validate registries, `r[...]` rule uniqueness, math syntax, and link integrity. |
 | **4. Zero Duplication Across `AGENTS.md` & `README.md` (`ref[repo.docs.agents-md-budgets]`)** | Never copy equations, clamp tables, or JSON schemas into `AGENTS.md` routing maps or package `README.md` files. Place normative specifications in `docs/specs/` and link to the exact section anchor or cite the `r[...]` rule ID. |
 | **5. Crisp Engineering-Manual Prose & Visual Communication** | Write in a direct, normative engineering voice—never narrative essays or dense walls of text. Use **Mermaid diagrams (`flowchart`, `sequenceDiagram`, `stateDiagram-v2`)** for signal topologies and lifecycles, and **monospaced ASCII diagrams (`text` code blocks)** whenever fixed-width spatial alignment displays binary/cache-line layouts, SIMD lanes, or parameter budgets more clearly than a Markdown table. |
 
@@ -26,7 +26,7 @@ Every document in [`docs/`](index.md) has a strict engineering role separating *
 flowchart LR
     Idx["docs/index.md<br/>(Master Specification Router)"] --> L1["Layer 1: docs/requirements/<br/>The 'What' (REQ-1.1..REQ-8.8)"]
     Idx --> L2["Layer 2: docs/specs/<br/>The 'How' (r[arch/qual/repo/dsp/train/container/sec.*])"]
-    Idx --> L3["Layer 3: docs/adr/<br/>The 'Why' (MADR 0001..0010-*.md)"]
+    Idx --> L3["Layer 3: docs/adr/<br/>The 'Why' (MADR 0001..0018-*.md)"]
     Idx --> Tmpl["docs/templates/<br/>requirement / spec / adr Templates"]
 ```
 
@@ -37,7 +37,7 @@ flowchart LR
 | **Layer 2B: Real-Time DSP (`docs/specs/dsp/`)** | [`op_t_transport.md`](specs/dsp/op_t_transport.md), [`op_m_modal_kautz.md`](specs/dsp/op_m_modal_kautz.md), [`op_n_commuted_cascade.md`](specs/dsp/op_n_commuted_cascade.md), [`router_and_stages_topology.md`](specs/dsp/router_and_stages_topology.md), [`parametric_control_bus.md`](specs/dsp/parametric_control_bus.md) | `r[dsp.op-t.*]`, `r[dsp.op-m.*]`, `r[dsp.op-n.*]`, `r[dsp.router.*]`, `r[dsp.stage1..4.*]`, `r[dsp.head.*]`, `r[dsp.zoh.*]`, `r[dsp.ctrl.*]`, `r[dsp.tempo.*]` | [`templates/spec_template.md`](templates/spec_template.md) |
 | **Layer 2C: Capture, Training & Audit (`docs/specs/training/`)** | [`capture_and_alignment.md`](specs/training/capture_and_alignment.md), [`four_stage_pipeline.md`](specs/training/four_stage_pipeline.md), [`iterative_resume_and_caching.md`](specs/training/iterative_resume_and_caching.md), [`control_space_audit.md`](specs/training/control_space_audit.md) | `r[train.capture.*]`, `r[train.pipeline.*]`, `r[train.gram.*]`, `r[train.resume.*]`, `r[train.cache.*]`, `r[train.cloud.*]`, `r[train.audit.*]` | [`templates/spec_template.md`](templates/spec_template.md) |
 | **Layer 2D: Containers & Security (`docs/specs/containers/`, `docs/specs/security/`)** | [`dnam_binary_format.md`](specs/containers/dnam_binary_format.md), [`checkpoint_and_cache_format.md`](specs/containers/checkpoint_and_cache_format.md), [`provenance_and_enclave_drm.md`](specs/security/provenance_and_enclave_drm.md), [`watermarking_and_marketplace.md`](specs/security/watermarking_and_marketplace.md) | `r[container.dnam.*]`, `r[container.ckpt.*]`, `r[container.dnca.*]`, `r[sec.taxonomy.*]`, `r[sec.jcs.*]`, `r[sec.policy.*]`, `r[sec.sig.*]`, `r[sec.drm.*]`, `r[sec.watermark.*]`, `r[sec.anticlone.*]`, `r[sec.preview.*]`, `r[sec.edge.*]` | [`templates/spec_template.md`](templates/spec_template.md) |
-| **Layer 3: ADRs (`docs/adr/`)** | [`0001-superseded-tri-physics-prototype.md`](adr/0001-superseded-tri-physics-prototype.md) .. [`0010-rust-reference-spec-rules-and-madr-decisions.md`](adr/0010-rust-reference-spec-rules-and-madr-decisions.md) | `ADR-0001`–`ADR-0010` | [`templates/adr_template.md`](templates/adr_template.md) |
+| **Layer 3: ADRs (`docs/adr/`)** | [`0001-superseded-tri-physics-prototype.md`](adr/0001-superseded-tri-physics-prototype.md) .. [`0018-signal-chain-fixtures-crate-and-whitebox-distillation.md`](adr/0018-signal-chain-fixtures-crate-and-whitebox-distillation.md) | `ADR-0001`–`ADR-0018` | [`templates/adr_template.md`](templates/adr_template.md) |
 
 ---
 
@@ -45,11 +45,11 @@ flowchart LR
 
 1. **[`requirements/system_goals_and_requirements.md`](requirements/system_goals_and_requirements.md) (`REQ-1.1`–`REQ-8.8`) Must Remain Implementation-Agnostic (`ref[repo.docs.requirements-layer]`):**
    - Normative requirement prose states functional capabilities, physical coverage, perceptual quality (`bESR`), slimmable tier behavior, hardware budgets, and security guarantees **without** tying them to internal file extensions or JSON schema field names.
-   - [`tests/test_guardrails.py`](../tests/test_guardrails.py) strips Markdown link targets `](...)` and verifies that zero implementation-specific tokens (`.dnam`, `.dnam-ckpt`, `.dnam-cache`, `.dnam-seal`, `.dnce`, `max_supported_tier`, `user_metadata`, `royalty_splits`, `allowed_protection_profiles`, `allowed_oem_vendors`) appear in the prose of `system_goals_and_requirements.md`.
+   - [`tests/test_guardrails.test.ts`](../tests/test_guardrails.test.ts) strips Markdown link targets `](...)` and verifies that zero implementation-specific tokens (`.dnam`, `.dnam-ckpt`, `.dnam-cache`, `.dnam-seal`, `.dnce`, `max_supported_tier`, `user_metadata`, `royalty_splits`, `allowed_protection_profiles`, `allowed_oem_vendors`) appear in the prose of `system_goals_and_requirements.md`.
 2. **Rust Reference `r[...]` Definitions, `ref[...]` References & `verify[...]` Test Citations (`ref[repo.docs.spec-rules-and-adrs]`):**
    - **Definitions (`r[<id>]`):** Every normative specification under `docs/specs/**/*.md` must annotate each normative section and sub-rule with a backtick-wrapped rule definition matching `` `r[<domain>.<subdomain>.<rule>]` `` (lowercase ASCII letters, digits, hyphens, and dot-separated segments, minimum 3 segments). Concrete `r[<id>]` definitions are forbidden outside `docs/specs/` and `docs/templates/spec_template.md`.
    - **Cross-References (`ref[<id>]`):** Any citation to a rule in ADRs (`docs/adr/`), other docs, or implementation code (`packages/`) must use `ref[<domain>.<subdomain>.<rule>]`.
-   - **Test Verification Citations (`verify[<id>]`):** Test files (`tests/`, `packages/**/tests/`) use `verify[<domain>.<subdomain>.<rule>]` to declare which specification rules are verified. [`tests/test_guardrails.py`](../tests/test_guardrails.py) verifies that every `ref[<id>]` and `verify[<id>]` resolves to a defined `r[<id>]`, and `test_spec_rules_verified_in_tests` reports any `r[<id>]` rules in `docs/specs/` missing a `verify[<id>]` citation in tests.
+   - **Test Verification Citations (`verify[<id>]`):** Test files (`tests/`, `packages/**/tests/`) use `verify[<domain>.<subdomain>.<rule>]` to declare which specification rules are verified. [`tests/test_guardrails.test.ts`](../tests/test_guardrails.test.ts) verifies that every `ref[<id>]` and `verify[<id>]` resolves to a defined `r[<id>]`, and `test_spec_rules_verified_in_tests` reports any `r[<id>]` rules in `docs/specs/` missing a `verify[<id>]` citation in tests.
    - Rule identifiers are decoupled from Markdown section numbers (`1.1`, `1.2`) so re-ordering headings never invalidates code or test citations.
    - Every `##` / `###` / `####` leaf normative section in `docs/specs/**/*.md` must contain at least one `r[...]` rule definition, and all `r[...]` rule definitions across the repository must be globally unique.
 3. **MADR Architectural Decision Records (`docs/adr/NNNN-kebab-case.md`) & YAML Frontmatter (`ref[repo.docs.spec-rules-and-adrs]`):**
@@ -61,7 +61,7 @@ flowchart LR
 
 ## 4. Formatting, Mermaid Diagrams, ASCII Layouts & GitHub MathJax LaTeX Rules (`ref[repo.docs.markdown-table-math]`, `ref[repo.docs.github-latex-and-mermaid]`, `ref[repo.docs.relative-links-and-anchors]`)
 
-All Markdown files across the repository are validated on every test run by [`tests/test_guardrails.py`](../tests/test_guardrails.py). Follow these formatting rules to ensure clean rendering on GitHub and zero guardrail failures:
+All Markdown files across the repository are validated on every test run by [`tests/test_guardrails.test.ts`](../tests/test_guardrails.test.ts). Follow these formatting rules to ensure clean rendering on GitHub and zero guardrail failures:
 
 ### 4.1 Mermaid Diagrams (`ref[repo.docs.github-latex-and-mermaid]`)
 
@@ -136,6 +136,6 @@ Run the project-scoped documentation and specification guardrail suite from the 
 # Run formatting, linting, typechecking, and all documentation/specification guardrails
 moon check tests
 
-# Or invoke pytest directly on the top-level guardrail suite
-uv run --no-sync pytest tests/test_guardrails.py
+# Or invoke the guardrail test task directly
+moon run tests:test
 ```

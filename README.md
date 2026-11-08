@@ -75,7 +75,7 @@ Instead of forcing tone creators to train and distribute separate "feather", "li
 ## 4. How Capturing, Training & Playing Works
 
 > [!NOTE]
-> **Project Status:** The real-time Rust engine (`dnam-engine`), Python SDK (`dnam`), TypeScript/WebAudio SDK (`@dnam-project/dnam`), and Two-Sweep PyTorch trainer (`dnam-trainer`) are implemented and verified. The **DNAM Desktop Studio** app, unified **`dnam` CLI**, and **Creator Marketplace** are currently in active development.
+> **Project Status:** The real-time Rust engine (`dnam-engine`), TypeScript/WebAudio SDK (`@dnam-project/dnam`), and pure-Rust Two-Sweep VarPro/Cholesky trainer (`dnam-trainer`) are implemented and verified. The **DNAM Desktop Studio** app, unified **`dnam` CLI**, and **Creator Marketplace** are currently in active development.
 
 ```mermaid
 flowchart LR
@@ -96,14 +96,13 @@ flowchart LR
 
 ## 5. Ecosystem, SDKs & Hardware Integration
 
-DNAM is designed to run anywhere audio lives—from bare-metal embedded DSP boards to desktop DAWs, Python research notebooks, and web browsers:
+DNAM is designed to run anywhere audio lives—from bare-metal embedded DSP boards to desktop DAWs, studio tools, and web browsers:
 
 | Component | Package | What It Provides | Documentation |
 | :--- | :--- | :--- | :--- |
 | **Embedded & Native DSP Engine** | `dnam-engine` (Rust / C ABI) | Zero-allocation `#![no_std]` real-time engine with `ARM64 NEON`, `ARM SME`, `x86_64 AVX2`, and `WASM SIMD128` backends (`~143–179 ns` per stereo frame at `48 kHz`) for hardware pedalboards (such as Rockchip RK3582 / Darkglass Anagram) and native C/C++/Rust hosts. | [`packages/engine/README.md`](packages/engine/README.md) |
 | **WebAudio & Node.js SDK** | `@dnam-project/dnam` | TypeScript SDK providing a real-time browser `AudioWorklet` (`WASM SIMD128`) and native Node.js `N-API` runtime for web tone previews, cloud rendering, and Electron/Tauri apps. | [`packages/js/README.md`](packages/js/README.md) |
-| **Python SDK** | `dnam` | Python 3.15 SDK wrapping the Rust engine for zero-copy NumPy audio rendering, `.dnam` / `.dnam-ckpt` inspection, control-space clamping, and creator provenance signing. | [`packages/python/README.md`](packages/python/README.md) |
-| **PyTorch Trainer** | `dnam-trainer` | Two-Sweep Block-Coordinate Cholesky training pipeline, incremental `.dnam-ckpt` stem expansion, and automatic 3-Phase control-space safety auditing. | [`packages/trainer/README.md`](packages/trainer/README.md) |
+| **Pure-Rust Trainer** | `dnam-trainer` | Analytical Two-Sweep VarPro / Cholesky training pipeline (`faer` + `rayon`), incremental `.dnam-ckpt` stem expansion, and automatic 3-Phase control-space safety auditing. | [`packages/trainer/README.md`](packages/trainer/README.md) |
 | **Desktop Studio & CLI** *(In Progress)* | `@dnam-project/studio` | Unified `dnam` CLI (`init`, `model`, `capture`, `train`, `inspect`, `studio`) and native Tauri v2 Desktop Studio for hardware calibration, capture, training, and live playing. | [`packages/studio/README.md`](packages/studio/README.md) |
 | **Audio UI Design System** | `@dnam-project/ui` | Shared React 19 component library featuring rotary knobs, switches, and real-time spectrum, transfer-curve, and `bESR` visualizers. | [`packages/ui/README.md`](packages/ui/README.md) |
 | **Specifications & Architecture** | `docs/` | Complete system requirements, psychoacoustic quality standards, TORA DSP specifications, `.dnam` binary container format, and security/provenance architecture. | [`docs/index.md`](docs/index.md) |
@@ -119,7 +118,7 @@ Interested in building DNAM from source or contributing to the engine, trainer, 
 
 Licensed under the [DNAM Source-Available & Branding License 1.0.0 (`LICENSE`)](LICENSE):
 - **Free for Musicians & Tone Creators:** Capture, train, play, and share `.dnam` models freely. Creators retain full ownership of the `.dnam` models they train and may freely publish or sell their own first-party models directly (for example via their own website, Gumroad, Shopify, Bandcamp, or Patreon, or bundled with compliant hardware/plugins).
-- **Hardware & Closed-Source Plugin Linking Allowed:** Hardware manufacturers and plugin developers may link `dnam-engine` (`packages/engine`, `packages/python`, `packages/js`) into commercial hardware firmware and closed-source audio plugins without open-sourcing their own host or plugin code.
+- **Hardware & Closed-Source Plugin Linking Allowed:** Hardware manufacturers and plugin developers may link `dnam-engine` (`packages/engine`, `packages/js`) into commercial hardware firmware and closed-source audio plugins without open-sourcing their own host or plugin code.
 - **Mandatory DNAM Branding, Format & Provenance Integrity:** Products linking `dnam-engine` or loading `.dnam` models must retain user-facing **"DNAM"** ("Dynamic Neural Audio Modeler" / **"Powered by DNAM"**) branding, unmodified `.dnam` container compatibility, and intact `Ed25519` signatures, device authorization, and buyer watermarks (no white-labeling or DRM/watermark circumvention).
 - **No Unlicensed Marketplaces, Hosted Cloud Training, or Bulk Distillation:** Repackaging the standalone Desktop Studio (`packages/studio`), UI library (`packages/ui`), or trainer (`packages/trainer`), offering third-party hosted cloud training-as-a-service, operating an unlicensed multi-vendor `.dnam` model marketplace or aggregation hub, or bulk-distilling third-party `.dnam` models into competing formats is prohibited without a commercial license.
 

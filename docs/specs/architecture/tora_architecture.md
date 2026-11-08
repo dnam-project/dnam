@@ -182,7 +182,7 @@ Every model and configuration guarantees an unclipped operating envelope of at l
 
 `r[arch.telemetry.seqlock-publication]`
 
-Real-time host wrappers (`dnam_engine::host::DnamHostHandle`, [`../../adr/0015-realtime-host-concurrency-spsc-and-telemetry-seqlock.md`](../../adr/0015-realtime-host-concurrency-spsc-and-telemetry-seqlock.md)) decouple audio rendering callbacks from concurrent UI, MIDI, Python (`3.15t`), and TypeScript (`N-API` / `WASM`) control and telemetry threads in 100% safe `#![no_std]` + `alloc` Rust (`#[forbid(unsafe_code)]`):
+Real-time host wrappers (`dnam_engine::host::DnamHostHandle`, [`../../adr/0015-realtime-host-concurrency-spsc-and-telemetry-seqlock.md`](../../adr/0015-realtime-host-concurrency-spsc-and-telemetry-seqlock.md)) decouple audio rendering callbacks from concurrent UI, MIDI, Studio, and TypeScript (`N-API` / `WASM`) control and telemetry threads in 100% safe `#![no_std]` + `alloc` Rust (`#[forbid(unsafe_code)]`):
 1. **Wait-Free `AtomicU64` Seqlock (`TelemetryCell`):** `TelemetryWriter` packs `DnamTelemetrySnapshot` (`RawTelemetryRecord`) into a cache-line-aligned (`#[repr(align(64))]`) array of `29` `AtomicU64` words guarded by a monotonically advancing sequence counter `seq: AtomicU64` (`seq` odd before relaxed word stores, `Release` store `seq + 1` on completion). `TelemetryReader::read()` loads `seq1` (`Acquire`), copies the `29` atomic words, issues an `Acquire` fence, and verifies `seq1 == seq2` (with bounded retry and last-good snapshot fallback) without locking `DynamicDnamEngine`.
 2. **Sub-Block SPSC Drain & Telemetry Publication:** `DnamHostHandle` drains the 3-Lane `SpscControlRing` (`ref[dsp.ctrl.op-m.spsc-ingress]`) at the start of every `64`-frame sub-block and publishes the updated `DnamTelemetrySnapshot` to `TelemetryCell` at sub-block exit, while `RealtimeEngineSwap` performs non-blocking ping-pong hot-swaps so retired `DynamicDnamEngine` instances are dropped exclusively on the non-real-time controller thread.
 
@@ -580,11 +580,11 @@ TORA establishes five end-to-end trainer–engine isomorphism and pipeline guara
 
 | Guarantee ID | Subsystem Scope | TORA Architectural Realization |
 | :--- | :--- | :--- |
-| **1. Direct Commuted Stage Serialization (§5.1)** | Stage II (`stage2_cascade.py` / `op_n.rs`) | Directly serializes fitted `W_stage^(2.1..2.3)` matrices into `Arena 0..3` using identical project-then-filter ordering in training and runtime. |
-| **2. Joint Full-Rig Training (§5.2)** | Two-Sweep Pipeline (`sweep1_cascade.py`, `sweep2_tank.py`, `polish_head.py`) | Freezes upstream stage/control behavior before accumulating tier-specific sufficient statistics, solving Stages I–IV sequentially in Sweep 1 and polishing the joint head in Sweep 2. |
-| **3. End-to-End 3-Phase Audit Wiring (§5.3)** | Step 0 & Audit Engine | Wires Step-0 order-statistic calibration, physical variance gates, non-stop 3-phase clamping, and export certification into the training pipeline. |
+| **1. Direct Commuted Stage Serialization (§5.1)** | Stage II (`stages/stage2.rs` / `op_n.rs`) | Directly serializes fitted `W_stage^(2.1..2.3)` matrices into `Arena 0..3` using identical project-then-filter ordering in training and runtime. |
+| **2. Joint Full-Rig Training (§5.2)** | Two-Sweep Pipeline (`packages/trainer/src/solver.rs`) | Freezes upstream stage/control behavior before accumulating tier-specific sufficient statistics, solving Stages I–IV sequentially in Sweep 1 and polishing the joint head in Sweep 2. |
+| **3. End-to-End 3-Phase Audit Wiring (§5.3)** | Step 0 & Audit Engine (`packages/trainer/src/solver/stages.rs`) | Wires Step-0 order-statistic calibration, physical variance gates, non-stop 3-phase clamping, and export certification into the training pipeline. |
 | **4. True-Stereo Calibration & 8-Port Routing (§5.4)** | Stem Extractor & Router | Preserves 2-channel stem arrays `X ∈ R^(N×2)` (`[Left, Right]` or `[Main, Aux]`) with causal parallel alignment and return-to-send isolation. |
-| **5. Nested 4-Tier Physical Hierarchy (§5.5)** | Feature Bus & Arenas (`Arena 0..3`, `head_kronecker.py`) | Extracts four nested physical feature definitions (`64 / 128 / 192 / 256 D`) and stores tier-bundled per-stem sufficient statistics in `.dnam-ckpt`. |
+| **5. Nested 4-Tier Physical Hierarchy (§5.5)** | Feature Bus & Arenas (`Arena 0..3`, `stages/head.rs`) | Extracts four nested physical feature definitions (`64 / 128 / 192 / 256 D`) and stores tier-bundled per-stem sufficient statistics in `.dnam-ckpt`. |
 
 ### 5.1 Direct Stage II Commuted Cascade Serialization & Runtime Parity
 
@@ -690,4 +690,4 @@ TORA builds a nested 4-tier physical hierarchy matching `REQ-5`: `Lite` ($64\tex
   - [`provenance_and_enclave_drm.md`](../security/provenance_and_enclave_drm.md): Ed25519 Signatures, Enclave DRM & Protection Profiles.
   - [`watermarking_and_marketplace.md`](../security/watermarking_and_marketplace.md): Buyer Watermarking, Structural Fingerprint & Storefront Previews.
 - **Architectural Decision Records (`docs/adr/`)**
-  - [`0002-tri-operator-recurrent-architecture.md`](../../adr/0002-tri-operator-recurrent-architecture.md) through [`0015-realtime-host-concurrency-spsc-and-telemetry-seqlock.md`](../../adr/0015-realtime-host-concurrency-spsc-and-telemetry-seqlock.md).
+  - [`0002-tri-operator-recurrent-architecture.md`](../../adr/0002-tri-operator-recurrent-architecture.md) through [`0018-signal-chain-fixtures-crate-and-whitebox-distillation.md`](../../adr/0018-signal-chain-fixtures-crate-and-whitebox-distillation.md).

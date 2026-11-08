@@ -10,31 +10,31 @@
 # ==============================================================================
 [rules."repo.code.type-safety-and-imports"]
 scope = "out-of-scope"
-reason = "Repository-wide Python/TypeScript static typing and import boundary guardrail verified in tests/test_guardrails.py"
+reason = "Repository-wide Rust/TypeScript static typing and import boundary guardrail verified in tests/test_guardrails.test.ts"
 
 [rules."repo.docs.agents-md-budgets"]
 scope = "out-of-scope"
-reason = "Repository-wide AGENTS.md byte budget guardrail verified in tests/test_guardrails.py"
+reason = "Repository-wide AGENTS.md byte budget guardrail verified in tests/test_guardrails.test.ts"
 
 [rules."repo.docs.requirements-layer"]
 scope = "out-of-scope"
-reason = "Repository-wide requirements registry guardrail verified in tests/test_guardrails.py"
+reason = "Repository-wide requirements registry guardrail verified in tests/test_guardrails.test.ts"
 
 [rules."repo.docs.spec-rules-and-adrs"]
 scope = "out-of-scope"
-reason = "Repository-wide specification rule and MADR structure guardrail verified in tests/test_guardrails.py"
+reason = "Repository-wide specification rule and MADR structure guardrail verified in tests/test_guardrails.test.ts"
 
 [rules."repo.docs.markdown-table-math"]
 scope = "out-of-scope"
-reason = "Repository-wide Markdown table math guardrail verified in tests/test_guardrails.py"
+reason = "Repository-wide Markdown table math guardrail verified in tests/test_guardrails.test.ts"
 
 [rules."repo.docs.github-latex-and-mermaid"]
 scope = "out-of-scope"
-reason = "Repository-wide GitHub MathJax and Mermaid syntax guardrail verified in tests/test_guardrails.py"
+reason = "Repository-wide GitHub MathJax and Mermaid syntax guardrail verified in tests/test_guardrails.test.ts"
 
 [rules."repo.docs.relative-links-and-anchors"]
 scope = "out-of-scope"
-reason = "Repository-wide Markdown link and anchor resolution guardrail verified in tests/test_guardrails.py"
+reason = "Repository-wide Markdown link and anchor resolution guardrail verified in tests/test_guardrails.test.ts"
 
 # ==============================================================================
 # 2. Architecture: Psychoacoustic Quality & Tiers (`docs/specs/architecture/psychoacoustic_quality_and_tiers.md`)
@@ -229,7 +229,7 @@ scope = "engine"
 
 [rules."arch.index.subsystems"]
 scope = "out-of-scope"
-reason = "Documentation subsystem navigation index verified by relative-link guardrails in tests/test_guardrails.py"
+reason = "Documentation subsystem navigation index verified by relative-link guardrails in tests/test_guardrails.test.ts"
 
 # ==============================================================================
 # 4. Containers: Checkpoint & Cache Format (`docs/specs/containers/checkpoint_and_cache_format.md`)
@@ -250,36 +250,31 @@ scope = "engine"
 scope = "engine"
 
 [rules."container.ckpt.standalone-full"]
-scope = "out-of-scope"
-reason = "Trainer Arena 4 full Gram checkpoint writer/reader mode owned by packages/trainer"
+scope = "engine"
 
 [rules."container.ckpt.prefix-delta"]
-scope = "out-of-scope"
-reason = "Trainer Arena 4 incremental prefix-delta statistics mode owned by packages/trainer"
+scope = "engine"
 
 [rules."container.ckpt.objective-records"]
-scope = "out-of-scope"
-reason = "Trainer objective and loss history checkpoint records owned by packages/trainer"
+scope = "engine"
 
 [rules."container.ckpt.stems-registry"]
-scope = "out-of-scope"
-reason = "Trainer/Studio stem registry checkpoint records owned by packages/trainer"
+scope = "engine"
 
 [rules."container.ckpt.gram-fingerprint"]
-scope = "out-of-scope"
-reason = "Trainer Gram-input SHA-256 fingerprint record owned by packages/trainer"
+scope = "engine"
 
 [rules."container.dnca.inpc"]
-scope = "out-of-scope"
-reason = "Trainer/Studio Arena 5 per-input calibration record (INPC) owned by packages/trainer"
+scope = "engine"
 
 [rules."container.dnca.stmc"]
-scope = "out-of-scope"
-reason = "Trainer/Studio Arena 5 per-stem calibration record (STMC) owned by packages/trainer"
+scope = "engine"
 
 [rules."container.dnca.dnce-sidecar"]
-scope = "out-of-scope"
-reason = "Local Studio/Trainer .dnce workspace sidecar cache owned by packages/trainer and packages/studio"
+scope = "engine"
+
+[rules."container.dnca.coreset-fp16"]
+scope = "engine"
 
 # ==============================================================================
 # 5. Containers: DNAM Binary Format (`docs/specs/containers/dnam_binary_format.md`)
@@ -1006,70 +1001,7 @@ scope = "out-of-scope"
 reason = "Cloud training job protocol owned by packages/trainer and packages/studio"
 
 # ==============================================================================
-# 17. SDKs: Python SDK (`docs/specs/sdks/python_sdk.md`)
-# ==============================================================================
-[rules."sdk.python.layout.package-namespace"]
-scope = "out-of-scope"
-reason = "Python SDK (packages/python) contract verified by Python test suite"
-
-[rules."sdk.python.layout.curated-exports"]
-scope = "out-of-scope"
-reason = "Python SDK (packages/python) contract verified by Python test suite"
-
-[rules."sdk.python.abi.abi3-abi3t"]
-scope = "out-of-scope"
-reason = "Python SDK (packages/python) contract verified by Python test suite"
-
-[rules."sdk.python.api.core-types"]
-scope = "out-of-scope"
-reason = "Python SDK (packages/python) contract verified by Python test suite"
-
-[rules."sdk.python.api.engine-facets"]
-scope = "out-of-scope"
-reason = "Python SDK (packages/python) contract verified by Python test suite"
-
-[rules."sdk.python.api.flexible-in-precise-out"]
-scope = "out-of-scope"
-reason = "Python SDK (packages/python) contract verified by Python test suite"
-
-[rules."sdk.python.errors.typed-hierarchy"]
-scope = "out-of-scope"
-reason = "Python SDK (packages/python) contract verified by Python test suite"
-
-[rules."sdk.python.engine.zero-copy-and-gil"]
-scope = "out-of-scope"
-reason = "Python SDK (packages/python) contract verified by Python test suite"
-
-[rules."sdk.python.engine.pedalboard-call"]
-scope = "out-of-scope"
-reason = "Python SDK (packages/python) contract verified by Python test suite"
-
-[rules."sdk.python.engine.free-threading"]
-scope = "out-of-scope"
-reason = "Python SDK (packages/python) contract verified by Python test suite"
-
-[rules."sdk.python.model.containers-and-checkpoints"]
-scope = "out-of-scope"
-reason = "Python SDK (packages/python) contract verified by Python test suite"
-
-[rules."sdk.python.controls.space-and-tempo"]
-scope = "out-of-scope"
-reason = "Python SDK (packages/python) contract verified by Python test suite"
-
-[rules."sdk.python.schema.rust-parity"]
-scope = "out-of-scope"
-reason = "Python SDK (packages/python) contract verified by Python test suite"
-
-[rules."sdk.python.provenance.v2-security"]
-scope = "out-of-scope"
-reason = "Python SDK (packages/python) contract verified by Python test suite"
-
-[rules."sdk.python.dsp.reference-kernels"]
-scope = "out-of-scope"
-reason = "Python SDK (packages/python) contract verified by Python test suite"
-
-# ==============================================================================
-# 18. SDKs: TypeScript SDK (`docs/specs/sdks/typescript_sdk.md`)
+# 17. SDKs: TypeScript SDK (`docs/specs/sdks/typescript_sdk.md`)
 # ==============================================================================
 [rules."sdk.ts.layout.feature-modules"]
 scope = "out-of-scope"

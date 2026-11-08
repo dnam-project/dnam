@@ -89,4 +89,4 @@ and platform-specific paths separately.
 - [ ] Every new or modified module includes `proptest!` property-based tests (alongside exact boundary/vector tests) co-located in its source file (`#[cfg(test)]`), with `verify[...]` citations for all covered `r[...]` specification rules.
 - [ ] `moon check engine` passes all formatting, Clippy (`-D warnings`), build, and unit/`proptest`/integration tests (`tests/realtime_safety.rs` and `tests/backend_parity.rs`).
 - [ ] `moon run engine:coverage` confirms ≥ 95% coverage, including all newly added or modified functions and tier branches.
-- [ ] If any public API or FFI signature changed, `packages/python/rust/` bindings and scoped `AGENTS.md` files (`< 2,500 B`) are updated accordingly.
+- [ ] If any public API or FFI signature changed, `packages/js/rust/` bindings and scoped `AGENTS.md` files (`< 2,500 B`) are updated accordingly.

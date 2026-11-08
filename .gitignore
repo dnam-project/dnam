@@ -1,24 +1,10 @@
-# Python / uv / maturin
-__pycache__/
-*.py[cod]
-*.so
-*.pyd
-*.dylib
-.venv/
-.pytest_cache/
-.ruff_cache/
-.hypothesis/
-.benchmarks/
-.coverage
-dist/
-build/
-*.egg-info/
-
 # Rust / Cargo
 target/
 
 # Node.js / Vite / Vitest / Playwright
 node_modules/
+dist/
+build/
 coverage/
 .vitest/
 test-results/

@@ -38,6 +38,8 @@
       "packages/web/*.ts",
       "packages/web/*.mjs",
       "packages/web/*.json",
+      "tests/**/*.ts",
+      "tests/*.json",
       "package.json",
       "tsconfig.json",
       "biome.json"
@@ -237,7 +239,8 @@
         "packages/studio/src/**/*.test.ts",
         "packages/studio/src/**/*.test.tsx",
         "packages/studio/tests/**/*.ts",
-        "packages/studio/tests/**/*.tsx"
+        "packages/studio/tests/**/*.tsx",
+        "tests/**/*.ts"
       ],
       "linter": {
         "rules": {
