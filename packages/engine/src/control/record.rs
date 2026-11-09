@@ -117,6 +117,64 @@ impl ControlChannelRecord {
     }
 }
 
+/// Fixed-size zero-allocation runtime slot for a single `CP1` contributor (`1..=3` lanes,
+/// `ref[container.dnam.cp1-profile]`, `ref[dsp.ctrl.accum.cp1-scaling]`).
+///
+/// Supports both continuous Lobatto controls (`option_idx == 0xFF`, `lanes in 1..=3`) and discrete
+/// switch option contributors (`option_idx < 16`, `lanes == 1`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Cp1ContributorSlot {
+    /// Active lane count (`1..=3`).
+    pub lanes: u8,
+    /// Contributor kind (`0` = continuous `Range`, `1` = discrete `Switch` option, `2` = 2-D `Cross-term` product).
+    pub ctrl_kind: u8,
+    /// Control index (`0..P`) that owns this contributor.
+    pub control_idx: u16,
+    /// Discrete switch option index (`0..16`), or `0xFF` for continuous range controls.
+    pub option_idx: u8,
+    /// Partner control index (`0..P`) when `ctrl_kind == 2` (`Cross-term` product $\psi_1(u_{c_1})\psi_1(u_{c_2})$).
+    pub partner_control_id: u16,
+    /// Base main-effect columns (`8` latent dims per lane, `Arena 0`).
+    pub main_base: [[f32; 8]; 3],
+    /// Scalar lane-collapse weights (`emb[k]`, `Arena 0`).
+    pub emb: [f32; 3],
+    /// Base 4-D FM factor vector (`v_base[4]`, `Arena 0`).
+    pub v_base: [f32; 4],
+    /// Ultra delta main-effect columns (`8` latent dims per lane, `Arena 3`).
+    pub main_ultra: [[f32; 8]; 3],
+    /// Ultra delta 4-D FM factor vector (`v_ultra[4]`, `Arena 3`).
+    pub v_ultra: [f32; 4],
+    /// True when `main_ultra` / `v_ultra` are populated.
+    pub has_ultra: bool,
+}
+
+impl Default for Cp1ContributorSlot {
+    #[inline]
+    fn default() -> Self {
+        Self::zero()
+    }
+}
+
+impl Cp1ContributorSlot {
+    /// Constructs a zeroed contributor slot.
+    #[inline]
+    pub const fn zero() -> Self {
+        Self {
+            lanes: 0,
+            ctrl_kind: 0,
+            control_idx: 0,
+            option_idx: 0xFF,
+            partner_control_id: 0,
+            main_base: [[0.0; 8]; 3],
+            emb: [0.0; 3],
+            v_base: [0.0; 4],
+            main_ultra: [[0.0; 8]; 3],
+            v_ultra: [0.0; 4],
+            has_ultra: false,
+        }
+    }
+}
+
 /// O(1) 64-Byte Latent Accumulator S_lat = (z_main, s_vx, s_v2x2).
 #[repr(C, align(64))]
 #[derive(Debug, Clone, Copy, PartialEq)]

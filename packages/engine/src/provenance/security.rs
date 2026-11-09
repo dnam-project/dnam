@@ -1652,7 +1652,7 @@ mod spec_tests {
         // 3. Full 64,000 B arena gauge + Tardos watermarking & 224-D structural hash
         let mut arena = vec![0u8; ARENA_OFFSET_ULTRA_END as usize];
         for t in 0..4 {
-            for blk in 0..4 {
+            for blk in 0..crate::provenance::STAGE3_KAUTZ_BLOCKS_PER_TIER[t] {
                 let base = kautz_soa_byte_offset(t, blk);
                 for l in 0..4 {
                     arena[base + l * 4..base + (l + 1) * 4].copy_from_slice(&0.9_f32.to_le_bytes());
@@ -1660,6 +1660,8 @@ mod spec_tests {
                         .copy_from_slice(&0.5_f32.to_le_bytes());
                     arena[base + (16 + l) * 4..base + (17 + l) * 4]
                         .copy_from_slice(&0.25_f32.to_le_bytes());
+                    arena[base + (24 + l) * 4..base + (25 + l) * 4]
+                        .copy_from_slice(&0.15_f32.to_le_bytes());
                 }
             }
         }

@@ -49,6 +49,9 @@ impl SchemaVersion {
     /// `1.1.0` schema release adding optional `.dnam-ckpt` Arena 4 (`FLAG_HAS_CALIB_STATS`).
     pub const V1_1_0: Self = Self::new(1, 1, 0);
 
+    /// Canonical `2.0.0` schema release (`ref[container.dnam.formats]`).
+    pub const V2_0_0: Self = Self::new(2, 0, 0);
+
     /// Current container schema version supported by this engine build.
     pub const CURRENT: Self = Self::new(
         crate::container::CONTAINER_VERSION_MAJOR,
@@ -153,7 +156,7 @@ impl SchemaVersion {
 }
 
 fn default_version() -> String {
-    SchemaVersion::V1_0_0.as_semver_string()
+    SchemaVersion::V2_0_0.as_semver_string()
 }
 
 fn default_container_kind() -> String {
@@ -261,7 +264,7 @@ impl DnamJsonHeader {
     /// Constructs a canonical reference [`DnamJsonHeader`] (used by tests and container builders).
     pub fn default_reference() -> Self {
         Self {
-            version: "1.0.0".to_string(),
+            version: "2.0.0".to_string(),
             container_kind: "dnam".to_string(),
             architecture: "DNAM_TORA".to_string(),
             sample_rate_train_hz: 48_000,
@@ -735,7 +738,7 @@ mod tests {
             ]
         }"#;
         let mut h: DnamJsonHeader = serde_json::from_str(minimal_json).unwrap();
-        assert_eq!(h.version, "1.0.0");
+        assert_eq!(h.version, "2.0.0");
         assert_eq!(h.container_kind, "dnam");
         assert_eq!(h.architecture, "DNAM_TORA");
         assert_eq!(h.sample_rate_train_hz, 48_000);
@@ -835,10 +838,10 @@ mod tests {
         assert!(SchemaVersion::parse("a.0.0").is_err());
         assert!(SchemaVersion::parse("1.b.0").is_err());
         assert!(SchemaVersion::parse("1.0.c").is_err());
-        assert_eq!(SchemaVersion::V1_0_0.as_semver_string(), "1.0.0");
+        assert_eq!(SchemaVersion::V2_0_0.as_semver_string(), "2.0.0");
 
         let norm_json = DnamJsonHeader::validate_and_normalize_json_str(minimal_json).unwrap();
-        assert!(norm_json.contains("\"version\":\"1.0.0\""));
+        assert!(norm_json.contains("\"version\":\"2.0.0\""));
         assert!(DnamJsonHeader::validate_and_normalize_json_str("not json").is_err());
         let bad_unknown = minimal_json.replace(
             "\"metadata\": {",

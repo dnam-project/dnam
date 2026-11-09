@@ -104,7 +104,7 @@ fn build_reference_header_and_arena() -> (DnamJsonHeader, Vec<u8>) {
     preset_ctrls.insert("boost".to_string(), serde_json::json!("on"));
 
     let header = DnamJsonHeader {
-        version: "1.0.0".to_string(),
+        version: "2.0.0".to_string(),
         container_kind: "dnam".to_string(),
         architecture: "DNAM_TORA".to_string(),
         sample_rate_train_hz: 48_000,
@@ -223,7 +223,17 @@ fn build_reference_header_and_arena() -> (DnamJsonHeader, Vec<u8>) {
             let off = cw_base + w * 4;
             arena[off..off + 4].copy_from_slice(&val.to_le_bytes());
         }
-        for blk in 0..4 {
+        let fir_base = dnam_engine::provenance::STAGE3_EARLY_FIR_BASES[tier];
+        for tap in 0..32 {
+            let v = if tap == 0 || tap == 16 {
+                0.0625_f32
+            } else {
+                0.005_f32
+            };
+            arena[fir_base + tap * 4..fir_base + (tap + 1) * 4].copy_from_slice(&v.to_le_bytes());
+        }
+        let blocks = dnam_engine::provenance::STAGE3_KAUTZ_BLOCKS_PER_TIER[tier];
+        for blk in 0..blocks {
             let k_base = dnam_engine::provenance::kautz_soa_byte_offset(tier, blk);
             for lane in 0..4 {
                 let r_low = 0.88_f32 + 0.01 * (lane as f32);
@@ -242,6 +252,10 @@ fn build_reference_header_and_arena() -> (DnamJsonHeader, Vec<u8>) {
                     .copy_from_slice(&0.25_f32.to_le_bytes());
                 arena[k_base + 80 + lane * 4..k_base + 80 + (lane + 1) * 4]
                     .copy_from_slice(&(-0.15_f32).to_le_bytes());
+                arena[k_base + 96 + lane * 4..k_base + 96 + (lane + 1) * 4]
+                    .copy_from_slice(&0.20_f32.to_le_bytes());
+                arena[k_base + 112 + lane * 4..k_base + 112 + (lane + 1) * 4]
+                    .copy_from_slice(&(-0.10_f32).to_le_bytes());
             }
         }
     }
@@ -268,12 +282,25 @@ fn build_reference_header_and_arena() -> (DnamJsonHeader, Vec<u8>) {
         let off = 63_424 + i * 4;
         arena[off..off + 4].copy_from_slice(&val.to_le_bytes());
     }
-    for i in 0..64 {
-        let val = 0.05_f32 * (((i * 7 + 1) % 13) as f32 - 6.0);
-        let off = 8_256 + i * 4;
-        arena[off..off + 4].copy_from_slice(&val.to_le_bytes());
-        let off_u = 63_168 + i * 4;
-        arena[off_u..off_u + 4].copy_from_slice(&val.to_le_bytes());
+    // Populate cp1_lanes_dir at 7,524 with 3 inline CP1 contributors (2 Range + 1 Switch)
+    arena[7_524..7_526].copy_from_slice(&3_u16.to_le_bytes());
+    arena[7_526] = 2;
+    arena[7_527] = 2;
+    arena[7_528] = (1 << 4) | 1;
+    let mut b_cur = 7_680_usize;
+    let mut u_cur = 61_312_usize;
+    for (c, &lanes) in [2_usize, 2, 1].iter().enumerate() {
+        for l in 0..lanes {
+            for d in 0..4 {
+                let val = 0.03_f32 * (((c * 7 + l * 3 + d + 1) % 11) as f32 - 5.0);
+                arena[b_cur + l * 32 + d * 4..b_cur + l * 32 + (d + 1) * 4]
+                    .copy_from_slice(&val.to_le_bytes());
+                arena[u_cur + l * 32 + d * 4..u_cur + l * 32 + (d + 1) * 4]
+                    .copy_from_slice(&(0.5 * val).to_le_bytes());
+            }
+        }
+        b_cur += 4 * (9 * lanes + 4);
+        u_cur += 32 * lanes + 16;
     }
 
     for (g, &tbase) in [4_672_usize, 17_792_usize, 34_496_usize, 48_896_usize]

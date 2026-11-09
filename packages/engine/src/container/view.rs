@@ -5,7 +5,9 @@
 use alloc::string::ToString;
 use alloc::vec::Vec;
 
-use crate::control::ControlChannelRecord;
+use crate::control::{
+    ControlChannelRecord, ControlClampDescriptor, ControlLatentProjection, Cp1ContributorSlot,
+};
 use crate::memory::{AlignedBuffer, ArenaStorage, CacheLine64};
 use crate::provenance::{
     CryptoProvider, DNSL_MAGIC, VerificationStatus, chacha20_xor_arena_blocks, decode_hex_array,
@@ -14,10 +16,12 @@ use crate::provenance::{
 use crate::schema::{DnamError, DnamJsonHeader, DnamProtectionProfile};
 use crate::types::Tier;
 
-use super::preamble::DnamPreamble;
+use super::preamble::{DnamPreamble, is_v2_wire_directory_container};
 use super::{
-    ARENA4_STEM_BYTES_PRO, ARENA4_STEM_BYTES_ULTRA, DNAM_MAGIC, DNCK_MAGIC, FLAG_HAS_FULL_DELTA,
-    FLAG_HAS_PRO_DELTA, FLAG_HAS_ULTRA_DELTA, crc32c_update, verify_ckpt_arena5_calib_stats,
+    ARENA4_STEM_BYTES_PRO, ARENA4_STEM_BYTES_ULTRA, DNAM_MAGIC, DNCK_MAGIC, FLAG_HAS_CALIB_STATS,
+    FLAG_HAS_CKPT_STEMS, FLAG_HAS_FULL_DELTA, FLAG_HAS_LITE, FLAG_HAS_PRO_DELTA,
+    FLAG_HAS_SIGNATURES, FLAG_HAS_ULTRA_DELTA, FLAG_STEREO_OUT, crc32c_update,
+    verify_ckpt_arena5_calib_stats,
 };
 
 /// Computes `header_crc32c` over `container_bytes[0..tensor_arena_offset]` with
@@ -26,6 +30,51 @@ pub fn compute_header_crc32c(container_bytes: &[u8], tensor_arena_offset: usize)
     let mut crc = crc32c_update(0, &container_bytes[0..60]);
     crc = crc32c_update(crc, &[0u8; 4]);
     crc32c_update(crc, &container_bytes[64..tensor_arena_offset])
+}
+
+type SharedControlsExtent = (
+    Vec<ControlClampDescriptor>,
+    Vec<Cp1ContributorSlot>,
+    Vec<ControlChannelRecord>,
+);
+
+fn decode_shared_controls_extent(
+    shared_slice: &[u8],
+    header: &DnamJsonHeader,
+) -> Result<SharedControlsExtent, DnamError> {
+    let p_ctrls = header.controls_schema.len();
+    let starts_with_cp1 = shared_slice.len() >= 4 && shared_slice[0..4] == super::wire::CP1_MAGIC;
+    let (clamp_descriptors, cp1_slice) =
+        if p_ctrls > 0 && shared_slice.len() >= p_ctrls * 64 && !starts_with_cp1 {
+            let mut descs = Vec::with_capacity(p_ctrls);
+            for p in 0..p_ctrls {
+                let off = p * 64;
+                let mut desc_bytes = [0u8; 64];
+                desc_bytes.copy_from_slice(&shared_slice[off..off + 64]);
+                descs.push(ControlClampDescriptor::from_bytes(&desc_bytes));
+            }
+            (descs, &shared_slice[p_ctrls * 64..])
+        } else {
+            (
+                header.compile_clamp_descriptors().unwrap_or_default(),
+                shared_slice,
+            )
+        };
+    let mut cp1_contributors = Vec::new();
+    if cp1_slice.len() >= 8 && cp1_slice[0..4] == super::wire::CP1_MAGIC {
+        let count = u16::from_le_bytes([cp1_slice[4], cp1_slice[5]]) as usize;
+        cp1_contributors.resize(count, Cp1ContributorSlot::zero());
+        super::wire::decode_cp1_shared_stream_into_slice(cp1_slice, &mut cp1_contributors)?;
+    }
+    let control_records = clamp_descriptors
+        .iter()
+        .copied()
+        .map(|clamp| ControlChannelRecord {
+            clamp,
+            projection: ControlLatentProjection::new(),
+        })
+        .collect();
+    Ok((clamp_descriptors, cp1_contributors, control_records))
 }
 
 /// Zero-copy or decrypted view over a validated `.dnam`, `.dnam-ckpt`, or `.dnam-seal` (`b"DNSL"`) container.
@@ -39,6 +88,10 @@ pub struct DnamContainerView<'a> {
     pub verification_status: VerificationStatus,
     /// Resolved container protection profile (`Open`, `DeviceAllowlisted`, or `EnclaveSealed`).
     pub protection_profile: DnamProtectionProfile,
+    /// Compiled 64-byte `ControlClampDescriptor[0..P]` table from Region 4 `shared_extent` or Region 2B.
+    pub clamp_descriptors: Vec<ControlClampDescriptor>,
+    /// Decoded `CP1\0` variable-length contributor slots from Region 4 `shared_extent` (if present).
+    pub cp1_contributors: Vec<Cp1ContributorSlot>,
     /// Unified 128-byte `ControlChannelRecord[0..P]` table parsed from Region 2B (`control_table_offset..tensor_arena_offset`).
     pub control_records: Vec<ControlChannelRecord>,
     /// 64-byte aligned tensor arena storage (`Borrowed` on aligned `mmap`, or `Owned` if decrypted/copied).
@@ -73,6 +126,8 @@ impl<'a> DnamContainerView<'a> {
                 header: owned_view.header,
                 verification_status: owned_view.verification_status,
                 protection_profile: owned_view.protection_profile,
+                clamp_descriptors: owned_view.clamp_descriptors,
+                cp1_contributors: owned_view.cp1_contributors,
                 control_records: owned_view.control_records,
                 arena_storage: ArenaStorage::from_slice_owned(owned_view.arena_storage.as_bytes()),
             });
@@ -86,11 +141,7 @@ impl<'a> DnamContainerView<'a> {
         is_enclave_sealed_wrapper: bool,
         max_supported_tier: Tier,
     ) -> Result<Self, DnamError> {
-        if bytes.len() >= 8
-            && &bytes[0..4] == b"DNAM"
-            && u16::from_le_bytes([bytes[4], bytes[5]]) == 2
-            && u16::from_le_bytes([bytes[6], bytes[7]]) == 0
-        {
+        if is_v2_wire_directory_container(bytes) && &bytes[0..4] == b"DNAM" {
             let layout = super::wire::validate_v2_open_dnam_layout(bytes)?;
             let json_slice =
                 &bytes[layout.header_extent.0..layout.header_extent.0 + layout.header_extent.1];
@@ -103,13 +154,38 @@ impl<'a> DnamContainerView<'a> {
             {
                 return Err(DnamError::PreviewContainerRejected);
             }
-            let header: DnamJsonHeader = serde_json::from_slice(json_slice)
+            let mut header: DnamJsonHeader = serde_json::from_slice(json_slice)
                 .map_err(|e| DnamError::InvalidJsonHeader(e.to_string()))?;
             header.validate()?;
+            let mutable_slice =
+                &bytes[layout.mutable_extent.0..layout.mutable_extent.0 + layout.mutable_extent.1];
+            let dmu_val = super::wire::parse_and_validate_dmu1_frame(mutable_slice)?;
+            if let Some(presets_val) = dmu_val.get("presets")
+                && let Ok(mut_presets) =
+                    serde_json::from_value::<Vec<crate::schema::PresetDef>>(presets_val.clone())
+                && !mut_presets.is_empty()
+            {
+                header.presets = mut_presets;
+            }
+            if let Some(um_val) = dmu_val.get("user_metadata")
+                && let Ok(mut_um) = serde_json::from_value::<
+                    alloc::collections::BTreeMap<alloc::string::String, serde_json::Value>,
+                >(um_val.clone())
+                && !mut_um.is_empty()
+            {
+                header.user_metadata = mut_um;
+            }
+            let shared_slice =
+                &bytes[layout.shared_extent.0..layout.shared_extent.0 + layout.shared_extent.1];
+            let (clamp_descriptors, cp1_contributors, control_records) =
+                decode_shared_controls_extent(shared_slice, &header)?;
+
             let auth_slice =
                 &bytes[layout.auth_extent.0..layout.auth_extent.0 + layout.auth_extent.1];
             let verification_status = if auth_slice.len() >= 8
-                && &auth_slice[0..8] == b"DAU1\0\0\0\0"
+                && &auth_slice[0..4] == b"DAU1"
+                && auth_slice[4] <= 1
+                && auth_slice[5..8] == [0, 0, 0]
             {
                 let env = crate::provenance::Dau1Envelope::from_bytes(auth_slice)?;
                 if env.auth_kind != layout.auth_kind || env.creator_max_tier != layout.maximum_tier
@@ -118,8 +194,6 @@ impl<'a> DnamContainerView<'a> {
                         "DAU1 auth_kind or creator_max_tier mismatch with preamble",
                     ));
                 }
-                let shared_slice =
-                    &bytes[layout.shared_extent.0..layout.shared_extent.0 + layout.shared_extent.1];
                 let shared_framing = crate::provenance::build_plaintext_shared_v1(
                     &bytes[0..64],
                     &bytes[64..192],
@@ -133,17 +207,19 @@ impl<'a> DnamContainerView<'a> {
                     tier_slices_vec.push(&bytes[prev_t..end_t]);
                     prev_t = end_t;
                 }
-                let prefixes = crate::provenance::compute_plaintext_prefixes_v1(
-                    b"DNAM-MASTER-PREFIX-V1",
-                    &hdr_sha,
-                    &shared_framing,
-                    &tier_slices_vec,
-                )?;
-                for (t_idx, pfx) in prefixes.iter().enumerate() {
-                    if env.master_prefixes.get(t_idx) != Some(pfx) {
-                        return Err(DnamError::CryptoVerificationFailed(
-                            "DAU1 master tier prefix digest mismatch",
-                        ));
+                if env.auth_kind == 0 {
+                    let prefixes = crate::provenance::compute_plaintext_prefixes_v1(
+                        b"DNAM-MASTER-PREFIX-V1",
+                        &hdr_sha,
+                        &shared_framing,
+                        &tier_slices_vec,
+                    )?;
+                    for (t_idx, pfx) in prefixes.iter().enumerate() {
+                        if env.master_prefixes.get(t_idx) != Some(pfx) {
+                            return Err(DnamError::CryptoVerificationFailed(
+                                "DAU1 master tier prefix digest mismatch",
+                            ));
+                        }
                     }
                 }
                 let creator_manifest = crate::provenance::build_creator_manifest_v1(
@@ -190,11 +266,13 @@ impl<'a> DnamContainerView<'a> {
                             &creator_manifest,
                             &env.creator_signature,
                         );
+                    let policy_sha =
+                        crate::provenance::compute_license_policy_sha256(&env.policy_bytes);
                     let buyer_receipt = crate::provenance::build_buyer_receipt_v1(
                         &m_pub,
                         &creator_signed_sha,
-                        &hdr_sha,
-                        b_max,
+                        &policy_sha,
+                        layout.protection_profile,
                         &env.buyer_prefixes,
                         None,
                         &[],
@@ -218,7 +296,10 @@ impl<'a> DnamContainerView<'a> {
             let retained_tier = Tier::from_u8(layout.retained_tier).min(max_supported_tier);
             let tier_end = layout.tier_ends[retained_tier as usize];
             let arena_slice = &bytes[layout.tier_start..tier_end];
-            let mut flags = super::FLAG_HAS_LITE | super::FLAG_STEREO_OUT;
+            let mut flags = FLAG_HAS_LITE;
+            if header.io_config.output_mode != "mono" {
+                flags |= FLAG_STEREO_OUT;
+            }
             if retained_tier >= Tier::Full {
                 flags |= FLAG_HAS_FULL_DELTA;
             }
@@ -227,6 +308,10 @@ impl<'a> DnamContainerView<'a> {
             }
             if retained_tier >= Tier::Ultra {
                 flags |= FLAG_HAS_ULTRA_DELTA;
+            }
+            if layout.auth_kind > 0 || !matches!(verification_status, VerificationStatus::Unsigned)
+            {
+                flags |= FLAG_HAS_SIGNATURES;
             }
             let preamble = DnamPreamble {
                 magic: DNAM_MAGIC,
@@ -251,7 +336,7 @@ impl<'a> DnamContainerView<'a> {
                 arena_crc32c_ultra: 0,
                 num_ckpt_stems: 0,
                 _reserved: 0,
-                tail_time_ms: 0.0,
+                tail_time_ms: header.io_config.tail_time_ms,
                 header_crc32c: 0,
             };
             return Ok(Self {
@@ -259,8 +344,35 @@ impl<'a> DnamContainerView<'a> {
                 header,
                 verification_status,
                 protection_profile: DnamProtectionProfile::Open,
-                control_records: Vec::new(),
+                clamp_descriptors,
+                cp1_contributors,
+                control_records,
                 arena_storage: ArenaStorage::from_slice_or_copy(arena_slice),
+            });
+        }
+
+        if is_v2_wire_directory_container(bytes) && &bytes[0..4] == b"DNCK" {
+            let exported = super::wire::export_runtime_dnam_from_ckpt(bytes)?;
+            let runtime_view = DnamContainerView::from_inner_dnam_bytes(
+                &exported,
+                crypto,
+                is_enclave_sealed_wrapper,
+                max_supported_tier,
+            )?;
+            let mut preamble = runtime_view.preamble;
+            preamble.magic = DNCK_MAGIC;
+            preamble.flags |= FLAG_HAS_CKPT_STEMS | FLAG_HAS_CALIB_STATS;
+            return Ok(Self {
+                preamble,
+                header: runtime_view.header,
+                verification_status: runtime_view.verification_status,
+                protection_profile: runtime_view.protection_profile,
+                clamp_descriptors: runtime_view.clamp_descriptors,
+                cp1_contributors: runtime_view.cp1_contributors,
+                control_records: runtime_view.control_records,
+                arena_storage: ArenaStorage::from_slice_owned(
+                    runtime_view.arena_storage.as_bytes(),
+                ),
             });
         }
 
@@ -456,11 +568,15 @@ impl<'a> DnamContainerView<'a> {
             crypto,
         )?;
 
+        let clamp_descriptors = control_records.iter().map(|r| r.clamp).collect();
+
         Ok(Self {
             preamble,
             header,
             verification_status,
             protection_profile,
+            clamp_descriptors,
+            cp1_contributors: Vec::new(),
             control_records,
             arena_storage,
         })
@@ -574,7 +690,7 @@ mod tests {
             prefix_crc32c: 0,
         };
         DnamJsonHeader {
-            version: "1.0.0".to_string(),
+            version: "2.0.0".to_string(),
             container_kind: "dnam".to_string(),
             architecture: "DNAM_TORA".to_string(),
             sample_rate_train_hz: 48_000,

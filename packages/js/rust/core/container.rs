@@ -200,6 +200,7 @@ pub(crate) fn populate_reference_controls_and_arena(
     arena[0..4].copy_from_slice(&1.0_f32.to_le_bytes());
     arena[20..24].copy_from_slice(&1.0_f32.to_le_bytes());
     arena[4224..4228].copy_from_slice(&0.25_f32.to_le_bytes());
+    arena[4416..4420].copy_from_slice(&0.25_f32.to_le_bytes());
     arena[4480..4484].copy_from_slice(&0.25_f32.to_le_bytes());
 
     let descriptors = header
@@ -378,11 +379,7 @@ pub fn strip_v2_open_dnam_container_core(
 pub fn build_reference_checkpoint_core(include_calib_stats: bool) -> Result<Vec<u8>, String> {
     let mut header = DnamJsonHeader::default_reference();
     header.container_kind = "dnam-ckpt".to_string();
-    header.version = if include_calib_stats {
-        "1.1.0".to_string()
-    } else {
-        "1.0.0".to_string()
-    };
+    header.version = "2.0.0".to_string();
 
     let mut arena = populate_reference_controls_and_arena(&mut header, true)?;
     let stem_offset = arena.len();

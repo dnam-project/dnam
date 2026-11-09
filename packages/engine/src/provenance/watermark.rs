@@ -39,29 +39,43 @@ pub(crate) const fn max_tiers_for_arena_len(arena_len: usize) -> usize {
     }
 }
 
-/// Returns the byte offset of the 96-byte modal/Kautz SoA struct (`[6, 4]` floats) for `(tier, block_idx)`
+/// Per-tier byte offsets of the 128-byte Stage III Early Reflection FIR block (`16` Left + `16` Right `f32` taps)
 /// inside `Arena 0..3`:
-/// - `tier == 0` (`Lite`, `stage3_early_fir_kautz` `4,288..4,672`): `4_288 + block_idx * 96`
-/// - `tier == 1` (`Full`, `stage3_kautz_delta` `17,408..17,792`): `17_408 + block_idx * 96`
-/// - `tier == 2` (`Pro`, `stage3_kautz_delta` `31,552..31,936`): `31_552 + block_idx * 96`
-/// - `tier == 3` (`Ultra`, `stage3_kautz_delta` `48,512..48,896`): `48_512 + block_idx * 96`
+/// - `tier == 0` (`Lite`): `4_288..4_416` (`128 B`)
+/// - `tier == 1` (`Full`): `17_408..17_536` (`128 B`)
+/// - `tier == 2` (`Pro`): `31_552..31_680` (`128 B`)
+/// - `tier == 3` (`Ultra`): `48_512..48_640` (`128 B`)
+pub const STAGE3_EARLY_FIR_BASES: [usize; 4] = [4_288, 17_408, 31_552, 48_512];
+
+/// Per-tier base byte offsets of the Stage III Orthonormal Kautz 128-byte (`[8, 4]` `f32` SoA) modal blocks
+/// inside `Arena 0..3`:
+/// - `tier == 0` (`Lite`, `1` block = `4` pole pairs, `128 B`): `4_416..4_544`
+/// - `tier == 1` (`Full`, `1` block = `+4` pole pairs, `128 B`): `17_536..17_664`
+/// - `tier == 2` (`Pro`, `2` blocks = `+8` pole pairs, `256 B`): `31_680..31_936`
+/// - `tier == 3` (`Ultra`, `4` blocks = `+16` pole pairs, `512 B`): `60_160..60_672`
+pub const STAGE3_KAUTZ_BASES: [usize; 4] = [4_416, 17_536, 31_680, 60_160];
+
+/// Number of 128-byte (`4`-pole-pair) Kautz SoA blocks stored in each tier delta (`Lite=1`, `Full=1`, `Pro=2`, `Ultra=4`).
+pub const STAGE3_KAUTZ_BLOCKS_PER_TIER: [usize; 4] = [1, 1, 2, 4];
+
+/// Cumulative Kautz pole-pair channel base index per tier (`[0, 4, 8, 16]`, total `32` pole pairs across all 4 tiers).
+pub const STAGE3_KAUTZ_TIER_CHANNEL_BASE: [usize; 4] = [0, 4, 8, 16];
+
+/// Returns the byte offset of the 128-byte modal/Kautz SoA struct (`[8, 4]` floats:
+/// `[r_low, dr, theta, b_gamma, c_re_l, c_im_l, c_re_r, c_im_r]`) for `(tier, block_idx)` inside `Arena 0..3`.
 #[inline]
 pub const fn kautz_soa_byte_offset(tier: usize, block_idx: usize) -> usize {
-    match tier {
-        0 => 4_288 + block_idx * 96,
-        1 => 17_408 + block_idx * 96,
-        2 => 31_552 + block_idx * 96,
-        _ => 48_512 + block_idx * 96,
-    }
+    let t = if tier < 4 { tier } else { 3 };
+    STAGE3_KAUTZ_BASES[t] + block_idx * 128
 }
 
 /// Applies **Mechanism A (Exact Isometric Gauge Watermark)** in-place on a prefix-composable
 /// `Arena 0..3` buffer (`10,752 B`, `22,336 B`, `36,224 B`, or `64,000 B`):
-/// 1. Scales $b_{\gamma,b,c}$ by $\kappa_{b,c} \in [0.985, 1.015]$ and $(c_{\text{real},b,c}, c_{\text{imag},b,c})$
-///    by $\kappa_{b,c}^{-1}$ across all present modal/Kautz channels (`16` per tier, up to `64` in `Ultra`; `0.0000 dB` audio distortion).
+/// 1. Scales $b_{\gamma,b,c}$ by $\kappa_{b,c} \in [0.985, 1.015]$ and $(c_{\text{real},L/R,b,c}, c_{\text{imag},L/R,b,c})$
+///    by $\kappa_{b,c}^{-1}$ across all present Stage III Kautz modal blocks (`[1, 1, 2, 4]` blocks per tier = `32` pole pairs in `Ultra`; `0.0000 dB` audio distortion).
 /// 2. Rotates the SVD stereo output head basis $\mathbf{W}_{\text{head},1..4}$ (and `Ultra` modes `5..8` when present)
-///    by $\mathbf{Q}_{\text{buyer}}^\top \in SO(4)$ and the SVD control subspace projection matrix $\mathbf{P}_{\text{svd}}$
-///    (and $\mathbf{P}_{\text{svd,ultra}}$) by $\mathbf{Q}_{\text{buyer}}$.
+///    by $\mathbf{Q}_{\text{buyer}}^\top \in SO(4)$ and the control subspace projections (`CP1` contributors, $\mathbf{U}_{\text{int}}$, and $\mathbf{W}_{\text{ctrl}}$ columns `0..4`)
+///    by $\mathbf{Q}_{\text{buyer}}$.
 pub fn apply_isometric_gauge_watermark(
     arena: &mut [u8],
     kappa: &[f32],
@@ -74,7 +88,8 @@ pub fn apply_isometric_gauge_watermark(
             actual: arena.len(),
         });
     }
-    let required_channels = max_tiers * 16;
+    let required_channels = STAGE3_KAUTZ_TIER_CHANNEL_BASE[max_tiers - 1]
+        + STAGE3_KAUTZ_BLOCKS_PER_TIER[max_tiers - 1] * 4;
     if kappa.len() < required_channels {
         return Err(DnamError::BufferTooSmall {
             expected: required_channels,
@@ -82,26 +97,34 @@ pub fn apply_isometric_gauge_watermark(
         });
     }
 
-    // 1. Modal/Kautz reciprocal scaling gauge (b_gamma * kappa, c_real / kappa, c_imag / kappa)
+    // 1. Modal/Kautz reciprocal scaling gauge (b_gamma * kappa, c_re_l..c_im_r / kappa)
     for tier in 0..max_tiers {
-        for blk in 0..4 {
+        let blocks = STAGE3_KAUTZ_BLOCKS_PER_TIER[tier];
+        let ch_tier_base = STAGE3_KAUTZ_TIER_CHANNEL_BASE[tier];
+        for blk in 0..blocks {
             let base = kautz_soa_byte_offset(tier, blk);
             for lane in 0..4 {
-                let ch_global = tier * 16 + blk * 4 + lane;
+                let ch_global = ch_tier_base + blk * 4 + lane;
                 let k_val = kappa[ch_global];
                 let inv_kappa = 1.0 / k_val;
 
                 let b_gamma_off = base + (12 + lane) * 4;
-                let c_real_off = base + (16 + lane) * 4;
-                let c_imag_off = base + (20 + lane) * 4;
+                let c_re_l_off = base + (16 + lane) * 4;
+                let c_im_l_off = base + (20 + lane) * 4;
+                let c_re_r_off = base + (24 + lane) * 4;
+                let c_im_r_off = base + (28 + lane) * 4;
 
                 let b_gamma = read_f32_le(arena, b_gamma_off);
-                let c_real = read_f32_le(arena, c_real_off);
-                let c_imag = read_f32_le(arena, c_imag_off);
+                let c_re_l = read_f32_le(arena, c_re_l_off);
+                let c_im_l = read_f32_le(arena, c_im_l_off);
+                let c_re_r = read_f32_le(arena, c_re_r_off);
+                let c_im_r = read_f32_le(arena, c_im_r_off);
 
                 write_f32_le(arena, b_gamma_off, b_gamma * k_val);
-                write_f32_le(arena, c_real_off, c_real * inv_kappa);
-                write_f32_le(arena, c_imag_off, c_imag * inv_kappa);
+                write_f32_le(arena, c_re_l_off, c_re_l * inv_kappa);
+                write_f32_le(arena, c_im_l_off, c_im_l * inv_kappa);
+                write_f32_le(arena, c_re_r_off, c_re_r * inv_kappa);
+                write_f32_le(arena, c_im_r_off, c_im_r * inv_kappa);
             }
         }
     }
@@ -145,24 +168,89 @@ pub fn apply_isometric_gauge_watermark(
         }
     }
 
-    // 3. Rotate P_svd (16 rows x 4 cols = 64 floats = 256 B) in Arena 0 CL12..15 (8256..8512):
-    let p_svd_base = 8_256_usize;
-    for row in 0..16 {
+    // Helper closure to post-multiply a 4-float row at `row_byte_off` by `q_buyer_4x4`:
+    let rotate_row_4 = |buf: &mut [u8], row_byte_off: usize| {
         let mut old_row = [0.0_f32; 4];
         for m in 0..4 {
-            old_row[m] = read_f32_le(arena, p_svd_base + (row * 4 + m) * 4);
+            old_row[m] = read_f32_le(buf, row_byte_off + m * 4);
         }
         for k in 0..4 {
             let mut rotated = 0.0_f32;
             for m in 0..4 {
                 rotated += old_row[m] * q_buyer_4x4[m][k];
             }
-            write_f32_le(arena, p_svd_base + (row * 4 + k) * 4, rotated);
+            write_f32_le(buf, row_byte_off + k * 4, rotated);
+        }
+    };
+
+    // 3. Rotate inline CP1 contributors (7,680..8,512) + U_int^base (7,552..7,680) + W_ctrl^base[:, 0..4] (9,536..10,560)
+    //    when cp1_lanes_dir (7,524..7,526) has count > 0, or legacy P_svd (8,256..8,512) when count == 0:
+    let cp1_count = u16::from_le_bytes([arena[7_524], arena[7_525]]) as usize;
+    if (1..=26).contains(&cp1_count) {
+        let use_3b_dir = cp1_count <= 8
+            && arena[7_526] == 0
+            && arena[7_527] == 0
+            && ((1..=3).contains(&(arena[7_529] & 0x0F))
+                || (1..=3).contains(&(arena[7_530] & 0x0F)));
+        let mut b_cursor = 7_680_usize;
+        let mut u_cursor = 61_312_usize;
+        for c in 0..cp1_count {
+            let packed = if use_3b_dir {
+                let b1 = arena[7_528 + c * 3 + 1];
+                let b2 = arena[7_528 + c * 3 + 2];
+                if (1..=3).contains(&(b1 & 0x0F)) {
+                    b1
+                } else {
+                    b2
+                }
+            } else {
+                arena[7_526 + c]
+            };
+            let lanes = (packed & 0x0F) as usize;
+            let b_bytes = 4 * (9 * lanes + 4);
+            if !(1..=3).contains(&lanes) || b_cursor + b_bytes > 8_512 {
+                break;
+            }
+            for l in 0..lanes {
+                rotate_row_4(arena, b_cursor + l * 32);
+            }
+            b_cursor += b_bytes;
+            if max_tiers >= 4 && u_cursor + (32 * lanes + 16) <= 63_424 {
+                for l in 0..lanes {
+                    rotate_row_4(arena, u_cursor + l * 32);
+                }
+                u_cursor += 32 * lanes + 16;
+            }
+        }
+        // Rotate U_int^base[0..4][0..4] at 7,552..7,680 (128 B = 4 rows x 8 floats)
+        for r in 0..4 {
+            rotate_row_4(arena, 7_552 + r * 32);
+        }
+        // Rotate W_ctrl^base[row, 0..4] at 9,536..10,560 so W_ctrl * q_16 is gauge-invariant under z_head rotation
+        for row in 0..16 {
+            rotate_row_4(arena, 9_536 + row * 64);
+        }
+        if max_tiers >= 4 {
+            // Rotate 3 x U_int,Delta[0..12][0..4] at 60,928..61,312 (384 B = 12 rows x 8 floats)
+            for r in 0..12 {
+                rotate_row_4(arena, 60_928 + r * 32);
+            }
+        }
+    } else {
+        let p_svd_base = 8_256_usize;
+        for row in 0..16 {
+            rotate_row_4(arena, p_svd_base + row * 16);
+        }
+        if max_tiers >= 4 {
+            let p_svd_ultra_base = 63_168_usize;
+            for row in 0..16 {
+                rotate_row_4(arena, p_svd_ultra_base + row * 16);
+            }
         }
     }
 
-    // 4. When Arena 3 (Tier::Ultra, 64,000 B) is present, also rotate modes 5..8 (49,408..57,600),
-    //    b_head_modes_5_to_8 (63,424..63,456), and P_svd_ultra (63,168..63,424):
+    // 4. When Arena 3 (Tier::Ultra, 64,000 B) is present, also rotate modes 5..8 (49,408..57,600)
+    //    and b_head_modes_5_to_8 (63,424..63,456):
     if max_tiers >= 4 {
         for tier in 0..4 {
             let ultra_mode_base = 49_408 + tier * 2048;
@@ -195,20 +283,6 @@ pub fn apply_isometric_gauge_watermark(
                 }
                 let off = 63_424 + (k * 2 + lr) * 4;
                 write_f32_le(arena, off, rotated);
-            }
-        }
-        let p_svd_ultra_base = 63_168_usize;
-        for row in 0..16 {
-            let mut old_row = [0.0_f32; 4];
-            for m in 0..4 {
-                old_row[m] = read_f32_le(arena, p_svd_ultra_base + (row * 4 + m) * 4);
-            }
-            for k in 0..4 {
-                let mut rotated = 0.0_f32;
-                for m in 0..4 {
-                    rotated += old_row[m] * q_buyer_4x4[m][k];
-                }
-                write_f32_le(arena, p_svd_ultra_base + (row * 4 + k) * 4, rotated);
             }
         }
     }
@@ -392,7 +466,7 @@ mod tests {
 
         let mut valid_lite = [0u8; 10_752];
         assert!(
-            apply_isometric_gauge_watermark(&mut valid_lite, &[1.0; 8], &[[0.0; 4]; 4]).is_err()
+            apply_isometric_gauge_watermark(&mut valid_lite, &[1.0; 2], &[[0.0; 4]; 4]).is_err()
         );
         assert!(apply_tardos_watermark_7680(&mut valid_lite, &[1.0; 100], 1e-4).is_err());
         assert!(score_tardos_watermark_7680(&valid_lite, &valid_lite, &[1.0; 100]).is_err());
@@ -452,8 +526,9 @@ mod tests {
                 let v = (((i * 29 + 7) % 97) as f32 - 48.0) * 0.015;
                 master[i * 4..i * 4 + 4].copy_from_slice(&v.to_le_bytes());
             }
+            master[7_524..7_526].fill(0);
             for tier in 0..4 {
-                for blk in 0..4 {
+                for blk in 0..STAGE3_KAUTZ_BLOCKS_PER_TIER[tier] {
                     let base = kautz_soa_byte_offset(tier, blk);
                     for lane in 0..4 {
                         write_f32_le(&mut master, base + lane * 4, 0.85);
@@ -462,6 +537,8 @@ mod tests {
                         write_f32_le(&mut master, base + (12 + lane) * 4, 0.30);
                         write_f32_le(&mut master, base + (16 + lane) * 4, 0.45);
                         write_f32_le(&mut master, base + (20 + lane) * 4, -0.20);
+                        write_f32_le(&mut master, base + (24 + lane) * 4, 0.35);
+                        write_f32_le(&mut master, base + (28 + lane) * 4, -0.15);
                     }
                 }
             }

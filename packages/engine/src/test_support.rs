@@ -189,3 +189,63 @@ pub fn ulp_distance_f64(a: f64, b: f64) -> u64 {
     };
     to_ordered(a).abs_diff(to_ordered(b))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_splitmix64_rat_and_ieee754_helpers() {
+        let mut rng = SplitMix64::new(0x1234_5678_9ABC_DEF0);
+        let _u32_v = rng.next_u32();
+        let u_f64 = rng.next_unit_f64();
+        assert!((0.0..1.0).contains(&u_f64));
+        let r_f32 = rng.next_f32_range(-2.0, 2.0);
+        assert!((-2.0..=2.0).contains(&r_f32));
+
+        let zero = Rat::new(0, 5);
+        assert_eq!(zero, Rat::from_int(0));
+        let a = Rat::new(-6, 8);
+        let b = Rat::new(1, -2);
+        assert_eq!(a.add(b), Rat::new(-5, 4));
+        assert_eq!(a.sub(b), Rat::new(-1, 4));
+        assert_eq!(a.mul(b), Rat::new(3, 8));
+        assert_eq!(a.div(b), Rat::new(3, 2));
+        assert_eq!(a.abs(), Rat::new(3, 4));
+        assert_eq!(a.floor(), -1);
+        assert_eq!(a.ceil(), 0);
+        assert_eq!(Rat::new(5, 2).round_ties_to_even(), 2);
+        assert_eq!(Rat::new(7, 2).round_ties_to_even(), 4);
+        assert_eq!(Rat::new(3, 4).round_ties_to_even(), 1);
+        assert_eq!(Rat::new(1, 4).round_ties_to_even(), 0);
+        let (q_int, q_frac) = Rat::new(3, 2).round_q32();
+        assert_eq!(q_int, 1);
+        assert_eq!(q_frac, 0x8000_0000);
+        assert!((Rat::new(1, 2).to_f64() - 0.5).abs() < 1e-12);
+        assert!((Rat::new(1, 2).to_f32() - 0.5).abs() < 1e-6);
+
+        assert_eq!(widen_f32_bits_to_f64(f32::NAN.to_bits()), None);
+        assert_eq!(widen_f32_bits_to_f64(0), Some(0.0));
+        assert_eq!(widen_f32_bits_to_f64(1), Some(f64::from(f32::from_bits(1))));
+        assert_eq!(widen_f32_bits_to_f64(1.5_f32.to_bits()), Some(1.5));
+
+        assert_eq!(ulp_distance_f32(0.0, -0.0), 0);
+        assert_eq!(
+            ulp_distance_f32(1.0, f32::from_bits(1.0_f32.to_bits() + 1)),
+            1
+        );
+        assert_eq!(
+            ulp_distance_f32(-1.0, f32::from_bits((-1.0_f32).to_bits() + 1)),
+            1
+        );
+        assert_eq!(ulp_distance_f64(0.0, -0.0), 0);
+        assert_eq!(
+            ulp_distance_f64(1.0, f64::from_bits(1.0_f64.to_bits() + 1)),
+            1
+        );
+        assert_eq!(
+            ulp_distance_f64(-1.0, f64::from_bits((-1.0_f64).to_bits() + 1)),
+            1
+        );
+    }
+}

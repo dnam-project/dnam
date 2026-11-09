@@ -24,9 +24,14 @@ pub use plane::{
     verify_coprime_fdn_pair, verify_dynamic_stability_excursion,
 };
 
-pub use bus::ControlBus;
+pub use bus::{
+    ControlBus, decode_cp1_inline_contributors, eval_uint_base_3x8, eval_uint_ultra_delta_6x8,
+    trust_clip_outward_4d,
+};
 pub use descriptor::{ConditionalClampRule, ControlClampDescriptor};
-pub use record::{ControlChannelRecord, ControlLatentProjection, LatentAccumulator64B};
+pub use record::{
+    ControlChannelRecord, ControlLatentProjection, Cp1ContributorSlot, LatentAccumulator64B,
+};
 pub use reference::{
     eval_chebyshev_lfo_4harm_f64, eval_newton_lobatto_basis_f64, eval_rank4_fm_interaction_f64,
     eval_trust_region_softclip_f64,

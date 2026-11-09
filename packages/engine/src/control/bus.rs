@@ -6,18 +6,21 @@ use core::marker::PhantomData;
 use crate::math::{MathBackend, SimdVec4, flush_recursive_state_f32};
 
 use super::descriptor::ControlClampDescriptor;
-use super::record::{ControlChannelRecord, ControlLatentProjection, LatentAccumulator64B};
+use super::plane::{MAX_EXACT_CONTRIBUTORS, eval_tier_stage_dispatch};
+use super::record::{
+    ControlChannelRecord, ControlLatentProjection, Cp1ContributorSlot, LatentAccumulator64B,
+};
 use super::{ANTI_ZIPPER_SNAP_EPS, DEFAULT_ANTI_ZIPPER_POLE, TELEMETRY_CONTROL_SLOTS};
 
 /// Real-time $3\text{ kHz}$ Parametric Control Bus state (`#[repr(C, align(64))]`).
 ///
 /// Implements Theorem 3 (`docs/dsp/parametric_control_bus.md` §2.5): supports $P \in [0, 255]$
-/// user controls via the unified 128-byte [`ControlChannelRecord`] table and the fixed 64-byte
-/// running sufficient-statistic accumulator [`LatentAccumulator64B`] ($\mathcal{O}(1)$ per moved knob).
+/// user controls via the unified 128-byte [`ControlChannelRecord`] table, `CP1\0` contributor slots,
+/// and the fixed-width exact-integer / 64-byte running sufficient-statistic accumulators ($\mathcal{O}(1)$ per moved knob).
 #[repr(C, align(64))]
 #[derive(Clone, Debug)]
 pub struct ControlBus<B: MathBackend> {
-    /// O(1) 64-byte running latent sufficient-statistic accumulator $\mathcal{S}_{\text{lat}} = (\mathbf{z}_{\text{main}}, \mathbf{s}_{vx}, \mathbf{s}_{v2x2})$ (`Lite`/`Full`/`Pro`, $D_h=4, R=4$).
+    /// O(1) 64-byte running latent sufficient-statistic accumulator $\mathcal{S}_{\text{lat}} = (\mathbf{z}_{\text{main}}, \mathbf{s}_{vx}, \mathbf{s}_{v2x2})$ (`Lite`/`Full`/`Pro`, $D_h=4, R=4`).
     pub latent_acc: LatentAccumulator64B,
     /// Ultra-tier ($D_h=8, R=8$) FM linear sum accumulator for factors `4..8`.
     pub s_vx_ultra: [f32; 4],
@@ -27,6 +30,10 @@ pub struct ControlBus<B: MathBackend> {
     pub descriptors: Vec<ControlClampDescriptor>,
     /// Compiled 64-byte binary latent projections (`CL 1` of `ControlChannelRecord[0..P]`).
     pub projections: Vec<ControlLatentProjection>,
+    /// Pre-allocated `CP1` contributor slots (`0..num_contributors`, capacity `MAX_EXACT_CONTRIBUTORS = 255`).
+    pub contributors: Vec<Cp1ContributorSlot>,
+    /// Active number of `CP1` contributor slots in `contributors`.
+    pub num_contributors: usize,
     /// Number of active controls $P \in [0, 255]$.
     pub num_controls: usize,
     /// Raw user-requested physical control values.
@@ -49,10 +56,12 @@ pub struct ControlBus<B: MathBackend> {
     pub anti_zipper_pole: f32,
     /// Whether any control is currently slewing or dirty (`false` = static `0 MACs/sample` cache active).
     pub is_dirty: bool,
-    /// Current base SVD control coordinates $\mathbf{z}_{\text{head}} \in \mathbb{R}^4$ (`Lite`/`Full`/`Pro` modes `1..4`) after trust-region soft-clip (`ref[dsp.ctrl.op-n.trust-clip]`).
+    /// Current base SVD control coordinates $\mathbf{z}_{\text{head}} \in \mathbb{R}^4$ (`Lite`/`Full`/`Pro` modes `1..4`) after trust-region clip (`ref[dsp.ctrl.op-n.trust-clip]`).
     pub z_head: [f32; 4],
     /// Current `Ultra`-tier (`Tier::Ultra`, modes `5..8`, $D_h = 8$) collapsed SVD control coordinates $\mathbf{z}_{\text{head,ultra}} \in \mathbb{R}^4$.
     pub z_head_ultra: [f32; 4],
+    /// Current Ultra-tier stage control delta $\Delta\mathbf{z}_{\text{stage,ultra}} \in \mathbb{R}^4$.
+    pub z_stage_ultra: [f32; 4],
     /// Gauge-invariant leading 4-D control basis coordinates $\mathbf{x}_{\text{basis},0..4} \in \mathbb{R}^4$ for stage/tank dispatch.
     pub ctrl_basis_4: [f32; 4],
     /// Current 3-band envelope follower states $\mathbf{e}[k] \in \mathbb{R}^3$ (`Low`, `Mid`, `High`) + pad.
@@ -67,8 +76,8 @@ pub struct ControlBus<B: MathBackend> {
     pub lfo_phases_q192: [crate::math::Q0_192Phase; 2],
     /// LFO 0 and LFO 1 per-tick angle bit patterns for `Q0.192` phase accumulation (`ref[dsp.op-m.rotor.q0-192-lfo]`).
     pub lfo_angle_bits: [u32; 2],
-    /// Exact-integer (`9-word S` + `18-word D`) FM interaction accumulators for the 4 base factors (`ref[dsp.ctrl.accum.exact-int]`).
-    pub exact_fm_acc: [super::plane::ExactIntFactorAccumulator; 4],
+    /// Exact-integer (`9-word S` + `18-word D`) FM interaction accumulators for all 8 factors (`0..4` base + `4..8` Ultra, `ref[dsp.ctrl.accum.exact-int]`).
+    pub exact_fm_acc: [super::plane::ExactIntFactorAccumulator; 8],
     /// Current 4-harmonic Chebyshev LFO waves $\mathbf{l}[k] \in [-1, +1]^8$ ($T_1..T_4$ for LFO 0 and LFO 1).
     pub lfo_harmonics: [f32; 8],
     /// Stage modulation offsets ($\Delta\theta_{\text{stage}} \in \mathbb{R}^{16}$).
@@ -85,7 +94,7 @@ pub struct ControlBus<B: MathBackend> {
     pub tank_state_mod: [f32; 4],
     /// Whether Spatial Tank modulation outputs were updated on the most recent $3\text{ kHz}$ tick.
     pub tank_mod_dirty: bool,
-    /// Trust-region radius $M_h$ (`ref[dsp.ctrl.op-n.trust-clip]`, default `2.5`).
+    /// Trust-region radius $M_h$ (`ref[dsp.ctrl.op-n.trust-clip]`, default `10.0`).
     pub trust_radius_mh: f32,
     /// Pre-computed reciprocal square $M_h^{-2}$ for division-free $3\text{ kHz}$ trust-region evaluation (`0 FDIV`).
     pub inv_trust_radius_mh2: f32,
@@ -101,6 +110,8 @@ impl<B: MathBackend> ControlBus<B> {
             s_v2x2_ultra: [0.0; 4],
             descriptors: alloc::vec![ControlClampDescriptor::empty(); TELEMETRY_CONTROL_SLOTS],
             projections: alloc::vec![ControlLatentProjection::new(); TELEMETRY_CONTROL_SLOTS],
+            contributors: alloc::vec![Cp1ContributorSlot::zero(); MAX_EXACT_CONTRIBUTORS],
+            num_contributors: 0,
             num_controls: 0,
             raw_values: alloc::vec![0.0; TELEMETRY_CONTROL_SLOTS],
             clamped_values: alloc::vec![0.0; TELEMETRY_CONTROL_SLOTS],
@@ -114,6 +125,7 @@ impl<B: MathBackend> ControlBus<B> {
             is_dirty: false,
             z_head: [0.0; 4],
             z_head_ultra: [0.0; 4],
+            z_stage_ultra: [0.0; 4],
             ctrl_basis_4: [0.0; 4],
             env_states: [0.0; 4],
             env_poles: [0.985, 0.960, 0.910, 0.0],
@@ -122,7 +134,7 @@ impl<B: MathBackend> ControlBus<B> {
             lfo_phases_q192: [crate::math::Q0_192Phase::ZERO; 2],
             lfo_angle_bits: [0; 2],
             exact_fm_acc: core::array::from_fn(|_| {
-                super::plane::ExactIntFactorAccumulator::new(TELEMETRY_CONTROL_SLOTS)
+                super::plane::ExactIntFactorAccumulator::new(MAX_EXACT_CONTRIBUTORS)
             }),
             lfo_harmonics: [0.0; 8],
             stage_targets: [0.0; 16],
@@ -132,8 +144,8 @@ impl<B: MathBackend> ControlBus<B> {
             tank_grain_len_scale: [0.0; 4],
             tank_state_mod: [0.0; 4],
             tank_mod_dirty: false,
-            trust_radius_mh: 2.5,
-            inv_trust_radius_mh2: 1.0 / (2.5 * 2.5),
+            trust_radius_mh: 10.0,
+            inv_trust_radius_mh2: 1.0 / (10.0 * 10.0),
             _backend: PhantomData,
         }
     }
@@ -147,6 +159,10 @@ impl<B: MathBackend> ControlBus<B> {
         }
         if self.projections.len() < cap {
             self.projections.resize(cap, ControlLatentProjection::new());
+        }
+        if self.contributors.len() < MAX_EXACT_CONTRIBUTORS {
+            self.contributors
+                .resize(MAX_EXACT_CONTRIBUTORS, Cp1ContributorSlot::zero());
         }
         if self.raw_values.len() < cap {
             self.raw_values.resize(cap, 0.0);
@@ -170,10 +186,17 @@ impl<B: MathBackend> ControlBus<B> {
             self.active_switch_options.resize(cap, 0);
         }
         if self.exact_fm_acc[0].count < cap {
-            let valid_cap = cap.min(super::plane::MAX_EXACT_CONTRIBUTORS);
-            self.exact_fm_acc =
-                core::array::from_fn(|_| super::plane::ExactIntFactorAccumulator::new(valid_cap));
+            self.exact_fm_acc = core::array::from_fn(|_| {
+                super::plane::ExactIntFactorAccumulator::new(MAX_EXACT_CONTRIBUTORS)
+            });
         }
+    }
+
+    /// Loads `CP1\0` contributor slots into the pre-allocated `contributors` buffer without heap allocation.
+    pub fn load_cp1_contributors(&mut self, slots: &[Cp1ContributorSlot]) {
+        let n = slots.len().min(self.contributors.len());
+        self.contributors[..n].copy_from_slice(&slots[..n]);
+        self.num_contributors = n;
     }
 
     /// Loads the unified 128-byte [`ControlChannelRecord`] table (`Region 2B`, $P \in [0, 255]$).
@@ -224,9 +247,9 @@ impl<B: MathBackend> ControlBus<B> {
         out
     }
 
-    /// Loads the embedded [`ControlClampDescriptor`] table (`CL 16..23`, `bytes[8512..9024]`) and
-    /// global LFO/Envelope/Trust-Region anchors from `Arena 0` (`bytes[7488..10752]`) and snaps
-    /// all controls to their `default_val`.
+    /// Loads the embedded [`ControlClampDescriptor`] table (`CL 16..23`, `bytes[8512..9024]`),
+    /// inline `CP1` contributor slots (`Arena 0 [7,680..8,512]` and `Arena 3 [61,312..63,424]`), and
+    /// global LFO/Envelope/Trust-Region anchors from `Arena 0..3` and snaps all controls to their `default_val`.
     pub fn load_from_arena0(&mut self, arena0_bytes: &[u8], num_controls: usize, rho_ctrl: f64) {
         self.ensure_control_capacity(num_controls);
         self.num_controls = num_controls;
@@ -245,6 +268,15 @@ impl<B: MathBackend> ControlBus<B> {
                     self.descriptors[p] = desc;
                 }
             }
+        }
+
+        // Decode inline CP1 contributor slots if Region 4 CP1 stream was not already loaded
+        if self.num_contributors == 0
+            && let Ok(inline_count) =
+                decode_cp1_inline_contributors(arena0_bytes, &mut self.contributors)
+            && inline_count > 0
+        {
+            self.num_contributors = inline_count;
         }
 
         self.update_sample_rate_params(arena0_bytes, rho_ctrl);
@@ -429,14 +461,32 @@ impl<B: MathBackend> ControlBus<B> {
     #[cfg_attr(feature = "hotpath", hotpath::measure)]
     #[inline]
     pub fn tick_3khz(&mut self, audio_abs_energy: f32, arena_bytes: &[u8]) -> bool {
-        for b in 0..3 {
-            let pole = self.env_poles[b];
-            self.env_states[b] = flush_recursive_state_f32(
-                pole * self.env_states[b] + (1.0 - pole) * audio_abs_energy,
-            );
+        self.tick_3khz_with_detectors(audio_abs_energy, None, arena_bytes)
+    }
+
+    /// Executes one $3\text{ kHz}$ Control-Bus tick with optional 4-band stereo-linked ballistic
+    /// detector states `[e_low, e_mid, e_high, e_aux]` from `Stage 0` (`r[dsp.ctrl.modulators.dynamic]`).
+    #[inline]
+    pub fn tick_3khz_with_detectors(
+        &mut self,
+        audio_abs_energy: f32,
+        stage0_detectors: Option<[f32; 4]>,
+        arena_bytes: &[u8],
+    ) -> bool {
+        if let Some(det) = stage0_detectors {
+            for b in 0..4 {
+                self.env_states[b] = flush_recursive_state_f32(det[b]);
+            }
+        } else {
+            for b in 0..3 {
+                let pole = self.env_poles[b];
+                self.env_states[b] = flush_recursive_state_f32(
+                    pole * self.env_states[b] + (1.0 - pole) * audio_abs_energy,
+                );
+            }
+            // Causal attack onset detector (fast high-band envelope minus slow low-band envelope)
+            self.env_states[3] = (self.env_states[2] - self.env_states[0]).max(0.0);
         }
-        // Causal attack onset detector (fast high-band envelope minus slow low-band envelope)
-        self.env_states[3] = (self.env_states[2] - self.env_states[0]).max(0.0);
         for j in 0..2 {
             let angle_bits = self.lfo_angle_bits[j];
             if (angle_bits & 0x7fff_ffff) == 0 {
@@ -535,7 +585,147 @@ impl<B: MathBackend> ControlBus<B> {
 
     #[inline]
     fn evaluate_static_control_basis(&mut self, arena_bytes: &[u8]) {
-        // 1. Apply Theorem 3 O(1) Incremental Single-Knob Delta Update Law over any moved controls p in 0..P
+        if self.num_contributors > 0 {
+            let mut z_main_base = [0.0_f32; 8];
+            let mut z_main_ultra = [0.0_f32; 8];
+            let mut s_emb = [0.0_f32; 3];
+            for c in 0..self.num_contributors.min(self.contributors.len()) {
+                let slot = &self.contributors[c];
+                let p = slot.control_idx as usize;
+                let effective_kind = if slot.ctrl_kind != 0 {
+                    slot.ctrl_kind
+                } else if p < self.num_controls {
+                    self.descriptors[p].ctrl_kind
+                } else {
+                    0
+                };
+                let (lob, scalar) = match effective_kind {
+                    0 if p < self.num_controls => {
+                        let u = self.current_u_norm[p];
+                        (self.descriptors[p].eval_lobatto_basis(u), u)
+                    }
+                    1 if p < self.num_controls => {
+                        let active_opt = self.active_switch_options[p];
+                        let def_opt = (self.descriptors[p].default_val.max(0.0) + 0.5) as u8;
+                        let s = if slot.option_idx == 0xFF {
+                            if active_opt != def_opt { 1.0 } else { 0.0 }
+                        } else if active_opt != def_opt && active_opt == slot.option_idx {
+                            1.0
+                        } else {
+                            0.0
+                        };
+                        ([s, 0.0, 0.0], s)
+                    }
+                    2 => {
+                        let q = slot.partner_control_id as usize;
+                        if p < self.num_controls && q < self.num_controls {
+                            let u_p = self.current_u_norm[p];
+                            let u_q = self.current_u_norm[q];
+                            let lob_p = self.descriptors[p].eval_lobatto_basis(u_p);
+                            let lob_q = self.descriptors[q].eval_lobatto_basis(u_q);
+                            let prod = lob_p[0] * lob_q[0];
+                            ([prod, lob_p[1] * lob_q[0], lob_p[0] * lob_q[1]], prod)
+                        } else {
+                            ([0.0; 3], 0.0)
+                        }
+                    }
+                    _ => ([0.0; 3], 0.0),
+                };
+                for k in 0..3 {
+                    let lk = lob[k];
+                    if lk.abs() > 1e-12 {
+                        for d in 0..8 {
+                            z_main_base[d] += slot.main_base[k][d] * lk;
+                            if slot.has_ultra {
+                                z_main_ultra[d] += slot.main_ultra[k][d] * lk;
+                            }
+                        }
+                    }
+                }
+                let has_emb = slot.emb.iter().any(|&w| w.abs() > 1e-12);
+                let z_c = if has_emb {
+                    slot.emb[0] * lob[0] + slot.emb[1] * lob[1] + slot.emb[2] * lob[2]
+                } else {
+                    scalar
+                };
+                for e in 0..3 {
+                    s_emb[e] += slot.emb[e] * scalar;
+                }
+                if c < self.exact_fm_acc[0].count {
+                    for f in 0..4 {
+                        let _ = self.exact_fm_acc[f]
+                            .update_contributor(c, (slot.v_base[f] * z_c).to_bits());
+                        let v_u = if slot.has_ultra {
+                            slot.v_ultra[f] * z_c
+                        } else {
+                            0.0
+                        };
+                        let _ = self.exact_fm_acc[4 + f].update_contributor(c, v_u.to_bits());
+                    }
+                }
+            }
+            let mut z_fm_base = [0.0_f32; 4];
+            let mut z_fm_ultra = [0.0_f32; 4];
+            for f in 0..4 {
+                if let Some(bits) = self.exact_fm_acc[f].twice_pairs.to_interaction_f32_bits() {
+                    z_fm_base[f] = f32::from_bits(bits);
+                }
+                if let Some(bits) = self.exact_fm_acc[4 + f]
+                    .twice_pairs
+                    .to_interaction_f32_bits()
+                {
+                    z_fm_ultra[f] = f32::from_bits(bits);
+                }
+            }
+            let (uint_base, has_uint_base) = eval_uint_base_4x8(arena_bytes, z_fm_base, s_emb);
+            let mut z_base_8 = [0.0_f32; 8];
+            for d in 0..8 {
+                z_base_8[d] = z_main_base[d] + uint_base[d];
+            }
+            if !has_uint_base {
+                for f in 0..4 {
+                    z_base_8[f] += z_fm_base[f];
+                    z_base_8[4 + f] += z_fm_base[f];
+                }
+            }
+
+            if arena_bytes.len() >= 64_000 {
+                let (delta_base_8, uint_ultra_8, has_uint_ultra) =
+                    eval_uint_ultra_delta_3x4x8(arena_bytes, z_fm_base, z_fm_ultra, s_emb);
+                for d in 0..8 {
+                    z_base_8[d] += delta_base_8[d];
+                }
+                let mut z_ultra_8 = [0.0_f32; 8];
+                for d in 0..8 {
+                    z_ultra_8[d] = z_main_ultra[d] + uint_ultra_8[d];
+                }
+                if !has_uint_ultra {
+                    for f in 0..4 {
+                        z_ultra_8[f] += z_fm_ultra[f];
+                        z_ultra_8[4 + f] += z_fm_ultra[f];
+                    }
+                }
+                let mut z_head_u4 = [z_ultra_8[0], z_ultra_8[1], z_ultra_8[2], z_ultra_8[3]];
+                let mut z_stage_u4 = [z_ultra_8[4], z_ultra_8[5], z_ultra_8[6], z_ultra_8[7]];
+                trust_clip_outward_4d(&mut z_head_u4, self.trust_radius_mh);
+                trust_clip_outward_4d(&mut z_stage_u4, self.trust_radius_mh);
+                self.z_head_ultra = z_head_u4;
+                self.z_stage_ultra = z_stage_u4;
+            } else {
+                self.z_head_ultra = [0.0; 4];
+                self.z_stage_ultra = [0.0; 4];
+            }
+            let mut z_head_4 = [z_base_8[0], z_base_8[1], z_base_8[2], z_base_8[3]];
+            let mut z_stage_4 = [z_base_8[4], z_base_8[5], z_base_8[6], z_base_8[7]];
+            trust_clip_outward_4d(&mut z_head_4, self.trust_radius_mh);
+            trust_clip_outward_4d(&mut z_stage_4, self.trust_radius_mh);
+            self.z_head = z_head_4;
+            self.ctrl_basis_4 = z_stage_4;
+            self.evaluate_tank_modulation(arena_bytes);
+            return;
+        }
+
+        // Apply Theorem 3 O(1) Incremental Single-Knob Delta Update Law over any moved controls p in 0..P
         for p in 0..self.num_controls {
             let u_new = self.current_u_norm[p];
             let u_old = self.prev_eval_u_norm[p];
@@ -563,6 +753,8 @@ impl<B: MathBackend> ControlBus<B> {
                     for f in 0..4 {
                         let _ = self.exact_fm_acc[f]
                             .update_contributor(p, (proj.v_factors[f] * u_new).to_bits());
+                        let _ = self.exact_fm_acc[4 + f]
+                            .update_contributor(p, (proj.v_factors[4 + f] * u_new).to_bits());
                     }
                 }
                 self.prev_eval_u_norm[p] = u_new;
@@ -575,143 +767,47 @@ impl<B: MathBackend> ControlBus<B> {
                 z_acc_8[4 + f] = f32::from_bits(bits);
             }
         }
-        let z_acc_ultra_4 =
+        let mut z_acc_ultra_4 =
             LatentAccumulator64B::evaluate_z_ultra_fm(&self.s_vx_ultra, &self.s_v2x2_ultra);
-
-        let mut basis_16 = [0.0_f32; 16];
-        let mut b_idx = 0_usize;
-        for p in 0..self.num_controls {
-            if b_idx >= 16 {
-                break;
-            }
-            if self.descriptors[p].ctrl_kind == 0 {
-                let lob = self.descriptors[p].eval_lobatto_basis(self.current_u_norm[p]);
-                let deg = (self.descriptors[p].lobatto_degree as usize).min(3);
-                for k in 0..deg {
-                    if b_idx < 16 {
-                        basis_16[b_idx] = lob[k];
-                        b_idx += 1;
-                    }
-                }
-            } else if self.descriptors[p].ctrl_kind == 1 {
-                let active_opt = self.active_switch_options[p] as usize;
-                let num_non_def = self.descriptors[p].lobatto_degree as usize;
-                for opt_k in 1..=num_non_def {
-                    if b_idx < 16 {
-                        basis_16[b_idx] = if active_opt == opt_k { 1.0 } else { 0.0 };
-                        b_idx += 1;
-                    }
-                }
+        for f in 0..4 {
+            if let Some(bits) = self.exact_fm_acc[4 + f]
+                .twice_pairs
+                .to_interaction_f32_bits()
+            {
+                z_acc_ultra_4[f] = f32::from_bits(bits);
             }
         }
 
-        self.ctrl_basis_4 = [
-            basis_16[0] + z_acc_8[4],
-            basis_16[1] + z_acc_8[5],
-            basis_16[2] + z_acc_8[6],
-            basis_16[3] + z_acc_8[7],
-        ];
-        let p_svd_base = 8_256_usize;
-        let fm_base = 7_744_usize;
-        let mut z_raw = B::Vec4::from_array([z_acc_8[0], z_acc_8[1], z_acc_8[2], z_acc_8[3]]);
-
-        if arena_bytes.len() >= p_svd_base + 256 {
-            let mut sum_vx = B::Vec4::zero();
-            let mut sum_v2x2 = B::Vec4::zero();
-
-            for row in 0..12 {
-                let x_val = basis_16[row];
-                if x_val.abs() > 1e-12 {
-                    let x_vec = B::Vec4::splat(x_val);
-                    let v_off = fm_base + row * 16;
-                    let v_row = read_vec4_le::<B>(arena_bytes, v_off);
-                    let vx = v_row.mul(x_vec);
-                    sum_vx = sum_vx.add(vx);
-                    sum_v2x2 = sum_v2x2.fma(vx, vx);
-                }
-            }
-            let fm_arr = sum_vx
-                .mul(sum_vx)
-                .sub(sum_v2x2)
-                .mul(B::Vec4::splat(0.5))
-                .to_array();
-            for m in 0..4 {
-                if 12 + m >= b_idx {
-                    basis_16[12 + m] = fm_arr[m];
-                }
-            }
-
-            for row in 0..16 {
-                let x_val = basis_16[row];
-                if x_val.abs() > 1e-12 {
-                    let x_vec = B::Vec4::splat(x_val);
-                    let p_off = p_svd_base + row * 16;
-                    let p_row = read_vec4_le::<B>(arena_bytes, p_off);
-                    z_raw = z_raw.fma(x_vec, p_row);
-                }
-            }
+        let mut z_head_4 = [z_acc_8[0], z_acc_8[1], z_acc_8[2], z_acc_8[3]];
+        let mut z_stage_4 = [z_acc_8[4], z_acc_8[5], z_acc_8[6], z_acc_8[7]];
+        if z_stage_4.iter().all(|&v| v.abs() <= 1e-12) && self.num_controls > 0 {
+            let lob = self.descriptors[0].eval_lobatto_basis(self.current_u_norm[0]);
+            z_stage_4 = [lob[0], lob[1], lob[2], 0.0];
         }
+        trust_clip_outward_4d(&mut z_head_4, self.trust_radius_mh);
+        trust_clip_outward_4d(&mut z_stage_4, self.trust_radius_mh);
+        self.z_head = z_head_4;
+        self.ctrl_basis_4 = z_stage_4;
 
-        let mut z_raw_arr = z_raw.to_array();
-        crate::operators::op_n::trust_region_softclip_4d(&mut z_raw_arr, self.trust_radius_mh);
-        self.z_head = z_raw_arr;
-
-        // Evaluate `Arena 3` (`Tier::Ultra`) Rank-8 FM (`V_int_ultra` at 62,912..63,168)
-        // and Nested SVD Prefix modes 5..8 (`P_svd_ultra` at 63,168..63,424) when present.
-        const FM_ULTRA_BASE: usize = 62_912;
-        const P_SVD_ULTRA_BASE: usize = 63_168;
-        if arena_bytes.len() >= P_SVD_ULTRA_BASE + 256 {
-            let mut sum_vx_u = B::Vec4::zero();
-            let mut sum_v2x2_u = B::Vec4::zero();
-            for row in 0..12 {
-                let x_val = basis_16[row];
-                if x_val.abs() > 1e-12 {
-                    let x_vec = B::Vec4::splat(x_val);
-                    let v_off = FM_ULTRA_BASE + row * 16;
-                    let v_row = read_vec4_le::<B>(arena_bytes, v_off);
-                    let vx = v_row.mul(x_vec);
-                    sum_vx_u = sum_vx_u.add(vx);
-                    sum_v2x2_u = sum_v2x2_u.fma(vx, vx);
-                }
-            }
-            let fm_u_arr = sum_vx_u
-                .mul(sum_vx_u)
-                .sub(sum_v2x2_u)
-                .mul(B::Vec4::splat(0.5))
-                .to_array();
-            let mut basis_ultra_16 = basis_16;
-            for m in 0..4 {
-                if 12 + m >= b_idx {
-                    basis_ultra_16[12 + m] = fm_u_arr[m];
-                }
-            }
-            let mut z_raw_u = B::Vec4::from_array(z_acc_ultra_4);
-            for (row, &x_val) in basis_ultra_16.iter().enumerate() {
-                if x_val.abs() > 1e-12 {
-                    let x_vec = B::Vec4::splat(x_val);
-                    let p_off = P_SVD_ULTRA_BASE + row * 16;
-                    let p_row = read_vec4_le::<B>(arena_bytes, p_off);
-                    z_raw_u = z_raw_u.fma(x_vec, p_row);
-                }
-            }
-            let mut z_raw_u_arr = z_raw_u.to_array();
-            crate::operators::op_n::trust_region_softclip_4d(
-                &mut z_raw_u_arr,
-                self.trust_radius_mh,
-            );
-            self.z_head_ultra = z_raw_u_arr;
+        if arena_bytes.len() >= 64_000 {
+            trust_clip_outward_4d(&mut z_acc_ultra_4, self.trust_radius_mh);
+            self.z_head_ultra = z_acc_ultra_4;
+            self.z_stage_ultra = [0.0; 4];
         } else {
             self.z_head_ultra = [0.0; 4];
+            self.z_stage_ultra = [0.0; 4];
         }
 
         self.evaluate_tank_modulation(arena_bytes);
     }
 
     /// Evaluates the $3\text{ kHz}$ `8 × 32` / `16 × 16` Control/LFO/Envelope $\to$ Stage & Spatial Tank
-    /// state-space projection matrix `W_ctrl` (`CL 32..47`, `bytes 9536..10560` in `Arena 0`, `0 FDIV`, `0 FSQRT`).
+    /// state-space projection matrix `W_ctrl` (`CL 32..47`, `bytes 9536..10560` in `Arena 0`, plus
+    /// `16 × 4` Ultra delta at `bytes 60672..60928` in `Arena 3`, `0 FDIV`, `0 FSQRT`).
     #[inline]
     fn evaluate_tank_modulation(&mut self, arena_bytes: &[u8]) {
         const W_CTRL_TANK_BASE: usize = 9_536;
+        const W_CTRL_ULTRA_BASE: usize = 60_672;
         if arena_bytes.len() < W_CTRL_TANK_BASE + 1024 {
             self.tank_mod_dirty = false;
             return;
@@ -760,6 +856,49 @@ impl<B: MathBackend> ControlBus<B> {
 
         self.tank_grain_len_scale = acc[6].to_array();
         self.tank_state_mod = acc[7].to_array();
+
+        // Also evaluate 16x16 + 16x4 stage dispatch into stage_targets (`r[dsp.ctrl.modulators.dynamic]`)
+        let z_ctrl_8 = [
+            self.z_head[0],
+            self.z_head[1],
+            self.z_head[2],
+            self.z_head[3],
+            self.ctrl_basis_4[0],
+            self.ctrl_basis_4[1],
+            self.ctrl_basis_4[2],
+            self.ctrl_basis_4[3],
+        ];
+        let m_dyn_8 = [
+            self.lfo_phasors[0][0],
+            self.lfo_phasors[0][1],
+            self.lfo_harmonics[1],
+            self.lfo_harmonics[5],
+            self.env_states[0],
+            self.env_states[1],
+            self.env_states[2],
+            self.env_states[3],
+        ];
+        let q16 = Self::assemble_q16(&z_ctrl_8, &m_dyn_8);
+        let mut w_base = [[0.0f32; 16]; 16];
+        for (r, row_arr) in w_base.iter_mut().enumerate() {
+            let row_off = W_CTRL_TANK_BASE + r * 64;
+            for c in 0..4 {
+                let v = read_vec4_le::<B>(arena_bytes, row_off + c * 16).to_array();
+                row_arr[c * 4..c * 4 + 4].copy_from_slice(&v);
+            }
+        }
+        if arena_bytes.len() >= W_CTRL_ULTRA_BASE + 256 {
+            let mut w_ultra = [[0.0f32; 4]; 16];
+            for (r, row_arr) in w_ultra.iter_mut().enumerate() {
+                *row_arr = read_vec4_le::<B>(arena_bytes, W_CTRL_ULTRA_BASE + r * 16).to_array();
+            }
+            self.stage_targets =
+                eval_tier_stage_dispatch(&w_base, Some(&w_ultra), &q16, &q16, &self.z_stage_ultra);
+        } else {
+            self.stage_targets =
+                eval_tier_stage_dispatch(&w_base, None, &q16, &q16, &self.z_stage_ultra);
+        }
+
         self.tank_mod_dirty = true;
     }
 
@@ -808,6 +947,351 @@ impl<B: MathBackend> ControlBus<B> {
                 .store(&mut t_chunks[c]);
         }
     }
+}
+
+/// Applies the outward-checked 4-D trust-region clip (`ref[dsp.ctrl.op-n.trust-clip]`) with
+/// fallback to `trust_region_softclip_4d`.
+#[inline]
+pub fn trust_clip_outward_4d(vec: &mut [f32; 4], radius_mh: f32) {
+    let in_bits = [
+        vec[0].to_bits(),
+        vec[1].to_bits(),
+        vec[2].to_bits(),
+        vec[3].to_bits(),
+    ];
+    if let Some((out_bits, _, _)) = crate::math::trust_clip_outward_checked_bits::<4>(
+        &in_bits,
+        radius_mh.to_bits(),
+        (1.0e-12_f32).to_bits(),
+    ) {
+        *vec = [
+            f32::from_bits(out_bits[0]),
+            f32::from_bits(out_bits[1]),
+            f32::from_bits(out_bits[2]),
+            f32::from_bits(out_bits[3]),
+        ];
+    } else {
+        crate::operators::op_n::trust_region_softclip_4d(vec, radius_mh);
+    }
+}
+
+/// Evaluates `U_int^base` (`4 × 8 = 128 B` at `Arena 0 [7,552..7,680]`) on `z_fm_base` (`r[dsp.ctrl.accum.anova-fm]`).
+#[inline]
+pub fn eval_uint_base_4x8(
+    arena_bytes: &[u8],
+    z_fm_base: [f32; 4],
+    s_emb: [f32; 3],
+) -> ([f32; 8], bool) {
+    const UINT_BASE_OFF: usize = 7_552;
+    if arena_bytes.len() < UINT_BASE_OFF + 128 {
+        return ([0.0; 8], false);
+    }
+    let has_nonzero_uint = arena_bytes[UINT_BASE_OFF..UINT_BASE_OFF + 128]
+        .iter()
+        .any(|&b| b != 0);
+    if !has_nonzero_uint {
+        return ([0.0; 8], false);
+    }
+    let inputs = if z_fm_base.iter().any(|&v| v.abs() > 1e-12) {
+        z_fm_base
+    } else {
+        [
+            s_emb[0] * s_emb[1],
+            s_emb[0] * s_emb[2],
+            s_emb[1] * s_emb[2],
+            s_emb[0] * s_emb[0],
+        ]
+    };
+    let mut out = [0.0_f32; 8];
+    for (r, &p_val) in inputs.iter().enumerate() {
+        if p_val.abs() > 1e-12 {
+            let row_off = UINT_BASE_OFF + r * 32;
+            for (d, out_d) in out.iter_mut().enumerate() {
+                let off = row_off + d * 4;
+                let w = f32::from_le_bytes([
+                    arena_bytes[off],
+                    arena_bytes[off + 1],
+                    arena_bytes[off + 2],
+                    arena_bytes[off + 3],
+                ]);
+                *out_d += p_val * w;
+            }
+        }
+    }
+    (out, true)
+}
+
+/// Evaluates `U_int^base` (`3 × 8` at `Arena 0 [7,552..7,648]`) on the 3 pairwise products of `s_emb`.
+#[inline]
+pub fn eval_uint_base_3x8(arena_bytes: &[u8], s_emb: [f32; 3]) -> [f32; 8] {
+    eval_uint_base_4x8(arena_bytes, [0.0; 4], s_emb).0
+}
+
+/// Evaluates `3 × U_int,Delta` (`3 × 4 × 8 = 384 B` at `Arena 3 [60,928..61,312]`, `r[dsp.ctrl.accum.anova-fm]`):
+/// - Block 0 (`60,928..61,056`): maps `z_fm_ultra` into `\Delta z_raw[0..8]`
+/// - Block 1 (`61,056..61,184`): maps `z_fm_base` into `z_raw[8..16]`
+/// - Block 2 (`61,184..61,312`): maps `z_fm_ultra` into `z_raw[8..16]`
+#[inline]
+pub fn eval_uint_ultra_delta_3x4x8(
+    arena_bytes: &[u8],
+    z_fm_base: [f32; 4],
+    z_fm_ultra: [f32; 4],
+    s_emb: [f32; 3],
+) -> ([f32; 8], [f32; 8], bool) {
+    const UINT_ULTRA_OFF: usize = 60_928;
+    if arena_bytes.len() < UINT_ULTRA_OFF + 384 {
+        return ([0.0; 8], [0.0; 8], false);
+    }
+    let has_nonzero_uint = arena_bytes[UINT_ULTRA_OFF..UINT_ULTRA_OFF + 384]
+        .iter()
+        .any(|&b| b != 0);
+    if !has_nonzero_uint {
+        return ([0.0; 8], [0.0; 8], false);
+    }
+    let has_fm =
+        z_fm_base.iter().any(|&v| v.abs() > 1e-12) || z_fm_ultra.iter().any(|&v| v.abs() > 1e-12);
+    let (in_b0, in_b1, in_b2) = if has_fm {
+        (z_fm_ultra, z_fm_base, z_fm_ultra)
+    } else {
+        let p = [
+            s_emb[0] * s_emb[1],
+            s_emb[0] * s_emb[2],
+            s_emb[1] * s_emb[2],
+            0.0,
+        ];
+        ([0.0; 4], p, [0.0; 4])
+    };
+    let mut delta_base_8 = [0.0_f32; 8];
+    let mut ultra_new_8 = [0.0_f32; 8];
+    for (r, &val) in in_b0.iter().enumerate() {
+        if val.abs() > 1e-12 {
+            let row_off = UINT_ULTRA_OFF + r * 32;
+            for (d, out_d) in delta_base_8.iter_mut().enumerate() {
+                let off = row_off + d * 4;
+                let w = f32::from_le_bytes([
+                    arena_bytes[off],
+                    arena_bytes[off + 1],
+                    arena_bytes[off + 2],
+                    arena_bytes[off + 3],
+                ]);
+                *out_d += val * w;
+            }
+        }
+    }
+    for (r, &val) in in_b1.iter().enumerate() {
+        if val.abs() > 1e-12 {
+            let row_off = UINT_ULTRA_OFF + 128 + r * 32;
+            for (d, out_d) in ultra_new_8.iter_mut().enumerate() {
+                let off = row_off + d * 4;
+                let w = f32::from_le_bytes([
+                    arena_bytes[off],
+                    arena_bytes[off + 1],
+                    arena_bytes[off + 2],
+                    arena_bytes[off + 3],
+                ]);
+                *out_d += val * w;
+            }
+        }
+    }
+    for (r, &val) in in_b2.iter().enumerate() {
+        if val.abs() > 1e-12 {
+            let row_off = UINT_ULTRA_OFF + 256 + r * 32;
+            for (d, out_d) in ultra_new_8.iter_mut().enumerate() {
+                let off = row_off + d * 4;
+                let w = f32::from_le_bytes([
+                    arena_bytes[off],
+                    arena_bytes[off + 1],
+                    arena_bytes[off + 2],
+                    arena_bytes[off + 3],
+                ]);
+                *out_d += val * w;
+            }
+        }
+    }
+    (delta_base_8, ultra_new_8, true)
+}
+
+/// Evaluates `U_int,Delta` (`6 × 8` at `Arena 3 [60,928..61,120]`) on 6 pairwise products.
+#[inline]
+pub fn eval_uint_ultra_delta_6x8(
+    arena_bytes: &[u8],
+    s_emb: [f32; 3],
+    s_emb_ultra: [f32; 3],
+) -> [f32; 8] {
+    const UINT_ULTRA_OFF: usize = 60_928;
+    if arena_bytes.len() < UINT_ULTRA_OFF + 192 {
+        return [0.0; 8];
+    }
+    let pairs = [
+        s_emb[0] * s_emb[1],
+        s_emb[0] * s_emb[2],
+        s_emb[1] * s_emb[2],
+        s_emb_ultra[0] * s_emb[0],
+        s_emb_ultra[1] * s_emb[1],
+        s_emb_ultra[2] * s_emb[2],
+    ];
+    let mut out = [0.0_f32; 8];
+    for (r, &p_val) in pairs.iter().enumerate() {
+        if p_val.abs() > 1e-12 {
+            let row_off = UINT_ULTRA_OFF + r * 32;
+            for (d, out_d) in out.iter_mut().enumerate() {
+                let off = row_off + d * 4;
+                let w = f32::from_le_bytes([
+                    arena_bytes[off],
+                    arena_bytes[off + 1],
+                    arena_bytes[off + 2],
+                    arena_bytes[off + 3],
+                ]);
+                *out_d += p_val * w;
+            }
+        }
+    }
+    out
+}
+
+/// Decodes inline `CP1` contributors from `Arena 0 [7,680..8,512]` (`832 B` base) and
+/// `Arena 3 [61,312..63,424]` (`2,112 B` Ultra) using `cp1_lanes_dir` at `Arena 0 [7,524..7,552]`.
+/// Returns `Ok(0)` when `num_inline_contributors == 0`.
+pub fn decode_cp1_inline_contributors(
+    arena_bytes: &[u8],
+    out_slots: &mut [Cp1ContributorSlot],
+) -> Result<usize, crate::schema::DnamError> {
+    const DIR_OFF: usize = 7_524;
+    const BASE_OFF: usize = 7_680;
+    const BASE_END: usize = 8_512;
+    const ULTRA_OFF: usize = 61_312;
+    const ULTRA_END: usize = 63_424;
+
+    if arena_bytes.len() < BASE_END {
+        return Ok(0);
+    }
+    let count = u16::from_le_bytes([arena_bytes[DIR_OFF], arena_bytes[DIR_OFF + 1]]) as usize;
+    if count == 0 {
+        return Ok(0);
+    }
+    if count > 26 || count > out_slots.len() {
+        return Err(crate::schema::DnamError::SchemaValidationError(
+            alloc::string::String::from("inline CP1 contributor count exceeds 26"),
+        ));
+    }
+    let use_3b_dir = count <= 8
+        && arena_bytes[DIR_OFF + 2] == 0
+        && arena_bytes[DIR_OFF + 3] == 0
+        && ((1..=3).contains(&(arena_bytes[DIR_OFF + 5] & 0x0F))
+            || (1..=3).contains(&(arena_bytes[DIR_OFF + 6] & 0x0F)));
+    let has_ultra = arena_bytes.len() >= ULTRA_END;
+    let mut b_cursor = BASE_OFF;
+    let mut u_cursor = ULTRA_OFF;
+    for (c, slot) in out_slots.iter_mut().take(count).enumerate() {
+        let (control_idx, ctrl_kind, option_idx, partner_control_id, lanes) = if use_3b_dir {
+            let entry_off = DIR_OFF + 4 + c * 3;
+            let c_idx = arena_bytes[entry_off] as u16;
+            let b1 = arena_bytes[entry_off + 1];
+            let b2 = arena_bytes[entry_off + 2];
+            let (packed, aux) = if (1..=3).contains(&(b1 & 0x0F)) {
+                (b1, b2)
+            } else {
+                (b2, b1)
+            };
+            let kind = (packed >> 4) & 0x0F;
+            let l = packed & 0x0F;
+            let opt = if kind == 1 { aux } else { 0xFF };
+            let partner = if kind == 2 { aux as u16 } else { 0 };
+            (c_idx, kind, opt, partner, l)
+        } else {
+            let packed = arena_bytes[DIR_OFF + 2 + c];
+            let kind = (packed >> 4) & 0x0F;
+            let l = packed & 0x0F;
+            let opt = if kind == 1 { 1 } else { 0xFF };
+            let partner = if kind == 2 { (c + 1) as u16 } else { 0 };
+            (c as u16, kind, opt, partner, l)
+        };
+        if !(1..=3).contains(&lanes) {
+            return Err(crate::schema::DnamError::SchemaValidationError(
+                alloc::string::String::from("invalid inline CP1 lane count"),
+            ));
+        }
+        let l_cnt = lanes as usize;
+        let b_bytes = 4 * (9 * l_cnt + 4);
+        if b_cursor + b_bytes > BASE_END {
+            return Err(crate::schema::DnamError::SchemaValidationError(
+                alloc::string::String::from("inline CP1 base payload exceeds 832 B"),
+            ));
+        }
+        let mut main_base = [[0.0f32; 8]; 3];
+        for row in main_base.iter_mut().take(l_cnt) {
+            for val in row.iter_mut() {
+                *val = f32::from_le_bytes([
+                    arena_bytes[b_cursor],
+                    arena_bytes[b_cursor + 1],
+                    arena_bytes[b_cursor + 2],
+                    arena_bytes[b_cursor + 3],
+                ]);
+                b_cursor += 4;
+            }
+        }
+        let mut emb = [0.0f32; 3];
+        for val in emb.iter_mut().take(l_cnt) {
+            *val = f32::from_le_bytes([
+                arena_bytes[b_cursor],
+                arena_bytes[b_cursor + 1],
+                arena_bytes[b_cursor + 2],
+                arena_bytes[b_cursor + 3],
+            ]);
+            b_cursor += 4;
+        }
+        let mut v_base = [0.0f32; 4];
+        for val in &mut v_base {
+            *val = f32::from_le_bytes([
+                arena_bytes[b_cursor],
+                arena_bytes[b_cursor + 1],
+                arena_bytes[b_cursor + 2],
+                arena_bytes[b_cursor + 3],
+            ]);
+            b_cursor += 4;
+        }
+        let mut main_ultra = [[0.0f32; 8]; 3];
+        let mut v_ultra = [0.0f32; 4];
+        if has_ultra {
+            let u_bytes = (32 * l_cnt) + 16;
+            if u_cursor + u_bytes <= ULTRA_END {
+                for row in main_ultra.iter_mut().take(l_cnt) {
+                    for val in row.iter_mut() {
+                        *val = f32::from_le_bytes([
+                            arena_bytes[u_cursor],
+                            arena_bytes[u_cursor + 1],
+                            arena_bytes[u_cursor + 2],
+                            arena_bytes[u_cursor + 3],
+                        ]);
+                        u_cursor += 4;
+                    }
+                }
+                for val in &mut v_ultra {
+                    *val = f32::from_le_bytes([
+                        arena_bytes[u_cursor],
+                        arena_bytes[u_cursor + 1],
+                        arena_bytes[u_cursor + 2],
+                        arena_bytes[u_cursor + 3],
+                    ]);
+                    u_cursor += 4;
+                }
+            }
+        }
+        *slot = Cp1ContributorSlot {
+            lanes,
+            ctrl_kind,
+            control_idx,
+            option_idx,
+            partner_control_id,
+            main_base,
+            emb,
+            v_base,
+            main_ultra,
+            v_ultra,
+            has_ultra,
+        };
+    }
+    Ok(count)
 }
 
 impl<B: MathBackend> Default for ControlBus<B> {
@@ -863,11 +1347,15 @@ mod tests {
         let mut arena0 = vec![0u8; 64_000];
         arena0[7488 + 16..7488 + 20].copy_from_slice(&0.95_f32.to_le_bytes());
         arena0[10560..10564].copy_from_slice(&0.5_f32.to_le_bytes());
-        for off in (7744..8512).step_by(4) {
+        // Populate cp1_lanes_dir at 7,524 with 2 inline CP1 contributors (ctrl 0: 3-lane Range, ctrl 1: 1-lane Switch)
+        arena0[7_524..7_526].copy_from_slice(&2_u16.to_le_bytes());
+        arena0[7_526] = 3;
+        arena0[7_527] = (1 << 4) | 1;
+        for off in (7_680..8_512).step_by(4) {
             arena0[off..off + 4].copy_from_slice(&2.0_f32.to_le_bytes());
         }
-        // Populate P_SVD_ULTRA_BASE (63,168..63,424) with large weights to exercise z_u_norm_sq > 0.25
-        for off in (63_168..63_424).step_by(4) {
+        // Populate inline Ultra CP1 payload (61,312..63,424) with large weights to exercise outward_checked_trust_clip
+        for off in (61_312..63_424).step_by(4) {
             arena0[off..off + 4].copy_from_slice(&2.0_f32.to_le_bytes());
         }
         let mut cb = Box::new(ControlBus::<ScalarBackend>::default());
@@ -910,6 +1398,42 @@ mod tests {
         assert_eq!(cb.clamped_values[1], 1.0);
         assert!(cb.tick_3khz(0.5, &arena0));
         assert!(!cb.tick_3khz(0.5, &arena0));
+
+        // Also test canonical R17-E2 3-byte cp1_lanes_dir encoding: (control_id, packed_kind_and_lanes, option_or_partner)
+        let mut arena_3b = vec![0u8; 64_000];
+        arena_3b[7_524] = 3;
+        // Slot 0: control 0, Range (kind 0), 2 lanes
+        arena_3b[7_528] = 0;
+        arena_3b[7_529] = 2;
+        arena_3b[7_530] = 0;
+        // Slot 1: control 1, Switch (kind 1), 1 lane, option 1
+        arena_3b[7_531] = 1;
+        arena_3b[7_532] = (1 << 4) | 1;
+        arena_3b[7_533] = 1;
+        // Slot 2: control 0 x control 2 Cross-term (kind 2), 1 lane, partner 2
+        arena_3b[7_534] = 0;
+        arena_3b[7_535] = (2 << 4) | 1;
+        arena_3b[7_536] = 2;
+        for off in (7_552..7_680).step_by(4) {
+            arena_3b[off..off + 4].copy_from_slice(&0.15_f32.to_le_bytes());
+        }
+        for off in (7_680..8_100).step_by(4) {
+            arena_3b[off..off + 4].copy_from_slice(&0.25_f32.to_le_bytes());
+        }
+        for off in (60_928..61_600).step_by(4) {
+            arena_3b[off..off + 4].copy_from_slice(&0.10_f32.to_le_bytes());
+        }
+        cb.ensure_control_capacity(3);
+        cb.descriptors[2] = cb.descriptors[0];
+        cb.num_contributors = 0;
+        cb.load_from_arena0(&arena_3b, 3, 1.0);
+        assert_eq!(cb.num_contributors, 3);
+        cb.set_control_immediate(0, 8.0);
+        cb.set_control_immediate(1, 1.0);
+        cb.set_control_immediate(2, 8.0);
+        cb.refresh_static_state(&arena_3b);
+        assert!(cb.z_head[0].abs() > 0.0);
+        assert!(cb.z_head_ultra[0].abs() > 0.0);
 
         // Short arena slice exercises early return in evaluate_tank_modulation
         let short_arena = [0u8; 1024];

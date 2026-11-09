@@ -57,7 +57,7 @@ fn current_alloc_count() -> usize {
 
 fn make_test_container() -> AlignedBuffer<CacheLine64> {
     let mut header = DnamJsonHeader {
-        version: "1.0.0".to_string(),
+        version: "2.0.0".to_string(),
         container_kind: "dnam".to_string(),
         architecture: "DNAM_TORA".to_string(),
         sample_rate_train_hz: 48_000,

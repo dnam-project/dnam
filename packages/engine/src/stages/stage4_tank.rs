@@ -14,8 +14,8 @@ pub const STAGE4_TANK_RAM_BYTES: usize = 2080;
 
 /// Number of delay lines in Stage IV Lite.
 pub const TANK_LITE_LINES: usize = 4;
-/// Capacity per line in Lite: 256 samples (512 bytes fp16).
-pub const TANK_LINE_CAPACITY: usize = 256;
+/// Capacity per line: 1024 samples so `D_max(192 kHz) = 1004 <= 1024` (`ref[dsp.stage4.spatial-tank]`).
+pub const TANK_LINE_CAPACITY: usize = 1024;
 const TANK_LINE_MASK: usize = TANK_LINE_CAPACITY - 1;
 
 /// Passband-normalized 5 Hz DC blocker (`ref[dsp.stage4.dc-blocker]`).
@@ -58,14 +58,16 @@ impl TankDcBlocker {
     }
 }
 
-/// Stage IV: Unitary Spatial Tank (2,080 B Lite RAM).
+/// Stage IV: Unitary Spatial Tank (2,080 B nominal 48 kHz Lite RAM budget).
 #[repr(C, align(64))]
 #[derive(Clone, Debug)]
 pub struct Stage4SpatialTank {
-    /// 4 delay lines stored as fp16: 4 * 256 * 2 B = 2,048 B.
+    /// 4 delay lines stored as fp16 (`1024` capacity for up to `192 kHz` ZOH rescaling).
     pub lines: [[u16; TANK_LINE_CAPACITY]; TANK_LITE_LINES],
     pub write_ptr: usize,
-    /// Delay lengths in samples for the 4 lines.
+    /// Immutable `48 kHz` base delay lengths in samples (`[149.0, 179.0, 211.0, 239.0]`).
+    pub base_delay_lengths: [f32; TANK_LITE_LINES],
+    /// Rescaled delay lengths in samples for the 4 lines (`1..1023`).
     pub delay_lengths: [usize; TANK_LITE_LINES],
     /// Givens mixing angle psi in radians with slew bound |delta_psi| <= 0.05.
     pub current_psi: f32,
@@ -96,6 +98,7 @@ impl Stage4SpatialTank {
         Self {
             lines: [[0; TANK_LINE_CAPACITY]; TANK_LITE_LINES],
             write_ptr: 0,
+            base_delay_lengths: [149.0, 179.0, 211.0, 239.0],
             delay_lengths: [149, 179, 211, 239], // Co-prime lengths
             current_psi: core::f32::consts::FRAC_PI_4, // pi / 4
             target_psi: core::f32::consts::FRAC_PI_4,
@@ -123,8 +126,49 @@ impl Stage4SpatialTank {
         self.ducking_vca.reset();
     }
 
-    /// Reconfigures Stage IV sample-rate parameters (e.g. 5 Hz DC blocker pole R_dc and ducking VCA poles) under ZOH.
+    /// Loads `48 kHz` Stage IV base delay lengths and loop parameters from `Arena 0 [4,672..4,704]`
+    /// when non-zero, falling back to canonical defaults.
+    pub fn load_from_arena(&mut self, arena: &[u8]) {
+        const DEFAULTS: [f32; TANK_LITE_LINES] = [149.0, 179.0, 211.0, 239.0];
+        if arena.len() < 4_704 {
+            self.base_delay_lengths = DEFAULTS;
+            return;
+        }
+        for (l, &def_d) in DEFAULTS.iter().enumerate() {
+            let v = crate::provenance::watermark::read_f32_le(arena, 4_672 + l * 4);
+            self.base_delay_lengths[l] = if v.is_finite() && (4.0..=255.0).contains(&v) {
+                v
+            } else {
+                def_d
+            };
+        }
+        let g = crate::provenance::watermark::read_f32_le(arena, 4_688);
+        if g.is_finite() && (0.05..=1.18).contains(&g) {
+            self.g_loop = g;
+        }
+        let sigma = crate::provenance::watermark::read_f32_le(arena, 4_692);
+        if sigma.is_finite() && (0.05..=10.0).contains(&sigma) {
+            self.sigma_knee = sigma;
+        }
+        let psi = crate::provenance::watermark::read_f32_le(arena, 4_696);
+        if psi.is_finite()
+            && psi.abs() > 1e-6
+            && (-core::f32::consts::PI..=core::f32::consts::PI).contains(&psi)
+        {
+            self.target_psi = psi;
+            self.current_psi = psi;
+            let (c, s) = algebraic_unit_rotor_op_m(psi);
+            self.cos_psi = c;
+            self.sin_psi = s;
+        }
+    }
+
+    /// Reconfigures Stage IV sample-rate parameters (delay line lengths, 5 Hz DC blocker pole R_dc, and ducking VCA poles) under ZOH.
     pub fn reconfigure_sample_rate(&mut self, zoh: &crate::container::ZohRescaledParams) {
+        for l in 0..TANK_LITE_LINES {
+            let scaled = (zoh.rescale_alignment_delay(self.base_delay_lengths[l]) + 0.5) as usize;
+            self.delay_lengths[l] = scaled.clamp(1, TANK_LINE_CAPACITY - 1);
+        }
         for b in &mut self.dc_blockers {
             b.r_dc = zoh.r_dc_host;
         }
@@ -342,6 +386,20 @@ impl Stage4SpatialTank {
         self.ducking_vca.step_stereo(in_l, in_r, wet_l, wet_r)
     }
 
+    /// Evaluates Stage IV for stereo input `(in_l, in_r)`, returning `(wet_l, wet_r, readout_sig, loop_sig)`.
+    #[inline(always)]
+    pub fn step_stereo_with_readouts(
+        &mut self,
+        in_l: f32,
+        in_r: f32,
+    ) -> (f32, f32, [f32; TANK_LITE_LINES], [f32; TANK_LITE_LINES]) {
+        let (cos_psi, sin_psi) = self.step_givens_slew();
+        let (readout_sig, loop_sig) = self.step_reads_and_saturate();
+        let (wet_l, wet_r) =
+            self.step_mix_write_duck(cos_psi, sin_psi, readout_sig, loop_sig, in_l, in_r);
+        (wet_l, wet_r, readout_sig, loop_sig)
+    }
+
     /// Evaluates Stage IV for stereo input (in_l, in_r).
     ///
     /// Returns stereo wet reverberant output (wet_l, wet_r).
@@ -349,9 +407,8 @@ impl Stage4SpatialTank {
     #[cfg_attr(feature = "hotpath", hotpath::measure)]
     #[inline(always)]
     pub fn step_stereo(&mut self, in_l: f32, in_r: f32) -> (f32, f32) {
-        let (cos_psi, sin_psi) = self.step_givens_slew();
-        let (readout_sig, loop_sig) = self.step_reads_and_saturate();
-        self.step_mix_write_duck(cos_psi, sin_psi, readout_sig, loop_sig, in_l, in_r)
+        let (wet_l, wet_r, _, _) = self.step_stereo_with_readouts(in_l, in_r);
+        (wet_l, wet_r)
     }
 }
 

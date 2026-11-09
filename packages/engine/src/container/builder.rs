@@ -119,9 +119,11 @@ pub fn build_dnam_container(
     let has_calib_stats = is_ckpt && stored_arena_bytes.len() > stems_end;
     if has_calib_stats {
         verify_ckpt_arena5_calib_stats(stored_arena_bytes, stems_end)?;
-        if header.metadata.signatures.is_none() && header.schema_version()?.minor < 1 {
-            header.version = crate::schema::SchemaVersion::V1_1_0.as_semver_string();
-        }
+    }
+    if header.metadata.signatures.is_none()
+        && (header.version == "1.0.0" || header.version == "1.1.0")
+    {
+        header.version = crate::schema::SchemaVersion::V2_0_0.as_semver_string();
     }
 
     let json_bytes =
@@ -206,11 +208,44 @@ pub fn build_dnam_container(
     Ok(container)
 }
 
-/// Updates the JSON header of an existing container in-place (< 0.1 ms).
+/// Updates the JSON header or `DMU1` mutable frame of an existing container in-place (< 0.1 ms).
 pub fn update_header_in_place(
     container_bytes: &mut [u8],
     new_header: &DnamJsonHeader,
 ) -> Result<(), DnamError> {
+    if super::preamble::is_v2_wire_directory_container(container_bytes)
+        && &container_bytes[0..4] == b"DNAM"
+    {
+        let layout = super::wire::validate_v2_open_dnam_layout(container_bytes)?;
+        let mut dmu_obj = serde_json::Map::new();
+        if !new_header.presets.is_empty() {
+            dmu_obj.insert(
+                "presets".to_string(),
+                serde_json::to_value(&new_header.presets)
+                    .map_err(|e| DnamError::InvalidJsonHeader(e.to_string()))?,
+            );
+        }
+        if !new_header.user_metadata.is_empty() {
+            dmu_obj.insert(
+                "user_metadata".to_string(),
+                serde_json::to_value(&new_header.user_metadata)
+                    .map_err(|e| DnamError::InvalidJsonHeader(e.to_string()))?,
+            );
+        }
+        let payload_bytes = serde_json::to_vec(&serde_json::Value::Object(dmu_obj))
+            .map_err(|e| DnamError::InvalidJsonHeader(e.to_string()))?;
+        let cap = layout.mutable_extent.1;
+        if super::wire::DMU1_HEADER_SIZE + payload_bytes.len() > cap {
+            return Err(DnamError::HeaderCapacityExceeded {
+                capacity: cap,
+                required: super::wire::DMU1_HEADER_SIZE + payload_bytes.len(),
+            });
+        }
+        let dmu1 = super::wire::build_dmu1_mutable_frame(&payload_bytes, cap)?;
+        container_bytes[layout.mutable_extent.0..layout.mutable_extent.0 + cap]
+            .copy_from_slice(&dmu1);
+        return Ok(());
+    }
     let mut preamble = DnamPreamble::from_bytes(container_bytes)?;
     let arena_off = preamble.tensor_arena_offset as usize;
     if container_bytes.len() < arena_off {

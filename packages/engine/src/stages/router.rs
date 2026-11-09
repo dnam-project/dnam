@@ -148,7 +148,7 @@ impl ReturnAligner {
     }
 }
 
-/// Stage 0: 8-Port Matrix Router state (1,536 B RAM).
+///// Stage 0: 8-Port Matrix Router state (1,536 B RAM).
 #[repr(C, align(64))]
 #[derive(Clone, Debug)]
 pub struct Stage0Router {
@@ -164,12 +164,21 @@ pub struct Stage0Router {
     /// Dual TPT Linkwitz-Riley 4th-order (`200 Hz`) crossovers (`ref[dsp.router.lr4-crossover]`).
     pub tpt_crossover_l: super::topology::TptLr4Crossover,
     pub tpt_crossover_r: super::topology::TptLr4Crossover,
+    /// Configured clean-sub / LR4 crossover frequency in Hz (default `200.0`).
+    pub crossover_hz: f32,
+    /// 4-band ballistic envelope detector state (`[Low, Mid, High, AuxKey]`, `ref[dsp.router.ballistic-envelope-bank]`).
+    pub detector_envelopes: [f32; 4],
+    pub detector_att_alphas: [f32; 4],
+    pub detector_rel_alphas: [f32; 4],
+    /// Stereo-link blend `alpha_link in [0, 1]` and Aux-key blend `beta_key in [0, 1]` (`ref[dsp.router.stereo-link-detector]`).
+    pub stereo_link_alpha: f32,
+    pub aux_key_beta: f32,
     /// WDW dry tap routing mode (`PreSpatialCore` vs `DirectDry`, `ref[dsp.router.wdw-contract]`).
     pub wdw_tap_mode: super::topology::WdwDryTapMode,
     /// WDW mode: whether Port Out 3 outputs dedicated dry center feed.
     pub wdw_mode: bool,
     /// Padding to strictly match 1,536 B footprint.
-    pub _pad: [u8; 64],
+    pub _pad: [u8; 4],
 }
 
 const _: () = assert!(core::mem::size_of::<Stage0Router>() <= ROUTER_STATE_RAM_BYTES);
@@ -195,9 +204,15 @@ impl Stage0Router {
             sub_crossover_r: BezoutCleanCrossover::new(),
             tpt_crossover_l: super::topology::TptLr4Crossover::new_48khz(),
             tpt_crossover_r: super::topology::TptLr4Crossover::new_48khz(),
+            crossover_hz: 200.0,
+            detector_envelopes: [0.0; 4],
+            detector_att_alphas: [0.002081, 0.010363, 0.098925, 0.040811],
+            detector_rel_alphas: [0.000139, 0.000521, 0.001388, 0.000417],
+            stereo_link_alpha: 1.0,
+            aux_key_beta: 0.0,
             wdw_tap_mode: super::topology::WdwDryTapMode::PreSpatialCore,
             wdw_mode: false,
-            _pad: [0; 64],
+            _pad: [0; 4],
         }
     }
 
@@ -208,6 +223,74 @@ impl Stage0Router {
         self.sub_crossover_r.reset();
         self.tpt_crossover_l.reset();
         self.tpt_crossover_r.reset();
+        self.detector_envelopes.fill(0.0);
+    }
+
+    /// Sets the training-rate clean-sub and TPT LR4 crossover frequency in Hz (default `200.0`).
+    pub fn set_crossover_hz(&mut self, freq_hz: f32) {
+        let f = freq_hz.clamp(20.0, 2000.0);
+        self.crossover_hz = f;
+        self.sub_crossover_l.set_crossover_hz(f);
+        self.sub_crossover_r.set_crossover_hz(f);
+        self.tpt_crossover_l = super::topology::TptLr4Crossover::new_at_rate(f as f64, 48_000.0);
+        self.tpt_crossover_r = super::topology::TptLr4Crossover::new_at_rate(f as f64, 48_000.0);
+    }
+
+    /// Reconfigures Stage 0 return aligners, crossovers, and 4-band ballistic detector alphas for `zoh`.
+    pub fn reconfigure_sample_rate(&mut self, zoh: &crate::container::ZohRescaledParams) {
+        let align_delay = zoh.rescale_alignment_delay(4.0);
+        self.return_aligner_l.set_delay(align_delay);
+        self.return_aligner_r.set_delay(align_delay);
+        self.sub_crossover_l.reconfigure_sample_rate(zoh);
+        self.sub_crossover_r.reconfigure_sample_rate(zoh);
+        let fs_eff = zoh.effective_sample_rate_hz();
+        let fc = self.crossover_hz.clamp(20.0, 2000.0) as f64;
+        self.tpt_crossover_l = super::topology::TptLr4Crossover::new_at_rate(fc, fs_eff);
+        self.tpt_crossover_r = super::topology::TptLr4Crossover::new_at_rate(fc, fs_eff);
+        for b in 0..4 {
+            if let Some((att, rel)) = super::topology::prepare_ballistic_band_alphas(b, fs_eff) {
+                self.detector_att_alphas[b] = att;
+                self.detector_rel_alphas[b] = rel;
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    #[inline(always)]
+    fn step_ballistic_detector(
+        &mut self,
+        inst_l: f32,
+        inst_r: f32,
+        ret_l: f32,
+        ret_r: f32,
+        tpt_low_l: f32,
+        tpt_high_l: f32,
+        tpt_low_r: f32,
+        tpt_high_r: f32,
+    ) {
+        let aux_mono = 0.5 * (ret_l + ret_r);
+        let (det_l, det_r) = super::topology::eval_stereo_linked_aux_detector(
+            inst_l,
+            inst_r,
+            aux_mono,
+            self.stereo_link_alpha,
+            self.aux_key_beta,
+        );
+        let inputs = [
+            0.5 * (tpt_low_l.abs() + tpt_low_r.abs()),
+            0.5 * (tpt_high_l.abs() + tpt_high_r.abs()),
+            0.5 * (det_l + det_r),
+            0.5 * (ret_l.abs() + ret_r.abs()),
+        ];
+        for (b, &u) in inputs.iter().enumerate() {
+            let prev = self.detector_envelopes[b];
+            let alpha = if u > prev {
+                self.detector_att_alphas[b]
+            } else {
+                self.detector_rel_alphas[b]
+            };
+            self.detector_envelopes[b] = flush_recursive_state_f32(prev + alpha * (u - prev));
+        }
     }
 
     /// Sets scattering matrix coefficients with strict enforcement of `ref[dsp.router.return-to-send-isolation]` DAG constraint:
@@ -265,9 +348,21 @@ impl Stage0Router {
             + self.s_matrix[3][2] * ret_l_aligned
             + self.s_matrix[3][3] * ret_r_aligned;
 
-        // 3. Parallel clean Bezout sub crossover (< 200 Hz)
+        // 3. Parallel clean Bezout sub crossover + TPT LR4 crossover + 4-band ballistic detector
         let clean_sub_l = self.sub_crossover_l.step(inst_l);
         let clean_sub_r = self.sub_crossover_r.step(inst_r);
+        let (tpt_low_l, tpt_high_l) = self.tpt_crossover_l.step(inst_l);
+        let (tpt_low_r, tpt_high_r) = self.tpt_crossover_r.step(inst_r);
+        self.step_ballistic_detector(
+            inst_l,
+            inst_r,
+            ret_l_aligned,
+            ret_r_aligned,
+            tpt_low_l,
+            tpt_high_l,
+            tpt_low_r,
+            tpt_high_r,
+        );
 
         (send_l, send_r, down_l, down_r, clean_sub_l, clean_sub_r)
     }
@@ -281,6 +376,11 @@ impl Stage0Router {
         let down_r = self.s_matrix[3][0] * inst_l + self.s_matrix[3][1] * inst_r;
         let clean_sub_l = self.sub_crossover_l.step(inst_l);
         let clean_sub_r = self.sub_crossover_r.step(inst_r);
+        let (tpt_low_l, tpt_high_l) = self.tpt_crossover_l.step(inst_l);
+        let (tpt_low_r, tpt_high_r) = self.tpt_crossover_r.step(inst_r);
+        self.step_ballistic_detector(
+            inst_l, inst_r, 0.0, 0.0, tpt_low_l, tpt_high_l, tpt_low_r, tpt_high_r,
+        );
         (down_l, down_r, clean_sub_l, clean_sub_r)
     }
 }

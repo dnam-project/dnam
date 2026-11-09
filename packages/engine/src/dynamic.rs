@@ -136,6 +136,8 @@ impl<'a> DynamicDnamEngine<'a> {
             verification_status: view.verification_status,
             protection_profile: view.protection_profile,
             control_records: view.control_records,
+            clamp_descriptors: view.clamp_descriptors,
+            cp1_contributors: view.cp1_contributors,
             arena_storage: crate::memory::ArenaStorage::from_owned_buffer(owned_arena),
         };
         let mut engine = DynamicDnamEngine::<'static>::new_empty(
@@ -200,6 +202,8 @@ impl<'a> DynamicDnamEngine<'a> {
             verification_status: view.verification_status,
             protection_profile: view.protection_profile,
             control_records: view.control_records,
+            clamp_descriptors: view.clamp_descriptors,
+            cp1_contributors: view.cp1_contributors,
             arena_storage: crate::memory::ArenaStorage::from_owned_buffer(owned_arena),
         };
         let mut engine = DynamicDnamEngine::<'static>::new_empty(Tier::Ultra, backend);

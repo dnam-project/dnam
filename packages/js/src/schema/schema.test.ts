@@ -110,11 +110,12 @@ describe("schema & error parity", () => {
     // verify[sdk.ts.api.literal-unions-and-options]
     for (const driver of [loadNodeDriverSync(), loadNodeWasmDriverSync()]) {
       withDriver(driver, () => {
-        const v11 = parseSchemaVersion("1.1.0");
-        expect(v11.semver).toBe("1.1.0");
-        expect(v11.isSupported).toBe(true);
-        expect(parseSchemaVersion("1.0").semver).toBe("1.0.0");
-        expect(parseSchemaVersion("2.0.0").isSupported).toBe(false);
+        const v20 = parseSchemaVersion("2.0.0");
+        expect(v20.semver).toBe("2.0.0");
+        expect(v20.isSupported).toBe(true);
+        expect(parseSchemaVersion("2.0").semver).toBe("2.0.0");
+        expect(parseSchemaVersion("1.1.0").isSupported).toBe(false);
+        expect(parseSchemaVersion("3.0.0").isSupported).toBe(false);
         expect(() => parseSchemaVersion("bad")).toThrow(DnamError);
         expect(() => parseSchemaVersion("1.x.0")).toThrow(DnamError);
 
@@ -170,7 +171,7 @@ describe("schema & error parity", () => {
           expect(v.major).toBe(major);
           expect(v.minor).toBe(minor);
           expect(v.patch).toBe(patch);
-          expect(v.isSupported).toBe(major === 1 && (minor === 0 || minor === 1));
+          expect(v.isSupported).toBe(major === 2 && minor === 0);
         },
       ),
       { numRuns: 40 },

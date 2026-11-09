@@ -17,20 +17,22 @@ pub mod wire;
 pub mod zoh;
 
 pub use wire::{
-    Cp1DecodedRecord, DEFAULT_MAX_MUTABLE_CAPACITY, DMU1_HEADER_SIZE, DMUE_FOOTER_SIZE,
+    CP1_MAGIC, Cp1DecodedRecord, DEFAULT_MAX_MUTABLE_CAPACITY, DMU1_HEADER_SIZE, DMUE_FOOTER_SIZE,
     DeclaredDelayHistory, StructuredConditionalBound, StructuredConditionalCurve,
     SwitchControlSpec, V2_DIRECTORY_SIZE, V2_HEADER_OFFSET, V2_PREAMBLE_SIZE, V2ContainerLayout,
     align64_u64, append_dmue_mutable_suffix, build_dmu1_mutable_frame,
-    build_dnck_writer_manifest_message, build_v2_open_dnam_container, compute_dnck_bundle_prefixes,
-    compute_v2_open_retained_prefix_sha256, cp1_contributor_record_bytes,
-    decode_cp1_contributor_stream, encode_domain_field, eval_ui_midpoint_power_skew,
-    export_runtime_dnam_from_ckpt, is_valid_jcs_unicode_text, parse_and_validate_dmu1_frame,
-    parse_canonical_reference_samples, parse_strict_json_object_bytes,
-    parse_structured_conditional_bounds, parse_structured_conditional_curves,
-    project_immutable_header_value, resolve_conditional_safe_interval,
-    select_conditional_calibration_curve, serialize_jcs_value, strip_v2_open_dnam_container,
-    validate_canonical_jcs_header_bytes, validate_delay_histories, validate_mutable_json_schema,
-    validate_stage3_tier_slices, validate_v2_dnck_checkpoint, validate_v2_open_dnam_layout,
+    build_dnck_writer_manifest_message, build_v2_dnck_checkpoint, build_v2_open_dnam_container,
+    compute_dnck_bundle_prefixes, compute_v2_open_retained_prefix_sha256,
+    cp1_contributor_record_bytes, decode_cp1_contributor_stream,
+    decode_cp1_contributor_stream_into_slice, decode_cp1_shared_stream_into_slice,
+    encode_domain_field, eval_ui_midpoint_power_skew, export_runtime_dnam_from_ckpt,
+    is_valid_jcs_unicode_text, parse_and_validate_dmu1_frame, parse_canonical_reference_samples,
+    parse_strict_json_object_bytes, parse_structured_conditional_bounds,
+    parse_structured_conditional_curves, project_immutable_header_value,
+    resolve_conditional_safe_interval, select_conditional_calibration_curve, serialize_jcs_value,
+    strip_v2_open_dnam_container, validate_canonical_jcs_header_bytes, validate_delay_histories,
+    validate_dmu1_frame_no_alloc, validate_mutable_json_schema, validate_stage3_tier_slices,
+    validate_v2_dnam_layout_no_alloc, validate_v2_dnck_checkpoint, validate_v2_open_dnam_layout,
 };
 
 #[cfg(feature = "crypto")]
@@ -44,7 +46,7 @@ pub use ckpt::{
     ARENA5_HEADER_BYTES, DNCA_MAGIC, pack_uplo_u_f64, unpack_uplo_u_f64, uplo_u_packed_len,
     verify_ckpt_arena5_calib_stats, verify_ckpt_stem_arena4_crc32c,
 };
-pub use preamble::DnamPreamble;
+pub use preamble::{DnamPreamble, is_v2_wire_directory_container};
 pub use strip::strip_container_to_tier;
 pub use view::{DnamContainerView, compute_header_crc32c};
 pub use zoh::ZohRescaledParams;
@@ -55,11 +57,11 @@ pub const DNAM_MAGIC: [u8; 4] = *b"DNAM";
 /// Magic bytes for a `.dnam-ckpt` iterative training checkpoint container (`0x4B434E44` little-endian).
 pub const DNCK_MAGIC: [u8; 4] = *b"DNCK";
 
-/// Current container major version (`1`).
-pub const CONTAINER_VERSION_MAJOR: u16 = 1;
+/// Current container major version (`2`).
+pub const CONTAINER_VERSION_MAJOR: u16 = 2;
 
-/// Current container minor version (`1`, backwards-compatible with `1.0.0` and `1.1.0`).
-pub const CONTAINER_VERSION_MINOR: u16 = 1;
+/// Current container minor version (`0`).
+pub const CONTAINER_VERSION_MINOR: u16 = 0;
 
 /// Fixed byte length of `Arena 0 (Lite)` (`168 × 64 B = 10,752 B`).
 pub const ARENA_OFFSET_LITE_END: u32 = 10_752;

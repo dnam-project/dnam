@@ -62,6 +62,10 @@ pub struct StagePipeline {
     pub kautz_tiers_r: [[crate::operators::op_m::KautzModalBank<4>; 4]; 4],
     pub base_fir_taps: [f32; 16],
     pub fir_taps: [f32; 16],
+    pub base_fir_taps_l: [[f32; 16]; 4],
+    pub base_fir_taps_r: [[f32; 16]; 4],
+    pub fir_taps_l: [[f32; 16]; 4],
+    pub fir_taps_r: [[f32; 16]; 4],
     pub stage4: Stage4SpatialTank,
     pub head: MidSideKroneckerHead,
 }
@@ -87,6 +91,10 @@ impl StagePipeline {
             kautz_tiers_r: [EMPTY_TIER; 4],
             base_fir_taps: [0.0625; 16],
             fir_taps: [0.0625; 16],
+            base_fir_taps_l: [[0.0625; 16], [0.0; 16], [0.0; 16], [0.0; 16]],
+            base_fir_taps_r: [[0.0625; 16], [0.0; 16], [0.0; 16], [0.0; 16]],
+            fir_taps_l: [[0.0625; 16], [0.0; 16], [0.0; 16], [0.0; 16]],
+            fir_taps_r: [[0.0625; 16], [0.0; 16], [0.0; 16], [0.0; 16]],
             stage4: Stage4SpatialTank::new(),
             head: MidSideKroneckerHead::new(),
         }
@@ -132,16 +140,28 @@ impl StagePipeline {
         self.load_from_arena_with_zoh(arena, &zoh_id);
     }
 
-    /// Loads per-tier Orthonormal Kautz modal bank parameters and early FIR taps from `Arena 0..3`,
-    /// rescaling modal poles, angles, $\mathcal{H}_2$-norm input scalars, and FIR taps under continuous-time ZOH.
-    pub fn load_from_arena_with_zoh(
+    /// Loads per-tier Orthonormal Kautz modal bank parameters, early FIR taps, and Stage 0–IV base
+    /// parameters from `Arena 0..3`, rescaling modal poles, angles, $\mathcal{H}_2$-norm input scalars,
+    /// and FIR taps under continuous-time ZOH without resetting recursive state (`s_re, s_im`, delay lines).
+    pub fn load_kautz_and_fir_from_arena_with_zoh(
         &mut self,
         arena: &[u8],
         zoh: &crate::container::ZohRescaledParams,
     ) {
+        if arena.len() >= 132 {
+            let fc = crate::provenance::watermark::read_f32_le(arena, 128);
+            if fc.is_finite() && (20.0..=1000.0).contains(&fc) {
+                self.stage0.set_crossover_hz(fc);
+            }
+        }
+        self.stage1.load_from_arena(arena);
+        self.stage2.load_from_arena(arena);
+        self.stage4.load_from_arena(arena);
+
         let max_tiers = crate::provenance::watermark::max_tiers_for_arena_len(arena.len());
         for tier in 0..max_tiers {
-            for blk in 0..4 {
+            let n_blocks = crate::provenance::STAGE3_KAUTZ_BLOCKS_PER_TIER[tier];
+            for blk in 0..n_blocks {
                 let base = crate::provenance::kautz_soa_byte_offset(tier, blk);
                 for lane in 0..4 {
                     let r_low = crate::provenance::watermark::read_f32_le(arena, base + lane * 4);
@@ -151,10 +171,20 @@ impl StagePipeline {
                         crate::provenance::watermark::read_f32_le(arena, base + (8 + lane) * 4);
                     let b_gamma =
                         crate::provenance::watermark::read_f32_le(arena, base + (12 + lane) * 4);
-                    let c_re =
+                    let c_re_l =
                         crate::provenance::watermark::read_f32_le(arena, base + (16 + lane) * 4);
-                    let c_im =
+                    let c_im_l =
                         crate::provenance::watermark::read_f32_le(arena, base + (20 + lane) * 4);
+                    let raw_c_re_r =
+                        crate::provenance::watermark::read_f32_le(arena, base + (24 + lane) * 4);
+                    let raw_c_im_r =
+                        crate::provenance::watermark::read_f32_le(arena, base + (28 + lane) * 4);
+                    let (c_re_r, c_im_r) = if raw_c_re_r.abs() <= 1e-12 && raw_c_im_r.abs() <= 1e-12
+                    {
+                        (c_re_l, c_im_l)
+                    } else {
+                        (raw_c_re_r, raw_c_im_r)
+                    };
                     let is_active =
                         r_low.abs() > 1e-12 || dr.abs() > 1e-12 || b_gamma.abs() > 1e-12;
                     let (r, theta_eff, b_gamma_eff) = if is_active {
@@ -170,8 +200,8 @@ impl StagePipeline {
                         theta_eff,
                         0.0,
                         b_gamma_eff,
-                        c_re,
-                        c_im,
+                        c_re_l,
+                        c_im_l,
                     );
                     self.kautz_tiers_r[tier][blk].set_pole_with_b_gamma(
                         lane,
@@ -179,48 +209,92 @@ impl StagePipeline {
                         theta_eff,
                         0.0,
                         b_gamma_eff,
-                        c_re,
-                        c_im,
+                        c_re_r,
+                        c_im_r,
                     );
                 }
             }
-        }
-        if arena.len() >= 4_224 {
-            let mut has_nonzero = false;
-            let mut taps = [0.0f32; 16];
-            for (i, tap) in taps.iter_mut().enumerate() {
-                let v = crate::provenance::watermark::read_f32_le(arena, 4_160 + i * 4);
-                if v.abs() > 1e-12 {
-                    has_nonzero = true;
+            for blk in n_blocks..4 {
+                for lane in 0..4 {
+                    self.kautz_tiers_l[tier][blk]
+                        .set_pole_with_b_gamma(lane, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+                    self.kautz_tiers_r[tier][blk]
+                        .set_pole_with_b_gamma(lane, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
                 }
-                *tap = v;
             }
-            self.base_fir_taps = if has_nonzero { taps } else { [0.0625; 16] };
-            let base_taps = self.base_fir_taps;
-            zoh.rescale_fir_taps(&base_taps, &mut self.fir_taps);
+
+            let fir_base = crate::provenance::STAGE3_EARLY_FIR_BASES[tier];
+            if arena.len() >= fir_base + 128 {
+                let mut has_l = false;
+                let mut has_r = false;
+                let mut taps_l = [0.0f32; 16];
+                let mut taps_r = [0.0f32; 16];
+                for i in 0..16 {
+                    let vl = crate::provenance::watermark::read_f32_le(arena, fir_base + i * 4);
+                    let vr =
+                        crate::provenance::watermark::read_f32_le(arena, fir_base + 64 + i * 4);
+                    if vl.abs() > 1e-12 {
+                        has_l = true;
+                    }
+                    if vr.abs() > 1e-12 {
+                        has_r = true;
+                    }
+                    taps_l[i] = vl;
+                    taps_r[i] = vr;
+                }
+                if tier == 0 && !has_l && !has_r && arena.len() >= 4_224 {
+                    for (i, tap) in taps_l.iter_mut().enumerate() {
+                        let v = crate::provenance::watermark::read_f32_le(arena, 4_160 + i * 4);
+                        if v.abs() > 1e-12 {
+                            has_l = true;
+                        }
+                        *tap = v;
+                    }
+                }
+                let default_taps = if tier == 0 { [0.0625; 16] } else { [0.0; 16] };
+                let eff_l = if has_l { taps_l } else { default_taps };
+                let eff_r = if has_r {
+                    taps_r
+                } else if has_l {
+                    taps_l
+                } else {
+                    default_taps
+                };
+                self.base_fir_taps_l[tier] = eff_l;
+                self.base_fir_taps_r[tier] = eff_r;
+                zoh.rescale_fir_taps(&eff_l, &mut self.fir_taps_l[tier]);
+                zoh.rescale_fir_taps(&eff_r, &mut self.fir_taps_r[tier]);
+            }
         }
+        self.base_fir_taps = self.base_fir_taps_l[0];
+        self.fir_taps = self.fir_taps_l[0];
+    }
+
+    /// Loads per-tier Orthonormal Kautz modal bank parameters and early FIR taps from `Arena 0..3`,
+    /// rescaling modal poles, angles, $\mathcal{H}_2$-norm input scalars, and FIR taps under continuous-time ZOH.
+    pub fn load_from_arena_with_zoh(
+        &mut self,
+        arena: &[u8],
+        zoh: &crate::container::ZohRescaledParams,
+    ) {
+        self.load_kautz_and_fir_from_arena_with_zoh(arena, zoh);
         self.reset_to_dc_equilibrium();
         self.reconfigure_sample_rate(zoh);
     }
 
     /// Reconfigures physical stage parameters for host sample rate under continuous-time ZOH.
     pub fn reconfigure_sample_rate(&mut self, zoh: &crate::container::ZohRescaledParams) {
-        let align_delay = zoh.rescale_alignment_delay(4.0);
-        self.stage0.return_aligner_l.set_delay(align_delay);
-        self.stage0.return_aligner_r.set_delay(align_delay);
-        self.stage0.sub_crossover_l.reconfigure_sample_rate(zoh);
-        self.stage0.sub_crossover_r.reconfigure_sample_rate(zoh);
-        self.stage0.tpt_crossover_l =
-            TptLr4Crossover::new_at_rate(200.0, zoh.sample_rate_host_hz as f64);
-        self.stage0.tpt_crossover_r =
-            TptLr4Crossover::new_at_rate(200.0, zoh.sample_rate_host_hz as f64);
-        self.stage1.op_t_pre.xfade_len = zoh.switch_xfade_samples_host as usize;
-        self.stage1
-            .op_t_pre
-            .set_target_delay(zoh.tau_ref_samples_host, true);
-        self.stage1.op_t_pre.current_delay = self.stage1.op_t_pre.target_delay;
-        self.stage1.op_t_pre.xfade_active = false;
+        self.stage0.reconfigure_sample_rate(zoh);
+        self.stage1.reconfigure_sample_rate(zoh);
         self.stage2.reconfigure_sample_rate(zoh);
+        self.stage3.reconfigure_sample_rate(zoh);
+        self.stage3_r.reconfigure_sample_rate(zoh);
+        for tier in 0..4 {
+            let bl = self.base_fir_taps_l[tier];
+            let br = self.base_fir_taps_r[tier];
+            zoh.rescale_fir_taps(&bl, &mut self.fir_taps_l[tier]);
+            zoh.rescale_fir_taps(&br, &mut self.fir_taps_r[tier]);
+        }
         let base_taps = self.base_fir_taps;
         zoh.rescale_fir_taps(&base_taps, &mut self.fir_taps);
         self.stage4.reconfigure_sample_rate(zoh);
@@ -245,8 +319,9 @@ mod tests {
         pipe.load_from_arena(&arena);
         assert_eq!(pipe.fir_taps, [0.0625; 16]);
 
-        // Populate custom FIR taps at Arena 0 offset 4,160 and Kautz pole at tier 0, blk 0, lane 0
-        arena[4_160..4_164].copy_from_slice(&0.5_f32.to_le_bytes());
+        // Populate custom FIR taps at STAGE3_EARLY_FIR_BASES[0] (4,288) and Kautz pole at tier 0, blk 0, lane 0
+        let fir0 = crate::provenance::STAGE3_EARLY_FIR_BASES[0];
+        arena[fir0..fir0 + 4].copy_from_slice(&0.5_f32.to_le_bytes());
         let k_base = crate::provenance::kautz_soa_byte_offset(0, 0);
         arena[k_base..k_base + 4].copy_from_slice(&0.90_f32.to_le_bytes());
         arena[k_base + 16..k_base + 20].copy_from_slice(&0.04_f32.to_le_bytes());
@@ -272,6 +347,8 @@ mod tests {
                 < 1e-6
         );
         assert!((pipe.stage4.dc_blockers[0].r_dc - zoh.r_dc_host).abs() < 1e-6);
+        assert_eq!(pipe.stage4.delay_lengths[0], 298);
+        assert_eq!(pipe.stage3.onset_delay_samples, 32);
         // Verify DC sum of FIR taps is preserved across ZOH resampling (sum == 0.5)
         let fir_sum: f32 = pipe.fir_taps.iter().sum();
         assert!((fir_sum - 0.5).abs() < 1e-5);

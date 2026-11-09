@@ -700,18 +700,18 @@ mod tests {
             assert!(h_future.validate().is_err());
             assert!(compute_immutable_header_sha256(&h_future).is_err());
             assert!(
-                compute_immutable_header_sha256_for_version(&h1, SchemaVersion::new(2, 0, 0))
+                compute_immutable_header_sha256_for_version(&h1, SchemaVersion::new(3, 0, 0))
                     .is_err()
             );
 
             // SchemaVersion parsing and preamble matching
-            let v1 = SchemaVersion::parse("1.0.0").unwrap();
-            assert_eq!(v1, SchemaVersion::V1_0_0);
-            assert!(v1.is_supported());
-            assert!(v1.ensure_matches_preamble(1, 0).is_ok());
-            assert!(v1.ensure_matches_preamble(1, 1).is_err());
+            let v2 = SchemaVersion::parse("2.0.0").unwrap();
+            assert_eq!(v2, SchemaVersion::V2_0_0);
+            assert!(v2.is_supported());
+            assert!(v2.ensure_matches_preamble(2, 0).is_ok());
+            assert!(v2.ensure_matches_preamble(2, 1).is_err());
             assert!(SchemaVersion::parse("invalid").is_err());
-            assert!(SchemaVersion::parse("1.0.0.1").is_err());
+            assert!(SchemaVersion::parse("2.0.0.1").is_err());
 
             // Test sign_creator_header_json and sign_marketplace_receipt_json
             let base_hdr = DnamJsonHeader::default_reference();

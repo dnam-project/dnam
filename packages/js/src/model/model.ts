@@ -322,9 +322,13 @@ export class Model<TParams extends ParameterValueMap = Record<string, number | s
     this.#ensureAlive();
     const tierIdx = coerceTierIndex(maxTier);
     if (
-      this.#bytes.length >= 8 &&
+      this.#bytes.length >= 64 &&
       this.#preamble.magic === "DNAM" &&
-      this.#preamble.versionMajor === 2
+      this.#preamble.versionMajor === 2 &&
+      this.#bytes[16] === 0 &&
+      this.#bytes[17] === 0 &&
+      this.#bytes[18] === 0 &&
+      this.#bytes[19] === 0
     ) {
       const strippedV2 = getActiveDriver().stripV2OpenDnamContainer(this.#bytes, tierIdx);
       return new Model<TParams>(strippedV2);

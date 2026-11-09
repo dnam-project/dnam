@@ -21,6 +21,9 @@ pub struct ToneBasisFilters {
     pub lpf400_state: f32,
     pub hpf1200_state: f32,
     pub hpf1200_x1: f32,
+    pub base_alpha_80: f32,
+    pub base_alpha_400: f32,
+    pub base_alpha_1200: f32,
     pub alpha_80: f32,
     pub alpha_400: f32,
     pub alpha_1200: f32,
@@ -47,6 +50,9 @@ impl ToneBasisFilters {
             lpf400_state: 0.0,
             hpf1200_state: 0.0,
             hpf1200_x1: 0.0,
+            base_alpha_80: Self::ALPHA_80,
+            base_alpha_400: Self::ALPHA_400,
+            base_alpha_1200: Self::ALPHA_1200,
             alpha_80: Self::ALPHA_80,
             alpha_400: Self::ALPHA_400,
             alpha_1200: Self::ALPHA_1200,
@@ -73,9 +79,9 @@ impl ToneBasisFilters {
 
     /// Reconfigures 1-pole tone basis cutoffs (`80 Hz`, `400 Hz`, `1200 Hz`) under continuous-time ZOH.
     pub fn reconfigure_sample_rate(&mut self, zoh: &crate::container::ZohRescaledParams) {
-        self.alpha_80 = zoh.rescale_real_pole(Self::ALPHA_80);
-        self.alpha_400 = zoh.rescale_real_pole(Self::ALPHA_400);
-        self.alpha_1200 = zoh.rescale_real_pole(Self::ALPHA_1200);
+        self.alpha_80 = zoh.rescale_real_pole(self.base_alpha_80);
+        self.alpha_400 = zoh.rescale_real_pole(self.base_alpha_400);
+        self.alpha_1200 = zoh.rescale_real_pole(self.base_alpha_1200);
     }
 
     /// Advances the tone-basis filters by one sample. Direct callers must hold a
@@ -109,7 +115,7 @@ impl ToneBasisFilters {
     }
 }
 
-/// Stage II 3-Stage Commuted Nonlinear Cascade (288 B Lite RAM).
+/// Stage II 3-Stage Commuted Nonlinear Cascade (288 B Lite nominal RAM budget).
 #[repr(C, align(64))]
 #[derive(Clone, Debug)]
 pub struct Stage2CommutedCascade {
@@ -126,6 +132,15 @@ pub struct Stage2CommutedCascade {
     /// 4-Filter Tone Basis filters for Left and Right channels
     pub tone_basis_l: ToneBasisFilters,
     pub tone_basis_r: ToneBasisFilters,
+    /// Base 48 kHz V1A/V1B nonlinear parameters loaded from `Arena 0 [4,096..4,160]`.
+    pub v1a_beta: f32,
+    pub v1a_delta: f32,
+    pub v1a_comp: f32,
+    pub v1b_beta: f32,
+    pub v1b_delta: f32,
+    pub v1b_comp: f32,
+    /// Base 48 kHz power-supply sag pole (default `0.995`).
+    pub base_r_sag: f32,
     /// Power supply sag integrator
     pub sag_envelope: f32,
     /// ZOH-rescaled 5 Hz AC-coupling pole (default `0.9993` at 48 kHz).
@@ -137,6 +152,8 @@ pub struct Stage2CommutedCascade {
     /// Previous V1A output for degree-7/8 ADAA `C^2` wavefolding (`ref[dsp.op-n.wavefolder.cubic-c2]`).
     pub prev_v1a_l: f32,
     pub prev_v1a_r: f32,
+    /// Latest V1B + Hysteresis + Sag taps (`[v1b_l1, v1b_l2, h_l, pwr_l, v1b_r1, v1b_r2, h_r, pwr_r]`).
+    pub last_v1b_hyst: [f32; 8],
     pub _pad: [u8; 4],
 }
 
@@ -157,12 +174,20 @@ impl Stage2CommutedCascade {
             hyst_right: QuadratureHysteresis2D::new(),
             tone_basis_l: ToneBasisFilters::new(),
             tone_basis_r: ToneBasisFilters::new(),
+            v1a_beta: 1.0,
+            v1a_delta: 0.25,
+            v1a_comp: 0.5,
+            v1b_beta: 1.0,
+            v1b_delta: 0.2,
+            v1b_comp: 0.5,
+            base_r_sag: 0.995,
             sag_envelope: 0.0,
             r_ac: 0.9993,
             r_sag: 0.995,
             hyst_diff_scale: 1.0,
             prev_v1a_l: 0.0,
             prev_v1a_r: 0.0,
+            last_v1b_hyst: [0.0; 8],
             _pad: [0; 4],
         }
     }
@@ -179,13 +204,86 @@ impl Stage2CommutedCascade {
         self.sag_envelope = 0.0;
         self.prev_v1a_l = 0.0;
         self.prev_v1a_r = 0.0;
+        self.last_v1b_hyst = [0.0; 8];
+    }
+
+    /// Loads Stage II tone-basis cutoffs, sag pole, and V1A/V1B nonlinear parameters from `Arena 0 [4,096..4,160]`.
+    pub fn load_from_arena(&mut self, arena: &[u8]) {
+        if arena.len() < 4_160 {
+            return;
+        }
+        use crate::provenance::watermark::read_f32_le;
+        let a80 = read_f32_le(arena, 4_096);
+        let a400 = read_f32_le(arena, 4_100);
+        let a1200 = read_f32_le(arena, 4_104);
+        let rsag = read_f32_le(arena, 4_108);
+        if (0.5..=0.9999).contains(&a80) {
+            self.tone_basis_l.base_alpha_80 = a80;
+            self.tone_basis_r.base_alpha_80 = a80;
+        } else {
+            self.tone_basis_l.base_alpha_80 = ToneBasisFilters::ALPHA_80;
+            self.tone_basis_r.base_alpha_80 = ToneBasisFilters::ALPHA_80;
+        }
+        if (0.5..=0.9999).contains(&a400) {
+            self.tone_basis_l.base_alpha_400 = a400;
+            self.tone_basis_r.base_alpha_400 = a400;
+        } else {
+            self.tone_basis_l.base_alpha_400 = ToneBasisFilters::ALPHA_400;
+            self.tone_basis_r.base_alpha_400 = ToneBasisFilters::ALPHA_400;
+        }
+        if (0.5..=0.9999).contains(&a1200) {
+            self.tone_basis_l.base_alpha_1200 = a1200;
+            self.tone_basis_r.base_alpha_1200 = a1200;
+        } else {
+            self.tone_basis_l.base_alpha_1200 = ToneBasisFilters::ALPHA_1200;
+            self.tone_basis_r.base_alpha_1200 = ToneBasisFilters::ALPHA_1200;
+        }
+        self.base_r_sag = if (0.5..=0.9999).contains(&rsag) {
+            rsag
+        } else {
+            0.995
+        };
+
+        let v1a_b = read_f32_le(arena, 4_112);
+        let v1a_d = read_f32_le(arena, 4_116);
+        let v1a_c = read_f32_le(arena, 4_120);
+        if v1a_b.is_finite() && v1a_b > 1e-6 {
+            self.v1a_beta = v1a_b.clamp(0.1, 8.0);
+            self.v1a_delta = v1a_d.clamp(-0.9, 0.9);
+            self.v1a_comp = if v1a_c.is_finite() && v1a_c > 1e-6 {
+                v1a_c.clamp(0.1, 2.0)
+            } else {
+                0.5
+            };
+        } else {
+            self.v1a_beta = 1.0;
+            self.v1a_delta = 0.25;
+            self.v1a_comp = 0.5;
+        }
+
+        let v1b_b = read_f32_le(arena, 4_136);
+        let v1b_d = read_f32_le(arena, 4_140);
+        let v1b_c = read_f32_le(arena, 4_144);
+        if v1b_b.is_finite() && v1b_b > 1e-6 {
+            self.v1b_beta = v1b_b.clamp(0.1, 8.0);
+            self.v1b_delta = v1b_d.clamp(-0.9, 0.9);
+            self.v1b_comp = if v1b_c.is_finite() && v1b_c > 1e-6 {
+                v1b_c.clamp(0.1, 2.0)
+            } else {
+                0.5
+            };
+        } else {
+            self.v1b_beta = 1.0;
+            self.v1b_delta = 0.20;
+            self.v1b_comp = 0.5;
+        }
     }
 
     /// Reconfigures Stage II AC-coupling pole, sag integrator pole, hysteresis rate scale,
     /// and 4-filter tone basis cutoffs for host sample rate under continuous-time ZOH.
     pub fn reconfigure_sample_rate(&mut self, zoh: &crate::container::ZohRescaledParams) {
         self.r_ac = zoh.r_ac_host;
-        self.r_sag = zoh.rescale_real_pole(0.995);
+        self.r_sag = zoh.rescale_real_pole(self.base_r_sag);
         self.hyst_diff_scale = zoh.hysteresis_diff_scale();
         self.tone_basis_l.reconfigure_sample_rate(zoh);
         self.tone_basis_r.reconfigure_sample_rate(zoh);
@@ -204,6 +302,7 @@ impl Stage2CommutedCascade {
         self.sag_envelope = 0.0;
         self.prev_v1a_l = 0.0;
         self.prev_v1a_r = 0.0;
+        self.last_v1b_hyst = [0.0; 8];
     }
 
     /// Steps Stage II for stereo frame `(in_l, in_r)` through 2.1 Preamp -> 2.2 Driver -> 2.3 Power Amp.
@@ -221,8 +320,20 @@ impl Stage2CommutedCascade {
     ) -> ([f32; 8], [f32; 8]) {
         let r_ac = self.r_ac;
         // 1. Sub-stage 2.1: Preamp V1A
-        let v1a_out_l = self.v1a_left.step(in_l * drive_gain, 1.0, 0.25, 0.5, r_ac);
-        let v1a_out_r = self.v1a_right.step(in_r * drive_gain, 1.0, 0.25, 0.5, r_ac);
+        let v1a_out_l = self.v1a_left.step(
+            in_l * drive_gain,
+            self.v1a_beta,
+            self.v1a_delta,
+            self.v1a_comp,
+            r_ac,
+        );
+        let v1a_out_r = self.v1a_right.step(
+            in_r * drive_gain,
+            self.v1a_beta,
+            self.v1a_delta,
+            self.v1a_comp,
+            r_ac,
+        );
         let sig_v1a_l = v1a_out_l[1]; // 1.0x drive
         let sig_v1a_r = v1a_out_r[1];
 
@@ -243,9 +354,9 @@ impl Stage2CommutedCascade {
             &mut self.v1b_right,
             v1b_in_l,
             v1b_in_r,
-            1.0,
-            0.2,
-            0.5,
+            self.v1b_beta,
+            self.v1b_delta,
+            self.v1b_comp,
             r_ac,
         );
 
@@ -264,6 +375,7 @@ impl Stage2CommutedCascade {
 
         let pwr_l = (v1b_l1 + 0.1 * h_l) * sag_compression;
         let pwr_r = (v1b_r1 + 0.1 * h_r) * sag_compression;
+        self.last_v1b_hyst = [v1b_l1, v1b_l2, h_l, pwr_l, v1b_r1, v1b_r2, h_r, pwr_r];
 
         // 4. Tone basis filters [Direct, LPF_80, LPF_400, HPF_1200]
         let tone_l = self.tone_basis_l.step(pwr_l);

@@ -33,8 +33,6 @@ pub struct ContainerInspectionReport {
     /// Container protection profile (`"open"`, `"device_allowlisted"`, `"enclave_sealed"`).
     #[serde(default)]
     pub protection_profile: String,
-    /// Whether Core 2 (`M-UFDN`) is active.
-    pub core2_active: bool,
     /// Whether $3\text{ kHz}$ LFOs or envelopes are active.
     pub lfo_env_active: bool,
     /// Training sample rate in Hz.
@@ -161,16 +159,14 @@ pub fn inspect_container_bytes_with_crypto(
             .unwrap_or_else(|| "Unknown".to_string()),
         verification_status: verif,
         protection_profile: profile_str.to_string(),
-        core2_active: preamble.is_core2_active() || view.header.core2_mufdn.active,
-        lfo_env_active: preamble.is_lfo_env_active()
-            || view.header.control_bus.envelopes > 0
+        lfo_env_active: view.header.control_bus.envelopes > 0
             || view.header.control_bus.lfo_oscillators > 0,
         sample_rate_train_hz: preamble.sample_rate_train_hz,
-        control_decimation: preamble.control_decimation,
+        control_decimation: 16,
         detected_simd_backend: detect_native_backend_str().to_string(),
         num_controls: view.header.controls_schema.len(),
         num_ckpt_stems: preamble.num_ckpt_stems,
-        head_svd_rank: preamble.head_svd_rank,
+        head_svd_rank: view.header.slimmable_tiers.ultra.head_svd_rank,
         tail_time_ms: preamble.tail_time_ms,
         tensor_arena_byte_len: preamble.tensor_arena_byte_len,
         num_presets: view.header.presets.len(),
@@ -424,8 +420,8 @@ mod tests {
         dir
     }
 
-    fn make_test_container(core2_active: bool, is_ckpt: bool) -> Vec<u8> {
-        let mut header = DnamJsonHeader::default_reference(core2_active);
+    fn make_test_container(is_ckpt: bool) -> Vec<u8> {
+        let mut header = DnamJsonHeader::default_reference();
         if is_ckpt {
             header.container_kind = "dnam-ckpt".to_string();
         }
@@ -466,8 +462,8 @@ mod tests {
     #[test]
     fn test_inspect_and_render_with_dnam_engine() {
         let dir = temp_dir("inspect_render");
-        let dnam_bytes = make_test_container(true, false);
-        let ckpt_bytes = make_test_container(false, true);
+        let dnam_bytes = make_test_container(false);
+        let ckpt_bytes = make_test_container(true);
 
         let dnam_path = dir.join("ref.dnam");
         let ckpt_path = dir.join("ref.dnam-ckpt");
@@ -477,7 +473,6 @@ mod tests {
         let summary = inspect_container(&dnam_path).expect("inspect dnam");
         assert_eq!(summary.magic, "DNAM");
         assert!(!summary.is_checkpoint);
-        assert!(summary.core2_active);
         assert_eq!(summary.sample_rate_train_hz, 48_000);
         assert!(!summary.detected_simd_backend.is_empty());
 

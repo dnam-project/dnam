@@ -65,9 +65,10 @@ pub use verify::{
     sign_marketplace_receipt_json,
 };
 pub use watermark::{
-    apply_isometric_gauge_watermark, apply_tardos_watermark_7680, extract_structural_hash_224d,
-    generate_tardos_code_7680, kautz_soa_byte_offset, score_tardos_watermark_7680,
-    structural_cosine_similarity,
+    STAGE3_EARLY_FIR_BASES, STAGE3_KAUTZ_BASES, STAGE3_KAUTZ_BLOCKS_PER_TIER,
+    STAGE3_KAUTZ_TIER_CHANNEL_BASE, apply_isometric_gauge_watermark, apply_tardos_watermark_7680,
+    extract_structural_hash_224d, generate_tardos_code_7680, kautz_soa_byte_offset,
+    score_tardos_watermark_7680, structural_cosine_similarity,
 };
 
 /// Number of Stage II commuted nonlinear cascade projection weights across `Arena 0..3` (`768 + 1536 + 2304 + 3072 = 7680`).

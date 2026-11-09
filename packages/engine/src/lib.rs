@@ -58,6 +58,7 @@ pub mod types;
 
 pub use container::strip_container_to_tier;
 pub use dynamic::DynamicDnamEngine;
-pub use engine::{DnamEngine, OFFLINE_BOUNCE_PDC_SAMPLES};
+pub use engine::{DnamAudioIo, DnamEngine, OFFLINE_BOUNCE_PDC_SAMPLES};
+pub use host::{DistillationTarget, StemResponse, StemStimulus, StemStimulusBatch, StimulusFrame};
 pub use stages::{StagePipeline, TOTAL_LITE_STATE_RAM_BYTES};
 pub use types::{DnamTelemetrySnapshot, FtzDazGuard, Tier};

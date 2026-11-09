@@ -214,7 +214,7 @@ pub struct TierProfile {
     /// Active Stage III Orthonormal Kautz modal bank modes ($M_{\text{kautz}} \in \{4, 8, 16, 32\}$).
     #[serde(default)]
     pub kautz_modes: u8,
-    /// Active Stage IV tank delay lines ($M \in \{0, 4, 8, 16\}$).
+    /// Active Stage IV tank delay lines ($M \in \{4, 8, 8, 16\}$).
     pub tank_lines: u8,
     /// SVD output head rank ($D_h \in \{4, 8\}$).
     #[serde(default = "default_head_svd_rank")]

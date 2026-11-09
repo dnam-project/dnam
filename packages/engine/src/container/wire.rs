@@ -38,6 +38,8 @@ pub const DMU1_HEADER_SIZE: usize = 16;
 pub const DMUE_FOOTER_SIZE: usize = 16;
 /// Maximum default mutable frame capacity for bounded structural validation (`4,096 B`).
 pub const DEFAULT_MAX_MUTABLE_CAPACITY: usize = 4_096;
+/// Magic bytes for a packed `CP1\0` control projection contributor stream in `shared_extent`.
+pub const CP1_MAGIC: [u8; 4] = *b"CP1\0";
 
 /// Domain-separated binary field encoder `F(label, value) = u32le(len(label)) || label || u64le(len(value)) || value`
 /// (`ref[container.dnam.wire-framing]`, `ref[sec.sig.prefix-delegation]`).
@@ -167,7 +169,7 @@ pub fn build_v2_open_dnam_container(
     let m_bytes = match mutable_frame_bytes {
         Some(b) if !b.is_empty() => b,
         _ => {
-            default_dmu1 = build_dmu1_mutable_frame(b"{}", 18)?;
+            default_dmu1 = build_dmu1_mutable_frame(b"{}", 48)?;
             &default_dmu1
         }
     };
@@ -205,9 +207,8 @@ pub fn build_dmu1_mutable_frame(payload: &[u8], capacity: usize) -> Result<Vec<u
     Ok(frame)
 }
 
-/// Validates a `DMU1` mutable frame (CRC32C, zero padding, and strict RFC 8259 UTF-8 JSON object without
-/// BOM or duplicate keys) and returns the parsed JSON `Value` (`ref[container.dnam.mutable-frame]`).
-pub fn parse_and_validate_dmu1_frame(frame: &[u8]) -> Result<Value, DnamError> {
+/// Validates a `DMU1` mutable frame (CRC32C, zero padding, and UTF-8 `{...}` framing) without heap allocation.
+pub fn validate_dmu1_frame_no_alloc(frame: &[u8]) -> Result<(), DnamError> {
     reject_if(
         frame.len() < DMU1_HEADER_SIZE + 2 || &frame[0..4] != b"DMU1",
         "invalid DMU1 magic or short frame",
@@ -223,11 +224,9 @@ pub fn parse_and_validate_dmu1_frame(frame: &[u8]) -> Result<Value, DnamError> {
         frame[16 + n_len..].iter().any(|&b| b != 0),
         "non-zero DMU1 padding bytes",
     )?;
-    let mut crc_input = Vec::with_capacity(12 + n_len);
-    crc_input.extend_from_slice(b"DMU1");
-    crc_input.extend_from_slice(&frame[8..16]);
-    crc_input.extend_from_slice(payload);
-    let calc_crc = crc32c(&crc_input);
+    let c0 = crate::math::crc32c_slice(0, b"DMU1");
+    let c1 = crate::math::crc32c_slice(c0, &frame[8..16]);
+    let calc_crc = crate::math::crc32c_slice(c1, payload);
     if stored_crc != calc_crc {
         return Err(DnamError::Crc32cMismatch {
             region: "DMU1",
@@ -235,6 +234,26 @@ pub fn parse_and_validate_dmu1_frame(frame: &[u8]) -> Result<Value, DnamError> {
             computed: calc_crc,
         });
     }
+    reject_if(
+        payload.starts_with(&[0xEF, 0xBB, 0xBF]),
+        "UTF-8 BOM is forbidden",
+    )?;
+    let text = core::str::from_utf8(payload)
+        .map_err(|_| DnamError::SchemaValidationError("invalid UTF-8 JSON".to_string()))?;
+    let trimmed = text.trim_ascii();
+    reject_if(
+        !trimmed.starts_with('{') || !trimmed.ends_with('}'),
+        "DMU1 payload must be a JSON object",
+    )?;
+    Ok(())
+}
+
+/// Validates a `DMU1` mutable frame (CRC32C, zero padding, and strict RFC 8259 UTF-8 JSON object without
+/// BOM or duplicate keys) and returns the parsed JSON `Value` (`ref[container.dnam.mutable-frame]`).
+pub fn parse_and_validate_dmu1_frame(frame: &[u8]) -> Result<Value, DnamError> {
+    validate_dmu1_frame_no_alloc(frame)?;
+    let n_len = u64::from_le_bytes(frame[8..16].try_into().unwrap()) as usize;
+    let payload = &frame[16..16 + n_len];
     parse_strict_json_object_bytes(payload)
 }
 
@@ -330,9 +349,9 @@ pub fn validate_mutable_json_schema(doc: &Value) -> Result<(), DnamError> {
     Ok(())
 }
 
-/// Validates a v2.0 Open `.dnam` container's physical layout (`ref[container.dnam.open-layout]`,
+/// Validates a v2.0 Open `.dnam` container's physical layout without heap allocation (`ref[container.dnam.open-layout]`,
 /// `ref[container.dnam.preamble-directory]`, `ref[container.dnam.mutable-frame]`).
-pub fn validate_v2_open_dnam_layout(data: &[u8]) -> Result<V2ContainerLayout, DnamError> {
+pub fn validate_v2_dnam_layout_no_alloc(data: &[u8]) -> Result<V2ContainerLayout, DnamError> {
     reject_if(data.len() < V2_HEADER_OFFSET, "short structure")?;
     let magic: [u8; 4] = data[0..4].try_into().unwrap();
     let major = u16::from_le_bytes([data[4], data[5]]);
@@ -441,7 +460,7 @@ pub fn validate_v2_open_dnam_layout(data: &[u8]) -> Result<V2ContainerLayout, Dn
     }
     let retained_tier = retained_opt.or_schema_err("invalid retained end")?;
 
-    parse_and_validate_dmu1_frame(&data[mutable_offset..data.len() - DMUE_FOOTER_SIZE])?;
+    validate_dmu1_frame_no_alloc(&data[mutable_offset..data.len() - DMUE_FOOTER_SIZE])?;
 
     for (start, end) in [
         (header_end as usize, shared_offset as usize),
@@ -470,6 +489,14 @@ pub fn validate_v2_open_dnam_layout(data: &[u8]) -> Result<V2ContainerLayout, Dn
         ],
         mutable_extent: (mutable_offset, mutable_capacity as usize),
     })
+}
+
+/// Validates a v2.0 Open `.dnam` container's physical layout (`ref[container.dnam.open-layout]`,
+/// `ref[container.dnam.preamble-directory]`, `ref[container.dnam.mutable-frame]`).
+pub fn validate_v2_open_dnam_layout(data: &[u8]) -> Result<V2ContainerLayout, DnamError> {
+    let layout = validate_v2_dnam_layout_no_alloc(data)?;
+    parse_and_validate_dmu1_frame(&data[layout.mutable_extent.0..data.len() - DMUE_FOOTER_SIZE])?;
+    Ok(layout)
 }
 
 /// Strips a validated v2.0 Open `.dnam` container to `target_tier <= retained_tier` without re-signing
@@ -1083,6 +1110,187 @@ pub fn decode_cp1_contributor_stream(
     Ok(records)
 }
 
+/// Decodes a stream of packed `CP1` contributor records directly into a caller-supplied pre-allocated
+/// [`crate::control::Cp1ContributorSlot`] slice without heap allocation (`ref[container.dnam.cp1-profile]`).
+pub fn decode_cp1_contributor_stream_into_slice(
+    base_bytes: &[u8],
+    ultra_delta_bytes: Option<&[u8]>,
+    contributor_lanes: &[usize],
+    out_slots: &mut [crate::control::Cp1ContributorSlot],
+) -> Result<usize, DnamError> {
+    reject_if(
+        contributor_lanes.len() > out_slots.len(),
+        "contributor count exceeds slot capacity",
+    )?;
+    let mut expected_base = 0usize;
+    let mut expected_ultra = 0usize;
+    for &lanes in contributor_lanes {
+        expected_base += cp1_contributor_record_bytes(lanes, false)
+            .or_schema_err("invalid contributor lane count")?;
+        expected_ultra += cp1_contributor_record_bytes(lanes, true).unwrap();
+    }
+    reject_if(
+        base_bytes.len() < expected_base,
+        "incorrect base tensor length",
+    )?;
+    if let Some(ub) = ultra_delta_bytes
+        && ub.len() < expected_ultra
+    {
+        return Err(DnamError::SchemaValidationError(
+            "incorrect delta tensor length".to_string(),
+        ));
+    }
+
+    let read_f32_at = |bytes: &[u8], idx: usize| -> Result<f32, DnamError> {
+        let off = idx * 4;
+        let v = f32::from_le_bytes([bytes[off], bytes[off + 1], bytes[off + 2], bytes[off + 3]]);
+        reject_if(!v.is_finite(), "nonfinite coefficient")?;
+        Ok(v)
+    };
+
+    let mut b_off = 0usize;
+    let mut u_off = 0usize;
+    for (slot_idx, &lanes) in contributor_lanes.iter().enumerate() {
+        let b_len = cp1_contributor_record_bytes(lanes, false).unwrap();
+        let b_slice = &base_bytes[b_off..b_off + b_len];
+        b_off += b_len;
+
+        let mut slot = crate::control::Cp1ContributorSlot::zero();
+        slot.lanes = lanes as u8;
+        slot.control_idx = slot_idx as u16;
+        slot.option_idx = 0xFF;
+
+        for k in 0..lanes {
+            for r in 0..8 {
+                slot.main_base[k][r] = read_f32_at(b_slice, k * 8 + r)?;
+            }
+            slot.emb[k] = read_f32_at(b_slice, 8 * lanes + k)?;
+        }
+        let v_start = 9 * lanes;
+        for f in 0..4 {
+            slot.v_base[f] = read_f32_at(b_slice, v_start + f)?;
+        }
+
+        if let Some(ub) = ultra_delta_bytes {
+            let u_len = cp1_contributor_record_bytes(lanes, true).unwrap();
+            let u_slice = &ub[u_off..u_off + u_len];
+            u_off += u_len;
+            for k in 0..lanes {
+                for r in 0..8 {
+                    slot.main_ultra[k][r] = read_f32_at(u_slice, k * 8 + r)?;
+                }
+            }
+            let uv_start = 8 * lanes;
+            for f in 0..4 {
+                slot.v_ultra[f] = read_f32_at(u_slice, uv_start + f)?;
+            }
+            slot.has_ultra = true;
+        }
+        out_slots[slot_idx] = slot;
+    }
+    Ok(contributor_lanes.len())
+}
+
+/// Decodes a self-describing `CP1\0` contributor stream from `shared_extent` into `out_slots`
+/// without heap allocation (`ref[container.dnam.cp1-profile]`).
+///
+/// Framing: `b"CP1\0"` (`4 B`), `count: u16le` (`2 B`), `flags: u8` (`1 B`, bit 0 = `has_ultra`),
+/// `reserved: u8` (`1 B`), followed by `count * 4 B` contributor directory entries
+/// `(control_idx: u16le, lanes: u8, option_idx: u8)`, followed by packed `base_bytes` and optional `ultra_bytes`.
+pub fn decode_cp1_shared_stream_into_slice(
+    cp1_slice: &[u8],
+    out_slots: &mut [crate::control::Cp1ContributorSlot],
+) -> Result<usize, DnamError> {
+    if cp1_slice.len() < 8 || cp1_slice[0..4] != CP1_MAGIC {
+        return Ok(0);
+    }
+    let count = u16::from_le_bytes([cp1_slice[4], cp1_slice[5]]) as usize;
+    if count == 0 {
+        return Ok(0);
+    }
+    let has_ultra = (cp1_slice[6] & 1) != 0;
+    let dir_end = 8 + count * 4;
+    reject_if(
+        count > out_slots.len() || cp1_slice.len() < dir_end,
+        "invalid CP1 shared stream header",
+    )?;
+    let mut expected_base = 0usize;
+    let mut expected_ultra = 0usize;
+    for i in 0..count {
+        let raw_kl = cp1_slice[8 + i * 4 + 2];
+        let lanes = (raw_kl & 0x03) as usize;
+        expected_base += cp1_contributor_record_bytes(lanes, false)
+            .or_schema_err("invalid contributor lane count")?;
+        if has_ultra {
+            expected_ultra += cp1_contributor_record_bytes(lanes, true).unwrap();
+        }
+    }
+    reject_if(
+        cp1_slice.len() < dir_end + expected_base + expected_ultra,
+        "truncated CP1 shared stream payload",
+    )?;
+    let base_bytes = &cp1_slice[dir_end..dir_end + expected_base];
+    let ultra_bytes = &cp1_slice[dir_end + expected_base..dir_end + expected_base + expected_ultra];
+    let read_f32_at = |bytes: &[u8], idx: usize| -> Result<f32, DnamError> {
+        let off = idx * 4;
+        let v = f32::from_le_bytes([bytes[off], bytes[off + 1], bytes[off + 2], bytes[off + 3]]);
+        reject_if(!v.is_finite(), "nonfinite coefficient")?;
+        Ok(v)
+    };
+    let mut b_off = 0usize;
+    let mut u_off = 0usize;
+    for (slot_idx, out_slot) in out_slots.iter_mut().take(count).enumerate() {
+        let d_off = 8 + slot_idx * 4;
+        let control_idx = u16::from_le_bytes([cp1_slice[d_off], cp1_slice[d_off + 1]]);
+        let raw_kl = cp1_slice[d_off + 2];
+        let lanes = (raw_kl & 0x03) as usize;
+        let ctrl_kind = (raw_kl >> 2) & 0x03;
+        let aux = cp1_slice[d_off + 3];
+        let b_len = cp1_contributor_record_bytes(lanes, false).unwrap();
+        let b_slice = &base_bytes[b_off..b_off + b_len];
+        b_off += b_len;
+
+        let mut slot = crate::control::Cp1ContributorSlot::zero();
+        slot.lanes = lanes as u8;
+        slot.ctrl_kind = ctrl_kind;
+        slot.control_idx = control_idx;
+        if ctrl_kind == 2 {
+            slot.partner_control_id = aux as u16;
+            slot.option_idx = 0xFF;
+        } else {
+            slot.option_idx = aux;
+            slot.partner_control_id = 0;
+        }
+        for k in 0..lanes {
+            for r in 0..8 {
+                slot.main_base[k][r] = read_f32_at(b_slice, k * 8 + r)?;
+            }
+            slot.emb[k] = read_f32_at(b_slice, 8 * lanes + k)?;
+        }
+        let v_start = 9 * lanes;
+        for f in 0..4 {
+            slot.v_base[f] = read_f32_at(b_slice, v_start + f)?;
+        }
+        if has_ultra {
+            let u_len = cp1_contributor_record_bytes(lanes, true).unwrap();
+            let u_slice = &ultra_bytes[u_off..u_off + u_len];
+            u_off += u_len;
+            for k in 0..lanes {
+                for r in 0..8 {
+                    slot.main_ultra[k][r] = read_f32_at(u_slice, k * 8 + r)?;
+                }
+            }
+            let uv_start = 8 * lanes;
+            for f in 0..4 {
+                slot.v_ultra[f] = read_f32_at(u_slice, uv_start + f)?;
+            }
+            slot.has_ultra = true;
+        }
+        *out_slot = slot;
+    }
+    Ok(count)
+}
+
 // ============================================================================
 // Structured Conditional Control Rules (`ref[container.dnam.conditional-rules]`)
 // ============================================================================
@@ -1550,16 +1758,136 @@ pub fn validate_v2_dnck_checkpoint(data: &[u8]) -> Result<(u8, Vec<usize>, usize
     Ok((tier as u8, issued_ends, boundary))
 }
 
+/// Builds a canonical v2.0 `.dnam-ckpt` (`b"DNCK"`) container with a `DCA1` envelope and embedded
+/// `.dnam` runtime template (`ref[container.ckpt.bundle-framing]`, `ref[container.ckpt.dca1-signature]`,
+/// `ref[container.ckpt.export-template]`).
+pub fn build_v2_dnck_checkpoint(
+    header_bytes: &[u8],
+    runtime_dnam_container: &[u8],
+    extra_shared_ckpt_bytes: &[u8],
+    tier_bundles: &[&[u8]],
+    writer_pubkey: &[u8; 32],
+    writer_signature: &[u8; 64],
+    mutable_frame_bytes: Option<&[u8]>,
+) -> Result<Vec<u8>, DnamError> {
+    let runtime_layout = validate_v2_open_dnam_layout(runtime_dnam_container)?;
+    let count = tier_bundles.len();
+    reject_if(
+        header_bytes.is_empty()
+            || count == 0
+            || count > 4
+            || (count - 1) != (runtime_layout.retained_tier as usize)
+            || !extra_shared_ckpt_bytes.len().is_multiple_of(64),
+        "invalid v2 checkpoint inputs",
+    )?;
+
+    let mut prev_runtime = runtime_layout.tier_start;
+    for (idx, bundle) in tier_bundles.iter().enumerate() {
+        let runtime_len = runtime_layout.tier_ends[idx].saturating_sub(prev_runtime);
+        reject_if(
+            bundle.len() < runtime_len || !bundle.len().is_multiple_of(64),
+            "invalid checkpoint tier bundle length or alignment",
+        )?;
+        prev_runtime = runtime_layout.tier_ends[idx];
+    }
+
+    let mut shared = Vec::with_capacity(runtime_layout.tier_start + extra_shared_ckpt_bytes.len());
+    shared.extend_from_slice(&runtime_dnam_container[..runtime_layout.tier_start]);
+    shared.extend_from_slice(extra_shared_ckpt_bytes);
+
+    let maximum_tier = (count - 1) as u8;
+    let shared_offset = align64_u64(192 + header_bytes.len() as u64).unwrap();
+    let auth_offset = align64_u64(shared_offset + shared.len() as u64).unwrap();
+    let auth_length = (106 + 33 * count) as u64;
+    let bundle_start = align64_u64(auth_offset + auth_length).unwrap();
+
+    let mut ends = [0u64; 4];
+    let mut cur_end = bundle_start;
+    for (idx, bundle) in tier_bundles.iter().enumerate() {
+        cur_end = cur_end.checked_add(bundle.len() as u64).unwrap();
+        ends[idx] = cur_end;
+    }
+
+    let mut preamble = [0u8; 64];
+    preamble[0..4].copy_from_slice(b"DNCK");
+    preamble[4..6].copy_from_slice(&2u16.to_le_bytes());
+    preamble[6..8].copy_from_slice(&0u16.to_le_bytes());
+    preamble[8] = 0;
+    preamble[9] = 0;
+    preamble[10] = maximum_tier;
+    preamble[11] = 0;
+    preamble[12..16].copy_from_slice(&48_000u32.to_le_bytes());
+
+    let mut directory = [0u8; 128];
+    let dir_fields: [u64; 13] = [
+        192,
+        header_bytes.len() as u64,
+        shared_offset,
+        shared.len() as u64,
+        auth_offset,
+        auth_length,
+        0,
+        0,
+        bundle_start,
+        ends[0],
+        ends[1],
+        ends[2],
+        ends[3],
+    ];
+    for (idx, val) in dir_fields.iter().enumerate() {
+        directory[idx * 8..(idx + 1) * 8].copy_from_slice(&val.to_le_bytes());
+    }
+
+    let digests =
+        compute_dnck_bundle_prefixes(&preamble, &directory, header_bytes, &shared, tier_bundles);
+
+    let mut envelope = Vec::with_capacity(auth_length as usize);
+    envelope.extend_from_slice(b"DCA1\0\0\0\0");
+    envelope.extend_from_slice(writer_pubkey);
+    envelope.push(maximum_tier);
+    envelope.push(count as u8);
+    for (t, d) in digests.iter().enumerate() {
+        envelope.push(t as u8);
+        envelope.extend_from_slice(d);
+    }
+    envelope.extend_from_slice(writer_signature);
+
+    let mut ckpt = vec![0u8; ends[count - 1] as usize];
+    ckpt[..64].copy_from_slice(&preamble);
+    ckpt[64..192].copy_from_slice(&directory);
+    ckpt[192..192 + header_bytes.len()].copy_from_slice(header_bytes);
+    let s_off = shared_offset as usize;
+    ckpt[s_off..s_off + shared.len()].copy_from_slice(&shared);
+    let a_off = auth_offset as usize;
+    ckpt[a_off..a_off + envelope.len()].copy_from_slice(&envelope);
+    let mut b_off = bundle_start as usize;
+    for b in tier_bundles {
+        ckpt[b_off..b_off + b.len()].copy_from_slice(b);
+        b_off += b.len();
+    }
+
+    let default_dmu1;
+    let m_bytes = match mutable_frame_bytes {
+        Some(b) if !b.is_empty() => b,
+        _ => {
+            default_dmu1 = build_dmu1_mutable_frame(b"{}", 48)?;
+            &default_dmu1
+        }
+    };
+    append_dmue_mutable_suffix(&mut ckpt, m_bytes);
+    Ok(ckpt)
+}
+
 /// Exports the retained tier of a validated `.dnam-ckpt` (`DNCK`) container into a standalone
 /// `.dnam` runtime container (`ref[container.ckpt.export-template]`, `ref[container.ckpt.declarative-no-pickle]`).
 pub fn export_runtime_dnam_from_ckpt(data: &[u8]) -> Result<Vec<u8>, DnamError> {
-    if data.len() >= 8 && &data[0..4] == b"DNCK" && u16::from_le_bytes([data[4], data[5]]) == 1 {
+    if data.len() >= 64 && &data[0..4] == b"DNCK" && data[16..64].iter().any(|&b| b != 0) {
         use super::{ARENA_OFFSET_ULTRA_END, DnamContainerView, build_dnam_container};
         use crate::provenance::OpenArenaCryptoProvider;
 
         let view = DnamContainerView::from_bytes(data, &OpenArenaCryptoProvider)?;
         let mut header = view.header.clone();
-        header.version = "1.0.0".to_string();
+        header.version = "2.0.0".to_string();
         header.container_kind = "dnam".to_string();
         header.stems_registry = None;
         header.audit_report = None;

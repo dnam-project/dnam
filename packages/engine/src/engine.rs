@@ -20,6 +20,7 @@ use crate::stages::StagePipeline;
 use crate::types::{DnamTelemetrySnapshot, Tier};
 
 pub use oversampler::{OFFLINE_BOUNCE_PDC_SAMPLES, Oversampler4xState};
+pub use process::DnamAudioIo;
 pub use tempo::TempoSyncState;
 
 /// Zero-allocation real-time DNAM inference engine parameterized over a
@@ -37,6 +38,7 @@ pub struct DnamEngine<'a, B: MathBackend = DefaultMathBackend> {
     pub(crate) offline_bounce: bool,
     pub(crate) maximize_tier_on_bounce: bool,
     pub(crate) oversampler: Oversampler4xState,
+    pub(crate) oversampler_aux: Oversampler4xState,
     pub(crate) tempo_state: TempoSyncState,
     pub(crate) zoh: ZohRescaledParams,
     pub(crate) ctrl_sub_counter: usize,
@@ -78,8 +80,8 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
         };
         let preamble = DnamPreamble {
             magic: crate::container::DNAM_MAGIC,
-            version_major: 1,
-            version_minor: 0,
+            version_major: crate::container::CONTAINER_VERSION_MAJOR,
+            version_minor: crate::container::CONTAINER_VERSION_MINOR,
             flags: crate::container::FLAG_HAS_LITE | crate::container::FLAG_STEREO_OUT,
             num_controls: 0,
             sample_rate_train_hz: 48_000,
@@ -111,6 +113,7 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
             offline_bounce: false,
             maximize_tier_on_bounce: true,
             oversampler: Oversampler4xState::new(),
+            oversampler_aux: Oversampler4xState::new(),
             tempo_state: TempoSyncState::new(),
             zoh,
             ctrl_sub_counter: 0,
@@ -185,6 +188,8 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
             verification_status: view.verification_status,
             protection_profile: view.protection_profile,
             control_records: view.control_records,
+            clamp_descriptors: view.clamp_descriptors,
+            cp1_contributors: view.cp1_contributors,
             arena_storage: ArenaStorage::from_owned_buffer(owned_arena),
         };
         let mut engine = DnamEngine::<'static, B>::new_empty(max_supported_tier);
@@ -209,6 +214,8 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
             verification_status: view.verification_status,
             protection_profile: view.protection_profile,
             control_records: view.control_records,
+            clamp_descriptors: view.clamp_descriptors,
+            cp1_contributors: view.cp1_contributors,
             arena_storage: ArenaStorage::from_owned_buffer(owned_arena),
         };
         let mut engine = DnamEngine::<'static, B>::new_empty(Tier::Ultra);
@@ -293,7 +300,7 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
     pub fn set_offline_bounce(&mut self, enabled: bool) {
         if self.offline_bounce != enabled {
             self.offline_bounce = enabled;
-            let _ = self.reconfigure_for_sample_rate(self.zoh.sample_rate_host_hz);
+            let _ = self.reconfigure_for_bounce_toggle();
         }
     }
 
@@ -616,6 +623,52 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
         }
         for &(idx, val) in &batch.range_updates[..batch.range_count] {
             self.set_control_value(idx, val);
+        }
+        let extra_len = self
+            .header
+            .as_ref()
+            .map_or(0, |h| h.controls_schema.len().saturating_sub(256));
+        if extra_len > 0 {
+            let p_idx = batch.preset_index as usize;
+            let total_len = 256 + extra_len;
+            self.control_bus.ensure_control_capacity(total_len);
+            if self.control_bus.num_controls < total_len {
+                self.control_bus.num_controls = total_len;
+            }
+            for idx in 256..total_len {
+                let Some((is_sw, target_val)) = self.header.as_ref().and_then(|hdr| {
+                    let preset = hdr.presets.get(p_idx)?;
+                    let def = hdr.controls_schema.get(idx)?;
+                    let is_sw = def.kind == crate::schema::ControlKind::Switch;
+                    if let Some(val) = preset.controls.get(&def.id) {
+                        if let Some(f) = val.as_f64() {
+                            Some((is_sw, f as f32))
+                        } else if let Some(s) = val.as_str()
+                            && let Some(ref opts) = def.declared_options
+                            && let Some(opt_idx) = opts.iter().position(|o| o == s)
+                        {
+                            Some((true, opt_idx as f32))
+                        } else {
+                            None
+                        }
+                    } else {
+                        let def_val = self
+                            .control_bus
+                            .descriptors
+                            .get(idx)
+                            .map(|d| d.default_val)
+                            .unwrap_or(0.0);
+                        Some((is_sw, def_val))
+                    }
+                }) else {
+                    continue;
+                };
+                if is_sw {
+                    self.set_control_immediate(idx, target_val);
+                } else {
+                    self.set_control_value(idx, target_val);
+                }
+            }
         }
     }
 

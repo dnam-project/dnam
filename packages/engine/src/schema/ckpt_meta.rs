@@ -27,9 +27,9 @@ pub struct StemRegistryEntry {
     /// Extracted Stage-1 physical anchors (delays, LFO frequencies, decay gains).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extracted_physics: Option<ExtractedPhysics>,
-    /// `Arena 4` slice descriptor for $\operatorname{pack}_{\text{U}}(\mathbf{G}_{\text{audio}}^{(s)})$ (`148,224 B`).
+    /// `Arena 4` slice descriptor for $\operatorname{pack}_{\text{U}}(\mathbf{G}_{\text{audio}}^{(s)})$ (`263,168 B`).
     pub g_audio_uplo_u_f64: TensorSliceEntry,
-    /// `Arena 4` slice descriptor for tier-ordered $\mathbf{C}_{\text{audio}}^{(s)}$ (`3,072 B`).
+    /// `Arena 4` slice descriptor for tier-ordered $\mathbf{C}_{\text{audio}}^{(s)}$ (`4,096 B`).
     pub c_audio_tier_f64: TensorSliceEntry,
 }
 

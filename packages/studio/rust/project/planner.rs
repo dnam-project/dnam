@@ -986,7 +986,7 @@ mod tests {
         fs::write(&bad, b"not a container").expect("write bad");
         assert!(extract_checkpoint_prescriptions(&bad, &model).is_empty());
 
-        let mut header = DnamJsonHeader::default_reference(false);
+        let mut header = DnamJsonHeader::default_reference();
         let c1: ControlSchemaDef = serde_json::from_value(serde_json::json!({
             "id": "gain",
             "name": "Gain",

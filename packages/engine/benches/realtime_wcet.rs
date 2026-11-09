@@ -32,7 +32,7 @@ fn make_bench_container() -> AlignedBuffer<CacheLine64> {
     cond_max.insert("mode=b".to_string(), 1.0);
 
     let mut header = DnamJsonHeader {
-        version: "1.0.0".to_string(),
+        version: "2.0.0".to_string(),
         container_kind: "dnam".to_string(),
         architecture: "DNAM_TORA".to_string(),
         sample_rate_train_hz: 48_000,

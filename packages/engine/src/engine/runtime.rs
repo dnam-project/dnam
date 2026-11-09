@@ -33,13 +33,42 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
         self.verification_status = view.verification_status;
         self.protection_profile = view.protection_profile;
         self.arena_storage = view.arena_storage;
+        self.control_bus.num_contributors = 0;
         self.control_bus.load_control_records(&view.control_records);
+        if !view.clamp_descriptors.is_empty() {
+            let n_desc = view.clamp_descriptors.len();
+            self.control_bus.ensure_control_capacity(n_desc);
+            for (i, d) in view.clamp_descriptors.iter().enumerate() {
+                self.control_bus.descriptors[i] = *d;
+            }
+            if self.control_bus.num_controls < n_desc {
+                self.control_bus.num_controls = n_desc;
+            }
+        } else if view.control_records.is_empty()
+            && let Some(ref hdr) = self.header
+            && !hdr.controls_schema.is_empty()
+            && let Ok(compiled) = hdr.compile_clamp_descriptors()
+        {
+            let n_desc = compiled.len();
+            self.control_bus.ensure_control_capacity(n_desc);
+            for (i, d) in compiled.into_iter().enumerate() {
+                self.control_bus.descriptors[i] = d;
+            }
+            if self.control_bus.num_controls < n_desc {
+                self.control_bus.num_controls = n_desc;
+            }
+        }
+        if !view.cp1_contributors.is_empty() {
+            self.control_bus
+                .load_cp1_contributors(&view.cp1_contributors);
+        }
         self.tier = active_tier;
         self.max_available_tier = max_available_tier;
         self.max_supported_tier = max_supported_tier;
         self.offline_bounce = false;
         self.maximize_tier_on_bounce = true;
         self.oversampler.reset();
+        self.oversampler_aux.reset();
         self.tempo_state.sample_rate_hz = sample_rate_hz;
         self.zoh = zoh;
         self.ctrl_sub_counter = 0;
@@ -79,6 +108,40 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
         sample_rate_hz: u32,
     ) -> Result<(), DnamError> {
         self.reconfigure_for_sample_rate_with_mode(sample_rate_hz, false)
+    }
+
+    /// Reconfigures ZOH parameters for a live/offline-bounce transition without wiping
+    /// recursive DSP state or dynamic `ControlBus` state (`R20-E4`).
+    pub(crate) fn reconfigure_for_bounce_toggle(&mut self) -> Result<(), DnamError> {
+        let sample_rate_hz = self.zoh.sample_rate_host_hz;
+        let (r_ac_tr, r_dc_tr, tau_ref_tr, switch_xfade_tr) = self.training_zoh_poles();
+        let oversample_factor = if self.offline_bounce { 4 } else { 1 };
+        self.zoh = ZohRescaledParams::compute_oversampled(
+            self.preamble.sample_rate_train_hz,
+            sample_rate_hz,
+            oversample_factor,
+            r_ac_tr,
+            r_dc_tr,
+            tau_ref_tr,
+            switch_xfade_tr,
+        )?;
+        let arena = self.arena_storage.as_bytes();
+        self.control_bus
+            .update_sample_rate_params(arena, self.zoh.rho_ctrl);
+        self.control_bus.refresh_static_state(arena);
+        self.stage_pipeline
+            .load_kautz_and_fir_from_arena_with_zoh(arena, &self.zoh);
+        self.stage_pipeline.reconfigure_sample_rate(&self.zoh);
+        if self.control_bus.tank_mod_dirty {
+            self.apply_tank_modulations();
+            self.control_bus.tank_mod_dirty = false;
+        }
+        self.oversampler.reset();
+        self.oversampler_aux.reset();
+        self.ctrl_sub_counter = 0;
+        self.ctrl_energy_accum = 0.0;
+        self.cached_head_tiers = 0;
+        Ok(())
     }
 
     pub(crate) fn training_zoh_poles(&self) -> (f32, f32, f32, u32) {
@@ -160,15 +223,6 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
                 }
             }
             let arena = self.arena_storage.as_bytes();
-            if let Some(ref hdr) = self.header
-                && !hdr.controls_schema.is_empty()
-                && let Ok(compiled) = hdr.compile_clamp_descriptors()
-            {
-                self.control_bus.ensure_control_capacity(compiled.len());
-                for (i, d) in compiled.into_iter().enumerate() {
-                    self.control_bus.descriptors[i] = d;
-                }
-            }
             self.control_bus.load_from_arena0(
                 arena,
                 self.preamble.num_controls as usize,
@@ -177,15 +231,11 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
             if let Some(ref hdr) = self.header {
                 let mh = hdr.control_bus.head_trust_region_radius;
                 if mh > 1e-3 {
+                    self.control_bus.trust_radius_mh = mh;
                     self.control_bus.inv_trust_radius_mh2 = 1.0 / (mh * mh);
                 }
                 self.stage_pipeline
                     .stage0
-                    .sub_crossover_l
-                    .set_crossover_hz(hdr.stage0_router.sub_crossover_hz);
-                self.stage_pipeline
-                    .stage0
-                    .sub_crossover_r
                     .set_crossover_hz(hdr.stage0_router.sub_crossover_hz);
                 self.stage_pipeline.stage1.topology_mode = hdr.stage1_pre.topology_selector & 0x03;
                 self.stage_pipeline.stage1.gate_threshold = if hdr.stage1_pre.noise_gate_enabled {
@@ -207,6 +257,7 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
             if let Some(ref hdr) = self.header {
                 let mh = hdr.control_bus.head_trust_region_radius;
                 if mh > 1e-3 {
+                    self.control_bus.trust_radius_mh = mh;
                     self.control_bus.inv_trust_radius_mh2 = 1.0 / (mh * mh);
                 }
             }
@@ -227,6 +278,7 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
         }
 
         self.oversampler.reset();
+        self.oversampler_aux.reset();
         self.tempo_state.sample_rate_hz = sample_rate_hz;
         self.stage_pipeline.stage1.op_t_pre.current_delay =
             self.stage_pipeline.stage1.op_t_pre.target_delay;
@@ -253,6 +305,50 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
         tier: Tier,
         sample_rate_hz: u32,
     ) -> Result<(), DnamError> {
+        if crate::container::is_v2_wire_directory_container(bytes) {
+            let layout = crate::container::validate_v2_dnam_layout_no_alloc(bytes)?;
+            let preamble = DnamPreamble::from_bytes(bytes)?;
+            let arena_slice =
+                &bytes[layout.tier_start..layout.tier_ends[layout.retained_tier as usize]];
+            let shared_extent_slice =
+                &bytes[layout.shared_extent.0..layout.shared_extent.0 + layout.shared_extent.1];
+            let max_avail = Self::detect_max_tier(&preamble, arena_slice.len());
+            let active_tier = tier.min(max_avail).min(self.max_supported_tier);
+            if !self.arena_storage.reload_in_place(arena_slice) {
+                self.arena_storage = crate::memory::ArenaStorage::from_slice_or_copy(arena_slice);
+            }
+            self.control_bus.num_contributors = 0;
+            let p_ctrls = preamble.num_controls as usize;
+            self.control_bus.ensure_control_capacity(p_ctrls);
+            self.control_bus.num_controls = p_ctrls;
+            let desc_bytes_len = p_ctrls * 64;
+            if shared_extent_slice.len() >= desc_bytes_len {
+                for p in 0..p_ctrls {
+                    let off = p * 64;
+                    let mut db = [0u8; 64];
+                    db.copy_from_slice(&shared_extent_slice[off..off + 64]);
+                    self.control_bus.descriptors[p] =
+                        crate::control::ControlClampDescriptor::from_bytes(&db);
+                }
+                let cp1_tail = &shared_extent_slice[desc_bytes_len..];
+                if cp1_tail.len() >= 8
+                    && cp1_tail[0..4] == crate::container::CP1_MAGIC
+                    && let Ok(cnt) = crate::container::decode_cp1_shared_stream_into_slice(
+                        cp1_tail,
+                        &mut self.control_bus.contributors,
+                    )
+                {
+                    self.control_bus.num_contributors = cnt;
+                }
+            }
+            self.preamble = preamble;
+            self.header = None;
+            self.tier = active_tier;
+            self.max_available_tier = max_avail;
+            self.reconfigure_for_sample_rate_with_mode(sample_rate_hz, true)?;
+            return Ok(());
+        }
+
         let preamble = DnamPreamble::from_bytes(bytes)?;
         if preamble.is_encrypted_arena() {
             return Err(DnamError::EncryptedArenaRequiresDeviceKey);
@@ -282,6 +378,7 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
         if !self.arena_storage.reload_in_place(raw_arena) {
             self.arena_storage = crate::memory::ArenaStorage::from_slice_or_copy(raw_arena);
         }
+        self.control_bus.num_contributors = 0;
         let p_ctrls = preamble.num_controls as usize;
         if arena_off >= 64 + 128 * p_ctrls {
             let ctrl_off = arena_off - 128 * p_ctrls;
@@ -303,6 +400,57 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
         tier: Tier,
         sample_rate_hz: u32,
     ) -> Result<(), DnamError> {
+        if crate::container::is_v2_wire_directory_container(bytes) {
+            let layout = crate::container::validate_v2_dnam_layout_no_alloc(bytes)?;
+            let preamble = DnamPreamble::from_bytes(bytes)?;
+            let arena_slice =
+                &bytes[layout.tier_start..layout.tier_ends[layout.retained_tier as usize]];
+            let shared_extent_slice =
+                &bytes[layout.shared_extent.0..layout.shared_extent.0 + layout.shared_extent.1];
+            let json_slice =
+                &bytes[layout.header_extent.0..layout.header_extent.0 + layout.header_extent.1];
+            let max_avail = Self::detect_max_tier(&preamble, arena_slice.len());
+            let active_tier = tier.min(max_avail).min(self.max_supported_tier);
+            if !self.arena_storage.reload_in_place(arena_slice) {
+                self.arena_storage = crate::memory::ArenaStorage::from_slice_owned(arena_slice);
+            }
+            self.control_bus.num_contributors = 0;
+            let p_ctrls = preamble.num_controls as usize;
+            self.control_bus.ensure_control_capacity(p_ctrls);
+            self.control_bus.num_controls = p_ctrls;
+            let desc_bytes_len = p_ctrls * 64;
+            if shared_extent_slice.len() >= desc_bytes_len {
+                for p in 0..p_ctrls {
+                    let off = p * 64;
+                    let mut db = [0u8; 64];
+                    db.copy_from_slice(&shared_extent_slice[off..off + 64]);
+                    self.control_bus.descriptors[p] =
+                        crate::control::ControlClampDescriptor::from_bytes(&db);
+                }
+                let cp1_tail = &shared_extent_slice[desc_bytes_len..];
+                if cp1_tail.len() >= 8
+                    && cp1_tail[0..4] == crate::container::CP1_MAGIC
+                    && let Ok(cnt) = crate::container::decode_cp1_shared_stream_into_slice(
+                        cp1_tail,
+                        &mut self.control_bus.contributors,
+                    )
+                {
+                    self.control_bus.num_contributors = cnt;
+                }
+            }
+            let parsed_header =
+                serde_json::from_slice::<crate::schema::DnamJsonHeader>(json_slice).ok();
+            if let Some(ref hdr) = parsed_header {
+                self.freeze_mutes_dry = hdr.io_config.capabilities.freeze_mutes_dry;
+            }
+            self.preamble = preamble;
+            self.header = parsed_header;
+            self.tier = active_tier;
+            self.max_available_tier = max_avail;
+            self.reconfigure_for_sample_rate_with_mode(sample_rate_hz, true)?;
+            return Ok(());
+        }
+
         let preamble = DnamPreamble::from_bytes(bytes)?;
         if preamble.is_encrypted_arena() {
             return Err(DnamError::EncryptedArenaRequiresDeviceKey);
@@ -332,6 +480,7 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
         if !self.arena_storage.reload_in_place(raw_arena) {
             self.arena_storage = crate::memory::ArenaStorage::from_slice_owned(raw_arena);
         }
+        self.control_bus.num_contributors = 0;
         let p_ctrls = preamble.num_controls as usize;
         if arena_off >= 64 + 128 * p_ctrls {
             let ctrl_off = arena_off - 128 * p_ctrls;
@@ -378,6 +527,7 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
         self.stage_pipeline.stage1.op_t_pre.xfade_idx = 0;
         self.stage_pipeline.stage4.current_psi = self.stage_pipeline.stage4.target_psi;
         self.oversampler.reset();
+        self.oversampler_aux.reset();
         self.tempo_state.reset();
         self.current_stage_params = self.control_bus.stage_targets;
         self.stage_ramp_deltas = [0.0; 16];
@@ -601,6 +751,36 @@ mod tests {
                 .return_aligner_l
                 .delay_samples,
             d_before
+        );
+
+        // 5. Open v2.0 wire directory reload in-place and owned
+        let hdr_json = serde_json::to_vec(&header).unwrap();
+        let open_v2 = crate::container::build_v2_open_dnam_container(
+            &hdr_json,
+            &arena[..crate::container::ARENA_OFFSET_LITE_END as usize],
+            &[0xAA; 64],
+            &[
+                &arena[..crate::container::ARENA_OFFSET_LITE_END as usize],
+                &arena[crate::container::ARENA_OFFSET_LITE_END as usize
+                    ..crate::container::ARENA_OFFSET_FULL_END as usize],
+                &arena[crate::container::ARENA_OFFSET_FULL_END as usize
+                    ..crate::container::ARENA_OFFSET_PRO_END as usize],
+                &arena[crate::container::ARENA_OFFSET_PRO_END as usize
+                    ..crate::container::ARENA_OFFSET_ULTRA_END as usize],
+            ],
+            None,
+            0,
+        )
+        .unwrap();
+        assert!(
+            engine
+                .reload_model_in_place(&open_v2, Tier::Full, 48_000)
+                .is_ok()
+        );
+        assert!(
+            owned_engine
+                .reload_model_in_place_owned(&open_v2, Tier::Full, 48_000)
+                .is_ok()
         );
     }
 }

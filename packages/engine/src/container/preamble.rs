@@ -62,8 +62,22 @@ pub struct DnamPreamble {
 const _: () = assert!(size_of::<DnamPreamble>() == 64);
 const _: () = assert!(align_of::<DnamPreamble>() == 64);
 
+/// Returns `true` if `bytes` uses the `v2.0` 64B preamble + 128B region directory wire layout.
+#[inline]
+pub fn is_v2_wire_directory_container(bytes: &[u8]) -> bool {
+    bytes.len() >= 192
+        && (&bytes[0..4] == b"DNAM" || &bytes[0..4] == b"DNCK")
+        && u16::from_le_bytes([bytes[4], bytes[5]]) == 2
+        && u16::from_le_bytes([bytes[6], bytes[7]]) == 0
+        && (bytes[16..28] == [0u8; 12]
+            || u64::from_le_bytes([
+                bytes[64], bytes[65], bytes[66], bytes[67], bytes[68], bytes[69], bytes[70],
+                bytes[71],
+            ]) == super::wire::V2_HEADER_OFFSET as u64)
+}
+
 impl DnamPreamble {
-    /// Parses a 64-byte [`DnamPreamble`] from the leading 64 bytes of a container buffer.
+    /// Parses a 64-byte [`DnamPreamble`] from the leading bytes of a container buffer.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, DnamError> {
         if bytes.len() < 64 {
             return Err(DnamError::BufferTooSmall {
@@ -81,6 +95,82 @@ impl DnamPreamble {
             return Err(DnamError::UnsupportedVersion {
                 major: version_major,
                 minor: version_minor,
+            });
+        }
+        if is_v2_wire_directory_container(bytes) {
+            let header_len = u64::from_le_bytes([
+                bytes[72], bytes[73], bytes[74], bytes[75], bytes[76], bytes[77], bytes[78],
+                bytes[79],
+            ]) as u32;
+            let tier0_off = u64::from_le_bytes([
+                bytes[112], bytes[113], bytes[114], bytes[115], bytes[116], bytes[117], bytes[118],
+                bytes[119],
+            ]) as u32;
+            let tier0_len = u64::from_le_bytes([
+                bytes[120], bytes[121], bytes[122], bytes[123], bytes[124], bytes[125], bytes[126],
+                bytes[127],
+            ]) as u32;
+            let tier1_len = u64::from_le_bytes([
+                bytes[136], bytes[137], bytes[138], bytes[139], bytes[140], bytes[141], bytes[142],
+                bytes[143],
+            ]) as u32;
+            let tier2_len = u64::from_le_bytes([
+                bytes[152], bytes[153], bytes[154], bytes[155], bytes[156], bytes[157], bytes[158],
+                bytes[159],
+            ]) as u32;
+            let tier3_len = u64::from_le_bytes([
+                bytes[168], bytes[169], bytes[170], bytes[171], bytes[172], bytes[173], bytes[174],
+                bytes[175],
+            ]) as u32;
+            let retained_tier = if magic == DNAM_MAGIC { bytes[10] } else { 3 };
+            let mut flags = super::FLAG_HAS_LITE | FLAG_STEREO_OUT;
+            if retained_tier >= 1 {
+                flags |= FLAG_HAS_FULL_DELTA;
+            }
+            if retained_tier >= 2 {
+                flags |= FLAG_HAS_PRO_DELTA;
+            }
+            if retained_tier >= 3 {
+                flags |= FLAG_HAS_ULTRA_DELTA;
+            }
+            if magic == DNAM_MAGIC && bytes[11] > 0 {
+                flags |= FLAG_HAS_SIGNATURES;
+            }
+            let (sample_rate_train_hz, num_ckpt_stems) = if magic == DNAM_MAGIC {
+                (
+                    u32::from_le_bytes([bytes[12], bytes[13], bytes[14], bytes[15]]),
+                    0,
+                )
+            } else {
+                flags |= super::FLAG_HAS_CKPT_STEMS | FLAG_HAS_CALIB_STATS;
+                (
+                    48_000,
+                    u32::from_le_bytes([bytes[12], bytes[13], bytes[14], bytes[15]]) as u16,
+                )
+            };
+            let total_tier_len = tier0_len + tier1_len + tier2_len + tier3_len;
+            return Ok(Self {
+                magic,
+                version_major,
+                version_minor,
+                flags,
+                num_controls: 0,
+                sample_rate_train_hz,
+                json_header_byte_len: header_len,
+                tensor_arena_offset: tier0_off,
+                tensor_arena_byte_len: total_tier_len,
+                arena_lite_end_cl: (tier0_len / 64) as u16,
+                arena_full_end_cl: ((tier0_len + tier1_len) / 64) as u16,
+                arena_pro_end_cl: ((tier0_len + tier1_len + tier2_len) / 64) as u16,
+                arena_ultra_end_cl: (total_tier_len / 64) as u16,
+                arena_crc32c_lite: 0,
+                arena_crc32c_full: 0,
+                arena_crc32c_pro: 0,
+                arena_crc32c_ultra: 0,
+                num_ckpt_stems,
+                _reserved: 0,
+                tail_time_ms: 0.0,
+                header_crc32c: 0,
             });
         }
         let flags = u16::from_le_bytes([bytes[8], bytes[9]]);
@@ -262,7 +352,7 @@ mod tests {
         bad_preamble[0..4].copy_from_slice(b"DNAM");
         bad_preamble[4..6].copy_from_slice(&99_u16.to_le_bytes());
         assert!(DnamPreamble::from_bytes(&bad_preamble).is_err());
-        bad_preamble[4..6].copy_from_slice(&1_u16.to_le_bytes());
+        bad_preamble[4..6].copy_from_slice(&CONTAINER_VERSION_MAJOR.to_le_bytes());
         bad_preamble[20..24].copy_from_slice(&65_u32.to_le_bytes());
         assert!(DnamPreamble::from_bytes(&bad_preamble).is_err());
 

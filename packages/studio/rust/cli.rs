@@ -410,7 +410,7 @@ mod tests {
         .expect("studio headless_check");
         assert!(!studio_out.is_empty());
 
-        let mut header = DnamJsonHeader::default_reference(false);
+        let mut header = DnamJsonHeader::default_reference();
         let arena = vec![0u8; ARENA_OFFSET_ULTRA_END as usize];
         let c_bytes =
             build_dnam_container(&mut header, &arena, &arena, false).expect("build container");

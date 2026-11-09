@@ -195,7 +195,7 @@ pub fn testing_reference_header_json(kind: Option<String>) -> Result<String> {
     let header = match kind_str {
         "default" => DnamJsonHeader::default_reference(),
         "full" => DnamJsonHeader {
-            version: "1.1.0".to_string(),
+            version: "2.0.0".to_string(),
             container_kind: "dnam-ckpt".to_string(),
             architecture: "DNAM_TORA".to_string(),
             sample_rate_train_hz: 48_000,

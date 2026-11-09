@@ -192,6 +192,22 @@ impl ZohRescaledParams {
         self.rho_sr as f32
     }
 
+    /// Returns the effective internal DSP sample rate $f_{s,\text{internal}} = M_{\text{os}} \times f_{s,\text{host}}$ in Hz,
+    /// accounting for $4\times$ offline bounce oversampling (`ref[dsp.zoh.router-detector]`).
+    #[inline]
+    pub fn effective_sample_rate_hz(&self) -> f64 {
+        let host = (self.sample_rate_host_hz as f64).max(1.0);
+        let approx_os = ((self.control_decimation_host as f64) * 3000.0 / host).round();
+        let os_factor = if (approx_os - 4.0).abs() < 0.5 {
+            4.0
+        } else if (approx_os - 2.0).abs() < 0.5 {
+            2.0
+        } else {
+            1.0
+        };
+        host * os_factor
+    }
+
     /// Rescales an Op-T base delay $\tau_{0,m}^{\text{samples}}$ and integer Schroeder all-pass delay $D_{\text{ap},m}$ (`ref[dsp.zoh.op-t-delays]`).
     #[inline]
     pub fn rescale_op_t_delays(&self, tau0_samples_train: f32, d_ap_train: f32) -> (f32, usize) {

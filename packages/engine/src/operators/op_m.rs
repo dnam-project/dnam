@@ -466,8 +466,10 @@ impl KautzModalBank<4> {
         let l_re = B::Vec4::load(&self.lambda_re);
         let l_im = B::Vec4::load(&self.lambda_im);
         let b_g = B::Vec4::load(&self.b_gamma);
-        let c_r = B::Vec4::load(&self.c_re);
-        let c_i = B::Vec4::load(&self.c_im);
+        let c_r_l = B::Vec4::load(&self.c_re);
+        let c_i_l = B::Vec4::load(&self.c_im);
+        let c_r_r = B::Vec4::load(&right.c_re);
+        let c_i_r = B::Vec4::load(&right.c_im);
         let two = B::Vec4::splat(2.0);
 
         let prev_re_l = B::Vec4::load(&self.s_re);
@@ -492,8 +494,8 @@ impl KautzModalBank<4> {
         flush_recursive_state_vec4(next_re_r).store(&mut right.s_re);
         flush_recursive_state_vec4(next_im_r).store(&mut right.s_im);
 
-        let out_l = c_r.mul(next_re_l).sub(c_i.mul(next_im_l)).mul(two);
-        let out_r = c_r.mul(next_re_r).sub(c_i.mul(next_im_r)).mul(two);
+        let out_l = c_r_l.mul(next_re_l).sub(c_i_l.mul(next_im_l)).mul(two);
+        let out_r = c_r_r.mul(next_re_r).sub(c_i_r.mul(next_im_r)).mul(two);
         (out_l, out_r)
     }
 
@@ -828,6 +830,26 @@ impl Default for HilbertH1Lattice6Sec {
 }
 
 impl HilbertH1Lattice6Sec {
+    pub const fn new_48khz() -> Self {
+        Self {
+            alpha_i: HilbertSsbLattice10th::ALPHA_I,
+            alpha_q: HilbertSsbLattice10th::ALPHA_Q,
+            i_state: [[0.0; 2]; 6],
+            q_state: [[0.0; 2]; 6],
+            i_prev_y: [[0.0; 2]; 6],
+            q_prev_y: [[0.0; 2]; 6],
+            q_z1: 0.0,
+        }
+    }
+
+    pub fn reset(&mut self) {
+        self.i_state = [[0.0; 2]; 6];
+        self.q_state = [[0.0; 2]; 6];
+        self.i_prev_y = [[0.0; 2]; 6];
+        self.q_prev_y = [[0.0; 2]; 6];
+        self.q_z1 = 0.0;
+    }
+
     pub fn new_at_rate(rate_hz: f64) -> Option<Self> {
         let bits = interpolate_hilbert_h1_profile_bits(rate_hz)?;
         let alpha_i = core::array::from_fn(|k| f32::from_bits(bits[k]));
@@ -1059,6 +1081,20 @@ impl Default for T1DcBlocker {
 }
 
 impl T1DcBlocker {
+    pub const fn new_48khz() -> Self {
+        Self {
+            pole: f32::from_bits(0x3f7f_d51f),
+            gain: f32::from_bits(0x3f7f_ea90),
+            prev_x: 0.0,
+            prev_d: 0.0,
+        }
+    }
+
+    pub fn reset(&mut self) {
+        self.prev_x = 0.0;
+        self.prev_d = 0.0;
+    }
+
     pub fn new_at_rate(rate_hz: f64) -> Option<Self> {
         let (p_bits, g_bits) = compute_t1_dc_blocker_coeffs_bits(rate_hz)?;
         Some(Self {
@@ -1181,6 +1217,10 @@ impl T1SubHarmonicTracker {
             q2: 1.0,
             s_sheet: 1.0,
         }
+    }
+
+    pub fn reset(&mut self) {
+        *self = Self::new();
     }
 
     /// Steps the tracker from unnormalized analytic pair `(i_raw, q_raw)`, returning
