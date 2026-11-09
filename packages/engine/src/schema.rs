@@ -6,7 +6,6 @@
 //! [`crate::control::ControlClampDescriptor`] cache lines for zero-`FDIV`, zero-string-parsing
 //! $3\text{ kHz}$ execution.
 
-pub mod ckpt_meta;
 pub mod controls;
 pub mod error;
 pub mod header;
@@ -21,13 +20,14 @@ pub use controls::{
     ControlCalibration, ControlCalibrationRole, ControlKind, ControlSchemaDef, ControlUiHints,
     PresetDef, TempoSubdivision, TempoSyncResolution,
 };
-pub use error::{DnamError, cold_exp_f64, cold_ln_f64, cold_pow_f64, cold_sqrt_f64};
-pub(crate) use error::{SchemaOptionExt, reject_if};
+pub use error::{
+    DnamError, SchemaOptionExt, cold_exp_f64, cold_ln_f64, cold_pow_f64, cold_sqrt_f64, reject_if,
+};
 pub use header::{
-    AuditReport, BlendMode, ControlBusConfig, DnamJsonHeader, ExtractedPhysics, IoConfig,
-    LevelingConfig, LevelingMetric, ModelCapabilities, ModelMetadata, RouterConfig, SchemaVersion,
-    SlimmableTiersConfig, Stage1PreFxConfig, Stage2CascadeConfig, Stage3CabinetKautzConfig,
-    Stage4SpatialTankConfig, StemProvenance, StemRegistryEntry, TensorSliceEntry, TierProfile,
+    BlendMode, ControlBusConfig, DnamJsonHeader, IoConfig, LevelingConfig, LevelingMetric,
+    ModelCapabilities, ModelMetadata, RouterConfig, SchemaVersion, SlimmableTiersConfig,
+    Stage1PreFxConfig, Stage2CascadeConfig, Stage3CabinetKautzConfig, Stage4SpatialTankConfig,
+    TensorSliceEntry, TierProfile, check_no_unknown_header_keys,
 };
 pub use signatures::{
     AuthorizedDevice, CreatorSignature, DatasetProvenance, DistributionPolicy,

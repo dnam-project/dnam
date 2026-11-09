@@ -230,7 +230,7 @@ pub fn extract_stage3_tier_fingerprint_component(
             let items = [
                 floats[lane],
                 floats[4 + lane],
-                floats[8 + lane],
+                crate::provenance::fingerprint::quantize_pole_angle_1e2(floats[8 + lane]),
                 b_gamma * floats[16 + lane],
                 b_gamma * floats[20 + lane],
                 b_gamma * floats[24 + lane],

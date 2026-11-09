@@ -178,7 +178,7 @@ Every slice declared in `tensor_directory` has a 64-byte-aligned `byte_offset` r
 | :--- | :---: | :--- | :---: |
 | `stage0_router` | `Arena 0` (`Lite`) | `S_router[4, 4]` (`S_ret->send == 0`) + alignment/crossover metadata (`16 x f32`) | `64 B` (`1 CL`) |
 | `stage1_pre_{lite,full,pro,ultra}` | `Arena 0..3` | `Op-M[Pre]` 4-lane complex poles + `Op-T[Pre]` / `Op-N[Pre]` base scalars (`32 x f32`) | `128 B` (`2 CL`) |
-| `stage2_commuted_{lite,full,pro,ultra}` | `Arena 0..3` | Commuted `W_k^(s)` base + `D_s` latent mode weights (`16 x f32` per tier block) | `64 B` (`1 CL`) |
+| `stage2_commuted_{lite,full,pro,ultra}` | `Arena 0..3` | `K_t = 48 / 96 / 144 / 192` blocks (`16 x f32`/block): Role A (`b=0`) + Role B (`b=1..K_t-1`) | `3,072..12,288 B` |
 | `stage3_early_fir_{lite,full,pro,ultra}` | `Arena 0..3` | `16` Left `f32` taps + `16` Right `f32` taps (`32 x f32`, `ref[container.dnam.stage3-slices]`) | `128 B` (`2 CL`) |
 | `stage3_kautz_modals_{lite,full,pro,ultra}` | `Arena 0..3` | `1 / 1 / 2 / 4` blocks of 8-vector SoA Kautz poles (`ref[container.dnam.stage3-slices]`) | `128..512 B` |
 | `stage4_tank_{lite,full,pro,ultra}` | `Arena 0..3` | Per-group delay lengths, `a_diff`, `g_lin`, `V_ceil`, `sigma_knee` & Householder `v` (`16 x f32`/group) | `64..128 B` |

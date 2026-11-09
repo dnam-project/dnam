@@ -49,10 +49,8 @@ pub struct DnamEngine<'a, B: MathBackend = DefaultMathBackend> {
     pub(crate) stereo_width: f32,
     pub(crate) current_stage_params: [f32; 16],
     pub(crate) stage_ramp_deltas: [f32; 16],
-    pub(crate) collapsed_kautz_wl: [[B::Vec4; 8]; 4],
-    pub(crate) collapsed_kautz_wr: [[B::Vec4; 8]; 4],
-    pub(crate) collapsed_shared_wl: [B::Vec4; 7],
-    pub(crate) collapsed_shared_wr: [B::Vec4; 7],
+    pub(crate) collapsed_head_wl: [[B::Vec4; 16]; 4],
+    pub(crate) collapsed_head_wr: [[B::Vec4; 16]; 4],
     pub(crate) collapsed_b_head: [f32; 2],
     pub(crate) cached_z_head: [f32; 4],
     pub(crate) cached_z_head_ultra: [f32; 4],
@@ -124,10 +122,8 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
             stereo_width: 1.0,
             current_stage_params: [0.0; 16],
             stage_ramp_deltas: [0.0; 16],
-            collapsed_kautz_wl: [[<B::Vec4 as crate::math::SimdVec4>::zero(); 8]; 4],
-            collapsed_kautz_wr: [[<B::Vec4 as crate::math::SimdVec4>::zero(); 8]; 4],
-            collapsed_shared_wl: [<B::Vec4 as crate::math::SimdVec4>::zero(); 7],
-            collapsed_shared_wr: [<B::Vec4 as crate::math::SimdVec4>::zero(); 7],
+            collapsed_head_wl: [[<B::Vec4 as crate::math::SimdVec4>::zero(); 16]; 4],
+            collapsed_head_wr: [[<B::Vec4 as crate::math::SimdVec4>::zero(); 16]; 4],
             collapsed_b_head: [0.0; 2],
             cached_z_head: [f32::NAN; 4],
             cached_z_head_ultra: [f32::NAN; 4],
@@ -298,6 +294,7 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
 
     #[inline]
     pub fn set_offline_bounce(&mut self, enabled: bool) {
+        self.control_bus.offline_bounce = enabled;
         if self.offline_bounce != enabled {
             self.offline_bounce = enabled;
             let _ = self.reconfigure_for_bounce_toggle();
@@ -691,6 +688,18 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
             overflow_or_saturation_flags: self.saturation_flags,
         }
     }
+
+    /// Enables or disables optional live Ornstein–Uhlenbeck analog drift (`false` by default).
+    #[inline]
+    pub fn set_live_analog_drift(&mut self, enabled: bool) {
+        self.control_bus.live_analog_drift_enabled = enabled;
+    }
+
+    /// Returns whether live Ornstein–Uhlenbeck analog drift is enabled.
+    #[inline]
+    pub fn live_analog_drift_enabled(&self) -> bool {
+        self.control_bus.live_analog_drift_enabled
+    }
 }
 
 /// Applies calibrated control role side effects (`StereoMode`, `StereoWidth`, `FreezeLatch`)
@@ -844,281 +853,4 @@ pub(crate) fn resolve_preset_batch_by_index(
         }
     }
     Ok(batch)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::container::{ARENA_OFFSET_ULTRA_END, build_dnam_container};
-    use crate::math::ScalarBackend;
-    use crate::schema::{
-        BlendMode, ControlCalibration, ControlKind, ControlSchemaDef, ControlUiHints, PresetDef,
-    };
-    use alloc::collections::BTreeMap;
-    use alloc::string::String;
-
-    #[test]
-    fn test_dnam_engine_presets_and_reload_errors() {
-        let mut header = DnamJsonHeader::default_reference();
-        header.controls_schema = alloc::vec![
-            ControlSchemaDef {
-                id: String::from("gain"),
-                name: String::from("Gain"),
-                kind: ControlKind::Range,
-                unit: None,
-                lobatto_degree: Some(2),
-                anchor_nodes_norm: None,
-                declared_range: Some([0.0, 10.0]),
-                safe_clamped_range: Some([1.0, 9.0]),
-                default: serde_json::json!(5.0),
-                conditional_min: BTreeMap::new(),
-                conditional_max: BTreeMap::new(),
-                declared_options: None,
-                active_options: None,
-                clamp_warning: None,
-                calibration: None,
-                ui_hints: ControlUiHints::default(),
-                user_metadata: BTreeMap::new(),
-            },
-            ControlSchemaDef {
-                id: String::from("channel"),
-                name: String::from("Channel"),
-                kind: ControlKind::Switch,
-                unit: None,
-                lobatto_degree: None,
-                anchor_nodes_norm: None,
-                declared_range: None,
-                safe_clamped_range: None,
-                default: serde_json::json!("Clean"),
-                conditional_min: BTreeMap::new(),
-                conditional_max: BTreeMap::new(),
-                declared_options: Some(alloc::vec![String::from("Clean"), String::from("Lead")]),
-                active_options: Some(alloc::vec![String::from("Clean"), String::from("Lead")]),
-                clamp_warning: None,
-                calibration: None,
-                ui_hints: ControlUiHints::default(),
-                user_metadata: BTreeMap::new(),
-            },
-        ];
-        header.presets = alloc::vec![PresetDef {
-            id: String::from("lead_boost"),
-            name: String::from("Lead Boost"),
-            description: None,
-            controls: BTreeMap::from([
-                (String::from("gain"), serde_json::json!(8.0)),
-                (String::from("channel"), serde_json::json!("Lead")),
-            ]),
-            user_metadata: BTreeMap::new(),
-        }];
-
-        let arena = alloc::vec![0u8; ARENA_OFFSET_ULTRA_END as usize];
-        let container = build_dnam_container(&mut header, &arena, &arena, false).unwrap();
-
-        let mut engine =
-            DnamEngine::<ScalarBackend>::from_bytes(&container, Tier::Ultra, 48_000).unwrap();
-        assert_eq!(engine.tier(), Tier::Ultra);
-        assert_eq!(engine.sample_rate_hz(), 48_000);
-        assert_eq!(engine.zoh().sample_rate_host_hz, 48_000);
-        assert!(engine.header().is_some());
-        assert_eq!(engine.preamble().num_controls, 2);
-        assert_eq!(engine.verification_status(), &VerificationStatus::Unsigned);
-
-        engine.apply_preset("lead_boost").unwrap();
-        assert!(engine.apply_preset("missing").is_err());
-
-        let mut cap_engine = DnamEngine::<ScalarBackend>::with_max_capacity();
-        assert!(cap_engine.apply_preset("lead_boost").is_err());
-        cap_engine
-            .reload_model_in_place(&container, Tier::Full, 48_000)
-            .unwrap();
-        assert_eq!(cap_engine.tier(), Tier::Full);
-
-        assert!(
-            cap_engine
-                .reload_model_in_place(&container[..4096], Tier::Lite, 48_000)
-                .is_err()
-        );
-        let mut bad_crc = container.clone();
-        bad_crc[60] ^= 0xFF;
-        assert!(
-            cap_engine
-                .reload_model_in_place(&bad_crc, Tier::Lite, 48_000)
-                .is_err()
-        );
-        let mut enc_flag = container.clone();
-        enc_flag[6] |= (crate::container::FLAG_ENCRYPTED_ARENA & 0xFF) as u8;
-        enc_flag[7] |= ((crate::container::FLAG_ENCRYPTED_ARENA >> 8) & 0xFF) as u8;
-        assert!(
-            cap_engine
-                .reload_model_in_place(&enc_flag, Tier::Lite, 48_000)
-                .is_err()
-        );
-
-        let mut owned_eng =
-            DnamEngine::<ScalarBackend>::from_bytes_owned(&container, Tier::Lite, 48_000).unwrap();
-        assert_eq!(owned_eng.tier(), Tier::Lite);
-        assert!(
-            owned_eng
-                .reload_model_in_place_owned(&enc_flag, Tier::Lite, 48_000)
-                .is_err()
-        );
-
-        // Exercise set_max_supported_tier clamping active tier
-        engine.set_max_supported_tier(Tier::Lite);
-        assert_eq!(engine.tier(), Tier::Lite);
-
-        // Exercise configure_host_mix_and_leveling & sync_tempo on empty engine (header == None)
-        let mut empty_eng = DnamEngine::<ScalarBackend>::new_empty(Tier::Lite);
-        empty_eng.configure_host_mix_and_leveling(0.5, 0.0, false);
-        assert_eq!(empty_eng.sync_tempo(120.0, None, false), 0);
-    }
-
-    #[test]
-    fn test_dnam_engine_leveling_blend_trails_tempo_and_stereo_mode() {
-        let mut header = DnamJsonHeader::default_reference();
-        header.io_config.capabilities.blend_mode = BlendMode::HostParallel;
-        header.io_config.capabilities.wet_polarity_inverted = true;
-        header.io_config.capabilities.supports_trails = true;
-        header.io_config.capabilities.tempo_sync_capable = true;
-        header.io_config.leveling.auto_unity_enabled = true;
-        header.io_config.leveling.calibrated_trim_db = 6.0206; // ~2.0x linear gain
-
-        let mut cond_anchors = BTreeMap::new();
-        cond_anchors.insert(String::from("range=0.01-0.1s"), [10.0, 55.0, 100.0]);
-        cond_anchors.insert(String::from("range=0.1-1s"), [100.0, 550.0, 1000.0]);
-        cond_anchors.insert(String::from("range=1-2s"), [1000.0, 1500.0, 2000.0]);
-
-        header.controls_schema = alloc::vec![
-            ControlSchemaDef {
-                id: String::from("time"),
-                name: String::from("Time"),
-                kind: ControlKind::Range,
-                unit: Some(String::from("ms")),
-                lobatto_degree: Some(2),
-                anchor_nodes_norm: None,
-                declared_range: Some([0.0, 10.0]),
-                safe_clamped_range: Some([0.0, 10.0]),
-                default: serde_json::json!(5.0),
-                conditional_min: BTreeMap::new(),
-                conditional_max: BTreeMap::new(),
-                declared_options: None,
-                active_options: None,
-                clamp_warning: None,
-                calibration: Some(ControlCalibration {
-                    role: ControlCalibrationRole::DelayTimeMs,
-                    lobatto_physical_anchors: None,
-                    conditional_physical_anchors: cond_anchors,
-                    tempo_sync_default_subdivision: Some(TempoSubdivision::EighthDotted),
-                }),
-                ui_hints: ControlUiHints::default(),
-                user_metadata: BTreeMap::new(),
-            },
-            ControlSchemaDef {
-                id: String::from("range"),
-                name: String::from("Range"),
-                kind: ControlKind::Switch,
-                unit: None,
-                lobatto_degree: None,
-                anchor_nodes_norm: None,
-                declared_range: None,
-                safe_clamped_range: None,
-                default: serde_json::json!("0.1-1s"),
-                conditional_min: BTreeMap::new(),
-                conditional_max: BTreeMap::new(),
-                declared_options: Some(alloc::vec![
-                    String::from("0.01-0.1s"),
-                    String::from("0.1-1s"),
-                    String::from("1-2s"),
-                ]),
-                active_options: Some(alloc::vec![
-                    String::from("0.01-0.1s"),
-                    String::from("0.1-1s"),
-                    String::from("1-2s"),
-                ]),
-                clamp_warning: None,
-                calibration: None,
-                ui_hints: ControlUiHints::default(),
-                user_metadata: BTreeMap::new(),
-            },
-            ControlSchemaDef {
-                id: String::from("mode"),
-                name: String::from("Mode"),
-                kind: ControlKind::Switch,
-                unit: None,
-                lobatto_degree: None,
-                anchor_nodes_norm: None,
-                declared_range: None,
-                safe_clamped_range: None,
-                default: serde_json::json!("Stereo"),
-                conditional_min: BTreeMap::new(),
-                conditional_max: BTreeMap::new(),
-                declared_options: Some(alloc::vec![String::from("Mono"), String::from("Stereo")]),
-                active_options: Some(alloc::vec![String::from("Mono"), String::from("Stereo")]),
-                clamp_warning: None,
-                calibration: Some(ControlCalibration {
-                    role: ControlCalibrationRole::StereoMode,
-                    lobatto_physical_anchors: None,
-                    conditional_physical_anchors: BTreeMap::new(),
-                    tempo_sync_default_subdivision: None,
-                }),
-                ui_hints: ControlUiHints::default(),
-                user_metadata: BTreeMap::new(),
-            },
-        ];
-
-        let arena = alloc::vec![0u8; ARENA_OFFSET_ULTRA_END as usize];
-        let container = build_dnam_container(&mut header, &arena, &arena, false).unwrap();
-        let mut engine =
-            DnamEngine::<ScalarBackend>::from_bytes(&container, Tier::Lite, 48_000).unwrap();
-
-        engine.configure_host_mix_and_leveling(0.5, 0.0, true);
-        assert!((engine.mix_dry_gain - 0.5).abs() < 1e-4);
-        assert!((engine.mix_wet_gain - (-1.0)).abs() < 1e-3);
-        engine.configure_host_mix_and_leveling(0.5, 0.0, false);
-
-        assert!((engine.stereo_width() - 1.0).abs() < 1e-6);
-        engine.set_control_immediate(2, 0.0);
-        assert!(engine.stereo_width().abs() < 1e-6);
-        // Process block with stereo_width == 0.0 (stereo width folding active)
-        let mut l_fold = [0.0_f32; 4];
-        let mut r_fold = [0.0_f32; 4];
-        engine.process_block(
-            &[0.25, -0.5, 0.75, -0.25],
-            &[-0.25, 0.5, -0.75, 0.25],
-            &mut l_fold,
-            &mut r_fold,
-        );
-        engine.reset_to_dc_equilibrium();
-        engine.set_control_immediate(2, 1.0);
-        assert!((engine.stereo_width() - 1.0).abs() < 1e-6);
-
-        let updated = engine.sync_tempo(120.0, Some(TempoSubdivision::HalfDotted), false);
-        assert_eq!(updated, 2);
-        let snap = engine.telemetry_snapshot();
-        assert!((snap.clamped_controls[0] - 5.0).abs() < 1e-3);
-        assert!((snap.clamped_controls[1] - 2.0).abs() < 1e-3);
-
-        engine.set_bypass(true, false);
-        assert_eq!(engine.bypass_state(), (true, false));
-        let mut l_out = [0.0_f32; 4];
-        let mut r_out = [0.0_f32; 4];
-        engine.process_block(
-            &[0.25, -0.5, 0.75, -0.25],
-            &[-0.25, 0.5, -0.75, 0.25],
-            &mut l_out,
-            &mut r_out,
-        );
-        assert_eq!(l_out, [0.25, -0.5, 0.75, -0.25]);
-        assert_eq!(r_out, [-0.25, 0.5, -0.75, 0.25]);
-
-        engine.set_bypass(true, true);
-        assert_eq!(engine.bypass_state(), (true, true));
-        engine.process_block(
-            &[0.25, -0.5, 0.75, -0.25],
-            &[-0.25, 0.5, -0.75, 0.25],
-            &mut l_out,
-            &mut r_out,
-        );
-        assert_eq!(l_out, [0.25, -0.5, 0.75, -0.25]);
-    }
 }

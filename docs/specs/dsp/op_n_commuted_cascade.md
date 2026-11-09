@@ -48,7 +48,7 @@ Compute $y \approx (b - a)^{-1}$ without hardware division (`0 FDIV`) by widenin
 2. `r[dsp.op-n.polyadaa.bspline-ac]` **Passive Quadratic B-Spline Blend ($0.875, 0.125$) + AC Coupling ($R_{\text{ac}} = 0.9993$ at $48\text{ kHz}$):**
    $$\tilde{y}_{\text{nl}}[n] = 0.875 \mathcal{A}[n] + 0.125 \mathcal{A}[n-1], \qquad m_{\text{dc}}[n] = 0.9993 m_{\text{dc}}[n-1] + 0.0007 \tilde{y}_{\text{nl}}[n]$$
    $$y[n] = \alpha_c x[n] + \big(\tilde{y}_{\text{nl}}[n] - m_{\text{dc}}[n]\big)$$
-3. `r[dsp.op-n.polyadaa.drive-bank]` **Multi-Drive Bank:** Evaluated in parallel over fixed drive scales $d_{\text{bank}} = [0.25\times, 1.0\times, 4.0\times, 16.0\times]$.
+3. `r[dsp.op-n.polyadaa.drive-bank]` **Multi-Drive Bank (`last_a_odd` & `last_a_even`):** Evaluated in parallel over fixed drive scales $d_{\text{bank}} = [0.25\times, 1.0\times, 4.0\times, 16.0\times]$, caching both odd (`last_a_odd: [f32; 4]`) and even (`last_a_even: [f32; 4]`) interval-average antiderivative outputs per channel for downstream cascade and feature-bus projection.
 
 ---
 
@@ -160,7 +160,7 @@ Stage II models vacuum tube amplifier heads and high-gain drive pedals across th
 Sub-Stage 2.1 uses the four-filter tone basis with matched-pole coefficients $p_f = e^{-2\pi f / 48000}$ at `48 kHz` (rescaled at other rates via [router §9](router_and_stages_topology.md#9-continuous-time-zero-order-hold-zoh-sample-rate-adaptability-44196-khz--4-bounce)):
 $$\mathcal{L} = \big[\text{Direct}, \ \text{LPF}_{80\text{ Hz}}, \ \text{LPF}_{400\text{ Hz}}, \ \text{HPF}_{1200\text{ Hz}}\big], \qquad L_f(z) = \frac{1-p_f}{1-p_f z^{-1}}, \qquad H_f(z) = \frac{p_f(1-z^{-1})}{1-p_f z^{-1}}$$
 
-### 4.2 Stereo Basis and Coupling Matrices
+### 4.2 Stereo Basis, Role A Inter-Stage Coupling & Surjective Role B Feature-Bus Folding
 
 `r[dsp.op-n.stage2.stereo-coupling]`
 
@@ -168,6 +168,7 @@ Each sub-stage couples Left and Right nonlinear drive/fold/sag basis vectors acr
 $$\mathbf{u}_{\text{drive,stereo}}^{(s)}[n] = \big[\mathbf{u}_{\text{drive},L}^{(8)}[n], \ \mathbf{u}_{\text{drive},R}^{(8)}[n]\big]^\top \in \mathbb{R}^{16}$$
 - **Diagonal Blocks ($\mathbf{W}_{L\to L}, \mathbf{W}_{R\to R}$):** Primary Left and Right channel amplification.
 - **Off-Diagonal Blocks ($\mathbf{W}_{L\to R}, \mathbf{W}_{R\to L}$):** Shared power-supply $B^+$ sag coupling and transformer crosstalk ($-55\text{ to }-70\text{ dB}$).
+- **Role A (`b = 0`) vs. Surjective Role B (`b = 1..K_t-1`) Partition:** Within each tier's `stage2_cascade_w` slice (`K_t = 48 / 96 / 144 / 192` blocks of `16 x f32`), Block `b = 0` (**Role A**) parameterizes the `4×4` inter-stage coupling matrix driving Sub-Stages 2.1 $\to$ 2.2 $\to$ 2.3 (held watermark-free so nonlinear trajectories remain invariant), while Blocks `b = 1..K_t-1` (**Role B**) fold surjectively via `slot = (b - 1) & 7` into the 8 Stage II feature-bus readout slots (`40..48` per tier) for linear output-head projection and exact Layer 1 Cascade-Head Gauge compensation.
 
 ### 4.3 $3\text{ kHz}$ Bilinear Rank-$R$ Stage Latent Folding
 

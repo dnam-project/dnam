@@ -29,7 +29,9 @@ pub use topology::{
 pub use head::{HEAD_RAM_BYTES, MidSideKroneckerHead};
 pub use router::{BezoutCleanCrossover, ROUTER_STATE_RAM_BYTES, ReturnAligner, Stage0Router};
 pub use stage1_pre::{STAGE1_PRE_RAM_BYTES, Stage1PreDynamics};
-pub use stage2_cascade::{STAGE2_CASCADE_RAM_BYTES, Stage2CommutedCascade, ToneBasisFilters};
+pub use stage2_cascade::{
+    STAGE2_CASCADE_RAM_BYTES, Stage2CascadeFrameOut, Stage2CommutedCascade, ToneBasisFilters,
+};
 pub use stage3_cabinet::{STAGE3_CABINET_RAM_BYTES, Stage3CabinetModals};
 pub use stage4_tank::{STAGE4_TANK_RAM_BYTES, Stage4SpatialTank, TankDcBlocker};
 pub use weights::{
@@ -60,6 +62,15 @@ pub struct StagePipeline {
     pub stage3_r: Stage3CabinetModals,
     pub kautz_tiers_l: [[crate::operators::op_m::KautzModalBank<4>; 4]; 4],
     pub kautz_tiers_r: [[crate::operators::op_m::KautzModalBank<4>; 4]; 4],
+    pub kautz_base_r_low: [[[f32; 4]; 4]; 4],
+    pub kautz_base_dr: [[[f32; 4]; 4]; 4],
+    pub kautz_base_theta: [[[f32; 4]; 4]; 4],
+    pub kautz_base_b_gamma: [[[f32; 4]; 4]; 4],
+    pub kautz_host_r_low: [[[f32; 4]; 4]; 4],
+    pub kautz_host_dr: [[[f32; 4]; 4]; 4],
+    pub kautz_host_theta: [[[f32; 4]; 4]; 4],
+    pub last_dtheta_kautz: f32,
+    pub last_g_kautz: f32,
     pub base_fir_taps: [f32; 16],
     pub fir_taps: [f32; 16],
     pub base_fir_taps_l: [[f32; 16]; 4],
@@ -89,6 +100,15 @@ impl StagePipeline {
             stage3_r: Stage3CabinetModals::new(),
             kautz_tiers_l: [EMPTY_TIER; 4],
             kautz_tiers_r: [EMPTY_TIER; 4],
+            kautz_base_r_low: [[[0.0; 4]; 4]; 4],
+            kautz_base_dr: [[[0.0; 4]; 4]; 4],
+            kautz_base_theta: [[[0.0; 4]; 4]; 4],
+            kautz_base_b_gamma: [[[0.0; 4]; 4]; 4],
+            kautz_host_r_low: [[[0.0; 4]; 4]; 4],
+            kautz_host_dr: [[[0.0; 4]; 4]; 4],
+            kautz_host_theta: [[[0.0; 4]; 4]; 4],
+            last_dtheta_kautz: 0.0,
+            last_g_kautz: 0.5,
             base_fir_taps: [0.0625; 16],
             fir_taps: [0.0625; 16],
             base_fir_taps_l: [[0.0625; 16], [0.0; 16], [0.0; 16], [0.0; 16]],
@@ -157,6 +177,8 @@ impl StagePipeline {
         self.stage1.load_from_arena(arena);
         self.stage2.load_from_arena(arena);
         self.stage4.load_from_arena(arena);
+        self.last_dtheta_kautz = 0.0;
+        self.last_g_kautz = 0.5;
 
         let max_tiers = crate::provenance::watermark::max_tiers_for_arena_len(arena.len());
         for tier in 0..max_tiers {
@@ -185,13 +207,23 @@ impl StagePipeline {
                     } else {
                         (raw_c_re_r, raw_c_im_r)
                     };
+                    self.kautz_base_r_low[tier][blk][lane] = r_low;
+                    self.kautz_base_dr[tier][blk][lane] = dr;
+                    self.kautz_base_theta[tier][blk][lane] = theta;
+                    self.kautz_base_b_gamma[tier][blk][lane] = b_gamma;
                     let is_active =
                         r_low.abs() > 1e-12 || dr.abs() > 1e-12 || b_gamma.abs() > 1e-12;
                     let (r, theta_eff, b_gamma_eff) = if is_active {
                         let (rl_h, dr_h, th_h, bg_h) =
                             zoh.rescale_op_m_channel(r_low, dr, theta, b_gamma);
+                        self.kautz_host_r_low[tier][blk][lane] = rl_h;
+                        self.kautz_host_dr[tier][blk][lane] = dr_h;
+                        self.kautz_host_theta[tier][blk][lane] = th_h;
                         ((rl_h + 0.5 * dr_h).clamp(0.0, 0.99995), th_h, bg_h)
                     } else {
+                        self.kautz_host_r_low[tier][blk][lane] = r_low;
+                        self.kautz_host_dr[tier][blk][lane] = dr;
+                        self.kautz_host_theta[tier][blk][lane] = theta;
                         ((r_low + 0.5 * dr).clamp(0.0, 0.9995), theta, b_gamma)
                     };
                     self.kautz_tiers_l[tier][blk].set_pole_with_b_gamma(
@@ -215,6 +247,13 @@ impl StagePipeline {
                 }
             }
             for blk in n_blocks..4 {
+                self.kautz_base_r_low[tier][blk] = [0.0; 4];
+                self.kautz_base_dr[tier][blk] = [0.0; 4];
+                self.kautz_base_theta[tier][blk] = [0.0; 4];
+                self.kautz_base_b_gamma[tier][blk] = [0.0; 4];
+                self.kautz_host_r_low[tier][blk] = [0.0; 4];
+                self.kautz_host_dr[tier][blk] = [0.0; 4];
+                self.kautz_host_theta[tier][blk] = [0.0; 4];
                 for lane in 0..4 {
                     self.kautz_tiers_l[tier][blk]
                         .set_pole_with_b_gamma(lane, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
@@ -241,15 +280,6 @@ impl StagePipeline {
                     }
                     taps_l[i] = vl;
                     taps_r[i] = vr;
-                }
-                if tier == 0 && !has_l && !has_r && arena.len() >= 4_224 {
-                    for (i, tap) in taps_l.iter_mut().enumerate() {
-                        let v = crate::provenance::watermark::read_f32_le(arena, 4_160 + i * 4);
-                        if v.abs() > 1e-12 {
-                            has_l = true;
-                        }
-                        *tap = v;
-                    }
                 }
                 let default_taps = if tier == 0 { [0.0625; 16] } else { [0.0; 16] };
                 let eff_l = if has_l { taps_l } else { default_taps };
@@ -289,7 +319,34 @@ impl StagePipeline {
         self.stage2.reconfigure_sample_rate(zoh);
         self.stage3.reconfigure_sample_rate(zoh);
         self.stage3_r.reconfigure_sample_rate(zoh);
+        self.last_dtheta_kautz = 0.0;
+        self.last_g_kautz = 0.5;
         for tier in 0..4 {
+            let n_blocks = crate::provenance::STAGE3_KAUTZ_BLOCKS_PER_TIER[tier];
+            for blk in 0..n_blocks {
+                for lane in 0..4 {
+                    let r_low = self.kautz_base_r_low[tier][blk][lane];
+                    let dr = self.kautz_base_dr[tier][blk][lane];
+                    let theta = self.kautz_base_theta[tier][blk][lane];
+                    let b_gamma = self.kautz_base_b_gamma[tier][blk][lane];
+                    if r_low.abs() > 1e-12 || dr.abs() > 1e-12 || b_gamma.abs() > 1e-12 {
+                        let (rl_h, dr_h, th_h, bg_h) =
+                            zoh.rescale_op_m_channel(r_low, dr, theta, b_gamma);
+                        self.kautz_host_r_low[tier][blk][lane] = rl_h;
+                        self.kautz_host_dr[tier][blk][lane] = dr_h;
+                        self.kautz_host_theta[tier][blk][lane] = th_h;
+                        let r = (rl_h + 0.5 * dr_h).clamp(0.0, 0.99995);
+                        let c_re_l = self.kautz_tiers_l[tier][blk].c_re[lane];
+                        let c_im_l = self.kautz_tiers_l[tier][blk].c_im[lane];
+                        let c_re_r = self.kautz_tiers_r[tier][blk].c_re[lane];
+                        let c_im_r = self.kautz_tiers_r[tier][blk].c_im[lane];
+                        self.kautz_tiers_l[tier][blk]
+                            .set_pole_with_b_gamma(lane, r, th_h, 0.0, bg_h, c_re_l, c_im_l);
+                        self.kautz_tiers_r[tier][blk]
+                            .set_pole_with_b_gamma(lane, r, th_h, 0.0, bg_h, c_re_r, c_im_r);
+                    }
+                }
+            }
             let bl = self.base_fir_taps_l[tier];
             let br = self.base_fir_taps_r[tier];
             zoh.rescale_fir_taps(&bl, &mut self.fir_taps_l[tier]);
@@ -298,6 +355,58 @@ impl StagePipeline {
         let base_taps = self.base_fir_taps;
         zoh.rescale_fir_taps(&base_taps, &mut self.fir_taps);
         self.stage4.reconfigure_sample_rate(zoh);
+    }
+
+    /// Retunes Stage III Orthonormal Kautz modal poles at the 3 kHz control rate (`0 FSQRT/FDIV/libm`).
+    #[inline]
+    pub fn retune_kautz_formant_3khz(
+        &mut self,
+        active_tiers: usize,
+        dtheta_kautz: f32,
+        g_kautz: f32,
+    ) {
+        let g_clamped = g_kautz.clamp(0.0, 1.0);
+        if (dtheta_kautz - self.last_dtheta_kautz).abs() <= 1e-9
+            && (g_clamped - self.last_g_kautz).abs() <= 1e-9
+        {
+            return;
+        }
+        self.last_dtheta_kautz = dtheta_kautz;
+        self.last_g_kautz = g_clamped;
+
+        let max_t = active_tiers.min(4);
+        for tier in 0..max_t {
+            let n_blocks = crate::provenance::STAGE3_KAUTZ_BLOCKS_PER_TIER[tier];
+            for blk in 0..n_blocks {
+                for lane in 0..4 {
+                    let rl_h = self.kautz_host_r_low[tier][blk][lane];
+                    let dr_h = self.kautz_host_dr[tier][blk][lane];
+                    let th_h = self.kautz_host_theta[tier][blk][lane];
+                    let bg_h = self.kautz_tiers_l[tier][blk].b_gamma[lane];
+                    if rl_h.abs() > 1e-12 || dr_h.abs() > 1e-12 || th_h.abs() > 1e-12 {
+                        let r_base = (rl_h + g_clamped * dr_h).clamp(0.0, 0.99995);
+                        let r_eff = if dtheta_kautz.abs() > 1e-9 {
+                            r_base
+                                .min(0.9950 - 0.15 * dtheta_kautz.abs())
+                                .clamp(0.0, 0.9950)
+                        } else {
+                            r_base
+                        };
+                        let theta_eff =
+                            (th_h + dtheta_kautz).clamp(0.0, core::f32::consts::PI - 1e-4);
+                        let (cos_t, sin_t) =
+                            crate::operators::op_m::algebraic_unit_rotor_op_m(theta_eff);
+                        let l_re = r_eff * cos_t;
+                        let l_im = r_eff * sin_t;
+                        self.kautz_tiers_l[tier][blk].lambda_re[lane] = l_re;
+                        self.kautz_tiers_l[tier][blk].lambda_im[lane] = l_im;
+                        self.kautz_tiers_r[tier][blk].lambda_re[lane] = l_re;
+                        self.kautz_tiers_r[tier][blk].lambda_im[lane] = l_im;
+                        let _ = bg_h;
+                    }
+                }
+            }
+        }
     }
 }
 

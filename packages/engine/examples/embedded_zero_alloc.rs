@@ -106,8 +106,6 @@ fn build_demo_model(name: &str, seed: u8) -> AlignedBuffer<CacheLine64> {
         stage3_cabinet: Stage3CabinetKautzConfig::default(),
         stage4_tank: Stage4SpatialTankConfig::default(),
         tensor_directory: BTreeMap::new(),
-        stems_registry: None,
-        audit_report: None,
     };
 
     let mut arena = vec![0u8; 64_000];

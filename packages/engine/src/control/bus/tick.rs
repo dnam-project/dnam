@@ -451,6 +451,31 @@ impl<B: MathBackend> ControlBus<B> {
                 eval_tier_stage_dispatch(&w_base, None, &q16, &q16, &self.z_stage_ultra);
         }
 
+        if self.live_analog_drift_enabled && !self.offline_bounce && self.sigma_drift > 0.0 {
+            let rho = self.rho_drift_host.clamp(0.0, 0.9999);
+            let scale = self.sigma_drift * (1.0 - rho);
+            for d in 0..4 {
+                let mut x = self.drift_prng_state;
+                if x == 0 {
+                    x = Self::DEFAULT_DRIFT_PRNG_SEED;
+                }
+                x ^= x >> 12;
+                x ^= x << 25;
+                x ^= x >> 27;
+                self.drift_prng_state = x;
+                let rand_u32 = (x.wrapping_mul(0x2545_F491_4F6C_DD1D) >> 32) as u32;
+                let xi = ((rand_u32 >> 8) as f32) * (2.0 / 16_777_216.0) - 1.0;
+                self.ou_drift_state[d] =
+                    flush_recursive_state_f32(rho * self.ou_drift_state[d] + scale * xi);
+            }
+            self.stage_targets[2] += self.ou_drift_state[0];
+            self.stage_targets[5] += self.ou_drift_state[1];
+            self.stage_targets[8] += 0.25 * self.ou_drift_state[2];
+            self.stage_targets[12] += 0.25 * self.ou_drift_state[3];
+        } else {
+            self.ou_drift_state = [0.0; 4];
+        }
+
         self.tank_mod_dirty = true;
     }
 
@@ -670,6 +695,19 @@ mod tests {
         let q16 = ControlBus::<ScalarBackend>::assemble_q16(&[1.0; 8], &[2.0; 8]);
         assert_eq!(&q16[0..8], &[1.0; 8]);
         assert_eq!(&q16[8..16], &[2.0; 8]);
+
+        // Verify live analog drift is active when live_analog_drift_enabled && !offline_bounce,
+        // and strictly suppressed (0-ULP deterministic) when offline_bounce == true.
+        arena_3b[7_496..7_500].copy_from_slice(&0.02_f32.to_le_bytes()); // sigma_drift
+        arena_3b[7_500..7_504].copy_from_slice(&0.95_f32.to_le_bytes()); // rho_drift_train
+        cb.load_from_arena0(&arena_3b, 3, 1.0);
+        cb.live_analog_drift_enabled = true;
+        cb.offline_bounce = false;
+        cb.refresh_static_state(&arena_3b);
+        assert!(cb.ou_drift_state.iter().any(|&v| v.abs() > 0.0));
+        cb.offline_bounce = true;
+        cb.refresh_static_state(&arena_3b);
+        assert_eq!(cb.ou_drift_state, [0.0; 4]);
     }
 
     #[test]

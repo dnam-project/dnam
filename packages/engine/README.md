@@ -80,9 +80,9 @@ packages/engine/
 │   ├── operators.rs & operators/ # Op-T (op_t.rs), Op-M (op_m.rs), Op-N (op_n.rs), reference.rs
 │   ├── stages.rs & stages/ # Stage 0–IV topology.rs, stage1..stage4, head.rs, weights.rs
 │   ├── control.rs & control/ # 3 kHz bus.rs, plane.rs (ExactIntFactorAccumulator, Q64/Q32 tempo)
-│   ├── container.rs & container/ # wire.rs, preamble.rs, view.rs, zoh.rs, ckpt.rs, strip.rs
+│   ├── container.rs & container/ # wire.rs, preamble.rs, view.rs, zoh.rs, strip.rs
 │   ├── provenance.rs & provenance/ # security.rs (DAU1/HPKE/DME1), seal.rs, watermark.rs
-│   └── schema.rs & schema/ # #![no_std] serde/serde_json .dnam/.dnam-ckpt header & UI skew
+│   └── schema.rs & schema/ # #![no_std] serde/serde_json .dnam runtime header & UI skew
 ├── tests/                  # Cross-cutting integration tests (backend parity, 0-alloc, FFI, seal)
 ├── benches/                # Subsystem Criterion suites (pipeline, operators, stages_and_control,
 │                           # container_and_provenance) & WCET jitter audit (realtime_wcet)

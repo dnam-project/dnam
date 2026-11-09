@@ -18,10 +18,8 @@ use crate::types::Tier;
 
 use super::preamble::{DnamPreamble, is_v2_wire_directory_container};
 use super::{
-    ARENA4_STEM_BYTES_PRO, ARENA4_STEM_BYTES_ULTRA, DNAM_MAGIC, DNCK_MAGIC, FLAG_HAS_CALIB_STATS,
-    FLAG_HAS_CKPT_STEMS, FLAG_HAS_FULL_DELTA, FLAG_HAS_LITE, FLAG_HAS_PRO_DELTA,
-    FLAG_HAS_SIGNATURES, FLAG_HAS_ULTRA_DELTA, FLAG_STEREO_OUT, crc32c_update,
-    verify_ckpt_arena5_calib_stats,
+    DNAM_MAGIC, FLAG_HAS_FULL_DELTA, FLAG_HAS_LITE, FLAG_HAS_PRO_DELTA, FLAG_HAS_SIGNATURES,
+    FLAG_HAS_ULTRA_DELTA, FLAG_STEREO_OUT, crc32c_update,
 };
 
 /// Computes `header_crc32c` over `container_bytes[0..tensor_arena_offset]` with
@@ -32,13 +30,16 @@ pub fn compute_header_crc32c(container_bytes: &[u8], tensor_arena_offset: usize)
     crc32c_update(crc, &container_bytes[64..tensor_arena_offset])
 }
 
-type SharedControlsExtent = (
+/// Decoded shared control descriptors, `CP1\0` contributor slots, and unified 128-byte control records.
+pub type SharedControlsExtent = (
     Vec<ControlClampDescriptor>,
     Vec<Cp1ContributorSlot>,
     Vec<ControlChannelRecord>,
 );
 
-fn decode_shared_controls_extent(
+/// Decodes the shared controls extent (`ControlClampDescriptor[0..P]` + optional `CP1\0` stream)
+/// for a runtime `.dnam` or checkpoint `.dnam-ckpt` header.
+pub fn decode_shared_controls_extent(
     shared_slice: &[u8],
     header: &DnamJsonHeader,
 ) -> Result<SharedControlsExtent, DnamError> {
@@ -351,44 +352,18 @@ impl<'a> DnamContainerView<'a> {
             });
         }
 
-        if is_v2_wire_directory_container(bytes) && &bytes[0..4] == b"DNCK" {
-            let exported = super::wire::export_runtime_dnam_from_ckpt(bytes)?;
-            let runtime_view = DnamContainerView::from_inner_dnam_bytes(
-                &exported,
-                crypto,
-                is_enclave_sealed_wrapper,
-                max_supported_tier,
-            )?;
-            let mut preamble = runtime_view.preamble;
-            preamble.magic = DNCK_MAGIC;
-            preamble.flags |= FLAG_HAS_CKPT_STEMS | FLAG_HAS_CALIB_STATS;
-            return Ok(Self {
-                preamble,
-                header: runtime_view.header,
-                verification_status: runtime_view.verification_status,
-                protection_profile: runtime_view.protection_profile,
-                clamp_descriptors: runtime_view.clamp_descriptors,
-                cp1_contributors: runtime_view.cp1_contributors,
-                control_records: runtime_view.control_records,
-                arena_storage: ArenaStorage::from_slice_owned(
-                    runtime_view.arena_storage.as_bytes(),
-                ),
-            });
-        }
-
         let mut preamble = DnamPreamble::from_bytes(bytes)?;
+        if preamble.magic != DNAM_MAGIC {
+            return Err(DnamError::InvalidMagic(preamble.magic));
+        }
         let arena_off = preamble.tensor_arena_offset as usize;
         let full_arena_len = preamble.tensor_arena_byte_len as usize;
         let json_len = preamble.json_header_byte_len as usize;
 
         let effective_max_tier = preamble.highest_tier().min(max_supported_tier);
-        let arena_len = if preamble.magic == DNAM_MAGIC {
-            preamble
-                .arena_end_for_tier(effective_max_tier)
-                .min(full_arena_len)
-        } else {
-            full_arena_len
-        };
+        let arena_len = preamble
+            .arena_end_for_tier(effective_max_tier)
+            .min(full_arena_len);
 
         if arena_off < 64 + json_len || bytes.len() < arena_off + arena_len {
             return Err(DnamError::BufferTooSmall {
@@ -523,38 +498,11 @@ impl<'a> DnamContainerView<'a> {
         let plain_bytes = arena_storage.as_bytes();
         Self::verify_arena_prefix_crcs(&preamble, plain_bytes)?;
 
-        if preamble.magic == DNAM_MAGIC && preamble.has_calib_stats() {
+        if preamble.has_calib_stats() {
             return Err(DnamError::SchemaValidationError(
                 "FLAG_HAS_CALIB_STATS (Arena 5) is forbidden in runtime .dnam containers"
                     .to_string(),
             ));
-        }
-        if preamble.magic == DNCK_MAGIC && preamble.has_calib_stats() {
-            let weights_end = preamble.arena_end_for_tier(preamble.highest_tier());
-            let stems_end = header
-                .stems_registry
-                .as_ref()
-                .and_then(|stems| {
-                    stems
-                        .iter()
-                        .map(|s| {
-                            (s.c_audio_tier_f64.byte_offset + s.c_audio_tier_f64.byte_length)
-                                as usize
-                        })
-                        .max()
-                        .filter(|&end| end >= weights_end)
-                })
-                .unwrap_or_else(|| {
-                    let num_stems = preamble.num_ckpt_stems as usize;
-                    let stride =
-                        if plain_bytes.len() >= weights_end + num_stems * ARENA4_STEM_BYTES_ULTRA {
-                            ARENA4_STEM_BYTES_ULTRA
-                        } else {
-                            ARENA4_STEM_BYTES_PRO
-                        };
-                    weights_end + num_stems * stride
-                });
-            verify_ckpt_arena5_calib_stats(plain_bytes, stems_end)?;
         }
 
         // 5. Verify split-payload Ed25519 provenance over the loaded model weight arena prefix
@@ -666,10 +614,9 @@ mod tests {
     use super::*;
     use crate::provenance::DefaultCryptoProvider;
     use crate::schema::{
-        ControlBusConfig, DatasetProvenance, ExtractedPhysics, IoConfig, ModelMetadata,
-        RouterConfig, SlimmableTiersConfig, Stage1PreFxConfig, Stage2CascadeConfig,
-        Stage3CabinetKautzConfig, Stage4SpatialTankConfig, StemProvenance, StemRegistryEntry,
-        TensorSliceEntry, TierProfile,
+        ControlBusConfig, DatasetProvenance, IoConfig, ModelMetadata, RouterConfig,
+        SlimmableTiersConfig, Stage1PreFxConfig, Stage2CascadeConfig, Stage3CabinetKautzConfig,
+        Stage4SpatialTankConfig, TierProfile,
     };
     use alloc::collections::BTreeMap;
     use alloc::vec::Vec;
@@ -722,8 +669,6 @@ mod tests {
             stage3_cabinet: Stage3CabinetKautzConfig::default(),
             stage4_tank: Stage4SpatialTankConfig::default(),
             tensor_directory: BTreeMap::new(),
-            stems_registry: None,
-            audit_report: None,
         }
     }
 
@@ -786,42 +731,6 @@ mod tests {
         preamble.arena_crc32c_pro ^= 1;
         preamble.arena_crc32c_ultra ^= 1;
         assert!(DnamContainerView::verify_arena_prefix_crcs(&preamble, raw_arena).is_err());
-
-        // dnam-ckpt container with stems_registry
-        hdr.container_kind = "dnam-ckpt".to_string();
-        let dummy_slice = TensorSliceEntry {
-            arena: 4,
-            dtype: "f64".to_string(),
-            packing: Some("uplo_upper_col_major_tier_ordered".to_string()),
-            feature_dim: Some(64),
-            packed_len: Some(2080),
-            shape: None,
-            byte_offset: 0,
-            byte_length: 64,
-        };
-        hdr.stems_registry = Some(vec![StemRegistryEntry {
-            stem_id: "stem0".to_string(),
-            controls_meta: BTreeMap::new(),
-            provenance: StemProvenance {
-                input_pcm_sha256: "00".repeat(32),
-                target_pcm_sha256: "11".repeat(32),
-                num_frames: 48_000,
-            },
-            stem_arena4_crc32c: super::super::crc32c_compute(&[0u8; 64]),
-            user_metadata: BTreeMap::new(),
-            extracted_physics: Some(ExtractedPhysics {
-                delays_ms: vec![10.0],
-                lfo_freqs_hz: vec![0.5],
-                decay_gains_lin: vec![0.7],
-                detected_grain_size_ms: 0.0,
-                detected_pitch_shift_semitones: 0.0,
-            }),
-            g_audio_uplo_u_f64: dummy_slice.clone(),
-            c_audio_tier_f64: dummy_slice,
-        }]);
-        let ckpt_bytes = build_dnam_container(&mut hdr, &lite_arena, &lite_arena, false).unwrap();
-        let ckpt_view = DnamContainerView::from_bytes(&ckpt_bytes, &crypto).unwrap();
-        assert_eq!(ckpt_view.preamble.num_ckpt_stems, 1);
 
         assert!(update_header_in_place(&mut ultra_bytes[..64], &hdr).is_err());
         let mut huge_hdr = make_base_header("Huge");

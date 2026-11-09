@@ -66,6 +66,7 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
         self.max_available_tier = max_available_tier;
         self.max_supported_tier = max_supported_tier;
         self.offline_bounce = false;
+        self.control_bus.offline_bounce = false;
         self.maximize_tier_on_bounce = true;
         self.oversampler.reset();
         self.oversampler_aux.reset();
@@ -113,6 +114,7 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
     /// Reconfigures ZOH parameters for a live/offline-bounce transition without wiping
     /// recursive DSP state or dynamic `ControlBus` state (`R20-E4`).
     pub(crate) fn reconfigure_for_bounce_toggle(&mut self) -> Result<(), DnamError> {
+        self.control_bus.offline_bounce = self.offline_bounce;
         let sample_rate_hz = self.zoh.sample_rate_host_hz;
         let (r_ac_tr, r_dc_tr, tau_ref_tr, switch_xfade_tr) = self.training_zoh_poles();
         let oversample_factor = if self.offline_bounce { 4 } else { 1 };

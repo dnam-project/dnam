@@ -215,6 +215,9 @@ catalogs:
     axe-core:
       specifier: ^4.14.0
       version: 4.14.0
+    binaryen:
+      specifier: ^132.0.0
+      version: 132.0.0
     class-variance-authority:
       specifier: ^0.7.1
       version: 0.7.1
@@ -292,6 +295,9 @@ importers:
       '@vitest/coverage-v8':
         specifier: 'catalog:'
         version: 5.0.5(@vitest/browser@5.0.5)(vitest@5.0.5)
+      binaryen:
+        specifier: 'catalog:'
+        version: 132.0.0
       fast-check:
         specifier: 'catalog:'
         version: 4.10.2
@@ -1157,6 +1163,10 @@ packages:
   balanced-match@4.0.4:
     resolution: {integrity: sha512-BLrgEcRTwX2o6gGxGOCNyMvGSp35YofuYzw9h1IMTRmKqttAZZVU67bdb9Pr2vUHA8+j3i2tJfjO6C6+4myGTA==}
     engines: {node: 18 || 20 || >=22}
+
+  binaryen@132.0.0:
+    resolution: {integrity: sha512-4Usg7yEvwO3FMso3Oov6qkOOHSod1IEv+boKkh77kTljM+eNBouqCTbqWswGzbG+vDNO/b/v2C4gfEh1WgB9Lg==}
+    hasBin: true
 
   body-parser@2.4.0:
     resolution: {integrity: sha512-Ifk1KcLrxaGt1occQagQNFNNOqRt1LFuehEnHHzB8Z6cRgIxRU1TBaiIsUiCdA+gy5PL7Y1IX31DNKkRmxtXjQ==}
@@ -2804,6 +2814,8 @@ snapshots:
   axe-core@4.14.0: {}
 
   balanced-match@4.0.4: {}
+
+  binaryen@132.0.0: {}
 
   body-parser@2.4.0:
     dependencies:

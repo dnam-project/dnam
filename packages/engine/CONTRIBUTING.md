@@ -14,7 +14,7 @@ Consult [`AGENTS.md`](AGENTS.md) and the submodule `AGENTS.md` files for progres
 - **`src/operators/` ([`src/operators/AGENTS.md`](src/operators/AGENTS.md)):** Op-T (Transport/Elastic Buffer), Op-M (Modal Bank/Kautz), and Op-N (Commuted Cascade/PolyADAA).
 - **`src/stages/` ([`src/stages/AGENTS.md`](src/stages/AGENTS.md)):** Stage 0 8-Port Matrix Router and Stages I–IV canonical rig topology.
 - **`src/control/` ([`src/control/AGENTS.md`](src/control/AGENTS.md)):** $3\text{ kHz}$ envelopes, 4-FMA + Newton LFO rotors, Node-Anchored Lobatto HDMR, Rank-4 FM, and 3-Phase control clamping.
-- **`src/container/` ([`src/container/AGENTS.md`](src/container/AGENTS.md)):** 64-byte `.dnam` / `.dnam-ckpt` preamble, zero-copy `DnamContainerView`, Continuous-Time ZOH sample-rate rescaler ($44.1\text{–}96\text{ kHz}$), and `uplo='U'` Gram matrix packer.
+- **`src/container/` ([`src/container/AGENTS.md`](src/container/AGENTS.md)):** 64-byte `.dnam` preamble, zero-copy `DnamContainerView`, `DMU1`/`DMUE` mutable suffix framing, and Continuous-Time ZOH sample-rate rescaler ($44.1\text{–}96\text{ kHz}$). (`.dnam-ckpt` and `uplo='U'` Gram packing live in `packages/trainer/src/ckpt/`.)
 - **`src/provenance/` ([`src/provenance/AGENTS.md`](src/provenance/AGENTS.md)):** `DAU1` authentication envelopes, RFC 8785 JCS header digests, `Ed25519` prefix commitments, `OemDeviceCertificate` attestation, RFC 9180 HPKE & `DME1` encryption, Dual-Mechanism buyer watermarking, and `.dnam-prev` containment.
 - **`src/schema/` ([`src/schema/AGENTS.md`](src/schema/AGENTS.md)):** `#![no_std]` `serde` JSON header types, UI skew curves, and `DnamError`.
 

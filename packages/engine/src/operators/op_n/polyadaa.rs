@@ -20,6 +20,16 @@ pub const MULTI_DRIVE_SCALES: [f32; 4] = [0.25, 1.0, 4.0, 16.0];
 /// `A = beta * A_odd + delta * A_even`
 #[inline(always)]
 pub fn poly_adaa_algebraic_eval(u_prev: f32, u_curr: f32, beta: f32, delta: f32) -> f32 {
+    poly_adaa_algebraic_eval_pair(u_prev, u_curr, beta, delta).0
+}
+
+#[inline(always)]
+pub fn poly_adaa_algebraic_eval_pair(
+    u_prev: f32,
+    u_curr: f32,
+    beta: f32,
+    delta: f32,
+) -> (f32, f32) {
     const ONE_THIRD: f32 = 1.0 / 3.0;
     const ONE_FIFTH: f32 = 0.2;
 
@@ -36,11 +46,11 @@ pub fn poly_adaa_algebraic_eval(u_prev: f32, u_curr: f32, beta: f32, delta: f32)
     let quart = m2 * m2 + 2.0 * m2 * d2 + ONE_FIFTH * d2 * d2;
     let a_even = quad - quart;
 
-    beta * a_odd + delta * a_even
+    (beta * a_odd + delta * a_even, a_even)
 }
 
 #[inline(always)]
-fn poly_adaa_eval_vec4<V: SimdVec4>(u_prev: V, u_curr: V, beta: V, delta: V) -> V {
+fn poly_adaa_eval_vec4_pair<V: SimdVec4>(u_prev: V, u_curr: V, beta: V, delta: V) -> (V, V) {
     let half = V::splat(0.5);
     let one_pt_five = V::splat(1.5);
     let one_third = V::splat(1.0 / 3.0);
@@ -63,7 +73,7 @@ fn poly_adaa_eval_vec4<V: SimdVec4>(u_prev: V, u_curr: V, beta: V, delta: V) -> 
         .add(one_fifth.mul(d2).mul(d2));
     let a_even = quad.sub(quart);
 
-    beta.mul(a_odd).add(delta.mul(a_even))
+    (beta.mul(a_odd).add(delta.mul(a_even)), a_even)
 }
 
 /// Multi-Drive 1x B-Spline PolyADAA Bank Channel State (`ref[dsp.op-n.polyadaa.midpoint]`, `ref[dsp.op-n.polyadaa.rail-crossing]`, `ref[dsp.op-n.polyadaa.bspline-ac]`).
@@ -72,6 +82,7 @@ pub struct MultiDrivePolyAdaaChannel {
     pub u_prev: [f32; 4],
     pub a_prev: [f32; 4],
     pub m_dc: [f32; 4],
+    pub last_a_even: [f32; 4],
 }
 
 impl Default for MultiDrivePolyAdaaChannel {
@@ -86,6 +97,7 @@ impl MultiDrivePolyAdaaChannel {
             u_prev: [0.0; 4],
             a_prev: [0.0; 4],
             m_dc: [0.0; 4],
+            last_a_even: [0.0; 4],
         }
     }
 
@@ -93,6 +105,7 @@ impl MultiDrivePolyAdaaChannel {
         self.u_prev.fill(0.0);
         self.a_prev.fill(0.0);
         self.m_dc.fill(0.0);
+        self.last_a_even.fill(0.0);
     }
 
     /// Initializes resting DC equilibrium fixed point for grid bias `b_conv`.
@@ -100,10 +113,11 @@ impl MultiDrivePolyAdaaChannel {
         for (i, &drive) in MULTI_DRIVE_SCALES.iter().enumerate() {
             let u_raw = (2.0 / 3.0) * drive * b_conv;
             let u_rest = u_raw.clamp(-1.0, 1.0);
-            let a_rest = poly_adaa_algebraic_eval(u_rest, u_rest, beta, delta);
+            let (a_rest, a_even_rest) = poly_adaa_algebraic_eval_pair(u_rest, u_rest, beta, delta);
             self.u_prev[i] = u_raw;
             self.a_prev[i] = a_rest;
             self.m_dc[i] = flush_recursive_state_f32(a_rest);
+            self.last_a_even[i] = flush_recursive_state_f32(a_even_rest);
         }
     }
 
@@ -131,7 +145,8 @@ impl MultiDrivePolyAdaaChannel {
         let u_p_v = u_prev_v.max(neg_one).min(pos_one);
         let u_c_v = u_raw_v.max(neg_one).min(pos_one);
 
-        let mut a_v = poly_adaa_eval_vec4(u_p_v, u_c_v, V::splat(beta), V::splat(delta));
+        let (mut a_v, mut a_even_v) =
+            poly_adaa_eval_vec4_pair(u_p_v, u_c_v, V::splat(beta), V::splat(delta));
         let mut u_raw_arr = [0.0f32; 4];
         u_raw_v.store(&mut u_raw_arr);
 
@@ -140,7 +155,9 @@ impl MultiDrivePolyAdaaChannel {
             || self.u_prev[2].abs() > 1.0
         {
             let mut a_arr = [0.0f32; 4];
+            let mut a_even_arr = [0.0f32; 4];
             a_v.store(&mut a_arr);
+            a_even_v.store(&mut a_even_arr);
             for i in 0..4 {
                 if Self::crosses_rail(self.u_prev[i], u_raw_arr[i]) {
                     let (odd, even, _) = eval_saturated_polyadaa_rail_crossing_f64(
@@ -148,9 +165,11 @@ impl MultiDrivePolyAdaaChannel {
                         u_raw_arr[i] as f64,
                     );
                     a_arr[i] = ((beta as f64) * odd + (delta as f64) * even) as f32;
+                    a_even_arr[i] = even as f32;
                 }
             }
             a_v = V::load(&a_arr);
+            a_even_v = V::load(&a_even_arr);
         }
 
         let a_prev_v = V::load(&self.a_prev);
@@ -164,6 +183,7 @@ impl MultiDrivePolyAdaaChannel {
         flush_recursive_state_vec4(u_raw_v).store(&mut self.u_prev);
         flush_recursive_state_vec4(a_v).store(&mut self.a_prev);
         flush_recursive_state_vec4(next_m_dc_v).store(&mut self.m_dc);
+        flush_recursive_state_vec4(a_even_v).store(&mut self.last_a_even);
 
         let mut out = [0.0; 4];
         out_v.store(&mut out);
@@ -194,18 +214,20 @@ impl MultiDrivePolyAdaaChannel {
         let u2_p = p2.clamp(-1.0, 1.0);
         let u2_c = u2_raw.clamp(-1.0, 1.0);
 
-        let mut a1 = poly_adaa_algebraic_eval(u1_p, u1_c, beta, delta);
-        let mut a2 = poly_adaa_algebraic_eval(u2_p, u2_c, beta, delta);
+        let (mut a1, mut ae1) = poly_adaa_algebraic_eval_pair(u1_p, u1_c, beta, delta);
+        let (mut a2, mut ae2) = poly_adaa_algebraic_eval_pair(u2_p, u2_c, beta, delta);
         if Self::crosses_rail(p2, u2_raw) || u1_raw.abs() > 1.0 || p1.abs() > 1.0 {
             if Self::crosses_rail(p1, u1_raw) {
                 let (odd, even, _) =
                     eval_saturated_polyadaa_rail_crossing_f64(p1 as f64, u1_raw as f64);
                 a1 = ((beta as f64) * odd + (delta as f64) * even) as f32;
+                ae1 = even as f32;
             }
             if Self::crosses_rail(p2, u2_raw) {
                 let (odd, even, _) =
                     eval_saturated_polyadaa_rail_crossing_f64(p2 as f64, u2_raw as f64);
                 a2 = ((beta as f64) * odd + (delta as f64) * even) as f32;
+                ae2 = even as f32;
             }
         }
         let y1_nl = 0.875 * a1 + 0.125 * self.a_prev[1];
@@ -214,6 +236,7 @@ impl MultiDrivePolyAdaaChannel {
         self.u_prev[1] = flush_recursive_state_f32(u1_raw);
         self.a_prev[1] = flush_recursive_state_f32(a1);
         self.m_dc[1] = flush_recursive_state_f32(next_m1_dc);
+        self.last_a_even[1] = flush_recursive_state_f32(ae1);
 
         let y2_nl = 0.875 * a2 + 0.125 * self.a_prev[2];
         let next_m2_dc = r_ac * self.m_dc[2] + one_minus_rac * y2_nl;
@@ -221,6 +244,7 @@ impl MultiDrivePolyAdaaChannel {
         self.u_prev[2] = flush_recursive_state_f32(u2_raw);
         self.a_prev[2] = flush_recursive_state_f32(a2);
         self.m_dc[2] = flush_recursive_state_f32(next_m2_dc);
+        self.last_a_even[2] = flush_recursive_state_f32(ae2);
 
         (out1, out2)
     }
@@ -267,7 +291,8 @@ impl MultiDrivePolyAdaaChannel {
         let u_raw_v = V::load(&u_raw_4);
         let u_p_v = u_prev_v.max(neg_one).min(pos_one);
         let u_c_v = u_raw_v.max(neg_one).min(pos_one);
-        let mut a_v = poly_adaa_eval_vec4(u_p_v, u_c_v, V::splat(beta), V::splat(delta));
+        let (mut a_v, mut a_even_v) =
+            poly_adaa_eval_vec4_pair(u_p_v, u_c_v, V::splat(beta), V::splat(delta));
 
         if Self::crosses_rail(u_prev_4[1], u_raw_4[1])
             || Self::crosses_rail(u_prev_4[3], u_raw_4[3])
@@ -277,7 +302,9 @@ impl MultiDrivePolyAdaaChannel {
             || u_prev_4[2].abs() > 1.0
         {
             let mut a_4 = [0.0f32; 4];
+            let mut a_even_4 = [0.0f32; 4];
             a_v.store(&mut a_4);
+            a_even_v.store(&mut a_even_4);
             for i in 0..4 {
                 if Self::crosses_rail(u_prev_4[i], u_raw_4[i]) {
                     let (odd, even, _) = eval_saturated_polyadaa_rail_crossing_f64(
@@ -285,9 +312,11 @@ impl MultiDrivePolyAdaaChannel {
                         u_raw_4[i] as f64,
                     );
                     a_4[i] = ((beta as f64) * odd + (delta as f64) * even) as f32;
+                    a_even_4[i] = even as f32;
                 }
             }
             a_v = V::load(&a_4);
+            a_even_v = V::load(&a_even_4);
         }
 
         let a_prev_v = V::load(&a_prev_4);
@@ -301,10 +330,12 @@ impl MultiDrivePolyAdaaChannel {
         let mut u_flushed = [0.0f32; 4];
         let mut a_flushed = [0.0f32; 4];
         let mut m_flushed = [0.0f32; 4];
+        let mut ae_flushed = [0.0f32; 4];
         let mut out_4 = [0.0f32; 4];
         flush_recursive_state_vec4(u_raw_v).store(&mut u_flushed);
         flush_recursive_state_vec4(a_v).store(&mut a_flushed);
         flush_recursive_state_vec4(next_m_v).store(&mut m_flushed);
+        flush_recursive_state_vec4(a_even_v).store(&mut ae_flushed);
         out_v.store(&mut out_4);
 
         left.u_prev[1] = u_flushed[0];
@@ -321,6 +352,11 @@ impl MultiDrivePolyAdaaChannel {
         left.m_dc[2] = m_flushed[1];
         right.m_dc[1] = m_flushed[2];
         right.m_dc[2] = m_flushed[3];
+
+        left.last_a_even[1] = ae_flushed[0];
+        left.last_a_even[2] = ae_flushed[1];
+        right.last_a_even[1] = ae_flushed[2];
+        right.last_a_even[2] = ae_flushed[3];
 
         (out_4[0], out_4[1], out_4[2], out_4[3])
     }

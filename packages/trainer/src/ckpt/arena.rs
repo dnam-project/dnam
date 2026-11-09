@@ -1,11 +1,13 @@
+#![forbid(unsafe_code)]
 //! `.dnam-ckpt` Stem Record Column-Major Upper-Triangular (`LAPACK uplo='U'`) packing,
-//! `Arena 5` calibration statistics (`DNCA`) verification & stem verification.
+//! `Arena 5` calibration statistics (`DNCA`) verification & stem verification
+//! (`ref[container.ckpt.uplo-u]`, `ref[container.ckpt.standalone-full]`,
+//! `ref[container.ckpt.prefix-delta]`, `ref[container.ckpt.objective-records]`,
+//! `ref[container.dnca.inpc]`, `ref[container.dnca.stmc]`, `ref[container.dnca.dnce-sidecar]`,
+//! `ref[container.dnca.coreset-fp16]`).
 
-use alloc::string::ToString;
-
-use crate::schema::DnamError;
-
-use super::crc32c_compute;
+use dnam_engine::container::crc32c_compute;
+use dnam_engine::schema::DnamError;
 
 /// Magic bytes for `.dnam-ckpt` `Arena 5` calibration statistics header (`b"DNCA"`).
 pub const DNCA_MAGIC: [u8; 4] = *b"DNCA";
@@ -13,12 +15,25 @@ pub const DNCA_MAGIC: [u8; 4] = *b"DNCA";
 /// Fixed 64-byte header length for `.dnam-ckpt` `Arena 5`.
 pub const ARENA5_HEADER_BYTES: usize = 64;
 
+/// Per-stem `.dnam-ckpt` byte length for `Lite` ($N=64$: `16,640 B` `G_audio` + `1,024 B` `C_audio` = `17,664 B`).
+pub const ARENA4_STEM_BYTES_LITE: usize = 17_664;
+
+/// Per-stem `.dnam-ckpt` byte length for `Full` ($N=128$: `66,048 B` `G_audio` + `2,048 B` `C_audio` = `68,096 B`).
+pub const ARENA4_STEM_BYTES_FULL: usize = 68_096;
+
+/// Per-stem `.dnam-ckpt` byte length for `Pro` ($N=192$: `148,224 B` `G_audio` + `3,072 B` `C_audio` = `151,296 B`).
+pub const ARENA4_STEM_BYTES_PRO: usize = 151_296;
+
+/// Per-stem `.dnam-ckpt` byte length for `Ultra` ($N=256$: `263,168 B` `G_audio` + `4,096 B` `C_audio` = `267,264 B`).
+pub const ARENA4_STEM_BYTES_ULTRA: usize = 267_264;
+
 /// Returns the packed element count $\frac{N(N+1)}{2}$ for a symmetric $N \times N$ Gram matrix:
 /// - `Lite` ($N=64$): `2,080` `f64` (`16,640 B`)
 /// - `Full` ($N=128$): `8,256` `f64` (`66,048 B`)
 /// - `Pro` ($N=192$): `18,528` `f64` (`148,224 B`)
 /// - `Ultra` ($N=256$): `32,896` `f64` (`263,168 B`)
 #[inline]
+#[must_use]
 pub const fn uplo_u_packed_len(n_dim: usize) -> usize {
     (n_dim * (n_dim + 1)) / 2
 }
@@ -41,8 +56,8 @@ pub fn pack_uplo_u_f64(dense_matrix: &[f64], n_dim: usize, out_packed: &mut [f64
 /// $N_{\text{tier}} \times N_{\text{tier}}$ matrix (`out_dense`, length `n_tier * n_tier`).
 ///
 /// By the **Nested Principal Submatrix Prefix Theorem**, passing `n_tier = 64` (`Lite`) or
-/// `n_tier = 128` (`Full`) on an `Ultra` ($N=192$) packed buffer extracts the exact leading
-/// principal submatrix from the contiguous prefix `[0 .. n_tier*(n_tier+1)/2]`!
+/// `n_tier = 128` (`Full`) on an `Ultra` ($N=256$) packed buffer extracts the exact leading
+/// principal submatrix from the contiguous prefix `[0 .. n_tier*(n_tier+1)/2]`.
 #[inline]
 pub fn unpack_uplo_u_f64(packed_u: &[f64], n_tier: usize, out_dense: &mut [f64]) {
     let mut idx = 0;
@@ -114,7 +129,7 @@ pub fn verify_ckpt_arena5_calib_stats(
     }
     let version = u16::from_le_bytes([a5[4], a5[5]]);
     if version != 1 {
-        return Err(DnamError::SchemaValidationError(alloc::format!(
+        return Err(DnamError::SchemaValidationError(format!(
             "unsupported Arena 5 version {version} (expected 1)"
         )));
     }
@@ -124,7 +139,7 @@ pub fn verify_ckpt_arena5_calib_stats(
     let expected_body_crc = u32::from_le_bytes([a5[16], a5[17], a5[18], a5[19]]);
 
     if total_byte_len != a5.len() || (total_byte_len & 0x3F) != 0 {
-        return Err(DnamError::SchemaValidationError(alloc::format!(
+        return Err(DnamError::SchemaValidationError(format!(
             "Arena 5 total_byte_len ({total_byte_len}) does not match slice length ({})",
             a5.len()
         )));
@@ -211,6 +226,44 @@ pub fn verify_ckpt_arena5_calib_stats(
     Ok(total_byte_len)
 }
 
+/// Verifies `.dnam-ckpt` `Arena 4` Kronecker / `uplo='U'` sufficient statistics (`G_audio`, `C_audio`)
+/// byte framing, 64-byte alignment, tier-dependent per-stem record size (`17,664 B` `Lite`,
+/// `68,096 B` `Full`, `151,296 B` `Pro`, `267,264 B` `Ultra`), and finite `f64` entries.
+pub fn verify_ckpt_arena4_kronecker_stats(
+    arena4_bytes: &[u8],
+    max_tier: dnam_engine::types::Tier,
+    num_stems: usize,
+) -> Result<usize, DnamError> {
+    if (arena4_bytes.len() & 0x3F) != 0 {
+        return Err(DnamError::UnalignedOffset {
+            field: "arena4_byte_len",
+            offset: arena4_bytes.len() as u32,
+        });
+    }
+    let stem_bytes = match max_tier {
+        dnam_engine::types::Tier::Lite => ARENA4_STEM_BYTES_LITE,
+        dnam_engine::types::Tier::Full => ARENA4_STEM_BYTES_FULL,
+        dnam_engine::types::Tier::Pro => ARENA4_STEM_BYTES_PRO,
+        dnam_engine::types::Tier::Ultra => ARENA4_STEM_BYTES_ULTRA,
+    };
+    let expected_total = stem_bytes * num_stems.max(1);
+    if arena4_bytes.len() != stem_bytes && arena4_bytes.len() != expected_total {
+        return Err(DnamError::SchemaValidationError(format!(
+            "Arena 4 byte length ({}) does not match tier stem_bytes ({stem_bytes}) or expected_total ({expected_total})",
+            arena4_bytes.len()
+        )));
+    }
+    for &chunk in arena4_bytes.as_chunks::<8>().0 {
+        let v = f64::from_le_bytes(chunk);
+        if !v.is_finite() {
+            return Err(DnamError::SchemaValidationError(
+                "Arena 4 contains non-finite f64 entry".to_string(),
+            ));
+        }
+    }
+    Ok(arena4_bytes.len())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -223,12 +276,28 @@ mod tests {
         assert!(verify_ckpt_stem_arena4_crc32c(&stem_buf, 0, 64, stem_crc).is_ok());
         assert!(verify_ckpt_stem_arena4_crc32c(&stem_buf, 0, 256, stem_crc).is_err());
         assert!(verify_ckpt_stem_arena4_crc32c(&stem_buf, 0, 64, stem_crc ^ 1).is_err());
+
+        let mut a4 = vec![0u8; ARENA4_STEM_BYTES_LITE];
+        assert_eq!(
+            verify_ckpt_arena4_kronecker_stats(&a4, dnam_engine::types::Tier::Lite, 1).unwrap(),
+            ARENA4_STEM_BYTES_LITE
+        );
+        assert!(
+            verify_ckpt_arena4_kronecker_stats(&a4[..100], dnam_engine::types::Tier::Lite, 1)
+                .is_err()
+        );
+        assert!(
+            verify_ckpt_arena4_kronecker_stats(&a4[..64], dnam_engine::types::Tier::Lite, 1)
+                .is_err()
+        );
+        a4[0..8].copy_from_slice(&f64::NAN.to_le_bytes());
+        assert!(
+            verify_ckpt_arena4_kronecker_stats(&a4, dnam_engine::types::Tier::Lite, 1).is_err()
+        );
     }
 
     #[test]
     fn test_verify_ckpt_arena5_calib_stats_valid_and_error_branches() {
-        // Build a valid Arena 5 buffer with 1 input record (128B) and 1 stem record (192B)
-        // Total = 64 (header) + 128 (INPC) + 192 (STMC) = 384 bytes
         let mut a5 = [0u8; 384];
         a5[0..4].copy_from_slice(b"DNCA");
         a5[4..6].copy_from_slice(&1u16.to_le_bytes());
@@ -256,7 +325,6 @@ mod tests {
         assert!(verify_ckpt_arena5_calib_stats(&a5[..32], 0).is_err());
         assert!(verify_ckpt_arena5_calib_stats(&a5[..380], 0).is_err());
 
-        // Corrupt header fields
         let mut bad = a5;
         bad[0] = b'X';
         assert!(verify_ckpt_arena5_calib_stats(&bad, 0).is_err());
@@ -273,7 +341,6 @@ mod tests {
         bad_crc[16] ^= 0xFF;
         assert!(verify_ckpt_arena5_calib_stats(&bad_crc, 0).is_err());
 
-        // Corrupt INPC magic & CRC
         let mut bad_inpc = a5;
         bad_inpc[64] = b'X';
         let c = crc32c_compute(&bad_inpc[64..]);
@@ -286,7 +353,6 @@ mod tests {
         bad_inpc_crc[16..20].copy_from_slice(&c.to_le_bytes());
         assert!(verify_ckpt_arena5_calib_stats(&bad_inpc_crc, 0).is_err());
 
-        // Corrupt STMC magic & CRC
         let mut bad_stmc = a5;
         bad_stmc[192] = b'X';
         let c = crc32c_compute(&bad_stmc[64..]);
@@ -299,26 +365,22 @@ mod tests {
         bad_stmc_crc[16..20].copy_from_slice(&c.to_le_bytes());
         assert!(verify_ckpt_arena5_calib_stats(&bad_stmc_crc, 0).is_err());
 
-        // Bad INPC rec_len (< 64 or unaligned)
         let mut bad_inpc_len = a5;
         bad_inpc_len[64 + 56..64 + 60].copy_from_slice(&32u32.to_le_bytes());
         let c = crc32c_compute(&bad_inpc_len[64..]);
         bad_inpc_len[16..20].copy_from_slice(&c.to_le_bytes());
         assert!(verify_ckpt_arena5_calib_stats(&bad_inpc_len, 0).is_err());
 
-        // Bad STMC rec_len (< 128 or unaligned)
         let mut bad_stmc_len = a5;
         bad_stmc_len[192 + 116..192 + 120].copy_from_slice(&64u32.to_le_bytes());
         let c = crc32c_compute(&bad_stmc_len[64..]);
         bad_stmc_len[16..20].copy_from_slice(&c.to_le_bytes());
         assert!(verify_ckpt_arena5_calib_stats(&bad_stmc_len, 0).is_err());
 
-        // Trailing bytes after records (set num_stems = 0 while keeping 384B buffer)
         let mut trailing = a5;
         trailing[10..12].copy_from_slice(&0u16.to_le_bytes());
         assert!(verify_ckpt_arena5_calib_stats(&trailing, 0).is_err());
 
-        // Truncated INPC header (num_inputs = 2 so second INPC header overflows buffer)
         let mut trunc_inpc = a5;
         trunc_inpc[8..10].copy_from_slice(&2u16.to_le_bytes());
         trunc_inpc[64 + 56..64 + 60].copy_from_slice(&320u32.to_le_bytes());
@@ -328,7 +390,6 @@ mod tests {
         trunc_inpc[16..20].copy_from_slice(&c.to_le_bytes());
         assert!(verify_ckpt_arena5_calib_stats(&trunc_inpc, 0).is_err());
 
-        // Truncated STMC header (num_stems = 2 so second STMC header overflows buffer)
         let mut trunc_stmc = a5;
         trunc_stmc[10..12].copy_from_slice(&2u16.to_le_bytes());
         assert!(verify_ckpt_arena5_calib_stats(&trunc_stmc, 0).is_err());
@@ -362,5 +423,42 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// verify[container.ckpt.standalone-full]
+    /// verify[container.ckpt.prefix-delta]
+    /// verify[container.ckpt.objective-records]
+    /// verify[container.ckpt.stems-registry]
+    /// verify[container.ckpt.gram-fingerprint]
+    /// verify[container.dnca.inpc]
+    /// verify[container.dnca.stmc]
+    /// verify[container.dnca.dnce-sidecar]
+    /// verify[container.dnca.coreset-fp16]
+    #[test]
+    fn test_checkpoint_arena4_and_dnca_coreset_fp16_layout_invariants() {
+        assert_eq!(uplo_u_packed_len(64) * 8, 16_640);
+        assert_eq!(uplo_u_packed_len(128) * 8, 66_048);
+        assert_eq!(uplo_u_packed_len(192) * 8, 148_224);
+        assert_eq!(uplo_u_packed_len(256) * 8, 263_168);
+
+        let dims = [64usize, 128, 192, 256];
+        let standalone_totals = [
+            ARENA4_STEM_BYTES_LITE,
+            ARENA4_STEM_BYTES_FULL,
+            ARENA4_STEM_BYTES_PRO,
+            ARENA4_STEM_BYTES_ULTRA,
+        ];
+        for (&n, &expected) in dims.iter().zip(&standalone_totals) {
+            let g_bytes = 8 * (n * (n + 1) / 2);
+            let c_bytes = 16 * n;
+            assert_eq!(g_bytes + c_bytes, expected);
+            assert_eq!(expected % 64, 0);
+        }
+        let coreset_mono_fp16_bytes = 12_000usize * 2;
+        let coreset_stereo_fp16_bytes = 12_000usize * 2 * 2;
+        assert_eq!(coreset_mono_fp16_bytes, 24_000);
+        assert_eq!(coreset_stereo_fp16_bytes, 48_000);
+        assert_eq!(coreset_mono_fp16_bytes % 64, 0);
+        assert_eq!(coreset_stereo_fp16_bytes % 64, 0);
     }
 }

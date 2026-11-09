@@ -108,10 +108,28 @@ pub struct ControlBus<B: MathBackend> {
     pub trust_radius_mh: f32,
     /// Pre-computed reciprocal square $M_h^{-2}$ for division-free $3\text{ kHz}$ trust-region evaluation (`0 FDIV`).
     pub inv_trust_radius_mh2: f32,
+    /// Live-only Ornstein-Uhlenbeck (OU) analog drift standard deviation $\sigma_{\text{drift}} \in [0.0, 0.05]$ (`Arena 0 [7,496..7,500]`).
+    pub sigma_drift: f32,
+    /// Training-rate $3\text{ kHz}$ OU analog drift pole $\rho_{\text{drift,train}} \in [0.0, 0.9999]$ (`Arena 0 [7,500..7,504]`).
+    pub rho_drift_train: f32,
+    /// Host-rate rescaled OU analog drift pole $\rho_{\text{drift,host}} = \rho_{\text{drift,train}}^{\rho_{\text{ctrl}}}$.
+    pub rho_drift_host: f32,
+    /// Calibration dither SNR scale (`Arena 0 [7,516..7,520]`, clamped to $[0.0, 0.0056234133]$ $\le -45\text{ dB}$).
+    pub dither_snr_scale: f32,
+    /// Opt-in live-only analog drift switch (`false` by default for deterministic regression & training).
+    pub live_analog_drift_enabled: bool,
+    /// Whether the host engine is currently rendering an offline bounce (suppresses live-only OU drift for 0-ULP determinism).
+    pub offline_bounce: bool,
+    /// Branchless `xorshift64*` PRNG state for live-only OU analog drift (`0 FSQRT/FDIV/libm`).
+    pub drift_prng_state: u64,
+    /// 4-channel OU analog drift state $\boldsymbol{\eta}_{\text{drift}}[k] \in \mathbb{R}^4$.
+    pub ou_drift_state: [f32; 4],
     _backend: PhantomData<B>,
 }
 
 impl<B: MathBackend> ControlBus<B> {
+    pub const DEFAULT_DRIFT_PRNG_SEED: u64 = 0x853c_49e6_748f_ea9b;
+
     /// Creates a new [`ControlBus`] initialized at the default preset (`z_head = [0.0; 4]`, `is_dirty = false`).
     pub fn new() -> Self {
         Self {
@@ -156,6 +174,14 @@ impl<B: MathBackend> ControlBus<B> {
             tank_mod_dirty: false,
             trust_radius_mh: 10.0,
             inv_trust_radius_mh2: 1.0 / (10.0 * 10.0),
+            sigma_drift: 0.0,
+            rho_drift_train: 0.999,
+            rho_drift_host: 0.999,
+            dither_snr_scale: 0.0,
+            live_analog_drift_enabled: false,
+            offline_bounce: false,
+            drift_prng_state: Self::DEFAULT_DRIFT_PRNG_SEED,
+            ou_drift_state: [0.0; 4],
             _backend: PhantomData,
         }
     }
@@ -315,6 +341,30 @@ impl<B: MathBackend> ControlBus<B> {
                 self.lfo_rotors[j] = [c_inc, s_inc];
                 self.lfo_angle_bits[j] = dphi_host.to_bits();
             }
+            let sigma_raw = f32::from_le_bytes([
+                arena0_bytes[global_base + 8],
+                arena0_bytes[global_base + 9],
+                arena0_bytes[global_base + 10],
+                arena0_bytes[global_base + 11],
+            ]);
+            self.sigma_drift = if sigma_raw.is_finite() && sigma_raw > 0.0 {
+                sigma_raw.clamp(0.0, 0.05)
+            } else {
+                0.0
+            };
+            let rho_drift_raw = f32::from_le_bytes([
+                arena0_bytes[global_base + 12],
+                arena0_bytes[global_base + 13],
+                arena0_bytes[global_base + 14],
+                arena0_bytes[global_base + 15],
+            ]);
+            self.rho_drift_train = if rho_drift_raw.is_finite() && rho_drift_raw > 0.0 {
+                rho_drift_raw.clamp(0.0, 0.9999)
+            } else {
+                0.999
+            };
+            self.rho_drift_host =
+                crate::schema::cold_pow_f64(self.rho_drift_train as f64, rho_ctrl) as f32;
             for b in 0..3 {
                 let r_off = global_base + (4 + b) * 4;
                 let r_train = f32::from_le_bytes([
@@ -328,6 +378,17 @@ impl<B: MathBackend> ControlBus<B> {
                         crate::schema::cold_pow_f64(r_train as f64, rho_ctrl) as f32;
                 }
             }
+            let dither_raw = f32::from_le_bytes([
+                arena0_bytes[global_base + 28],
+                arena0_bytes[global_base + 29],
+                arena0_bytes[global_base + 30],
+                arena0_bytes[global_base + 31],
+            ]);
+            self.dither_snr_scale = if dither_raw.is_finite() && dither_raw > 0.0 {
+                dither_raw.clamp(0.0, 0.005_623_413_3)
+            } else {
+                0.0
+            };
             let mh_off = global_base + 32;
             let mh_from_table = if arena0_bytes.len() >= 10_564 {
                 f32::from_le_bytes([
@@ -364,6 +425,8 @@ impl<B: MathBackend> ControlBus<B> {
         self.lfo_phases_q192 = [crate::math::Q0_192Phase::ZERO; 2];
         self.lfo_harmonics = [0.0; 8];
         self.env_states = [0.0; 4];
+        self.ou_drift_state = [0.0; 4];
+        self.drift_prng_state = Self::DEFAULT_DRIFT_PRNG_SEED;
     }
 
     /// Snaps all controls immediately to their default values (`z_head = 0`, `is_dirty = false`).
@@ -401,6 +464,8 @@ impl<B: MathBackend> ControlBus<B> {
         self.lfo_phasors = [[1.0, 0.0], [1.0, 0.0]];
         self.lfo_phases_q192 = [crate::math::Q0_192Phase::ZERO; 2];
         self.env_states = [0.0; 4];
+        self.ou_drift_state = [0.0; 4];
+        self.drift_prng_state = Self::DEFAULT_DRIFT_PRNG_SEED;
         self.is_dirty = false;
     }
 

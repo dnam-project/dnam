@@ -34,6 +34,7 @@ export interface ExtractedPhysics {
  */
 export interface StemRegistryEntry {
   readonly stemId: string;
+  readonly enabled: boolean;
   readonly controlsMeta: Readonly<Record<string, unknown>>;
   readonly provenance: StemProvenance;
   readonly stemArena4Crc32c: number;

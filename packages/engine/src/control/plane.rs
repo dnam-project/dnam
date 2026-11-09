@@ -1,7 +1,7 @@
 //! Canonical v2.0 3 kHz Self-Similar Control Plane, Exact-Integer Sufficient-Statistic
 //! Accumulator (`9-word S` + `18-word D`), SPSC Per-Producer Ingress, Host Curve & Timestamp
-//! Arbitration, `Q64`/`Q32` Tempo Synchronization, Physical `f32` Calibration Inversion, and
-//! 3-Phase Control-Space Audit Helpers (`src/control/plane.rs`).
+//! Arbitration, `Q64`/`Q32` Tempo Synchronization, and Physical `f32` Calibration Inversion
+//! (`src/control/plane.rs`).
 //!
 //! Implements:
 //! - `ref[dsp.ctrl.op-m.ballistic-lfo]`, `ref[dsp.ctrl.op-m.rate-retime]`,
@@ -16,22 +16,18 @@
 //!   `ref[dsp.tempo.event-tracker]`, `ref[dsp.tempo.physical-inversion]`,
 //!   `ref[dsp.tempo.coprime-fdn]`, `ref[dsp.tempo.transport-jump]`
 //! - `ref[dsp.zoh.ctrl-stride]`
-//! - `ref[train.audit.phase1.clamp-range]`, `ref[train.audit.phase1.clamp-switch]`,
-//!   `ref[train.audit.phase1.clamp-stability]`, `ref[train.audit.phase3.clamp-dynamic]`,
-//!   `ref[train.audit.phase3.clamp-head-gain]`, `ref[train.audit.phase3.numeric-envelope]`,
-//!   `ref[train.audit.report.prescription]`
 //!
 //! Submodules:
 //! - [`stride_and_ingress`]: Control stride, window retiming, stage dispatch matrix, bounded SPSC ingress, and host curve arbitration.
 //! - [`exact_int`]: `9-word S` + `18-word D` exact-integer sufficient-statistic accumulator (`ExactIntFactorAccumulator`).
-//! - [`tempo_and_audit`]: `Q64`/`Q32` tempo synchronization, clock pulse tracker, physical `f32` calibration inversion, and 3-phase audit helpers.
+//! - [`tempo`]: `Q64`/`Q32` tempo synchronization, clock pulse tracker, and physical `f32` calibration inversion.
 
 pub mod exact_int;
 #[cfg(test)]
 mod exact_int_verify;
 pub mod stride_and_ingress;
-pub mod tempo_and_audit;
+pub mod tempo;
 
 pub use exact_int::*;
 pub use stride_and_ingress::*;
-pub use tempo_and_audit::*;
+pub use tempo::*;

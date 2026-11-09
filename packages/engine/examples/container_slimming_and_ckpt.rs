@@ -9,9 +9,6 @@
 //!    header slack via [`update_header_in_place`].
 //! 3. Round-tripping the v2.0 `DMU1` mutable suffix trailer (`build_dmu1_mutable_frame` /
 //!    `parse_and_validate_dmu1_frame`, `ref[container.dnam.mutable-frame]`).
-//! 4. Extracting a `Lite` (`64 x 64`) leading principal Gram submatrix directly from the
-//!    contiguous prefix of an `Ultra` (`256 x 256`) `LAPACK uplo='U'` packed buffer via
-//!    [`pack_uplo_u_f64`] and [`unpack_uplo_u_f64`] (`ref[container.ckpt.uplo-u]`).
 //!
 //! Run with:
 //!   `cargo run -p dnam-engine --example container_slimming_and_ckpt`
@@ -21,8 +18,7 @@ use std::collections::BTreeMap;
 use dnam_engine::Tier;
 use dnam_engine::container::{
     ARENA_OFFSET_ULTRA_END, DnamContainerView, build_dmu1_mutable_frame, build_dnam_container,
-    pack_uplo_u_f64, parse_and_validate_dmu1_frame, strip_container_to_tier, unpack_uplo_u_f64,
-    update_header_in_place, uplo_u_packed_len,
+    parse_and_validate_dmu1_frame, strip_container_to_tier, update_header_in_place,
 };
 use dnam_engine::provenance::DefaultCryptoProvider;
 use dnam_engine::schema::{DnamJsonHeader, PresetDef};
@@ -80,31 +76,5 @@ fn main() {
         "DMU1 frame length: {} B (64B aligned) | Parsed tag: {}",
         dmu1_frame.len(),
         parsed_dmu1["user_metadata"]["tag"],
-    );
-
-    // 4. Verify Nested Principal Submatrix Prefix Theorem on LAPACK uplo='U' packed Gram matrix
-    let n_ultra = 16_usize;
-    let n_lite = 4_usize;
-    let mut dense_ultra = vec![0.0_f64; n_ultra * n_ultra];
-    for r in 0..n_ultra {
-        for c in 0..n_ultra {
-            dense_ultra[r * n_ultra + c] = ((r + 1) * (c + 1)) as f64;
-        }
-    }
-    let mut packed_ultra = vec![0.0_f64; uplo_u_packed_len(n_ultra)];
-    pack_uplo_u_f64(&dense_ultra, n_ultra, &mut packed_ultra);
-
-    // Extract the leading 4x4 submatrix using ONLY the first `uplo_u_packed_len(4) == 10` elements
-    let lite_prefix_len = uplo_u_packed_len(n_lite);
-    let mut unpacked_lite = vec![0.0_f64; n_lite * n_lite];
-    unpack_uplo_u_f64(&packed_ultra[..lite_prefix_len], n_lite, &mut unpacked_lite);
-    for r in 0..n_lite {
-        for c in 0..n_lite {
-            assert_eq!(unpacked_lite[r * n_lite + c], dense_ultra[r * n_ultra + c]);
-        }
-    }
-    println!(
-        "uplo='U' Prefix Theorem verified: extracted {}x{} Gram submatrix from first {} packed f64s",
-        n_lite, n_lite, lite_prefix_len,
     );
 }

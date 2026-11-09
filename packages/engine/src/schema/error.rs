@@ -172,7 +172,7 @@ pub fn cold_sqrt_f64(x: f64) -> f64 {
 
 /// Returns `Err(DnamError::SchemaValidationError(msg.into()))` when `cond` is `true`.
 #[inline]
-pub(crate) fn reject_if(cond: bool, msg: &str) -> Result<(), DnamError> {
+pub fn reject_if(cond: bool, msg: &str) -> Result<(), DnamError> {
     if cond {
         Err(DnamError::SchemaValidationError(String::from(msg)))
     } else {
@@ -181,7 +181,7 @@ pub(crate) fn reject_if(cond: bool, msg: &str) -> Result<(), DnamError> {
 }
 
 /// Extension trait converting `Option<T>` into `Result<T, DnamError>` without per-site closures.
-pub(crate) trait SchemaOptionExt<T> {
+pub trait SchemaOptionExt<T> {
     fn or_schema_err(self, msg: &str) -> Result<T, DnamError>;
 }
 

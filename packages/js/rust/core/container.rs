@@ -6,17 +6,21 @@ use std::collections::BTreeMap;
 use dnam_engine::Tier;
 use dnam_engine::container::{
     ARENA_OFFSET_ULTRA_END, DnamContainerView, DnamPreamble, build_dmu1_mutable_frame,
-    build_dnam_container, crc32c_compute, export_runtime_dnam_from_ckpt, pack_uplo_u_f64,
-    parse_and_validate_dmu1_frame, project_immutable_header_value, serialize_jcs_value,
-    strip_container_to_tier, strip_v2_open_dnam_container, unpack_uplo_u_f64,
-    update_header_in_place, uplo_u_packed_len, validate_v2_dnck_checkpoint,
-    validate_v2_open_dnam_layout, verify_ckpt_arena5_calib_stats, verify_ckpt_stem_arena4_crc32c,
+    build_dnam_container, crc32c_compute, parse_and_validate_dmu1_frame,
+    project_immutable_header_value, serialize_jcs_value, strip_container_to_tier,
+    strip_v2_open_dnam_container, update_header_in_place, validate_v2_open_dnam_layout,
 };
 use dnam_engine::provenance::{RustCryptoProvider, decode_hex_array};
 use dnam_engine::schema::{
-    AuditReport, ControlCalibration, ControlCalibrationRole, ControlKind, ControlSchemaDef,
-    ControlUiHints, DnamJsonHeader, DnamProtectionProfile, ExtractedPhysics, PresetDef,
-    SchemaVersion, StemProvenance, StemRegistryEntry, TempoSubdivision, TensorSliceEntry,
+    ControlCalibration, ControlCalibrationRole, ControlKind, ControlSchemaDef, ControlUiHints,
+    DnamJsonHeader, DnamProtectionProfile, PresetDef, SchemaVersion, TempoSubdivision,
+    TensorSliceEntry,
+};
+use dnam_trainer::ckpt::{
+    AuditReport, DnamCkptHeader, DnamCkptView, ExtractedPhysics, StemProvenance, StemRegistryEntry,
+    build_dnam_ckpt_container, export_runtime_dnam_from_ckpt, pack_uplo_u_f64, unpack_uplo_u_f64,
+    uplo_u_packed_len, validate_v2_dnck_checkpoint, verify_ckpt_arena5_calib_stats,
+    verify_ckpt_stem_arena4_crc32c,
 };
 
 use crate::error::{format_tagged_dnam_error, validation_err};
@@ -54,6 +58,27 @@ pub fn validate_container_with_key_core(
         let mkt_pk =
             decode_hex_array::<32>(mkt_pk_hex).map_err(|e| format_tagged_dnam_error(&e))?;
         crypto = crypto.with_marketplace_pubkey(mkt_pk);
+    }
+    if container_bytes.starts_with(b"DNCK") {
+        let view = DnamCkptView::from_bytes(container_bytes, &crypto)
+            .map_err(|e| format_tagged_dnam_error(&e))?;
+        let json_end = 64_usize.saturating_add(view.preamble.json_header_byte_len as usize);
+        let header_json = if view.protection_profile != DnamProtectionProfile::EnclaveSealed
+            && container_bytes.len() >= json_end
+            && let Ok(raw_str) = core::str::from_utf8(&container_bytes[64..json_end])
+        {
+            raw_str.to_string()
+        } else {
+            serde_json::to_string(&view.header).map_err(|e| validation_err(e.to_string()))?
+        };
+        return Ok(ValidatedContainerInfo {
+            preamble: view.preamble,
+            magic_str: String::from_utf8_lossy(&view.preamble.magic).into_owned(),
+            verification_status: format!("{:?}", view.verification_status),
+            protection_profile: view.protection_profile.as_str().to_string(),
+            header_json,
+            arena_bytes: view.arena_storage.as_bytes().to_vec(),
+        });
     }
     let view = DnamContainerView::from_bytes(container_bytes, &crypto)
         .map_err(|e| format_tagged_dnam_error(&e))?;
@@ -325,9 +350,15 @@ pub fn canonicalize_jcs_core(
     serialize_jcs_value(&projected, reject_floats).map_err(|e| format_tagged_dnam_error(&e))
 }
 
-/// Validates and normalizes a snake_case `DnamJsonHeader` JSON string using Rust `serde` and
-/// `DnamJsonHeader::validate()`, rejecting unknown fields and returning canonical wire JSON.
+/// Validates and normalizes a snake_case `DnamJsonHeader` or `DnamCkptHeader` JSON string using
+/// Rust `serde` and `.validate()`, rejecting unknown fields and returning canonical wire JSON.
 pub fn validate_and_normalize_header_core(header_json: &str) -> Result<String, String> {
+    if let Ok(val) = serde_json::from_str::<serde_json::Value>(header_json)
+        && val.get("container_kind").and_then(|v| v.as_str()) == Some("dnam-ckpt")
+    {
+        return DnamCkptHeader::validate_and_normalize_json_str(header_json)
+            .map_err(|e| format_tagged_dnam_error(&e));
+    }
     DnamJsonHeader::validate_and_normalize_json_str(header_json)
         .map_err(|e| format_tagged_dnam_error(&e))
 }
@@ -377,11 +408,11 @@ pub fn strip_v2_open_dnam_container_core(
 // ============================================================================
 
 pub fn build_reference_checkpoint_core(include_calib_stats: bool) -> Result<Vec<u8>, String> {
-    let mut header = DnamJsonHeader::default_reference();
-    header.container_kind = "dnam-ckpt".to_string();
-    header.version = "2.0.0".to_string();
+    let mut header = DnamCkptHeader::default_reference();
+    header.base.container_kind = "dnam-ckpt".to_string();
+    header.base.version = "2.0.0".to_string();
 
-    let mut arena = populate_reference_controls_and_arena(&mut header, true)?;
+    let mut arena = populate_reference_controls_and_arena(&mut header.base, true)?;
     let stem_offset = arena.len();
     let stem_record_bytes = vec![0x2A_u8; 4_096];
     let stem_crc = crc32c_compute(&stem_record_bytes);
@@ -389,6 +420,7 @@ pub fn build_reference_checkpoint_core(include_calib_stats: bool) -> Result<Vec<
 
     header.stems_registry = Some(vec![StemRegistryEntry {
         stem_id: "stem_00_noon".to_string(),
+        enabled: true,
         controls_meta: BTreeMap::from([
             ("gain".to_string(), serde_json::json!(5.0)),
             ("boost".to_string(), serde_json::json!("off")),
@@ -448,7 +480,7 @@ pub fn build_reference_checkpoint_core(include_calib_stats: bool) -> Result<Vec<
         arena.extend_from_slice(&a5);
     }
 
-    build_dnam_container(&mut header, &arena, &arena, false)
+    build_dnam_ckpt_container(&mut header, &arena, &arena, false)
         .map_err(|e| format_tagged_dnam_error(&e))
 }
 

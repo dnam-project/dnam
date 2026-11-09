@@ -8,6 +8,7 @@ use dnam_engine::container::{DnamContainerView, FLAG_HAS_CKPT_STEMS, strip_conta
 use dnam_engine::math::{BackendKind, detect_best_backend};
 use dnam_engine::provenance::DefaultCryptoProvider;
 use dnam_engine::{DynamicDnamEngine, Tier};
+use dnam_trainer::ckpt::DnamCkptView;
 use serde::{Deserialize, Serialize};
 
 use crate::capture::{read_wav, write_wav_32bit_float};
@@ -135,6 +136,45 @@ pub fn inspect_container_bytes_with_crypto(
     marketplace_pubkey_hex: Option<&str>,
 ) -> StudioResult<ContainerInspectionReport> {
     let crypto = build_crypto_provider(device_id, device_key_hex, marketplace_pubkey_hex)?;
+    if bytes.starts_with(b"DNCK") {
+        let view = DnamCkptView::from_bytes(bytes, &crypto)
+            .map_err(|e| StudioError::Engine(format!("{e:?}")))?;
+        let preamble = &view.preamble;
+        let verif = format!("{:?}", view.verification_status);
+        let profile_str = match view.protection_profile {
+            dnam_engine::schema::DnamProtectionProfile::Open => "open",
+            dnam_engine::schema::DnamProtectionProfile::DeviceAllowlisted => "device_allowlisted",
+            dnam_engine::schema::DnamProtectionProfile::EnclaveSealed => "enclave_sealed",
+        };
+        return Ok(ContainerInspectionReport {
+            magic: String::from_utf8_lossy(&preamble.magic).into_owned(),
+            version_major: preamble.version_major,
+            version_minor: preamble.version_minor,
+            is_checkpoint: true,
+            model_name: view.header.base.metadata.name.clone(),
+            author: view
+                .header
+                .base
+                .metadata
+                .author
+                .clone()
+                .unwrap_or_else(|| "Unknown".to_string()),
+            verification_status: verif,
+            protection_profile: profile_str.to_string(),
+            lfo_env_active: view.header.base.control_bus.envelopes > 0
+                || view.header.base.control_bus.lfo_oscillators > 0,
+            sample_rate_train_hz: preamble.sample_rate_train_hz,
+            control_decimation: 16,
+            detected_simd_backend: detect_native_backend_str().to_string(),
+            num_controls: view.header.base.controls_schema.len(),
+            num_ckpt_stems: preamble.num_ckpt_stems,
+            head_svd_rank: view.header.base.slimmable_tiers.ultra.head_svd_rank,
+            tail_time_ms: preamble.tail_time_ms,
+            tensor_arena_byte_len: preamble.tensor_arena_byte_len,
+            num_presets: view.header.base.presets.len(),
+            byte_len: bytes.len(),
+        });
+    }
     let view = DnamContainerView::from_bytes(bytes, &crypto)
         .map_err(|e| StudioError::Engine(format!("{e:?}")))?;
     let preamble = &view.preamble;
@@ -407,6 +447,7 @@ mod tests {
 
     use dnam_engine::container::{ARENA_OFFSET_ULTRA_END, build_dnam_container};
     use dnam_engine::schema::{ControlKind, ControlSchemaDef, DnamJsonHeader, PresetDef};
+    use dnam_trainer::ckpt::{DnamCkptHeader, build_dnam_ckpt_container};
 
     use super::*;
 
@@ -422,9 +463,6 @@ mod tests {
 
     fn make_test_container(is_ckpt: bool) -> Vec<u8> {
         let mut header = DnamJsonHeader::default_reference();
-        if is_ckpt {
-            header.container_kind = "dnam-ckpt".to_string();
-        }
         let mut ctrl = serde_json::json!({
             "id": "gain",
             "name": "Gain",
@@ -456,7 +494,18 @@ mod tests {
         }];
         assert_eq!(header.controls_schema[0].kind, ControlKind::Range);
         let arena = vec![0u8; ARENA_OFFSET_ULTRA_END as usize];
-        build_dnam_container(&mut header, &arena, &arena, false).expect("build container")
+        if is_ckpt {
+            header.container_kind = "dnam-ckpt".to_string();
+            let mut ckpt_hdr = DnamCkptHeader {
+                base: header,
+                stems_registry: None,
+                audit_report: None,
+            };
+            build_dnam_ckpt_container(&mut ckpt_hdr, &arena, &arena, false)
+                .expect("build ckpt container")
+        } else {
+            build_dnam_container(&mut header, &arena, &arena, false).expect("build container")
+        }
     }
 
     #[test]

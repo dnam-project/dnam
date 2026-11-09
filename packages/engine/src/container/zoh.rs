@@ -166,11 +166,11 @@ impl ZohRescaledParams {
     /// under continuous-time ZOH via $p_{\text{host}} = p_{\text{train}}^{\rho_{\text{sr}}}$.
     #[inline]
     pub fn rescale_real_pole(&self, p_train: f32) -> f32 {
+        let p_clamped = p_train.clamp(1e-4, 0.999995);
         if (self.rho_sr - 1.0).abs() < 1e-12 {
-            return p_train;
+            return p_clamped;
         }
-        let p_clamped = p_train.clamp(1e-4, 0.99995);
-        cold_pow_f64(p_clamped as f64, self.rho_sr) as f32
+        (cold_pow_f64(p_clamped as f64, self.rho_sr) as f32).clamp(1e-4, 0.999995)
     }
 
     /// Rescales Stage 0 router sub-sample alignment latency:
@@ -383,6 +383,16 @@ mod tests {
 
         let zoh_fallback = ZohRescaledParams::new(48_000, 0);
         assert_eq!(zoh_fallback.sample_rate_host_hz, 48_000);
+
+        // Near-unity RC grid-leak / thermal pole clamping under high host SR and 4x oversampling
+        let zoh192_4x =
+            ZohRescaledParams::compute_oversampled(48_000, 192_000, 4, 0.9993, 0.995, 64.0, 128)
+                .unwrap();
+        let p_near_unity = zoh192_4x.rescale_real_pole(0.999995);
+        assert!(
+            (1e-4..=0.999995).contains(&p_near_unity),
+            "rescale_real_pole must clamp output to <= 0.999995 at 192kHz 4x, got {p_near_unity}"
+        );
     }
 
     proptest! {

@@ -9,10 +9,17 @@ use super::watermark::{
 };
 use super::{STRUCTURAL_HASH_DIM, STRUCTURAL_HASH_TIER_DIM};
 
+#[inline]
+pub(crate) fn quantize_pole_angle_1e2(theta: f64) -> f64 {
+    let scaled = theta * 100.0;
+    let rounded = (scaled + if scaled >= 0.0 { 0.5 } else { -0.5 }) as i64;
+    (rounded as f64) * 0.01
+}
+
 /// Extracts the 224-dimensional prefix-composable gauge-invariant structural hash vector $\mathbf{f}_{\text{struct}} \in \mathbb{R}^{224}$.
 ///
 /// Ordered strictly by tier $t \in \{0, 1, 2, 3\}$ (`[56*t .. 56*(t+1)]`):
-/// - `[0..16]`: modal/Kautz invariant composite pole signatures $r_{\text{low},b,c} + 0.5\,\Delta r_{b,c} + 0.1\,\theta_{0,b,c}$,
+/// - `[0..16]`: modal/Kautz invariant composite pole signatures $r_{\text{low},b,c} + 0.5\,\Delta r_{b,c} + 0.1\,\lfloor\theta_{0,b,c}\rceil_{10^{-2}}$,
 /// - `[16..32]`: gauge-invariant real products $I_{\text{real},b,c} = b_{\gamma,b,c} \cdot (c_{\text{real},L,b,c} + c_{\text{real},R,b,c})$,
 /// - `[32..48]`: gauge-invariant imaginary products $I_{\text{imag},b,c} = b_{\gamma,b,c} \cdot (c_{\text{imag},L,b,c} + c_{\text{imag},R,b,c})$,
 /// - `[48..52]`: 4 Stage IV Spatial Tank delay invariants for tier $t$,
@@ -39,7 +46,8 @@ pub fn extract_structural_hash_224d(arena: &[u8]) -> Result<[f64; STRUCTURAL_HAS
                 let ch_in_tier = blk * 4 + lane;
                 let r_low = read_f32_le(arena, base + lane * 4) as f64;
                 let dr = read_f32_le(arena, base + (4 + lane) * 4) as f64;
-                let theta = read_f32_le(arena, base + (8 + lane) * 4) as f64;
+                let theta =
+                    quantize_pole_angle_1e2(read_f32_le(arena, base + (8 + lane) * 4) as f64);
                 let b_gamma = read_f32_le(arena, base + (12 + lane) * 4) as f64;
                 let c_re_l = read_f32_le(arena, base + (16 + lane) * 4) as f64;
                 let c_im_l = read_f32_le(arena, base + (20 + lane) * 4) as f64;

@@ -65,9 +65,13 @@ pub use verify::{
     sign_marketplace_receipt_json,
 };
 pub use watermark::{
-    STAGE3_EARLY_FIR_BASES, STAGE3_KAUTZ_BASES, STAGE3_KAUTZ_BLOCKS_PER_TIER,
-    STAGE3_KAUTZ_TIER_CHANNEL_BASE, apply_isometric_gauge_watermark, apply_tardos_watermark_7680,
-    extract_structural_hash_224d, generate_tardos_code_7680, kautz_soa_byte_offset,
+    PHASE_CODING_MAX_RAD, STAGE3_EARLY_FIR_BASES, STAGE3_KAUTZ_BASES, STAGE3_KAUTZ_BLOCKS_PER_TIER,
+    STAGE3_KAUTZ_TIER_CHANNEL_BASE, TARDOS_CASCADE_RANGES, TardosCodebook7680,
+    apply_cascade_head_gauge, apply_isometric_gauge_watermark, apply_phase_coding_watermark,
+    apply_tardos_watermark_7680, apply_tardos_watermark_7680_envelopes,
+    compute_emr_masked_tardos_envelopes, extract_structural_hash_224d, generate_tardos_code_7680,
+    generate_tardos_codebook_7680, is_role_a_cascade_index, kautz_soa_byte_offset,
+    role_b_head_slot_for_index, score_phase_coding_arena, score_phase_coding_blackbox,
     score_tardos_watermark_7680, structural_cosine_similarity,
 };
 

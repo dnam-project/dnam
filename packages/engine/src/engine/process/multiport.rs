@@ -1,6 +1,6 @@
 //! 4-port (`4CM`, `WDW`, `Sidechain`) and 256-D Feature Bus processing loops for [`DnamEngine`].
 
-use super::DnamAudioIo;
+use super::{DnamAudioIo, feature_bus};
 use crate::engine::DnamEngine;
 use crate::math::{MathBackend, SimdVec4, flush_recursive_state_f32};
 use crate::provenance::watermark::max_tiers_for_arena_len;
@@ -70,34 +70,49 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
             )
         };
 
+        let arena_len = self.arena_storage.as_bytes().len();
+        let active_tiers =
+            (self.effective_tier() as usize + 1).min(max_tiers_for_arena_len(arena_len));
+        let loop_tiers = if feature_bus_out.is_some() {
+            4
+        } else {
+            active_tiers
+        };
+
         let k_ctrl = self.zoh.control_decimation_host;
         self.ctrl_energy_accum = flush_recursive_state_f32(
             self.ctrl_energy_accum + 0.5 * (eff_in_l.abs() + eff_in_r.abs()),
         );
         self.ctrl_sub_counter += 1;
         if self.ctrl_sub_counter >= k_ctrl {
-            let avg_energy = self.ctrl_energy_accum * self.zoh.alpha_ramp_host;
-            self.ctrl_sub_counter = 0;
-            self.ctrl_energy_accum = 0.0;
-            let det_env = self.stage_pipeline.stage0.detector_envelopes;
-            let arena = self.arena_storage.as_bytes();
-            let _changed =
-                self.control_bus
-                    .tick_3khz_with_detectors(avg_energy, Some(det_env), arena);
-            self.stage_ramp_deltas = crate::control::ControlBus::<B>::compute_micro_ramp_deltas(
-                &self.current_stage_params,
-                &self.control_bus.stage_targets,
-                self.zoh.alpha_ramp_host,
-            );
-            if self.control_bus.tank_mod_dirty {
-                self.apply_tank_modulations();
-                self.control_bus.tank_mod_dirty = false;
-            }
+            self.step_control_tick_3khz(loop_tiers);
         }
         crate::control::ControlBus::<B>::step_micro_ramp(
             &mut self.current_stage_params,
             &self.stage_ramp_deltas,
         );
+
+        let laws = crate::stages::eval_stage_modulation_laws(
+            &self.current_stage_params,
+            [
+                self.stage_pipeline.stage0.s_matrix[0][0],
+                self.stage_pipeline.stage0.s_matrix[1][1],
+            ],
+            self.zoh.tau_ref_samples_host,
+            256.0,
+            self.stage_pipeline.stage4.delay_lengths[0] as f32,
+            1004.0,
+            self.stage_pipeline.stage4.g_loop,
+            0.5,
+            self.stereo_width,
+        );
+        self.stage_pipeline.stage1.boost_gain = laws[4];
+        self.stage_pipeline.stage1.pitch_blend = self.current_stage_params[3].clamp(-1.0, 1.0);
+        let drive_gain = (laws[5] + 0.25 * self.control_bus.ctrl_basis_4[0]).clamp(0.25, 4.0);
+        let beta_tone = laws[6];
+        let pwr_drive = laws[7];
+        let sag_depth = (laws[8] + 0.1 * self.control_bus.ctrl_basis_4[1]).clamp(0.0, 0.8);
+        let g_fir = laws[11];
 
         let (down_l, down_r, clean_sub_l, clean_sub_r) = self
             .stage_pipeline
@@ -105,6 +120,9 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
             .route_frame_no_return(eff_in_l, eff_in_r);
 
         let (s1_l, s1_r) = self.stage_pipeline.stage1.step_stereo(down_l, down_r);
+        if loop_tiers >= 2 {
+            self.stage_pipeline.stage1.step_delta_branch(down_l, down_r);
+        }
 
         // 4CM contract (`r[dsp.router.return-to-send-isolation]`, `R15-E3`):
         // - FX Send (`send_l, send_r`) taps after Stage I (`s1_l, s1_r`) with S_{ret->send} == 0.
@@ -125,18 +143,13 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
             (s1_l, s1_r)
         };
 
-        let stage_law_5 = (1.0 + 0.25 * self.current_stage_params[5]).clamp(0.25, 4.0);
-        let stage_law_8 = (0.2 + 0.1 * self.current_stage_params[8]).clamp(0.0, 0.8);
-        let drive_gain = (stage_law_5 + 0.25 * self.control_bus.ctrl_basis_4[0]).clamp(0.25, 4.0);
-        let sag_depth = (stage_law_8 + 0.1 * self.control_bus.ctrl_basis_4[1]).clamp(0.0, 0.8);
-        let (basis_l, basis_r) = self
-            .stage_pipeline
-            .stage2
-            .step_frame(s2_in_l, s2_in_r, drive_gain, sag_depth);
-        let s2_l = basis_l[0];
-        let s2_r = basis_r[0];
+        let s2_out = self.stage_pipeline.stage2.step_frame_with_branches(
+            s2_in_l, s2_in_r, drive_gain, sag_depth, beta_tone, pwr_drive, loop_tiers,
+        );
+        let s2_l = s2_out.s2_l;
+        let s2_r = s2_out.s2_r;
 
-        let (s3_fir_l, s3_fir_r, s2_delayed_16_l, s2_delayed_16_r) = self
+        let (s3_fir_raw_l, s3_fir_raw_r, s2_delayed_16_l, s2_delayed_16_r) = self
             .stage_pipeline
             .stage3
             .step_fir_stereo_lr_taps_with_delayed_tap::<B>(
@@ -148,10 +161,22 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
                 &self.stage_pipeline.fir_taps_l[0],
                 &self.stage_pipeline.fir_taps_r[0],
             );
-
-        let arena_len = self.arena_storage.as_bytes().len();
-        let active_tiers =
-            (self.effective_tier() as usize + 1).min(max_tiers_for_arena_len(arena_len));
+        let (fir_seg_l, fir_seg_r) = self
+            .stage_pipeline
+            .stage3
+            .eval_higher_tier_fir_segments::<B>(
+                &self.stage_pipeline.stage3_r,
+                s3_fir_raw_l,
+                s3_fir_raw_r,
+                clean_sub_l,
+                clean_sub_r,
+                &self.stage_pipeline.fir_taps_l,
+                &self.stage_pipeline.fir_taps_r,
+                loop_tiers,
+                g_fir,
+            );
+        let s3_fir_l = fir_seg_l[0];
+        let s3_fir_r = fir_seg_r[0];
 
         if self.cached_head_tiers != active_tiers
             || self.cached_z_head != self.control_bus.z_head
@@ -160,48 +185,28 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
             self.refresh_collapsed_head_weights(active_tiers);
         }
 
-        if let Some(ref mut fb) = feature_bus_out {
-            fb.fill(0.0);
-        }
-
-        let mut head_acc_l = B::Vec4::zero();
-        let mut head_acc_r = B::Vec4::zero();
+        const TIER_BLK_BASE: [usize; 4] = [0, 1, 2, 4];
+        let mut kautz_modal_feats = [[0.0_f32; 4]; 8];
         let mut kautz_acc_l = B::Vec4::zero();
         let mut kautz_acc_r = B::Vec4::zero();
         let xl_vec = B::Vec4::splat(s2_delayed_16_l);
         let xr_vec = B::Vec4::splat(s2_delayed_16_r);
-        let kautz_loop_tiers = if feature_bus_out.is_some() {
-            4
-        } else {
-            active_tiers
-        };
-        for t in 0..kautz_loop_tiers {
-            let kwl = &self.collapsed_kautz_wl[t];
-            let kwr = &self.collapsed_kautz_wr[t];
+        for t in 0..loop_tiers {
             let tiers_l = &mut self.stage_pipeline.kautz_tiers_l[t];
             let tiers_r = &mut self.stage_pipeline.kautz_tiers_r[t];
             let n_blocks = crate::provenance::STAGE3_KAUTZ_BLOCKS_PER_TIER[t];
+            let blk_base = TIER_BLK_BASE[t];
             for blk in 0..n_blocks {
                 let (vl, vr) = tiers_l[blk].step_4lane_stereo_simd_splatted::<B>(
                     &mut tiers_r[blk],
                     xl_vec,
                     xr_vec,
                 );
-                if let Some(ref mut fb) = feature_bus_out {
-                    let modal_feat = crate::stages::pack_stage3_modal_block_features(
-                        &vl.to_array(),
-                        &vr.to_array(),
-                    );
-                    let m_off = t * 64 + blk * 4;
-                    fb[m_off..m_off + 4].copy_from_slice(&modal_feat);
-                }
+                kautz_modal_feats[blk_base + blk] =
+                    crate::stages::pack_stage3_modal_block_features(&vl.to_array(), &vr.to_array());
                 if t < active_tiers {
                     kautz_acc_l = kautz_acc_l.add(vl);
                     kautz_acc_r = kautz_acc_r.add(vr);
-                    head_acc_l = head_acc_l.fma(kwl[blk], vl).fma(kwl[4 + blk], vr);
-                    if !mono_only {
-                        head_acc_r = head_acc_r.fma(kwr[blk], vl).fma(kwr[4 + blk], vr);
-                    }
                 }
             }
         }
@@ -212,128 +217,49 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
             .stage_pipeline
             .stage4
             .step_stereo_with_readouts(s3_l, s3_r);
+        let (s4_full_taps, s4_pro_taps, s4_ultra_taps) = self
+            .stage_pipeline
+            .stage4
+            .read_multi_tier_taps(loop_tiers, tank_readouts, tank_loops);
 
-        let shared_phi: [B::Vec4; 7] = [
-            B::Vec4::from_array([basis_l[0], basis_l[1], basis_l[2], basis_l[3]]),
-            B::Vec4::from_array([basis_l[4], basis_l[5], basis_l[6], basis_l[7]]),
-            B::Vec4::from_array([basis_r[0], basis_r[1], basis_r[2], basis_r[3]]),
-            B::Vec4::from_array([basis_r[4], basis_r[5], basis_r[6], basis_r[7]]),
-            B::Vec4::from_array([s1_l, s1_r, s3_fir_l, s3_fir_r]),
-            B::Vec4::from_array([tank_l, tank_r, clean_sub_l, clean_sub_r]),
-            B::Vec4::from_array([s2_l, s2_r, s3_l, s3_r]),
-        ];
+        let fb_local = feature_bus::pack_tier_feature_bus(
+            &self.stage_pipeline.stage1,
+            &s2_out,
+            &kautz_modal_feats,
+            &fir_seg_l,
+            &fir_seg_r,
+            &tank_readouts,
+            &s4_full_taps,
+            &s4_pro_taps,
+            &s4_ultra_taps,
+            down_l,
+            down_r,
+            clean_sub_l,
+            clean_sub_r,
+            s1_l,
+            s1_r,
+            s2_in_l,
+            s2_in_r,
+            send_l,
+            send_r,
+            tank_l,
+            tank_r,
+            loop_tiers,
+        );
         if let Some(fb) = feature_bus_out.as_mut() {
-            // Assemble CANONICAL-256D-FEATURE-BUS-MAP (`r[dsp.head.feature-bus-slots]`, `R15-E2`, `R16-E3`)
-            let fir_0_l = s3_fir_l - clean_sub_l;
-            let fir_0_r = s3_fir_r - clean_sub_r;
-            let latest_l = (self.stage_pipeline.stage3.fir_write_ptr + 63) & 63;
-            let latest_r = (self.stage_pipeline.stage3_r.fir_write_ptr + 63) & 63;
-            let mut fir_seg_l = [fir_0_l, 0.0, 0.0, 0.0];
-            let mut fir_seg_r = [fir_0_r, 0.0, 0.0, 0.0];
-            for t in 1..4 {
-                let mut acc_l = 0.0_f32;
-                let mut acc_r = 0.0_f32;
-                for i in 0..16 {
-                    let h_l = self.stage_pipeline.stage3.fir_history[(latest_l + 64 - i) & 63];
-                    let h_r = self.stage_pipeline.stage3_r.fir_history[(latest_r + 64 - i) & 63];
-                    acc_l += self.stage_pipeline.fir_taps_l[t][i] * h_l;
-                    acc_r += self.stage_pipeline.fir_taps_r[t][i] * h_r;
-                }
-                fir_seg_l[t] = acc_l;
-                fir_seg_r[t] = acc_r;
-            }
-            let s1 = &self.stage_pipeline.stage1;
-            let s2 = &self.stage_pipeline.stage2;
-            let s4 = &self.stage_pipeline.stage4;
-
-            // Lite (0..64):
-            // 0..4 already filled by Stage III Kautz Block 0
-            fb[4..8].copy_from_slice(&s1.last_tracker_l);
-            fb[8..12].copy_from_slice(&s1.last_tracker_r);
-            fb[12..16].copy_from_slice(&s1.op_m_pre.z_re);
-            fb[16..20].copy_from_slice(&s1.op_m_pre_r.z_re);
-            fb[20..24].copy_from_slice(&basis_l[0..4]);
-            fb[24..28].copy_from_slice(&basis_l[4..8]);
-            fb[28..32].copy_from_slice(&basis_r[0..4]);
-            fb[32..36].copy_from_slice(&basis_r[4..8]);
-            fb[36..44].copy_from_slice(&s2.last_v1b_hyst);
-            fb[44..48].copy_from_slice(&s2.v1a_left.u_prev);
-            fb[48..52].copy_from_slice(&s2.v1a_right.u_prev);
-            fb[52..56].copy_from_slice(&tank_readouts);
-            fb[56] = tank_l;
-            fb[57] = tank_r;
-            fb[58] = s1_l + s2_l;
-            fb[59] = s1_r + s2_r;
-            fb[60] = clean_sub_l;
-            fb[61] = clean_sub_r;
-            fb[62] = fir_seg_l[0];
-            fb[63] = fir_seg_r[0];
-
-            // Full (64..128):
-            // 64..68 already filled by Stage III Kautz Block 1
-            fb[68..72].copy_from_slice(&s1.op_m_pre.z_im);
-            fb[72..76].copy_from_slice(&s1.op_m_pre_r.z_im);
-            fb[76..80].copy_from_slice(&[s1_l, s1_r, down_l, down_r]);
-            fb[80..84].copy_from_slice(&[s2_in_l, s2_in_r, send_l, send_r]);
-            fb[84..92].copy_from_slice(&basis_l);
-            fb[92..100].copy_from_slice(&basis_r);
-            fb[100..108].copy_from_slice(&s2.last_v1b_hyst);
-            fb[108..112].copy_from_slice(&s2.v1b_left.u_prev);
-            fb[112..116].copy_from_slice(&s2.v1b_right.u_prev);
-            fb[116..120].copy_from_slice(&tank_loops);
-            fb[120..124].copy_from_slice(&tank_readouts);
-            fb[124] = s4.ducking_vca.env;
-            fb[125] = s2.sag_envelope;
-            fb[126] = fir_seg_l[1];
-            fb[127] = fir_seg_r[1];
-
-            // Pro (128..192):
-            // 128..136 already filled by Stage III Kautz Blocks 2..3
-            fb[136..140].copy_from_slice(&s1.last_tracker_l);
-            fb[140..144].copy_from_slice(&s1.last_tracker_r);
-            fb[144..148].copy_from_slice(&s1.op_m_pre.z_re);
-            fb[148..152].copy_from_slice(&s1.op_m_pre_r.z_re);
-            fb[152..160].copy_from_slice(&basis_l);
-            fb[160..168].copy_from_slice(&basis_r);
-            fb[168..176].copy_from_slice(&s2.last_v1b_hyst);
-            fb[176..180].copy_from_slice(&s2.v1a_left.a_prev);
-            fb[180..184].copy_from_slice(&s2.v1a_right.a_prev);
-            fb[184..188].copy_from_slice(&tank_readouts);
-            fb[188] = tank_l;
-            fb[189] = tank_r;
-            fb[190] = fir_seg_l[2];
-            fb[191] = fir_seg_r[2];
-
-            // Ultra (192..256):
-            // 192..208 already filled by Stage III Kautz Blocks 4..7
-            fb[208..212].copy_from_slice(&s1.op_m_pre.z_im);
-            fb[212..216].copy_from_slice(&s1.op_m_pre_r.z_im);
-            fb[216..220].copy_from_slice(&s1.last_tracker_l);
-            fb[220..224].copy_from_slice(&s1.last_tracker_r);
-            fb[224..232].copy_from_slice(&basis_l);
-            fb[232..240].copy_from_slice(&basis_r);
-            fb[240..246].copy_from_slice(&s2.last_v1b_hyst[0..6]);
-            fb[246..250].copy_from_slice(&tank_loops);
-            fb[250..254].copy_from_slice(&tank_readouts);
-            fb[254] = fir_seg_l[3];
-            fb[255] = fir_seg_r[3];
+            **fb = fb_local;
         }
 
-        if mono_only {
-            for (g, &phi_g) in shared_phi.iter().enumerate() {
-                head_acc_l = head_acc_l.fma(self.collapsed_shared_wl[g], phi_g);
-            }
-        } else {
-            for (g, &phi_g) in shared_phi.iter().enumerate() {
-                head_acc_l = head_acc_l.fma(self.collapsed_shared_wl[g], phi_g);
-                head_acc_r = head_acc_r.fma(self.collapsed_shared_wr[g], phi_g);
-            }
-        }
+        let (head_sum_l, head_sum_r) = feature_bus::eval_tier_feature_bus_head_dot::<B>(
+            &fb_local,
+            &self.collapsed_head_wl,
+            &self.collapsed_head_wr,
+            active_tiers,
+            mono_only,
+        );
 
         let [b_head_l, b_head_r] = self.collapsed_b_head;
 
-        let head_sum_l = head_acc_l.horizontal_sum();
-        let head_sum_r = head_acc_r.horizontal_sum();
         let mut wet_l = s3_l + tank_l + head_sum_l + b_head_l;
         let mut wet_r = s3_r + tank_r + head_sum_r + b_head_r;
 
@@ -356,10 +282,12 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
         };
 
         if self.stage_pipeline.stage0.wdw_mode {
-            let w5_l = self.collapsed_shared_wl[5].to_array();
-            let w5_r = self.collapsed_shared_wr[5].to_array();
-            let tank_head_l = w5_l[0] * tank_l + w5_l[1] * tank_r;
-            let tank_head_r = w5_r[0] * tank_l + w5_r[1] * tank_r;
+            let (tank_head_l, tank_head_r) = feature_bus::eval_tier_tank_head_contribution::<B>(
+                &fb_local,
+                &self.collapsed_head_wl,
+                &self.collapsed_head_wr,
+                active_tiers,
+            );
             let w_wet_l = tank_l + tank_head_l;
             let w_wet_r = tank_r + tank_head_r;
             let core_l = s3_l + (head_sum_l - tank_head_l) + b_head_l;

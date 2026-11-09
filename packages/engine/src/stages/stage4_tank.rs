@@ -69,6 +69,15 @@ pub struct Stage4SpatialTank {
     pub base_delay_lengths: [f32; TANK_LITE_LINES],
     /// Rescaled delay lengths in samples for the 4 lines (`1..1023`).
     pub delay_lengths: [usize; TANK_LITE_LINES],
+    /// Immutable `48 kHz` Full-tier tank line `4..8` tap lengths (`Arena 1 [17,792..17,808]`).
+    pub base_full_delay_lengths: [f32; 4],
+    pub full_delay_lengths: [usize; 4],
+    /// Immutable `48 kHz` Pro-tier tank spatial tap lengths (`Arena 2 [34,496..34,512]`).
+    pub base_pro_delay_lengths: [f32; 4],
+    pub pro_delay_lengths: [usize; 4],
+    /// Immutable `48 kHz` Ultra-tier tank line `8..16` tap lengths (`Arena 3 [48,896..48,928]`).
+    pub base_ultra_delay_lengths: [f32; 8],
+    pub ultra_delay_lengths: [usize; 8],
     /// Givens mixing angle psi in radians with slew bound |delta_psi| <= 0.05.
     pub current_psi: f32,
     pub target_psi: f32,
@@ -94,12 +103,23 @@ impl Default for Stage4SpatialTank {
 }
 
 impl Stage4SpatialTank {
+    pub const DEFAULT_FULL_DELAYS: [f32; 4] = [263.0, 293.0, 331.0, 367.0];
+    pub const DEFAULT_PRO_DELAYS: [f32; 4] = [389.0, 419.0, 449.0, 487.0];
+    pub const DEFAULT_ULTRA_DELAYS: [f32; 8] =
+        [521.0, 563.0, 599.0, 641.0, 677.0, 719.0, 761.0, 809.0];
+
     pub const fn new() -> Self {
         Self {
             lines: [[0; TANK_LINE_CAPACITY]; TANK_LITE_LINES],
             write_ptr: 0,
             base_delay_lengths: [149.0, 179.0, 211.0, 239.0],
             delay_lengths: [149, 179, 211, 239], // Co-prime lengths
+            base_full_delay_lengths: Self::DEFAULT_FULL_DELAYS,
+            full_delay_lengths: [263, 293, 331, 367],
+            base_pro_delay_lengths: Self::DEFAULT_PRO_DELAYS,
+            pro_delay_lengths: [389, 419, 449, 487],
+            base_ultra_delay_lengths: Self::DEFAULT_ULTRA_DELAYS,
+            ultra_delay_lengths: [521, 563, 599, 641, 677, 719, 761, 809],
             current_psi: core::f32::consts::FRAC_PI_4, // pi / 4
             target_psi: core::f32::consts::FRAC_PI_4,
             g_loop: 0.85,
@@ -127,11 +147,14 @@ impl Stage4SpatialTank {
     }
 
     /// Loads `48 kHz` Stage IV base delay lengths and loop parameters from `Arena 0 [4,672..4,704]`
-    /// when non-zero, falling back to canonical defaults.
+    /// and multi-tier tap lengths from `Arena 1..3` when non-zero, falling back to canonical defaults.
     pub fn load_from_arena(&mut self, arena: &[u8]) {
         const DEFAULTS: [f32; TANK_LITE_LINES] = [149.0, 179.0, 211.0, 239.0];
         if arena.len() < 4_704 {
             self.base_delay_lengths = DEFAULTS;
+            self.base_full_delay_lengths = Self::DEFAULT_FULL_DELAYS;
+            self.base_pro_delay_lengths = Self::DEFAULT_PRO_DELAYS;
+            self.base_ultra_delay_lengths = Self::DEFAULT_ULTRA_DELAYS;
             return;
         }
         for (l, &def_d) in DEFAULTS.iter().enumerate() {
@@ -161,6 +184,45 @@ impl Stage4SpatialTank {
             self.cos_psi = c;
             self.sin_psi = s;
         }
+
+        if arena.len() >= 17_808 {
+            for (l, &def_d) in Self::DEFAULT_FULL_DELAYS.iter().enumerate() {
+                let v = crate::provenance::watermark::read_f32_le(arena, 17_792 + l * 4);
+                self.base_full_delay_lengths[l] = if v.is_finite() && (4.0..=511.0).contains(&v) {
+                    v
+                } else {
+                    def_d
+                };
+            }
+        } else {
+            self.base_full_delay_lengths = Self::DEFAULT_FULL_DELAYS;
+        }
+
+        if arena.len() >= 34_512 {
+            for (l, &def_d) in Self::DEFAULT_PRO_DELAYS.iter().enumerate() {
+                let v = crate::provenance::watermark::read_f32_le(arena, 34_496 + l * 4);
+                self.base_pro_delay_lengths[l] = if v.is_finite() && (4.0..=767.0).contains(&v) {
+                    v
+                } else {
+                    def_d
+                };
+            }
+        } else {
+            self.base_pro_delay_lengths = Self::DEFAULT_PRO_DELAYS;
+        }
+
+        if arena.len() >= 48_928 {
+            for (k, &def_d) in Self::DEFAULT_ULTRA_DELAYS.iter().enumerate() {
+                let v = crate::provenance::watermark::read_f32_le(arena, 48_896 + k * 4);
+                self.base_ultra_delay_lengths[k] = if v.is_finite() && (4.0..=1000.0).contains(&v) {
+                    v
+                } else {
+                    def_d
+                };
+            }
+        } else {
+            self.base_ultra_delay_lengths = Self::DEFAULT_ULTRA_DELAYS;
+        }
     }
 
     /// Reconfigures Stage IV sample-rate parameters (delay line lengths, 5 Hz DC blocker pole R_dc, and ducking VCA poles) under ZOH.
@@ -168,6 +230,17 @@ impl Stage4SpatialTank {
         for l in 0..TANK_LITE_LINES {
             let scaled = (zoh.rescale_alignment_delay(self.base_delay_lengths[l]) + 0.5) as usize;
             self.delay_lengths[l] = scaled.clamp(1, TANK_LINE_CAPACITY - 1);
+            let scaled_full =
+                (zoh.rescale_alignment_delay(self.base_full_delay_lengths[l]) + 0.5) as usize;
+            self.full_delay_lengths[l] = scaled_full.clamp(1, TANK_LINE_CAPACITY - 1);
+            let scaled_pro =
+                (zoh.rescale_alignment_delay(self.base_pro_delay_lengths[l]) + 0.5) as usize;
+            self.pro_delay_lengths[l] = scaled_pro.clamp(1, TANK_LINE_CAPACITY - 1);
+        }
+        for k in 0..8 {
+            let scaled_ultra =
+                (zoh.rescale_alignment_delay(self.base_ultra_delay_lengths[k]) + 0.5) as usize;
+            self.ultra_delay_lengths[k] = scaled_ultra.clamp(1, TANK_LINE_CAPACITY - 1);
         }
         for b in &mut self.dc_blockers {
             b.r_dc = zoh.r_dc_host;
@@ -196,7 +269,7 @@ impl Stage4SpatialTank {
         let inv_sigma = if (self.sigma_knee - 1.0).abs() <= 1e-6 {
             1.0_f64
         } else {
-            1.0_f64 / (self.sigma_knee.max(1e-3) as f64)
+            crate::math::newton6_reciprocal_f64(self.sigma_knee.max(1e-3) as f64)
         };
         let knee_u = super::topology::eval_stage4_blended_feedback_knee_fast(
             x,
@@ -224,7 +297,7 @@ impl Stage4SpatialTank {
         let inv_sigma = if (self.sigma_knee - 1.0).abs() <= 1e-6 {
             1.0_f32
         } else {
-            1.0_f32 / self.sigma_knee.max(1e-3)
+            crate::math::newton6_reciprocal_f64(self.sigma_knee.max(1e-3) as f64) as f32
         };
 
         let r0 = x[0] * inv_sigma;
@@ -398,6 +471,71 @@ impl Stage4SpatialTank {
         let (wet_l, wet_r) =
             self.step_mix_write_duck(cos_psi, sin_psi, readout_sig, loop_sig, in_l, in_r);
         (wet_l, wet_r, readout_sig, loop_sig)
+    }
+
+    /// Reads higher-tier (`Full`: 10 floats, `Pro`: 6 floats, `Ultra`: 8 floats) Stage IV spatial tank
+    /// taps from the existing `lines[0..4]` circular buffer (`REQ-5.6`: zero mutation of `Lite` state).
+    #[inline(always)]
+    pub fn read_multi_tier_taps(
+        &self,
+        max_tier: usize,
+        s4_read: [f32; 4],
+        s4_loop: [f32; 4],
+    ) -> ([f32; 10], [f32; 6], [f32; 8]) {
+        let mut full_out = [0.0f32; 10];
+        let mut pro_out = [0.0f32; 6];
+        let mut ultra_out = [0.0f32; 8];
+        if max_tier <= 1 {
+            return (full_out, pro_out, ultra_out);
+        }
+        let base_ptr = (self.write_ptr + TANK_LINE_CAPACITY - 1) & TANK_LINE_MASK;
+
+        let mut full_fp16 = [0u16; 4];
+        for l in 0..4 {
+            let d = self.full_delay_lengths[l].clamp(1, TANK_LINE_CAPACITY - 1);
+            full_fp16[l] = self.lines[l][(base_ptr + TANK_LINE_CAPACITY - d) & TANK_LINE_MASK];
+        }
+        let full_reads = DefaultMathBackend::fp16x4_to_f32x4(&full_fp16);
+        let full_loops = if self.freeze {
+            full_reads
+        } else {
+            self.coercive_saturate_4ch(full_reads)
+        };
+        full_out[0..4].copy_from_slice(&full_reads);
+        full_out[4..8].copy_from_slice(&full_loops);
+        full_out[8] = 0.5 * (full_reads[0] + full_reads[2]);
+        full_out[9] = 0.5 * (full_reads[1] + full_reads[3]);
+
+        if max_tier >= 3 {
+            let mut pro_fp16 = [0u16; 4];
+            for l in 0..4 {
+                let d = self.pro_delay_lengths[l].clamp(1, TANK_LINE_CAPACITY - 1);
+                pro_fp16[l] = self.lines[l][(base_ptr + TANK_LINE_CAPACITY - d) & TANK_LINE_MASK];
+            }
+            let pro_reads = DefaultMathBackend::fp16x4_to_f32x4(&pro_fp16);
+            pro_out[0..4].copy_from_slice(&pro_reads);
+            pro_out[4] = 0.5 * (pro_reads[0] - pro_reads[2]) + 0.25 * (s4_read[0] - s4_loop[0]);
+            pro_out[5] = 0.5 * (pro_reads[1] - pro_reads[3]) + 0.25 * (s4_read[1] - s4_loop[1]);
+        }
+
+        if max_tier >= 4 {
+            let mut ultra_fp16_a = [0u16; 4];
+            let mut ultra_fp16_b = [0u16; 4];
+            for k in 0..4 {
+                let d_a = self.ultra_delay_lengths[k].clamp(1, TANK_LINE_CAPACITY - 1);
+                let d_b = self.ultra_delay_lengths[k + 4].clamp(1, TANK_LINE_CAPACITY - 1);
+                ultra_fp16_a[k] =
+                    self.lines[k][(base_ptr + TANK_LINE_CAPACITY - d_a) & TANK_LINE_MASK];
+                ultra_fp16_b[k] =
+                    self.lines[k][(base_ptr + TANK_LINE_CAPACITY - d_b) & TANK_LINE_MASK];
+            }
+            let ua = DefaultMathBackend::fp16x4_to_f32x4(&ultra_fp16_a);
+            let ub = DefaultMathBackend::fp16x4_to_f32x4(&ultra_fp16_b);
+            ultra_out[0..4].copy_from_slice(&ua);
+            ultra_out[4..8].copy_from_slice(&ub);
+        }
+
+        (full_out, pro_out, ultra_out)
     }
 
     /// Evaluates Stage IV for stereo input (in_l, in_r).

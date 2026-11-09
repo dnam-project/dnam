@@ -177,7 +177,7 @@ $$\mathbf{z}_{\text{ctrl}} = \mathrm{clip}_{\text{trust}}(\mathbf{z}_{\text{raw}
 
 `r[dsp.ctrl.modulators.dynamic]`
 
-At each control boundary, `Op-M[Ctrl]` and `Op-N[Ctrl]` emit the 8-D dynamic modulator vector $\mathbf{m}_{\text{dyn}}[k] = [z_{\mathrm{re},\text{lfo0}}, z_{\mathrm{im},\text{lfo0}}, T_{\text{shape}}(z_{\mathrm{re},\text{lfo0}}), T_{\text{shape}}(z_{\mathrm{re},\text{lfo1}}), e_{\text{low}}, e_{\text{mid}}, e_{\text{high}}, e_{\text{aux}}]^\top \in \mathbb{R}^8$. During training, a 1D-CNN blind phase-locked teacher extracts analog oscillator drift and anneals to zero before `.dnam` export.
+At each control boundary, `Op-M[Ctrl]` and `Op-N[Ctrl]` emit the 8-D dynamic modulator vector $\mathbf{m}_{\text{dyn}}[k] = [z_{\mathrm{re},\text{lfo0}}, z_{\mathrm{im},\text{lfo0}}, T_{\text{shape}}(z_{\mathrm{re},\text{lfo0}}), T_{\text{shape}}(z_{\mathrm{re},\text{lfo1}}), e_{\text{low}}, e_{\text{mid}}, e_{\text{high}}, e_{\text{aux}}]^\top \in \mathbb{R}^8$. `Arena 0 [7,488..7,552]` (`control_modulators_and_lanes`) stores `[c_step_0, s_step_0, sigma_drift, rho_drift_train, p_env_0, p_env_1, p_env_2, dither_snr_scale]` at `7,488..7,520` (`sigma_drift: f32` at `7,496..7,500`, `rho_drift_train: f32` at `7,500..7,504`, and `dither_snr_scale: f32` at `7,516..7,520`) followed by `cp1_lanes_dir` at `7,520..7,552`; `live_analog_drift_enabled` defaults to `false` (`set_live_analog_drift(bool)`) and is automatically suppressed when `offline_bounce == true` to guarantee deterministic `0.000000 ULP` runtime, bounce, and training parity unless explicitly enabled for live auditioning.
 
 ### 3.1 Stage Parameter Dispatch Matrix $\mathbf{W}_{\text{ctrl}}$
 

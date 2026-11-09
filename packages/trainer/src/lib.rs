@@ -6,8 +6,16 @@
 //! container primitives with [`dnam_engine`] (`ref[arch.isomorphism.two-sweep]`,
 //! `ref[arch.isomorphism.audit-wiring]`).
 
+pub mod audit;
+pub mod ckpt;
 pub mod solver;
+pub mod targets;
 
+pub use targets::{
+    DistillationTarget, StemResponse, StemStimulus, StemStimulusBatch, StimulusFrame,
+};
+
+#[cfg(feature = "cli")]
 use clap::{Parser, Subcommand};
 use dnam_engine::Tier;
 use sha2::{Digest, Sha256};
@@ -25,6 +33,7 @@ pub const CORESET_FP16_MONO_BYTES: usize = CORESET_FP16_FRAMES_PER_STEM * 2;
 pub const CORESET_FP16_STEREO_BYTES: usize = CORESET_FP16_FRAMES_PER_STEM * 4;
 
 /// Command-line interface for the `dnam-train` analytical Two-Sweep system-identification binary.
+#[cfg(feature = "cli")]
 #[derive(Debug, Clone, Parser, PartialEq, Eq)]
 #[command(
     name = "dnam-train",
@@ -38,6 +47,7 @@ pub struct TrainerCli {
 }
 
 /// Supported subcommands for `dnam-train`.
+#[cfg(feature = "cli")]
 #[derive(Debug, Clone, Subcommand, PartialEq, Eq)]
 pub enum TrainerCommand {
     /// Inspect and validate trainer configuration and target slimmable tier.
@@ -60,6 +70,7 @@ pub struct CliExecutionReport {
 }
 
 /// Parses and executes a `dnam-train` CLI argument sequence.
+#[cfg(feature = "cli")]
 pub fn run_cli_from_args<I, T>(args: I) -> Result<CliExecutionReport, String>
 where
     I: IntoIterator<Item = T>,
@@ -159,6 +170,7 @@ mod tests {
     use super::*;
     use proptest::prelude::*;
 
+    #[cfg(feature = "cli")]
     #[test]
     fn test_cli_execution_and_tier_parsing() {
         let r_default = run_cli_from_args(["dnam-train"]).expect("default CLI run should succeed");

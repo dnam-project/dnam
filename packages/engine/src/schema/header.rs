@@ -13,7 +13,6 @@ use super::controls::{ControlKind, ControlSchemaDef, PresetDef};
 use super::error::DnamError;
 use super::signatures::{DatasetProvenance, DistributionPolicy, ModelSignatures};
 
-pub use super::ckpt_meta::{AuditReport, ExtractedPhysics, StemProvenance, StemRegistryEntry};
 pub use super::io_and_tiers::{
     BlendMode, IoConfig, LevelingConfig, LevelingMetric, ModelCapabilities, SlimmableTiersConfig,
     TierProfile, default_blend_one, default_head_svd_rank, default_input_ref_dbfs, default_inputs,
@@ -222,12 +221,6 @@ pub struct DnamJsonHeader {
     /// Tensor directory mapping symbolic tensor names to byte slices in `Arena 0..3`.
     #[serde(default)]
     pub tensor_directory: BTreeMap<String, TensorSliceEntry>,
-    /// Optional `.dnam-ckpt` multi-stem registry mapping stem IDs to Stem Record slice offsets.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub stems_registry: Option<Vec<StemRegistryEntry>>,
-    /// Optional `.dnam-ckpt` 3-phase clamp audit report.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub audit_report: Option<AuditReport>,
 }
 
 /// Essential model identity, calibration, dataset provenance, and cryptographic signatures.
@@ -344,8 +337,6 @@ impl DnamJsonHeader {
             stage3_cabinet: Stage3CabinetKautzConfig::default(),
             stage4_tank: Stage4SpatialTankConfig::default(),
             tensor_directory: BTreeMap::new(),
-            stems_registry: None,
-            audit_report: None,
         }
     }
 
@@ -578,17 +569,6 @@ impl DnamJsonHeader {
                 }
             }
         }
-        if let Some(stems) = &mut header.stems_registry {
-            for stem in stems {
-                for (k, v) in &mut stem.controls_meta {
-                    if range_ids.contains(k)
-                        && let Some(f) = v.as_f64()
-                    {
-                        *v = serde_json::Value::from(f);
-                    }
-                }
-            }
-        }
         header.validate()?;
         let norm_val = serde_json::to_value(&header)
             .map_err(|e| DnamError::InvalidJsonHeader(alloc::format!("{e}")))?;
@@ -633,7 +613,8 @@ fn is_skipped_optional_field(
     }
 }
 
-fn check_no_unknown_header_keys(
+/// Verifies that no unknown JSON schema fields exist in `input` relative to `normalized`.
+pub fn check_no_unknown_header_keys(
     input: &serde_json::Value,
     normalized: &serde_json::Value,
     parent_key: Option<&str>,

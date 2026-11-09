@@ -235,46 +235,60 @@ reason = "Documentation subsystem navigation index verified by relative-link gua
 # 4. Containers: Checkpoint & Cache Format (`docs/specs/containers/checkpoint_and_cache_format.md`)
 # ==============================================================================
 [rules."container.ckpt.bundle-framing"]
-scope = "engine"
+scope = "out-of-scope"
+reason = "Owned and verified by packages/trainer"
 
 [rules."container.ckpt.dca1-signature"]
-scope = "engine"
+scope = "out-of-scope"
+reason = "Owned and verified by packages/trainer"
 
 [rules."container.ckpt.export-template"]
-scope = "engine"
+scope = "out-of-scope"
+reason = "Owned and verified by packages/trainer"
 
 [rules."container.ckpt.declarative-no-pickle"]
-scope = "engine"
+scope = "out-of-scope"
+reason = "Owned and verified by packages/trainer"
 
 [rules."container.ckpt.uplo-u"]
-scope = "engine"
+scope = "out-of-scope"
+reason = "Owned and verified by packages/trainer"
 
 [rules."container.ckpt.standalone-full"]
-scope = "engine"
+scope = "out-of-scope"
+reason = "Owned and verified by packages/trainer"
 
 [rules."container.ckpt.prefix-delta"]
-scope = "engine"
+scope = "out-of-scope"
+reason = "Owned and verified by packages/trainer"
 
 [rules."container.ckpt.objective-records"]
-scope = "engine"
+scope = "out-of-scope"
+reason = "Owned and verified by packages/trainer"
 
 [rules."container.ckpt.stems-registry"]
-scope = "engine"
+scope = "out-of-scope"
+reason = "Owned and verified by packages/trainer"
 
 [rules."container.ckpt.gram-fingerprint"]
-scope = "engine"
+scope = "out-of-scope"
+reason = "Owned and verified by packages/trainer"
 
 [rules."container.dnca.inpc"]
-scope = "engine"
+scope = "out-of-scope"
+reason = "Owned and verified by packages/trainer"
 
 [rules."container.dnca.stmc"]
-scope = "engine"
+scope = "out-of-scope"
+reason = "Owned and verified by packages/trainer"
 
 [rules."container.dnca.dnce-sidecar"]
-scope = "engine"
+scope = "out-of-scope"
+reason = "Owned and verified by packages/trainer"
 
 [rules."container.dnca.coreset-fp16"]
-scope = "engine"
+scope = "out-of-scope"
+reason = "Owned and verified by packages/trainer"
 
 # ==============================================================================
 # 5. Containers: DNAM Binary Format (`docs/specs/containers/dnam_binary_format.md`)
@@ -842,13 +856,16 @@ reason = "Trainer/Studio multi-regime sub-sample capture alignment owned by pack
 # 14. Training: Control Space Audit (`docs/specs/training/control_space_audit.md`)
 # ==============================================================================
 [rules."train.audit.phase1.clamp-range"]
-scope = "engine"
+scope = "out-of-scope"
+reason = "Owned and verified by packages/trainer"
 
 [rules."train.audit.phase1.clamp-switch"]
-scope = "engine"
+scope = "out-of-scope"
+reason = "Owned and verified by packages/trainer"
 
 [rules."train.audit.phase1.clamp-stability"]
-scope = "engine"
+scope = "out-of-scope"
+reason = "Owned and verified by packages/trainer"
 
 [rules."train.audit.phase2.corner-barrier"]
 scope = "out-of-scope"
@@ -859,16 +876,20 @@ scope = "out-of-scope"
 reason = "Trainer Phase-2 2048-sample periodic PolyADAA rail occupancy auditor owned by packages/trainer"
 
 [rules."train.audit.phase3.clamp-dynamic"]
-scope = "engine"
+scope = "out-of-scope"
+reason = "Owned and verified by packages/trainer"
 
 [rules."train.audit.phase3.clamp-head-gain"]
-scope = "engine"
+scope = "out-of-scope"
+reason = "Owned and verified by packages/trainer"
 
 [rules."train.audit.phase3.numeric-envelope"]
-scope = "engine"
+scope = "out-of-scope"
+reason = "Owned and verified by packages/trainer"
 
 [rules."train.audit.report.prescription"]
-scope = "engine"
+scope = "out-of-scope"
+reason = "Owned and verified by packages/trainer"
 
 # ==============================================================================
 # 15. Training: Four-Stage Pipeline (`docs/specs/training/four_stage_pipeline.md`)

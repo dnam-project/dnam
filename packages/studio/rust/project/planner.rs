@@ -4,9 +4,9 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 
-use dnam_engine::container::DnamContainerView;
 use dnam_engine::provenance::DefaultCryptoProvider;
 use dnam_engine::schema::ControlCalibrationRole;
+use dnam_trainer::ckpt::DnamCkptView;
 use serde::{Deserialize, Serialize};
 
 use crate::project::manifest::{ControlRangeSpec, ControlSwitchSpec, ModelManifest};
@@ -66,11 +66,11 @@ pub fn extract_checkpoint_prescriptions(
         return Vec::new();
     };
     let crypto = DefaultCryptoProvider::default();
-    let Ok(view) = DnamContainerView::from_bytes(&bytes, &crypto) else {
+    let Ok(view) = DnamCkptView::from_bytes(&bytes, &crypto) else {
         return Vec::new();
     };
     let mut out = Vec::new();
-    for ctrl in &view.header.controls_schema {
+    for ctrl in &view.header.base.controls_schema {
         if let Some(warning) = &ctrl.clamp_warning
             && let Some(r) = model.ranges.iter().find(|r| r.id == ctrl.id)
         {
@@ -782,8 +782,9 @@ mod tests {
     use crate::project::manifest::{
         CaptureSettings, ControlRangeSpec, ControlSwitchOptionSpec, ControlSwitchSpec,
     };
-    use dnam_engine::container::{ARENA_OFFSET_ULTRA_END, build_dnam_container};
-    use dnam_engine::schema::{AuditReport, ControlSchemaDef, DnamJsonHeader};
+    use dnam_engine::container::ARENA_OFFSET_ULTRA_END;
+    use dnam_engine::schema::ControlSchemaDef;
+    use dnam_trainer::ckpt::{AuditReport, DnamCkptHeader, build_dnam_ckpt_container};
     use proptest::prelude::*;
     use std::env;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -986,7 +987,7 @@ mod tests {
         fs::write(&bad, b"not a container").expect("write bad");
         assert!(extract_checkpoint_prescriptions(&bad, &model).is_empty());
 
-        let mut header = DnamJsonHeader::default_reference();
+        let mut header = DnamCkptHeader::default_reference();
         let c1: ControlSchemaDef = serde_json::from_value(serde_json::json!({
             "id": "gain",
             "name": "Gain",
@@ -997,7 +998,7 @@ mod tests {
             "clamp_warning": "Capture gain=10.0"
         }))
         .expect("c1");
-        header.controls_schema = vec![c1];
+        header.base.controls_schema = vec![c1];
         header.audit_report = Some(AuditReport {
             phase1_clamps: vec!["CLAMP-RANGE".to_string()],
             phase2_rail_warnings: Vec::new(),
@@ -1006,8 +1007,8 @@ mod tests {
         });
 
         let arena = vec![0u8; ARENA_OFFSET_ULTRA_END as usize];
-        let bytes =
-            build_dnam_container(&mut header, &arena, &arena, false).expect("build container");
+        let bytes = build_dnam_ckpt_container(&mut header, &arena, &arena, false)
+            .expect("build ckpt container");
         let ckpt_path = dir.join("test.dnam-ckpt");
         fs::write(&ckpt_path, &bytes).expect("write ckpt");
 

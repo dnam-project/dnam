@@ -22,6 +22,9 @@ pub struct Stage1PreDynamics {
     pub op_m_pre: SymplecticModal4Lane,
     /// Op-M[Pre] Right channel: 4 complex poles (independent stereo recursive state).
     pub op_m_pre_r: SymplecticModal4Lane,
+    /// Full+ tier Stage I parallel 4-pole delta modal bank (`Arena 1 [10,752..10,832]`, `REQ-5.6`: zero mutation of `Lite` state).
+    pub op_m_pre_delta_l: SymplecticModal4Lane,
+    pub op_m_pre_delta_r: SymplecticModal4Lane,
     /// Immutable 48 kHz base Op-M parameters loaded from `Arena 0 [256..352]` for idempotent ZOH rescaling.
     pub base_op_m_r_low: [f32; 4],
     pub base_op_m_dr: [f32; 4],
@@ -30,6 +33,21 @@ pub struct Stage1PreDynamics {
     pub base_op_m_c_im: [f32; 4],
     pub op_m_c_re: [f32; 4],
     pub op_m_c_im: [f32; 4],
+    /// Immutable 48 kHz base Full+ delta Op-M parameters loaded from `Arena 1 [10,752..10,832]`.
+    pub base_delta_r_low: [f32; 4],
+    pub base_delta_dr: [f32; 4],
+    pub base_delta_theta: [f32; 4],
+    pub base_delta_c_re: [f32; 4],
+    pub base_delta_c_im: [f32; 4],
+    /// ZOH-rescaled host-rate Op-M parameters for 3 kHz formant/damping modulation (`0 FSQRT/FDIV/libm`).
+    pub host_op_m_r_low: [f32; 4],
+    pub host_op_m_dr: [f32; 4],
+    pub host_op_m_theta: [f32; 4],
+    pub host_delta_r_low: [f32; 4],
+    pub host_delta_dr: [f32; 4],
+    pub host_delta_theta: [f32; 4],
+    pub last_dtheta_pre: f32,
+    pub last_g_rad_pre: f32,
     /// Tracker-only passband-normalized 5 Hz DC blockers (`T1`, `ref[dsp.op-m.tracker.t1-dc-blocker]`).
     pub dc_blocker_l: T1DcBlocker,
     pub dc_blocker_r: T1DcBlocker,
@@ -41,6 +59,13 @@ pub struct Stage1PreDynamics {
     pub tracker_r: T1SubHarmonicTracker,
     pub last_tracker_l: [f32; 4],
     pub last_tracker_r: [f32; 4],
+    /// Per-sample Stage I sub-operator tap telemetry for the 256-D feature bus (`Full..Ultra` slots).
+    pub last_op_n_l: f32,
+    pub last_op_n_r: f32,
+    pub last_op_t_l: f32,
+    pub last_op_t_r: f32,
+    pub prev_op_t_l: f32,
+    pub prev_op_t_r: f32,
     /// Op-N[Pre] pre-gain, boost scale, gate threshold/ratio, and sub-harmonic pitch blend (`theta_2..theta_4`).
     pub pre_gain: f32,
     pub boost_gain: f32,
@@ -63,11 +88,16 @@ impl Default for Stage1PreDynamics {
 }
 
 impl Stage1PreDynamics {
+    pub const DEFAULT_DELTA_R_LOW: [f32; 4] = [0.78, 0.82, 0.86, 0.90];
+    pub const DEFAULT_DELTA_THETA: [f32; 4] = [0.18, 0.38, 0.72, 1.15];
+
     pub const fn new() -> Self {
         Self {
             op_t_pre: OpTDelayLine::new(),
             op_m_pre: SymplecticModal4Lane::new(),
             op_m_pre_r: SymplecticModal4Lane::new(),
+            op_m_pre_delta_l: SymplecticModal4Lane::new(),
+            op_m_pre_delta_r: SymplecticModal4Lane::new(),
             base_op_m_r_low: [0.0; 4],
             base_op_m_dr: [0.0; 4],
             base_op_m_theta: [0.0; 4],
@@ -75,6 +105,19 @@ impl Stage1PreDynamics {
             base_op_m_c_im: [0.0; 4],
             op_m_c_re: [1.0, 0.0, 0.0, 0.0],
             op_m_c_im: [0.0; 4],
+            base_delta_r_low: Self::DEFAULT_DELTA_R_LOW,
+            base_delta_dr: [0.0; 4],
+            base_delta_theta: Self::DEFAULT_DELTA_THETA,
+            base_delta_c_re: [1.0, 0.0, 0.0, 0.0],
+            base_delta_c_im: [0.0; 4],
+            host_op_m_r_low: [0.0; 4],
+            host_op_m_dr: [0.0; 4],
+            host_op_m_theta: [0.0; 4],
+            host_delta_r_low: Self::DEFAULT_DELTA_R_LOW,
+            host_delta_dr: [0.0; 4],
+            host_delta_theta: Self::DEFAULT_DELTA_THETA,
+            last_dtheta_pre: 0.0,
+            last_g_rad_pre: 0.5,
             dc_blocker_l: T1DcBlocker::new_48khz(),
             dc_blocker_r: T1DcBlocker::new_48khz(),
             hilbert_l: HilbertH1Lattice6Sec::new_48khz(),
@@ -83,6 +126,12 @@ impl Stage1PreDynamics {
             tracker_r: T1SubHarmonicTracker::new(),
             last_tracker_l: [0.0; 4],
             last_tracker_r: [0.0; 4],
+            last_op_n_l: 0.0,
+            last_op_n_r: 0.0,
+            last_op_t_l: 0.0,
+            last_op_t_r: 0.0,
+            prev_op_t_l: 0.0,
+            prev_op_t_r: 0.0,
             pre_gain: 1.0,
             boost_gain: 1.0,
             gate_threshold: 0.001,
@@ -97,6 +146,8 @@ impl Stage1PreDynamics {
         self.op_t_pre.reset();
         self.op_m_pre.reset();
         self.op_m_pre_r.reset();
+        self.op_m_pre_delta_l.reset();
+        self.op_m_pre_delta_r.reset();
         self.dc_blocker_l.reset();
         self.dc_blocker_r.reset();
         self.hilbert_l.reset();
@@ -105,9 +156,16 @@ impl Stage1PreDynamics {
         self.tracker_r.reset();
         self.last_tracker_l = [0.0; 4];
         self.last_tracker_r = [0.0; 4];
+        self.last_op_n_l = 0.0;
+        self.last_op_n_r = 0.0;
+        self.last_op_t_l = 0.0;
+        self.last_op_t_r = 0.0;
+        self.prev_op_t_l = 0.0;
+        self.prev_op_t_r = 0.0;
     }
 
-    /// Loads immutable 48 kHz Stage I Op-M, pre-gain, and topology parameters from `Arena 0 [256..360]`.
+    /// Loads immutable 48 kHz Stage I Op-M, pre-gain, and topology parameters from `Arena 0 [256..360]`
+    /// and Full+ parallel delta Op-M poles from `Arena 1 [10,752..10,832]`.
     pub fn load_from_arena(&mut self, arena: &[u8]) {
         if arena.len() < 360 {
             return;
@@ -141,6 +199,9 @@ impl Stage1PreDynamics {
         }
         self.op_m_c_re = self.base_op_m_c_re;
         self.op_m_c_im = self.base_op_m_c_im;
+        self.host_op_m_r_low = self.base_op_m_r_low;
+        self.host_op_m_dr = self.base_op_m_dr;
+        self.host_op_m_theta = self.base_op_m_theta;
 
         let pg = read_f32_le(arena, 352);
         if pg.is_finite() && pg > 1e-6 {
@@ -150,6 +211,37 @@ impl Stage1PreDynamics {
         if (1..=3).contains(&mode_word) {
             self.topology_mode = (mode_word as u8) & 0x03;
         }
+
+        let mut has_delta_poles = false;
+        if arena.len() >= 10_832 {
+            for lane in 0..4 {
+                let r_low = read_f32_le(arena, 10_752 + lane * 4);
+                let dr = read_f32_le(arena, 10_768 + lane * 4);
+                let theta = read_f32_le(arena, 10_784 + lane * 4);
+                let c_re = read_f32_le(arena, 10_800 + lane * 4);
+                let c_im = read_f32_le(arena, 10_816 + lane * 4);
+                if r_low.abs() > 1e-12 || dr.abs() > 1e-12 || theta.abs() > 1e-12 {
+                    has_delta_poles = true;
+                }
+                self.base_delta_r_low[lane] = r_low;
+                self.base_delta_dr[lane] = dr;
+                self.base_delta_theta[lane] = theta;
+                self.base_delta_c_re[lane] = c_re;
+                self.base_delta_c_im[lane] = c_im;
+            }
+        }
+        if !has_delta_poles {
+            self.base_delta_r_low = Self::DEFAULT_DELTA_R_LOW;
+            self.base_delta_dr = [0.0; 4];
+            self.base_delta_theta = Self::DEFAULT_DELTA_THETA;
+            self.base_delta_c_re = [1.0, 0.0, 0.0, 0.0];
+            self.base_delta_c_im = [0.0; 4];
+        }
+        self.host_delta_r_low = self.base_delta_r_low;
+        self.host_delta_dr = self.base_delta_dr;
+        self.host_delta_theta = self.base_delta_theta;
+        self.last_dtheta_pre = 0.0;
+        self.last_g_rad_pre = 0.5;
     }
 
     /// Reconfigures Stage I Op-T delay, Op-M poles, T1 DC blockers, and H1 Hilbert lattices for `zoh`.
@@ -170,19 +262,84 @@ impl Stage1PreDynamics {
         let _ = self.hilbert_l.retune_sample_rate(fs_eff);
         let _ = self.hilbert_r.retune_sample_rate(fs_eff);
 
+        self.last_dtheta_pre = 0.0;
+        self.last_g_rad_pre = 0.5;
         for lane in 0..4 {
             let r_low = self.base_op_m_r_low[lane];
             let dr = self.base_op_m_dr[lane];
             let theta = self.base_op_m_theta[lane];
             if r_low.abs() > 1e-12 || dr.abs() > 1e-12 || theta.abs() > 1e-12 {
                 let (rl_h, dr_h, th_h, _) = zoh.rescale_op_m_channel(r_low, dr, theta, 1.0);
+                self.host_op_m_r_low[lane] = rl_h;
+                self.host_op_m_dr[lane] = dr_h;
+                self.host_op_m_theta[lane] = th_h;
                 let r_eff = (rl_h + 0.5 * dr_h).clamp(0.0, 0.9995);
                 self.op_m_pre.set_pole(lane, r_eff, th_h);
                 self.op_m_pre_r.set_pole(lane, r_eff, th_h);
+            } else {
+                self.host_op_m_r_low[lane] = 0.0;
+                self.host_op_m_dr[lane] = 0.0;
+                self.host_op_m_theta[lane] = 0.0;
             }
+
+            let d_rl = self.base_delta_r_low[lane];
+            let d_dr = self.base_delta_dr[lane];
+            let d_th = self.base_delta_theta[lane];
+            let (d_rl_h, d_dr_h, d_th_h, _) = zoh.rescale_op_m_channel(d_rl, d_dr, d_th, 1.0);
+            self.host_delta_r_low[lane] = d_rl_h;
+            self.host_delta_dr[lane] = d_dr_h;
+            self.host_delta_theta[lane] = d_th_h;
+            let d_r_eff = (d_rl_h + 0.5 * d_dr_h).clamp(0.0, 0.9995);
+            self.op_m_pre_delta_l.set_pole(lane, d_r_eff, d_th_h);
+            self.op_m_pre_delta_r.set_pole(lane, d_r_eff, d_th_h);
         }
         self.op_m_c_re = self.base_op_m_c_re;
         self.op_m_c_im = self.base_op_m_c_im;
+    }
+
+    /// Retunes Stage I Op-M[Pre] (and Full+ delta Op-M when `retune_delta` is true) at the 3 kHz control rate (`0 FSQRT/FDIV/libm`).
+    #[inline]
+    pub fn retune_op_m_pre_3khz(&mut self, dtheta_pre: f32, g_rad_pre: f32, retune_delta: bool) {
+        let g_clamped = g_rad_pre.clamp(0.0, 1.0);
+        if (dtheta_pre - self.last_dtheta_pre).abs() <= 1e-9
+            && (g_clamped - self.last_g_rad_pre).abs() <= 1e-9
+        {
+            return;
+        }
+        self.last_dtheta_pre = dtheta_pre;
+        self.last_g_rad_pre = g_clamped;
+
+        for lane in 0..4 {
+            let rl_h = self.host_op_m_r_low[lane];
+            let dr_h = self.host_op_m_dr[lane];
+            let th_h = self.host_op_m_theta[lane];
+            if rl_h.abs() > 1e-12 || dr_h.abs() > 1e-12 || th_h.abs() > 1e-12 {
+                let r_eff = (rl_h + g_clamped * dr_h).clamp(0.0, 0.9995);
+                let theta_eff = (th_h + dtheta_pre).clamp(0.0, core::f32::consts::PI - 1e-4);
+                self.op_m_pre.set_pole(lane, r_eff, theta_eff);
+                self.op_m_pre_r.set_pole(lane, r_eff, theta_eff);
+            }
+            if retune_delta {
+                let d_rl_h = self.host_delta_r_low[lane];
+                let d_dr_h = self.host_delta_dr[lane];
+                let d_th_h = self.host_delta_theta[lane];
+                if d_rl_h.abs() > 1e-12 || d_dr_h.abs() > 1e-12 || d_th_h.abs() > 1e-12 {
+                    let r_d = (d_rl_h + g_clamped * d_dr_h).clamp(0.0, 0.9995);
+                    let th_d = (d_th_h + dtheta_pre).clamp(0.0, core::f32::consts::PI - 1e-4);
+                    self.op_m_pre_delta_l.set_pole(lane, r_d, th_d);
+                    self.op_m_pre_delta_r.set_pole(lane, r_d, th_d);
+                }
+            }
+        }
+    }
+
+    /// Steps the Full+ parallel 4-pole Stage I modal delta bank (`REQ-5.6`: zero mutation of `Lite` state).
+    #[inline(always)]
+    pub fn step_delta_branch(&mut self, in_l: f32, in_r: f32) {
+        for lane in 0..4 {
+            let _ = self.op_m_pre_delta_l.step_lane(lane, in_l);
+            let _ = self.op_m_pre_delta_r.step_lane(lane, in_r);
+        }
     }
 
     #[inline(always)]
@@ -267,30 +424,43 @@ impl Stage1PreDynamics {
     /// Direct callers must hold a [`crate::FtzDazGuard`] for the enclosing batch.
     #[inline(always)]
     pub fn step(&mut self, x: f32) -> f32 {
+        self.prev_op_t_l = self.last_op_t_l;
         match self.topology_mode & 0x03 {
             0 => {
                 // N -> M -> T
                 let s_n = self.step_op_n(x);
                 let s_m = self.step_op_m(s_n);
-                self.step_op_t(s_m)
+                let s_t = self.step_op_t(s_m);
+                self.last_op_n_l = s_n;
+                self.last_op_t_l = s_t;
+                s_t
             }
             1 => {
                 // M -> N -> T
                 let s_m = self.step_op_m(x);
                 let s_n = self.step_op_n(s_m);
-                self.step_op_t(s_n)
+                let s_t = self.step_op_t(s_n);
+                self.last_op_n_l = s_n;
+                self.last_op_t_l = s_t;
+                s_t
             }
             2 => {
                 // T -> N -> M
                 let s_t = self.step_op_t(x);
                 let s_n = self.step_op_n(s_t);
-                self.step_op_m(s_n)
+                let s_m = self.step_op_m(s_n);
+                self.last_op_t_l = s_t;
+                self.last_op_n_l = s_n;
+                s_m
             }
             _ => {
                 // T -> M -> N
                 let s_t = self.step_op_t(x);
                 let s_m = self.step_op_m(s_t);
-                self.step_op_n(s_m)
+                let s_n = self.step_op_n(s_m);
+                self.last_op_t_l = s_t;
+                self.last_op_n_l = s_n;
+                s_n
             }
         }
     }
@@ -300,30 +470,52 @@ impl Stage1PreDynamics {
     #[cfg_attr(feature = "hotpath", hotpath::measure)]
     #[inline(always)]
     pub fn step_stereo(&mut self, in_l: f32, in_r: f32) -> (f32, f32) {
+        self.prev_op_t_l = self.last_op_t_l;
+        self.prev_op_t_r = self.last_op_t_r;
         match self.topology_mode & 0x03 {
             0 => {
                 // N -> M -> T
                 let (n_l, n_r) = (self.step_op_n(in_l), self.step_op_n(in_r));
                 let (m_l, m_r) = self.step_op_m_stereo(n_l, n_r);
-                self.step_op_t_stereo(m_l, m_r)
+                let (t_l, t_r) = self.step_op_t_stereo(m_l, m_r);
+                self.last_op_n_l = n_l;
+                self.last_op_n_r = n_r;
+                self.last_op_t_l = t_l;
+                self.last_op_t_r = t_r;
+                (t_l, t_r)
             }
             1 => {
                 // M -> N -> T
                 let (m_l, m_r) = self.step_op_m_stereo(in_l, in_r);
                 let (n_l, n_r) = (self.step_op_n(m_l), self.step_op_n(m_r));
-                self.step_op_t_stereo(n_l, n_r)
+                let (t_l, t_r) = self.step_op_t_stereo(n_l, n_r);
+                self.last_op_n_l = n_l;
+                self.last_op_n_r = n_r;
+                self.last_op_t_l = t_l;
+                self.last_op_t_r = t_r;
+                (t_l, t_r)
             }
             2 => {
                 // T -> N -> M
                 let (t_l, t_r) = self.step_op_t_stereo(in_l, in_r);
                 let (n_l, n_r) = (self.step_op_n(t_l), self.step_op_n(t_r));
-                self.step_op_m_stereo(n_l, n_r)
+                let (m_l, m_r) = self.step_op_m_stereo(n_l, n_r);
+                self.last_op_t_l = t_l;
+                self.last_op_t_r = t_r;
+                self.last_op_n_l = n_l;
+                self.last_op_n_r = n_r;
+                (m_l, m_r)
             }
             _ => {
                 // T -> M -> N
                 let (t_l, t_r) = self.step_op_t_stereo(in_l, in_r);
                 let (m_l, m_r) = self.step_op_m_stereo(t_l, t_r);
-                (self.step_op_n(m_l), self.step_op_n(m_r))
+                let (n_l, n_r) = (self.step_op_n(m_l), self.step_op_n(m_r));
+                self.last_op_t_l = t_l;
+                self.last_op_t_r = t_r;
+                self.last_op_n_l = n_l;
+                self.last_op_n_r = n_r;
+                (n_l, n_r)
             }
         }
     }

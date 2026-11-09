@@ -572,31 +572,8 @@ mod tests {
         {
             use crate::provenance::RustCryptoProvider;
             use crate::provenance::sha256::encode_hex;
-            use crate::schema::{
-                CreatorSignature, ModelSignatures, StemProvenance, StemRegistryEntry,
-                TensorSliceEntry,
-            };
+            use crate::schema::{CreatorSignature, ModelSignatures};
 
-            let dummy_slice = TensorSliceEntry {
-                arena: 3,
-                dtype: String::from("f64"),
-                packing: None,
-                feature_dim: None,
-                packed_len: None,
-                shape: None,
-                byte_offset: 0,
-                byte_length: 64,
-            };
-            h1.stems_registry = Some(alloc::vec![StemRegistryEntry {
-                stem_id: String::from("stem0"),
-                controls_meta: BTreeMap::new(),
-                provenance: StemProvenance::default(),
-                stem_arena4_crc32c: 0,
-                extracted_physics: None,
-                g_audio_uplo_u_f64: dummy_slice.clone(),
-                c_audio_tier_f64: dummy_slice,
-                user_metadata: BTreeMap::from([(String::from("tag"), serde_json::json!("val"))]),
-            }]);
             let imm_sha = compute_immutable_header_sha256(&h1).unwrap();
             let arena = [0x42u8; 64];
             let arena_sha = sha256_digest(&arena);

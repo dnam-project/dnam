@@ -1,12 +1,17 @@
-//! Dual-Mechanism Buyer Watermarking (`Test 8H`) & Prefix-Composable `4 × 56-D = 224-D` Gauge-Invariant Structural Hash.
+//! 3-Layer Buyer Watermarking (`Test 8H`: Layer 1 Coupled Bilinear Gauge, Layer 2 Pole-Angle Phase Coding,
+//! Layer 3 Two-Seed Arcsine Tardos) & Prefix-Composable `4 × 56-D = 224-D` Gauge-Invariant Structural Hash.
 
-use alloc::vec::Vec;
+use crate::schema::{DnamError, cold_sqrt_f64};
 
-use crate::schema::DnamError;
-
-use super::TARDOS_CASCADE_WEIGHTS;
-use super::chacha20::chacha20_block_64b;
 use super::sha256::sha256_digest;
+
+pub mod tardos;
+pub use tardos::{
+    TARDOS_CASCADE_RANGES, TardosCodebook7680, apply_cascade_head_gauge,
+    apply_tardos_watermark_7680, apply_tardos_watermark_7680_envelopes,
+    compute_emr_masked_tardos_envelopes, generate_tardos_code_7680, generate_tardos_codebook_7680,
+    is_role_a_cascade_index, role_b_head_slot_for_index, score_tardos_watermark_7680,
+};
 
 #[inline]
 pub(crate) fn read_f32_le(arena: &[u8], byte_offset: usize) -> f32 {
@@ -19,7 +24,7 @@ pub(crate) fn read_f32_le(arena: &[u8], byte_offset: usize) -> f32 {
 }
 
 #[inline]
-fn write_f32_le(arena: &mut [u8], byte_offset: usize, val: f32) {
+pub(crate) fn write_f32_le(arena: &mut [u8], byte_offset: usize, val: f32) {
     let b = val.to_le_bytes();
     arena[byte_offset..byte_offset + 4].copy_from_slice(&b);
 }
@@ -292,92 +297,35 @@ pub fn apply_isometric_gauge_watermark(
 
 pub use super::fingerprint::{extract_structural_hash_224d, structural_cosine_similarity};
 
-/// Visits the byte offsets of all Stage II commuted nonlinear cascade projection weights (`stage2_cascade_w`)
-/// across `arena_len`:
-/// - `Arena 0` (`Lite`, `10,752 B`): `768` weights (`0..768`) at `1,024..4,096`
-/// - `Arena 1` (`Full`, `22,336 B`): `+1,536` weights (`768..2,304`) at `11,264..17,408`
-/// - `Arena 2` (`Pro`, `36,224 B`): `+2,304` weights (`2,304..4,608`) at `22,336..31,552`
-/// - `Arena 3` (`Ultra`, `64,000 B`): `+3,072` weights (`4,608..7,680`) at `36,224..48,512`
-fn for_each_conv_weight_offset_up_to<F: FnMut(usize, usize)>(arena_len: usize, mut f: F) -> usize {
-    let max_tiers = max_tiers_for_arena_len(arena_len);
-    let mut idx = 0_usize;
-    if max_tiers >= 1 {
-        // Arena 0 (Lite): stage2_cascade_w [3, 16, 4, 4] = 768 f32 words starting at 1024
-        let base = 1_024_usize;
-        for w in 0..768 {
-            f(idx, base + w * 4);
-            idx += 1;
-        }
-    }
-    if max_tiers >= 2 {
-        // Arena 1 (Full Delta): stage2_cascade_w_delta [3, 16, 8, 4] = 1536 f32 words starting at 11264
-        let base = 11_264_usize;
-        for w in 0..1536 {
-            f(idx, base + w * 4);
-            idx += 1;
-        }
-    }
-    if max_tiers >= 3 {
-        // Arena 2 (Pro Delta): stage2_cascade_w_delta [3, 16, 12, 4] = 2304 f32 words starting at 22336
-        let base = 22_336_usize;
-        for w in 0..2304 {
-            f(idx, base + w * 4);
-            idx += 1;
-        }
-    }
-    if max_tiers >= 4 {
-        // Arena 3 (Ultra Delta): stage2_cascade_w_delta [3, 16, 16, 4] = 3072 f32 words starting at 36224
-        let base = 36_224_usize;
-        for w in 0..3072 {
-            f(idx, base + w * 4);
-            idx += 1;
-        }
-    }
-    idx
+/// Maximum Layer 2 pole-angle phase perturbation (`0.05 deg = 8.726646e-4 rad`, `0.00 dB` magnitude change).
+pub const PHASE_CODING_MAX_RAD: f32 = 8.726_646e-4;
+
+#[inline]
+fn derive_phase_coding_tier_digest(buyer_seed: &[u8; 32], tier: u8) -> [u8; 32] {
+    let mut msg = [0u8; 17 + 32 + 1];
+    msg[0..17].copy_from_slice(b"DNAM-WM-PHASE-V1:");
+    msg[17..49].copy_from_slice(buyer_seed);
+    msg[49] = tier;
+    sha256_digest(&msg)
 }
 
-/// Deterministically generates a 7,680-chip Tardos binary spread-spectrum watermark code
-/// $\mathbf{c}^{(\text{buyer})} \in \{-1.0, +1.0\}^{7680}$ from `(marketplace_secret, model_id, license_id)`.
-pub fn generate_tardos_code_7680(
-    marketplace_secret: &[u8; 32],
-    model_id: &str,
-    license_id: &str,
-) -> [f32; TARDOS_CASCADE_WEIGHTS] {
-    let mut seed_input = Vec::with_capacity(64 + model_id.len() + license_id.len());
-    seed_input.extend_from_slice(b"DNAM-TARDOS-V1:");
-    seed_input.extend_from_slice(marketplace_secret);
-    seed_input.extend_from_slice(model_id.as_bytes());
-    seed_input.push(b':');
-    seed_input.extend_from_slice(license_id.as_bytes());
-    let buyer_seed = sha256_digest(&seed_input);
-    let nonce = [0u8; 12];
-
-    let mut code = [1.0_f32; TARDOS_CASCADE_WEIGHTS];
-    let mut bit_idx = 0_usize;
-    let mut blk_counter = 0_u32;
-
-    while bit_idx < TARDOS_CASCADE_WEIGHTS {
-        let stream = chacha20_block_64b(&buyer_seed, &nonce, blk_counter);
-        blk_counter += 1;
-        for &byte in &stream {
-            for b in 0..8 {
-                if bit_idx < TARDOS_CASCADE_WEIGHTS {
-                    code[bit_idx] = if ((byte >> b) & 1) == 1 { 1.0 } else { -1.0 };
-                    bit_idx += 1;
-                }
-            }
-        }
-    }
-    code
+#[inline]
+fn phase_chip_from_digest(digest: &[u8; 32], chip_idx: usize) -> f32 {
+    let byte = digest[(chip_idx / 8) & 31];
+    let bit = (byte >> (chip_idx & 7)) & 1;
+    if bit == 1 { 1.0_f32 } else { -1.0_f32 }
 }
 
-/// Embeds **Mechanism B (Prefix-Composable Spread-Spectrum Tardos Watermark)** into `Arena 0..3`
-/// (`768`, `2,304`, `4,608`, or `7,680` weights depending on container tier):
-/// $$W_{\text{conv},i}^{(\text{buyer})} = W_{\text{conv},i}^{(\text{master})} + \epsilon \, c_i^{(\text{buyer})}$$
-pub fn apply_tardos_watermark_7680(
+/// Applies **Layer 2 (Kautz & Inter-Stage Pole-Angle Phase Coding)** in-place on `Arena 0..3`
+/// using domain tag `"DNAM-WM-PHASE-V1"` (`delta_rad <= PHASE_CODING_MAX_RAD = 8.726646e-4 rad` = `0.05 deg`):
+/// - Perturbs each tier's Stage III Kautz modal pole angles $\theta_m$ (`STAGE3_KAUTZ_BASES`, `+32..+48` in each `128 B` block)
+///   by $\pm\Delta\theta$ (`0.00 dB` pole-radius change).
+/// - Perturbs active Stage II lifted inter-stage resonator pole angles (`theta_mid_1` at `4,180` when `r_mid_1 > 0.0`,
+///   and `theta_mid_2` at `4,212` when `r_mid_2 > 0.0`) by $\pm\Delta\theta$.
+pub fn apply_phase_coding_watermark(
     arena: &mut [u8],
-    code: &[f32],
-    epsilon: f32,
+    buyer_seed: &[u8; 32],
+    delta_rad: f32,
 ) -> Result<(), DnamError> {
     let max_tiers = max_tiers_for_arena_len(arena.len());
     if max_tiers == 0 {
@@ -386,32 +334,57 @@ pub fn apply_tardos_watermark_7680(
             actual: arena.len(),
         });
     }
-    let needed_chips = match max_tiers {
-        1 => 768,
-        2 => 2304,
-        3 => 4608,
-        _ => TARDOS_CASCADE_WEIGHTS,
-    };
-    if code.len() < needed_chips {
-        return Err(DnamError::BufferTooSmall {
-            expected: needed_chips,
-            actual: code.len(),
-        });
+    let step_rad = delta_rad.clamp(0.0, PHASE_CODING_MAX_RAD);
+
+    for tier in 0..max_tiers {
+        let digest = derive_phase_coding_tier_digest(buyer_seed, tier as u8);
+        let blocks = STAGE3_KAUTZ_BLOCKS_PER_TIER[tier];
+        for blk in 0..blocks {
+            let base = kautz_soa_byte_offset(tier, blk);
+            for lane in 0..4 {
+                let theta_off = base + (8 + lane) * 4;
+                let theta = read_f32_le(arena, theta_off);
+                if (1e-3..=core::f32::consts::PI - 1e-3).contains(&theta) {
+                    let chip_idx = blk * 4 + lane;
+                    let chip = phase_chip_from_digest(&digest, chip_idx);
+                    let perturbed =
+                        (theta + step_rad * chip).clamp(1e-4, core::f32::consts::PI - 1e-4);
+                    write_f32_le(arena, theta_off, perturbed);
+                }
+            }
+        }
+        if tier == 0 {
+            let r_mid_1 = read_f32_le(arena, 4_176);
+            let th1 = read_f32_le(arena, 4_180);
+            if r_mid_1 > 0.0 && (1e-3..=core::f32::consts::PI - 1e-3).contains(&th1) {
+                let chip = phase_chip_from_digest(&digest, 16);
+                write_f32_le(
+                    arena,
+                    4_180,
+                    (th1 + step_rad * chip).clamp(1e-4, core::f32::consts::PI - 1e-4),
+                );
+            }
+            let r_mid_2 = read_f32_le(arena, 4_208);
+            let th2 = read_f32_le(arena, 4_212);
+            if r_mid_2 > 0.0 && (1e-3..=core::f32::consts::PI - 1e-3).contains(&th2) {
+                let chip = phase_chip_from_digest(&digest, 17);
+                write_f32_le(
+                    arena,
+                    4_212,
+                    (th2 + step_rad * chip).clamp(1e-4, core::f32::consts::PI - 1e-4),
+                );
+            }
+        }
     }
-    for_each_conv_weight_offset_up_to(arena.len(), |idx, byte_off| {
-        let w = read_f32_le(arena, byte_off);
-        write_f32_le(arena, byte_off, w + epsilon * code[idx]);
-    });
     Ok(())
 }
 
-/// Computes the Tardos matched-filter Z-score ($\sigma$) of a suspect `Arena 0..3` (including
-/// tier-stripped containers down to `10,752 B` `Lite`) against `master_arena` and a candidate buyer's `code`:
-/// $$Z = \frac{1}{\sqrt{N_{\text{prefix}}}} \sum_{i=0}^{N_{\text{prefix}}-1} c_i^{(\text{buyer})} \operatorname{sign}\!\big(W_{\text{conv},i}^{(\text{suspect})} - W_{\text{conv},i}^{(\text{master})}\big)$$
-pub fn score_tardos_watermark_7680(
+/// Computes the Layer 2 pole-angle phase-coding Z-score ($\sigma$) of a suspect `Arena 0..3`
+/// against `master_arena` and a candidate `buyer_seed` (`"DNAM-WM-PHASE-V1"`).
+pub fn score_phase_coding_arena(
     master_arena: &[u8],
     suspect_arena: &[u8],
-    code: &[f32],
+    buyer_seed: &[u8; 32],
 ) -> Result<f64, DnamError> {
     let shared_len = master_arena.len().min(suspect_arena.len());
     let max_tiers = max_tiers_for_arena_len(shared_len);
@@ -421,48 +394,139 @@ pub fn score_tardos_watermark_7680(
             actual: shared_len,
         });
     }
-    let needed_chips = match max_tiers {
-        1 => 768,
-        2 => 2304,
-        3 => 4608,
-        _ => TARDOS_CASCADE_WEIGHTS,
-    };
-    if code.len() < needed_chips {
+    let mut corr = 0.0_f64;
+    let mut active = 0.0_f64;
+
+    for tier in 0..max_tiers {
+        let digest = derive_phase_coding_tier_digest(buyer_seed, tier as u8);
+        let blocks = STAGE3_KAUTZ_BLOCKS_PER_TIER[tier];
+        for blk in 0..blocks {
+            let base = kautz_soa_byte_offset(tier, blk);
+            for lane in 0..4 {
+                let theta_off = base + (8 + lane) * 4;
+                let theta_m = read_f32_le(master_arena, theta_off);
+                if !(1e-3..=core::f32::consts::PI - 1e-3).contains(&theta_m) {
+                    continue;
+                }
+                let chip_idx = blk * 4 + lane;
+                let chip = phase_chip_from_digest(&digest, chip_idx) as f64;
+                let diff = (read_f32_le(suspect_arena, theta_off) - theta_m) as f64;
+                let y = if diff > 1e-6 {
+                    1.0
+                } else if diff < -1e-6 {
+                    -1.0
+                } else {
+                    0.0
+                };
+                corr += chip * y;
+                active += y * y;
+            }
+        }
+        if tier == 0 {
+            for (r_off, th_off, chip_idx) in
+                [(4_176_usize, 4_180_usize, 16_usize), (4_208, 4_212, 17)]
+            {
+                let theta_m = read_f32_le(master_arena, th_off);
+                if read_f32_le(master_arena, r_off) > 0.0
+                    && (1e-3..=core::f32::consts::PI - 1e-3).contains(&theta_m)
+                {
+                    let chip = phase_chip_from_digest(&digest, chip_idx) as f64;
+                    let diff = (read_f32_le(suspect_arena, th_off) - theta_m) as f64;
+                    let y = if diff > 1e-6 {
+                        1.0
+                    } else if diff < -1e-6 {
+                        -1.0
+                    } else {
+                        0.0
+                    };
+                    corr += chip * y;
+                    active += y * y;
+                }
+            }
+        }
+    }
+    Ok(corr / cold_sqrt_f64(active.max(1.0)))
+}
+
+/// Computes the black-box Stage C pole-angle phase correlation Z-score $Z_{\text{phase},j}$
+/// from extracted/identified complex pole angles (`master_pole_angles` vs `suspect_pole_angles`)
+/// against a candidate `buyer_seed` (`"DNAM-WM-PHASE-V1"`).
+pub fn score_phase_coding_blackbox(
+    master_pole_angles: &[f32],
+    suspect_pole_angles: &[f32],
+    buyer_seed: &[u8; 32],
+) -> Result<f64, DnamError> {
+    let n = master_pole_angles.len().min(suspect_pole_angles.len());
+    if n < 4 {
         return Err(DnamError::BufferTooSmall {
-            expected: needed_chips,
-            actual: code.len(),
+            expected: 4,
+            actual: n,
         });
     }
+    let tier_counts = [4_usize, 4, 8, 16];
     let mut corr = 0.0_f64;
-    let count = for_each_conv_weight_offset_up_to(shared_len, |idx, byte_off| {
-        let w_m = read_f32_le(master_arena, byte_off);
-        let w_s = read_f32_le(suspect_arena, byte_off);
-        let diff = w_s - w_m;
-        let sign = if diff > 0.0 {
-            1.0_f64
-        } else if diff < 0.0 {
-            -1.0_f64
-        } else {
-            0.0_f64
-        };
-        corr += (code[idx] as f64) * sign;
-    });
-    Ok(corr / crate::schema::cold_sqrt_f64(count as f64))
+    let mut active = 0.0_f64;
+    let mut global_idx = 0_usize;
+
+    for (tier, &cnt) in tier_counts.iter().enumerate() {
+        let digest = derive_phase_coding_tier_digest(buyer_seed, tier as u8);
+        for c in 0..cnt {
+            if global_idx >= n {
+                break;
+            }
+            let chip = phase_chip_from_digest(&digest, c) as f64;
+            let diff = (suspect_pole_angles[global_idx] - master_pole_angles[global_idx]) as f64;
+            let y = if diff > 1e-6 {
+                1.0
+            } else if diff < -1e-6 {
+                -1.0
+            } else {
+                0.0
+            };
+            corr += chip * y;
+            active += y * y;
+            global_idx += 1;
+        }
+    }
+    if n > 32 {
+        let digest0 = derive_phase_coding_tier_digest(buyer_seed, 0);
+        for extra in 0..(n - 32).min(2) {
+            let idx = 32 + extra;
+            let chip = phase_chip_from_digest(&digest0, 16 + extra) as f64;
+            let diff = (suspect_pole_angles[idx] - master_pole_angles[idx]) as f64;
+            let y = if diff > 1e-6 {
+                1.0
+            } else if diff < -1e-6 {
+                -1.0
+            } else {
+                0.0
+            };
+            corr += chip * y;
+            active += y * y;
+        }
+    }
+    Ok(corr / cold_sqrt_f64(active.max(1.0)))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::provenance::KAUTZ_TOTAL_CHANNELS;
+    use crate::provenance::security::extract_stage3_tier_fingerprint_component;
     use proptest::prelude::*;
 
     #[test]
-    fn test_tardos_4buyer_collusion_and_short_buffer_errors() {
+    fn test_tardos_4buyer_collusion_role_a_exclusion_and_phase_coding() {
         let mut short = [0u8; 1024];
         assert!(apply_isometric_gauge_watermark(&mut short, &[1.0; 48], &[[0.0; 4]; 4]).is_err());
         assert!(extract_structural_hash_224d(&short).is_err());
         assert!(apply_tardos_watermark_7680(&mut short, &[1.0; 7680], 1e-4).is_err());
         assert!(score_tardos_watermark_7680(&short, &short, &[1.0; 7680]).is_err());
+        assert!(
+            apply_phase_coding_watermark(&mut short, &[0x11; 32], PHASE_CODING_MAX_RAD).is_err()
+        );
+        assert!(score_phase_coding_arena(&short, &short, &[0x11; 32]).is_err());
+        assert!(score_phase_coding_blackbox(&[0.1; 2], &[0.1; 2], &[0x11; 32]).is_err());
 
         let mut valid_lite = [0u8; 10_752];
         assert!(
@@ -484,6 +548,18 @@ mod tests {
         let c4 = generate_tardos_code_7680(&mp_secret, "mdl-1", "buyer-4");
         let c_innocent = generate_tardos_code_7680(&mp_secret, "mdl-1", "buyer-innocent");
 
+        // Verify all 64 Role A indices have chips[i] == 0.0 and accusation_weights[i] == 0.0:
+        for &(start, end, _) in &TARDOS_CASCADE_RANGES {
+            for idx in start..start + 16 {
+                assert_eq!(c1.chips[idx], 0.0);
+                assert_eq!(c1.accusation_weights[idx], 0.0);
+            }
+            for idx in start + 16..end {
+                assert!(c1.chips[idx] == 1.0 || c1.chips[idx] == -1.0);
+                assert_eq!(c1.chips[idx].signum(), c1.accusation_weights[idx].signum());
+            }
+        }
+
         let mut b1 = master.clone();
         let mut b2 = master.clone();
         let mut b3 = master.clone();
@@ -493,23 +569,175 @@ mod tests {
         apply_tardos_watermark_7680(&mut b3, &c3, 2e-4).unwrap();
         apply_tardos_watermark_7680(&mut b4, &c4, 2e-4).unwrap();
 
-        let mut pirated = master.clone();
+        // Verify Role A bytes in b1 are 100% identical to master:
+        for &(_, _, byte_base) in &TARDOS_CASCADE_RANGES {
+            assert_eq!(
+                b1[byte_base..byte_base + 64],
+                master[byte_base..byte_base + 64]
+            );
+        }
+
+        // 1. 4-buyer linear averaging collusion:
+        let mut pirated_avg = master.clone();
+        // 2. 4-buyer nonlinear majority-vote / interleaving collusion:
+        let mut pirated_maj = master.clone();
         for i in 0..16_000 {
             let off = i * 4;
-            let avg = 0.25
-                * (read_f32_le(&b1, off)
-                    + read_f32_le(&b2, off)
-                    + read_f32_le(&b3, off)
-                    + read_f32_le(&b4, off));
-            write_f32_le(&mut pirated, off, avg);
+            let (v1, v2, v3, v4) = (
+                read_f32_le(&b1, off),
+                read_f32_le(&b2, off),
+                read_f32_le(&b3, off),
+                read_f32_le(&b4, off),
+            );
+            let avg = 0.25 * (v1 + v2 + v3 + v4);
+            write_f32_le(&mut pirated_avg, off, avg);
+
+            let vm = read_f32_le(&master, off);
+            let votes = [v1 - vm, v2 - vm, v3 - vm, v4 - vm]
+                .iter()
+                .fold(0_i32, |acc, &d| {
+                    acc + if d > 1e-7 {
+                        1
+                    } else if d < -1e-7 {
+                        -1
+                    } else {
+                        0
+                    }
+                });
+            let maj = if votes > 0 {
+                v1.max(v2).max(v3).max(v4)
+            } else if votes < 0 {
+                v1.min(v2).min(v3).min(v4)
+            } else {
+                [v1, v2, v3, v4][i & 3]
+            };
+            write_f32_le(&mut pirated_maj, off, maj);
         }
 
         for code in [&c1, &c2, &c3, &c4] {
-            let z = score_tardos_watermark_7680(&master, &pirated, code).unwrap();
-            assert!(z > 20.0, "Colluder Z-score too low: {z:.2}");
+            let z_avg = score_tardos_watermark_7680(&master, &pirated_avg, code).unwrap();
+            assert!(
+                z_avg > 12.0,
+                "Linear-avg colluder Z-score too low: {z_avg:.2}"
+            );
+            let z_maj = score_tardos_watermark_7680(&master, &pirated_maj, code).unwrap();
+            assert!(
+                z_maj > 10.0,
+                "Majority-vote colluder Z-score too low: {z_maj:.2}"
+            );
         }
-        let z_innocent = score_tardos_watermark_7680(&master, &pirated, &c_innocent).unwrap();
+        let z_innocent = score_tardos_watermark_7680(&master, &pirated_avg, &c_innocent).unwrap();
         assert!(z_innocent.abs() < 4.5);
+
+        // 3. Verify Layer 2 Phase Coding & 1e-2 rad fingerprint quantization invariance:
+        for tier in 0..4 {
+            for blk in 0..STAGE3_KAUTZ_BLOCKS_PER_TIER[tier] {
+                let base = kautz_soa_byte_offset(tier, blk);
+                for lane in 0..4 {
+                    write_f32_le(
+                        &mut master,
+                        base + (8 + lane) * 4,
+                        0.15 + 0.05 * (lane as f32),
+                    );
+                }
+            }
+        }
+        write_f32_le(&mut master, 4_176, 0.85);
+        write_f32_le(&mut master, 4_180, 0.35);
+        write_f32_le(&mut master, 4_208, 0.85);
+        write_f32_le(&mut master, 4_212, 0.65);
+
+        let hash_pre_phase = extract_structural_hash_224d(&master).unwrap();
+        let fp_pre_phase = extract_stage3_tier_fingerprint_component(
+            &master[4_288..4_416],
+            &master[4_416..4_544],
+            4,
+        )
+        .unwrap();
+
+        let mut phase_arena = master.clone();
+        let buyer_phase_seed = [0x3C_u8; 32];
+        apply_phase_coding_watermark(&mut phase_arena, &buyer_phase_seed, PHASE_CODING_MAX_RAD)
+            .unwrap();
+
+        let hash_post_phase = extract_structural_hash_224d(&phase_arena).unwrap();
+        let fp_post_phase = extract_stage3_tier_fingerprint_component(
+            &phase_arena[4_288..4_416],
+            &phase_arena[4_416..4_544],
+            4,
+        )
+        .unwrap();
+        assert_eq!(fp_pre_phase, fp_post_phase);
+        assert!((1.0 - structural_cosine_similarity(&hash_pre_phase, &hash_post_phase)) < 1e-12);
+
+        let z_phase = score_phase_coding_arena(&master, &phase_arena, &buyer_phase_seed).unwrap();
+        assert!(z_phase > 5.0);
+        let z_phase_wrong = score_phase_coding_arena(&master, &phase_arena, &[0x99; 32]).unwrap();
+        assert!(z_phase_wrong.abs() < 3.5);
+
+        // Extract all 34 pole angles (32 Kautz + 2 Stage II inter-stage) and verify black-box Z-score:
+        let mut master_angles_34 = alloc::vec::Vec::with_capacity(34);
+        let mut suspect_angles_34 = alloc::vec::Vec::with_capacity(34);
+        for tier in 0..4 {
+            for blk in 0..STAGE3_KAUTZ_BLOCKS_PER_TIER[tier] {
+                let base = kautz_soa_byte_offset(tier, blk);
+                for lane in 0..4 {
+                    master_angles_34.push(read_f32_le(&master, base + (8 + lane) * 4));
+                    suspect_angles_34.push(read_f32_le(&phase_arena, base + (8 + lane) * 4));
+                }
+            }
+        }
+        master_angles_34.push(read_f32_le(&master, 4_180));
+        master_angles_34.push(read_f32_le(&master, 4_212));
+        suspect_angles_34.push(read_f32_le(&phase_arena, 4_180));
+        suspect_angles_34.push(read_f32_le(&phase_arena, 4_212));
+        let z_bb_34 =
+            score_phase_coding_blackbox(&master_angles_34, &suspect_angles_34, &buyer_phase_seed)
+                .unwrap();
+        assert!((z_bb_34 - z_phase).abs() < 1e-9);
+
+        // Verify inactive/zero Kautz blocks (theta == 0.0) are not clamped into false +1e-4 chips:
+        let mut sparse_master = alloc::vec![0u8; 64_000];
+        for lane in 0..4 {
+            write_f32_le(
+                &mut sparse_master,
+                4_416 + (8 + lane) * 4,
+                0.20 + 0.05 * (lane as f32),
+            );
+        }
+        let mut sparse_suspect = sparse_master.clone();
+        apply_phase_coding_watermark(&mut sparse_suspect, &buyer_phase_seed, PHASE_CODING_MAX_RAD)
+            .unwrap();
+        let z_sparse =
+            score_phase_coding_arena(&sparse_master, &sparse_suspect, &buyer_phase_seed).unwrap();
+        assert!((z_sparse - 2.0).abs() < 1e-6);
+
+        // 4. Verify EMR-masked Tardos envelopes and apply_cascade_head_gauge composition:
+        let gram_diag = [4.0_f64; 256];
+        let envs = compute_emr_masked_tardos_envelopes(&gram_diag, [2e-4, 2e-4]);
+        assert_eq!(envs[0], 0.0); // Role A
+        assert!((envs[16] - 1e-4).abs() < 1e-7); // Role B: 2e-4 / sqrt(4) = 1e-4
+        let mut env_arena = master.clone();
+        apply_tardos_watermark_7680_envelopes(&mut env_arena, &c1, &envs).unwrap();
+        assert!(score_tardos_watermark_7680(&master, &env_arena, &c1).unwrap() > 20.0);
+
+        let mut gauge_arena = alloc::vec![0u8; 64_000];
+        for off in (4_928..7_488).step_by(4) {
+            write_f32_le(&mut gauge_arena, off, 0.5);
+        }
+        for off in (49_408..51_456).step_by(4) {
+            write_f32_le(&mut gauge_arena, off, 0.25);
+        }
+        let delta_dyadic = [[1.0_f32; 4]; 32]; // m: 1.0 -> 2.0
+        apply_cascade_head_gauge(&mut gauge_arena, 0, &delta_dyadic).unwrap();
+        assert_eq!(read_f32_le(&gauge_arena, 4_928), 0.25);
+        assert_eq!(read_f32_le(&gauge_arena, 49_408), 0.125);
+        // Compose a second dyadic gauge (m: 2.0 -> 4.0) on already non-zero Role B deltas:
+        let delta_second = [[2.0_f32; 4]; 32];
+        apply_cascade_head_gauge(&mut gauge_arena, 0, &delta_second).unwrap();
+        assert_eq!(read_f32_le(&gauge_arena, 4_928), 0.125);
+        assert_eq!(read_f32_le(&gauge_arena, 49_408), 0.0625);
+        assert!(apply_cascade_head_gauge(&mut gauge_arena, 0, &[[-4.0_f32; 4]; 32]).is_err());
     }
 
     proptest! {

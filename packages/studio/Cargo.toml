@@ -34,6 +34,7 @@ desktop = [
 
 [dependencies]
 dnam-engine.workspace = true
+dnam-trainer.workspace = true
 serde = { workspace = true, features = ["std", "derive"] }
 serde_json = { workspace = true, features = ["std"] }
 toml.workspace = true

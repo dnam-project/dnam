@@ -1,22 +1,25 @@
-//! `.dnam-ckpt` v2.0 Bundle Framing, `DCA1` Signature & Zero-Copy Runtime Export
+#![forbid(unsafe_code)]
+//! `.dnam-ckpt` v2.0 Bundle Framing, `DCA1` Signature, and Zero-Copy Runtime Export
 //! (`ref[container.ckpt.bundle-framing]`, `ref[container.ckpt.dca1-signature]`,
 //! `ref[container.ckpt.export-template]`, `ref[container.ckpt.declarative-no-pickle]`,
 //! `ref[container.ckpt.uplo-u]`).
 
-use alloc::string::ToString;
-use alloc::vec;
-use alloc::vec::Vec;
-
-use super::layout::{
-    DMUE_FOOTER_SIZE, V2_HEADER_OFFSET, V2_PREAMBLE_SIZE, align64_u64, append_dmue_mutable_suffix,
-    build_dmu1_mutable_frame, encode_domain_field, parse_and_validate_dmu1_frame,
-    validate_v2_open_dnam_layout,
+use dnam_engine::Tier;
+use dnam_engine::container::{
+    ARENA_OFFSET_ULTRA_END, DMUE_FOOTER_SIZE, DNAM_MAGIC, V2_HEADER_OFFSET, V2_PREAMBLE_SIZE,
+    align64_u64, append_dmue_mutable_suffix, build_dmu1_mutable_frame, build_dnam_container,
+    encode_domain_field, parse_and_validate_dmu1_frame, validate_v2_open_dnam_layout,
 };
-use crate::provenance::sha256_digest;
-use crate::schema::{DnamError, SchemaOptionExt, reject_if};
+use dnam_engine::provenance::{OpenArenaCryptoProvider, sha256_digest};
+use dnam_engine::schema::{DnamError, SchemaOptionExt, reject_if};
+
+pub use super::view::{
+    DnamCkptView, build_dnam_ckpt_container, is_valid_arena4_stem_slice_len, resolve_ckpt_stems_end,
+};
 
 /// Computes the per-tier SHA-256 checkpoint prefix commitments under `"DNCK-CHECKPOINT-PREFIX-V1"`
 /// (`ref[container.ckpt.dca1-signature]`).
+#[must_use]
 pub fn compute_dnck_bundle_prefixes(
     preamble: &[u8],
     directory: &[u8],
@@ -48,6 +51,7 @@ pub fn compute_dnck_bundle_prefixes(
 }
 
 /// Builds the `"DNCK-CHECKPOINT-MANIFEST-V1"` signing message for `DCA1` (`ref[container.ckpt.dca1-signature]`).
+#[must_use]
 pub fn build_dnck_writer_manifest_message(
     writer_pubkey: &[u8; 32],
     checkpoint_header_sha256: &[u8; 32],
@@ -335,15 +339,10 @@ pub fn build_v2_dnck_checkpoint(
 /// `.dnam` runtime container (`ref[container.ckpt.export-template]`, `ref[container.ckpt.declarative-no-pickle]`).
 pub fn export_runtime_dnam_from_ckpt(data: &[u8]) -> Result<Vec<u8>, DnamError> {
     if data.len() >= 64 && &data[0..4] == b"DNCK" && data[16..64].iter().any(|&b| b != 0) {
-        use crate::container::{ARENA_OFFSET_ULTRA_END, DnamContainerView, build_dnam_container};
-        use crate::provenance::OpenArenaCryptoProvider;
-
-        let view = DnamContainerView::from_bytes(data, &OpenArenaCryptoProvider)?;
-        let mut header = view.header.clone();
+        let view = DnamCkptView::from_bytes(data, &OpenArenaCryptoProvider)?;
+        let mut header = view.header.base.clone();
         header.version = "2.0.0".to_string();
         header.container_kind = "dnam".to_string();
-        header.stems_registry = None;
-        header.audit_report = None;
         header.tensor_directory.retain(|_, entry| entry.arena < 4);
         header.metadata.signatures = None;
 
@@ -389,30 +388,27 @@ pub fn export_runtime_dnam_from_ckpt(data: &[u8]) -> Result<Vec<u8>, DnamError> 
         exported_layout.retained_tier != tier,
         "runtime tier mismatch",
     )?;
+    let _ = Tier::from_u8(tier);
+    let _ = DNAM_MAGIC;
     Ok(output)
 }
 
 #[cfg(test)]
 mod spec_tests {
     use super::*;
-    use crate::container::{
+    use crate::ckpt::{
         ARENA4_STEM_BYTES_FULL, ARENA4_STEM_BYTES_LITE, ARENA4_STEM_BYTES_PRO,
-        ARENA4_STEM_BYTES_ULTRA, build_v2_open_dnam_container, pack_uplo_u_f64, unpack_uplo_u_f64,
-        uplo_u_packed_len,
+        ARENA4_STEM_BYTES_ULTRA, pack_uplo_u_f64, unpack_uplo_u_f64, uplo_u_packed_len,
     };
-    use alloc::{format, string::String};
+    use dnam_engine::container::build_v2_open_dnam_container;
 
     /// verify[container.ckpt.bundle-framing]
     /// verify[container.ckpt.dca1-signature]
     /// verify[container.ckpt.export-template]
     /// verify[container.ckpt.declarative-no-pickle]
     /// verify[container.ckpt.uplo-u]
-    /// Verifies `.dnam-ckpt` v2.0 bundle framing, exact `DNCK-CHECKPOINT-PREFIX-V1` SHA-256 test vectors,
-    /// `DCA1` envelope validation, signature-preserving bundle stripping, zero-copy `.dnam` runtime export,
-    /// and `LAPACK uplo='U'` column-major upper-triangular packing.
     #[test]
     fn test_v2_dnck_checkpoint_bundle_framing_dca1_export_and_uplo_u() {
-        // 1. Exact golden vectors from checkpoint wire specification
         let header = br#"{"version":1}"#;
         let bundles_owned: Vec<Vec<u8>> = (0..4u8)
             .map(|tier| {
@@ -520,7 +516,6 @@ mod spec_tests {
         append_dmue_mutable_suffix(&mut ckpt, &ckpt_frame);
         let suffix = ckpt[ends[3] as usize..].to_vec();
 
-        // 2. Validate stripping to each tier 0..=3 and zero-copy runtime .dnam export
         for tier in 0..4usize {
             let mut stripped_ckpt = ckpt[..ends[tier] as usize].to_vec();
             stripped_ckpt.extend_from_slice(&suffix);
@@ -534,15 +529,25 @@ mod spec_tests {
             assert_eq!(exported_dnam, expected_dnam);
         }
 
-        // 3. Verify uplo='U' packing and Nested Principal Submatrix Prefix Theorem across 64/128/192/256
         assert_eq!(ARENA4_STEM_BYTES_LITE, 17_664);
         assert_eq!(ARENA4_STEM_BYTES_FULL, 68_096);
         assert_eq!(ARENA4_STEM_BYTES_PRO, 151_296);
         assert_eq!(ARENA4_STEM_BYTES_ULTRA, 267_264);
-        assert_eq!(uplo_u_packed_len(64), 2_080);
-        assert_eq!(uplo_u_packed_len(128), 8_256);
-        assert_eq!(uplo_u_packed_len(192), 18_528);
-        assert_eq!(uplo_u_packed_len(256), 32_896);
+        assert!(is_valid_arena4_stem_slice_len(
+            ARENA4_STEM_BYTES_ULTRA,
+            3,
+            ARENA4_STEM_BYTES_ULTRA
+        ));
+        assert!(is_valid_arena4_stem_slice_len(
+            3 * ARENA4_STEM_BYTES_ULTRA,
+            3,
+            ARENA4_STEM_BYTES_ULTRA
+        ));
+        assert!(!is_valid_arena4_stem_slice_len(
+            2 * ARENA4_STEM_BYTES_ULTRA,
+            3,
+            ARENA4_STEM_BYTES_ULTRA
+        ));
 
         let n_ultra = 256usize;
         let mut dense = vec![0.0_f64; n_ultra * n_ultra];
@@ -565,5 +570,44 @@ mod spec_tests {
                 }
             }
         }
+
+        // Export runtime .dnam from v1 page-aligned DNCK container
+        let mut ckpt_hdr = crate::ckpt::DnamCkptHeader::default_reference();
+        let arena_ultra = vec![0u8; ARENA_OFFSET_ULTRA_END as usize];
+        let v1_ckpt = crate::ckpt::build_dnam_ckpt_container(
+            &mut ckpt_hdr,
+            &arena_ultra,
+            &arena_ultra,
+            false,
+        )
+        .unwrap();
+        let exported_v1 = export_runtime_dnam_from_ckpt(&v1_ckpt).unwrap();
+        assert_eq!(&exported_v1[0..4], b"DNAM");
+
+        // Error branches in build_v2_dnck_checkpoint
+        assert!(
+            build_v2_dnck_checkpoint(
+                b"",
+                &runtime,
+                &[0u8; 64],
+                &bundle_refs,
+                &[0u8; 32],
+                &[0u8; 64],
+                None
+            )
+            .is_err()
+        );
+        assert!(
+            build_v2_dnck_checkpoint(
+                header,
+                &runtime,
+                &[0u8; 63],
+                &bundle_refs,
+                &[0u8; 32],
+                &[0u8; 64],
+                None
+            )
+            .is_err()
+        );
     }
 }

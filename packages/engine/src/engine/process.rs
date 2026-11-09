@@ -3,6 +3,7 @@
 //! Submodules:
 //! - [`multiport`]: 4-port (`4CM`, `WDW`, `Sidechain`) and 256-D Feature Bus processing loops.
 
+pub mod feature_bus;
 pub mod multiport;
 
 use super::DnamEngine;
@@ -43,7 +44,8 @@ fn read_vec4_le<B: MathBackend>(bytes: &[u8], off: usize) -> B::Vec4 {
 
 impl<'a, B: MathBackend> DnamEngine<'a, B> {
     /// Collapses the `3 kHz` SVD Kronecker Output Head weights (`ref[dsp.head.mid-side-factorization]`)
-    /// and pre-folds `CASCADE_W_BASES` and cross-tier shared feature groups (`g = 8..15`) for `active_tiers`.
+    /// across all `16` `Vec4` feature groups (`g = 0..16`) per tier and folds Role B (`b = 1..K_t-1`)
+    /// of `CASCADE_W_BASES[t]` surjectively onto the `32` `Vec4` slices $(c \in \{0,1\}, g \in 0..16)$.
     #[cfg_attr(feature = "hotpath", hotpath::measure)]
     #[inline]
     pub(crate) fn refresh_collapsed_head_weights(&mut self, active_tiers: usize) {
@@ -66,21 +68,24 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
             B::Vec4::splat(z_u[3]),
         ];
         let one_vec = B::Vec4::splat(1.0);
-        let mut shared_wl = [B::Vec4::zero(); 7];
-        let mut shared_wr = [B::Vec4::zero(); 7];
 
         for t in 0..active_tiers {
             let cw_base = CASCADE_W_BASES[t];
-            let w_c = [
-                read_vec4_le::<B>(arena, cw_base).add(one_vec),
-                read_vec4_le::<B>(arena, cw_base + 16).add(one_vec),
-                read_vec4_le::<B>(arena, cw_base + 32).add(one_vec),
-                read_vec4_le::<B>(arena, cw_base + 48).add(one_vec),
-            ];
+            let k_t = 48 * (t + 1);
+            let mut m_slices = [one_vec; 32];
+            if arena.len() >= cw_base + k_t * 64 {
+                for r in 0..(k_t - 1) {
+                    let blk_off = cw_base + (r + 1) * 64;
+                    for q in 0..4 {
+                        let s = (4 * r + q) & 31;
+                        m_slices[s] = m_slices[s].add(read_vec4_le::<B>(arena, blk_off + q * 16));
+                    }
+                }
+            }
 
             let h_base = HEAD_BASES[t];
             let u_base = 49_408 + t * 2048;
-            for g in 0..15 {
+            for g in 0..16 {
                 let g_off_l = g * 16;
                 let g_off_r = 256 + g * 16;
                 let mut wl = read_vec4_le::<B>(arena, h_base + g_off_l);
@@ -97,21 +102,10 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
                         wr = wr.fma(zu_vecs[k], read_vec4_le::<B>(arena, u_mode_off + g_off_r));
                     }
                 }
-                if g < 8 {
-                    self.collapsed_kautz_wl[t][g] = wl;
-                    self.collapsed_kautz_wr[t][g] = wr;
-                } else if g < 12 {
-                    let scale = w_c[g - 8];
-                    shared_wl[g - 8] = shared_wl[g - 8].fma(wl, scale);
-                    shared_wr[g - 8] = shared_wr[g - 8].fma(wr, scale);
-                } else {
-                    shared_wl[g - 8] = shared_wl[g - 8].add(wl);
-                    shared_wr[g - 8] = shared_wr[g - 8].add(wr);
-                }
+                self.collapsed_head_wl[t][g] = wl.mul(m_slices[g]);
+                self.collapsed_head_wr[t][g] = wr.mul(m_slices[16 + g]);
             }
         }
-        self.collapsed_shared_wl = shared_wl;
-        self.collapsed_shared_wr = shared_wr;
 
         let mut b_head_l = 0.0_f32;
         let mut b_head_r = 0.0_f32;
@@ -133,6 +127,38 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
         self.cached_z_head = z_h;
         self.cached_z_head_ultra = z_u;
         self.cached_head_tiers = active_tiers;
+    }
+
+    /// Executes the decimated `3 kHz` Control Bus tick and modal formant retuning.
+    #[inline]
+    pub(crate) fn step_control_tick_3khz(&mut self, loop_tiers: usize) {
+        let avg_energy = self.ctrl_energy_accum * self.zoh.alpha_ramp_host; // Division-free
+        self.ctrl_sub_counter = 0;
+        self.ctrl_energy_accum = 0.0;
+        let det_env = self.stage_pipeline.stage0.detector_envelopes;
+        let arena = self.arena_storage.as_bytes();
+        let _changed = self
+            .control_bus
+            .tick_3khz_with_detectors(avg_energy, Some(det_env), arena);
+        self.stage_ramp_deltas = crate::control::ControlBus::<B>::compute_micro_ramp_deltas(
+            &self.current_stage_params,
+            &self.control_bus.stage_targets,
+            self.zoh.alpha_ramp_host,
+        );
+        if self.control_bus.tank_mod_dirty {
+            self.apply_tank_modulations();
+            self.control_bus.tank_mod_dirty = false;
+        }
+        let dtheta_tick = self.current_stage_params[9]
+            .clamp(-core::f32::consts::FRAC_PI_4, core::f32::consts::FRAC_PI_4);
+        let g_rad_pre_tick = (0.5 + self.current_stage_params[6]).clamp(0.0, 1.0);
+        let g_kautz_tick = (0.5 + self.control_bus.ctrl_basis_4[2] + self.current_stage_params[10])
+            .clamp(0.0, 1.0);
+        self.stage_pipeline
+            .stage1
+            .retune_op_m_pre_3khz(dtheta_tick, g_rad_pre_tick, true);
+        self.stage_pipeline
+            .retune_kautz_formant_3khz(loop_tiers, dtheta_tick, g_kautz_tick);
     }
 
     /// Applies $3\text{ kHz}$ `ControlBus` state-space modulations (`W_ctrl`) to Stage I and Stage IV.
@@ -195,6 +221,10 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
             (in_l * live_scale, in_r * live_scale)
         };
 
+        let arena_len = self.arena_storage.as_bytes().len();
+        let active_tiers =
+            (self.effective_tier() as usize + 1).min(max_tiers_for_arena_len(arena_len));
+
         // Dual-rate 3 kHz Control Bus stepping: decimate by K_ctrl samples with precomputed alpha_ramp
         let k_ctrl = self.zoh.control_decimation_host;
         self.ctrl_energy_accum = flush_recursive_state_f32(
@@ -202,28 +232,34 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
         );
         self.ctrl_sub_counter += 1;
         if self.ctrl_sub_counter >= k_ctrl {
-            let avg_energy = self.ctrl_energy_accum * self.zoh.alpha_ramp_host; // Division-free
-            self.ctrl_sub_counter = 0;
-            self.ctrl_energy_accum = 0.0;
-            let det_env = self.stage_pipeline.stage0.detector_envelopes;
-            let arena = self.arena_storage.as_bytes();
-            let _changed =
-                self.control_bus
-                    .tick_3khz_with_detectors(avg_energy, Some(det_env), arena);
-            self.stage_ramp_deltas = crate::control::ControlBus::<B>::compute_micro_ramp_deltas(
-                &self.current_stage_params,
-                &self.control_bus.stage_targets,
-                self.zoh.alpha_ramp_host,
-            );
-            if self.control_bus.tank_mod_dirty {
-                self.apply_tank_modulations();
-                self.control_bus.tank_mod_dirty = false;
-            }
+            self.step_control_tick_3khz(active_tiers);
         }
         crate::control::ControlBus::<B>::step_micro_ramp(
             &mut self.current_stage_params,
             &self.stage_ramp_deltas,
         );
+
+        let laws = crate::stages::eval_stage_modulation_laws(
+            &self.current_stage_params,
+            [
+                self.stage_pipeline.stage0.s_matrix[0][0],
+                self.stage_pipeline.stage0.s_matrix[1][1],
+            ],
+            self.zoh.tau_ref_samples_host,
+            256.0,
+            self.stage_pipeline.stage4.delay_lengths[0] as f32,
+            1004.0,
+            self.stage_pipeline.stage4.g_loop,
+            0.5,
+            self.stereo_width,
+        );
+        self.stage_pipeline.stage1.boost_gain = laws[4];
+        self.stage_pipeline.stage1.pitch_blend = self.current_stage_params[3].clamp(-1.0, 1.0);
+        let drive_gain = (laws[5] + 0.25 * self.control_bus.ctrl_basis_4[0]).clamp(0.25, 4.0);
+        let beta_tone = laws[6];
+        let pwr_drive = laws[7];
+        let sag_depth = (laws[8] + 0.1 * self.control_bus.ctrl_basis_4[1]).clamp(0.0, 0.8);
+        let g_fir = laws[11];
 
         // Stage 0: 8-Port Matrix Router
         let (down_l, down_r, clean_sub_l, clean_sub_r) = self
@@ -231,23 +267,31 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
             .stage0
             .route_frame_no_return(eff_in_l, eff_in_r);
 
-        // Stage I: Pre-Dynamics
+        // Stage I: Pre-Dynamics (+ Full+ parallel modal delta bank)
         let (s1_l, s1_r) = self.stage_pipeline.stage1.step_stereo(down_l, down_r);
+        if active_tiers >= 2 {
+            self.stage_pipeline.stage1.step_delta_branch(down_l, down_r);
+        }
+        let send_l = self.stage_pipeline.stage0.s_matrix[0][0] * s1_l
+            + self.stage_pipeline.stage0.s_matrix[0][1] * s1_r;
+        let send_r = self.stage_pipeline.stage0.s_matrix[1][0] * s1_l
+            + self.stage_pipeline.stage0.s_matrix[1][1] * s1_r;
 
-        // Stage II: Commuted Cascade (Tone Basis + Non-linear PolyADAA)
-        let stage_law_5 = (1.0 + 0.25 * self.current_stage_params[5]).clamp(0.25, 4.0);
-        let stage_law_8 = (0.2 + 0.1 * self.current_stage_params[8]).clamp(0.0, 0.8);
-        let drive_gain = (stage_law_5 + 0.25 * self.control_bus.ctrl_basis_4[0]).clamp(0.25, 4.0);
-        let sag_depth = (stage_law_8 + 0.1 * self.control_bus.ctrl_basis_4[1]).clamp(0.0, 0.8);
-        let (basis_l, basis_r) = self
-            .stage_pipeline
-            .stage2
-            .step_frame(s1_l, s1_r, drive_gain, sag_depth);
-        let s2_l = basis_l[0];
-        let s2_r = basis_r[0];
+        // Stage II: Commuted Cascade (L-N-L-N + feedforward tier branches)
+        let s2_out = self.stage_pipeline.stage2.step_frame_with_branches(
+            s1_l,
+            s1_r,
+            drive_gain,
+            sag_depth,
+            beta_tone,
+            pwr_drive,
+            active_tiers,
+        );
+        let s2_l = s2_out.s2_l;
+        let s2_r = s2_out.s2_r;
 
-        // Stage III: Cabinet Modals (Early FIR + Stereo Kautz Modal Bank driven by 16-sample-delayed tap + Clean Sub crossover)
-        let (s3_fir_l, s3_fir_r, s2_delayed_16_l, s2_delayed_16_r) = self
+        // Stage III: Cabinet Modals (64-tap contiguous Early FIR + Stereo Kautz Modal Bank)
+        let (s3_fir_raw_l, s3_fir_raw_r, s2_delayed_16_l, s2_delayed_16_r) = self
             .stage_pipeline
             .stage3
             .step_fir_stereo_lr_taps_with_delayed_tap::<B>(
@@ -259,10 +303,22 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
                 &self.stage_pipeline.fir_taps_l[0],
                 &self.stage_pipeline.fir_taps_r[0],
             );
-
-        let arena_len = self.arena_storage.as_bytes().len();
-        let active_tiers =
-            (self.effective_tier() as usize + 1).min(max_tiers_for_arena_len(arena_len));
+        let (fir_seg_l, fir_seg_r) = self
+            .stage_pipeline
+            .stage3
+            .eval_higher_tier_fir_segments::<B>(
+                &self.stage_pipeline.stage3_r,
+                s3_fir_raw_l,
+                s3_fir_raw_r,
+                clean_sub_l,
+                clean_sub_r,
+                &self.stage_pipeline.fir_taps_l,
+                &self.stage_pipeline.fir_taps_r,
+                active_tiers,
+                g_fir,
+            );
+        let s3_fir_l = fir_seg_l[0];
+        let s3_fir_r = fir_seg_r[0];
 
         if self.cached_head_tiers != active_tiers
             || self.cached_z_head != self.control_bus.z_head
@@ -271,63 +327,79 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
             self.refresh_collapsed_head_weights(active_tiers);
         }
 
-        let mut head_acc_l = B::Vec4::zero();
-        let mut head_acc_r = B::Vec4::zero();
+        const TIER_BLK_BASE: [usize; 4] = [0, 1, 2, 4];
+        let mut kautz_modal_feats = [[0.0_f32; 4]; 8];
         let mut kautz_acc_l = B::Vec4::zero();
         let mut kautz_acc_r = B::Vec4::zero();
         let xl_vec = B::Vec4::splat(s2_delayed_16_l);
         let xr_vec = B::Vec4::splat(s2_delayed_16_r);
         for t in 0..active_tiers {
-            let kwl = &self.collapsed_kautz_wl[t];
-            let kwr = &self.collapsed_kautz_wr[t];
             let tiers_l = &mut self.stage_pipeline.kautz_tiers_l[t];
             let tiers_r = &mut self.stage_pipeline.kautz_tiers_r[t];
             let n_blocks = crate::provenance::STAGE3_KAUTZ_BLOCKS_PER_TIER[t];
+            let blk_base = TIER_BLK_BASE[t];
             for blk in 0..n_blocks {
                 let (vl, vr) = tiers_l[blk].step_4lane_stereo_simd_splatted::<B>(
                     &mut tiers_r[blk],
                     xl_vec,
                     xr_vec,
                 );
+                kautz_modal_feats[blk_base + blk] =
+                    crate::stages::pack_stage3_modal_block_features(&vl.to_array(), &vr.to_array());
                 kautz_acc_l = kautz_acc_l.add(vl);
                 kautz_acc_r = kautz_acc_r.add(vr);
-                head_acc_l = head_acc_l.fma(kwl[blk], vl).fma(kwl[4 + blk], vr);
-                if !mono_only {
-                    head_acc_r = head_acc_r.fma(kwr[blk], vl).fma(kwr[4 + blk], vr);
-                }
             }
         }
         let s3_l = s3_fir_l + 0.125 * kautz_acc_l.horizontal_sum();
         let s3_r = s3_fir_r + 0.125 * kautz_acc_r.horizontal_sum();
 
-        // Stage IV: Unitary Spatial Tank (Givens+Householder + Diffusers + DC Blocker + Ducking)
-        let (tank_l, tank_r) = self.stage_pipeline.stage4.step_stereo(s3_l, s3_r);
+        // Stage IV: Unitary Spatial Tank + Multi-Tier Delay Taps
+        let (tank_l, tank_r, tank_readouts, tank_loops) = self
+            .stage_pipeline
+            .stage4
+            .step_stereo_with_readouts(s3_l, s3_r);
+        let (s4_full_taps, s4_pro_taps, s4_ultra_taps) = self
+            .stage_pipeline
+            .stage4
+            .read_multi_tier_taps(active_tiers, tank_readouts, tank_loops);
 
-        // Multi-Tier 64-D / 256-D Feature Bus & 3 kHz SVD-Collapsed Kronecker Output Head (`ref[dsp.head.mid-side-factorization]`)
-        let shared_phi: [B::Vec4; 7] = [
-            B::Vec4::from_array([basis_l[0], basis_l[1], basis_l[2], basis_l[3]]),
-            B::Vec4::from_array([basis_l[4], basis_l[5], basis_l[6], basis_l[7]]),
-            B::Vec4::from_array([basis_r[0], basis_r[1], basis_r[2], basis_r[3]]),
-            B::Vec4::from_array([basis_r[4], basis_r[5], basis_r[6], basis_r[7]]),
-            B::Vec4::from_array([s1_l, s1_r, s3_fir_l, s3_fir_r]),
-            B::Vec4::from_array([tank_l, tank_r, clean_sub_l, clean_sub_r]),
-            B::Vec4::from_array([s2_l, s2_r, s3_l, s3_r]),
-        ];
-        if mono_only {
-            for (g, &phi_g) in shared_phi.iter().enumerate() {
-                head_acc_l = head_acc_l.fma(self.collapsed_shared_wl[g], phi_g);
-            }
-        } else {
-            for (g, &phi_g) in shared_phi.iter().enumerate() {
-                head_acc_l = head_acc_l.fma(self.collapsed_shared_wl[g], phi_g);
-                head_acc_r = head_acc_r.fma(self.collapsed_shared_wr[g], phi_g);
-            }
-        }
+        let fb_local = feature_bus::pack_tier_feature_bus(
+            &self.stage_pipeline.stage1,
+            &s2_out,
+            &kautz_modal_feats,
+            &fir_seg_l,
+            &fir_seg_r,
+            &tank_readouts,
+            &s4_full_taps,
+            &s4_pro_taps,
+            &s4_ultra_taps,
+            down_l,
+            down_r,
+            clean_sub_l,
+            clean_sub_r,
+            s1_l,
+            s1_r,
+            s1_l,
+            s1_r,
+            send_l,
+            send_r,
+            tank_l,
+            tank_r,
+            active_tiers,
+        );
+
+        let (head_sum_l, head_sum_r) = feature_bus::eval_tier_feature_bus_head_dot::<B>(
+            &fb_local,
+            &self.collapsed_head_wl,
+            &self.collapsed_head_wr,
+            active_tiers,
+            mono_only,
+        );
 
         let [b_head_l, b_head_r] = self.collapsed_b_head;
 
-        let mut wet_l = s3_l + tank_l + head_acc_l.horizontal_sum() + b_head_l;
-        let mut wet_r = s3_r + tank_r + head_acc_r.horizontal_sum() + b_head_r;
+        let mut wet_l = s3_l + tank_l + head_sum_l + b_head_l;
+        let mut wet_r = s3_r + tank_r + head_sum_r + b_head_r;
 
         // Stereo width folding (0.0 = mono, 1.0 = reference stereo, 2.0 = hyper-wide)
         if !mono_only && (self.stereo_width - 1.0).abs() > 1e-6 {

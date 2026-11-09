@@ -1402,6 +1402,7 @@ name = "dnam-js"
 version = "0.1.0"
 dependencies = [
  "dnam-engine",
+ "dnam-trainer",
  "napi",
  "napi-build",
  "napi-derive",
@@ -1418,6 +1419,7 @@ dependencies = [
  "cpal",
  "dialoguer",
  "dnam-engine",
+ "dnam-trainer",
  "ed25519-dalek",
  "ndarray",
  "proptest",

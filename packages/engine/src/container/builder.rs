@@ -11,14 +11,12 @@ use super::preamble::DnamPreamble;
 use super::view::compute_header_crc32c;
 use super::{
     ARENA_FULL_END_CL, ARENA_LITE_END_CL, ARENA_OFFSET_FULL_END, ARENA_OFFSET_LITE_END,
-    ARENA_OFFSET_PRO_END, ARENA_OFFSET_ULTRA_END, ARENA_PRO_END_CL, ARENA_ULTRA_END_CL,
-    ARENA4_STEM_BYTES_PRO, ARENA4_STEM_BYTES_ULTRA, DNAM_MAGIC, DNCK_MAGIC, FLAG_ENCRYPTED_ARENA,
-    FLAG_HAS_CALIB_STATS, FLAG_HAS_CKPT_STEMS, FLAG_HAS_FULL_DELTA, FLAG_HAS_LITE,
-    FLAG_HAS_PRO_DELTA, FLAG_HAS_SIGNATURES, FLAG_HAS_ULTRA_DELTA, FLAG_STEREO_OUT, crc32c_update,
-    verify_ckpt_arena5_calib_stats,
+    ARENA_OFFSET_PRO_END, ARENA_OFFSET_ULTRA_END, ARENA_PRO_END_CL, ARENA_ULTRA_END_CL, DNAM_MAGIC,
+    FLAG_ENCRYPTED_ARENA, FLAG_HAS_FULL_DELTA, FLAG_HAS_LITE, FLAG_HAS_PRO_DELTA,
+    FLAG_HAS_SIGNATURES, FLAG_HAS_ULTRA_DELTA, FLAG_STEREO_OUT, crc32c_update,
 };
 
-/// Builds a complete 4 KB page-aligned `.dnam` or `.dnam-ckpt` container byte vector.
+/// Builds a complete 4 KB page-aligned runtime `.dnam` container byte vector.
 pub fn build_dnam_container(
     header: &mut DnamJsonHeader,
     plaintext_arena_crc_source: &[u8],
@@ -34,30 +32,13 @@ pub fn build_dnam_container(
         });
     }
 
-    let is_ckpt = header.container_kind == "dnam-ckpt";
-    let magic = if is_ckpt { DNCK_MAGIC } else { DNAM_MAGIC };
-    let num_ckpt_stems = header.stems_registry.as_ref().map_or(0, |s| s.len() as u16);
-
-    if !is_ckpt && stored_arena_bytes.len() > ARENA_OFFSET_ULTRA_END as usize {
+    if stored_arena_bytes.len() > ARENA_OFFSET_ULTRA_END as usize {
         return Err(DnamError::SchemaValidationError(
             "runtime .dnam arena cannot exceed ARENA_OFFSET_ULTRA_END (64,000 B)".to_string(),
         ));
     }
 
-    let first_stem_off = if is_ckpt {
-        header.stems_registry.as_ref().and_then(|stems| {
-            stems
-                .iter()
-                .map(|s| s.g_audio_uplo_u_f64.byte_offset as usize)
-                .min()
-                .filter(|&off| off >= ARENA_OFFSET_LITE_END as usize)
-        })
-    } else {
-        None
-    };
-    let weights_capacity = first_stem_off.map_or(stored_arena_bytes.len(), |off| {
-        stored_arena_bytes.len().min(off)
-    });
+    let weights_capacity = stored_arena_bytes.len();
     let weights_end = if weights_capacity >= ARENA_OFFSET_ULTRA_END as usize {
         ARENA_OFFSET_ULTRA_END as usize
     } else if weights_capacity >= ARENA_OFFSET_PRO_END as usize {
@@ -96,30 +77,6 @@ pub fn build_dnam_container(
     header.slimmable_tiers.pro.prefix_crc32c = crc_pro;
     header.slimmable_tiers.ultra.prefix_crc32c = crc_ultra;
 
-    let stems_end = header
-        .stems_registry
-        .as_ref()
-        .and_then(|stems| {
-            stems
-                .iter()
-                .map(|s| (s.c_audio_tier_f64.byte_offset + s.c_audio_tier_f64.byte_length) as usize)
-                .max()
-                .filter(|&end| end >= weights_end)
-        })
-        .unwrap_or_else(|| {
-            let n_stems = num_ckpt_stems as usize;
-            let stride =
-                if stored_arena_bytes.len() >= weights_end + n_stems * ARENA4_STEM_BYTES_ULTRA {
-                    ARENA4_STEM_BYTES_ULTRA
-                } else {
-                    ARENA4_STEM_BYTES_PRO
-                };
-            weights_end + n_stems * stride
-        });
-    let has_calib_stats = is_ckpt && stored_arena_bytes.len() > stems_end;
-    if has_calib_stats {
-        verify_ckpt_arena5_calib_stats(stored_arena_bytes, stems_end)?;
-    }
     if header.metadata.signatures.is_none()
         && (header.version == "1.0.0" || header.version == "1.1.0")
     {
@@ -151,12 +108,6 @@ pub fn build_dnam_container(
     if header.io_config.output_mode != "mono" {
         flags |= FLAG_STEREO_OUT;
     }
-    if num_ckpt_stems > 0 {
-        flags |= FLAG_HAS_CKPT_STEMS;
-    }
-    if has_calib_stats {
-        flags |= FLAG_HAS_CALIB_STATS;
-    }
 
     let mut container = alloc::vec![0u8; tensor_arena_offset + stored_arena_bytes.len()];
     let control_table_off = tensor_arena_offset.saturating_sub(128 * p_ctrls);
@@ -175,7 +126,7 @@ pub fn build_dnam_container(
 
     let version = crate::schema::SchemaVersion::parse(&header.version)?;
     let preamble = DnamPreamble {
-        magic,
+        magic: DNAM_MAGIC,
         version_major: version.major,
         version_minor: version.minor,
         flags,
@@ -192,7 +143,7 @@ pub fn build_dnam_container(
         arena_crc32c_full: crc_full,
         arena_crc32c_pro: crc_pro,
         arena_crc32c_ultra: crc_ultra,
-        num_ckpt_stems,
+        num_ckpt_stems: 0,
         _reserved: 0,
         tail_time_ms: header.io_config.tail_time_ms,
         header_crc32c: 0,

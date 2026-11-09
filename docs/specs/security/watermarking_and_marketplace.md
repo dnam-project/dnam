@@ -27,15 +27,16 @@ Complementing Cryptographic Provenance & Hardware Enclave DRM ([`provenance_and_
 
 ### 1.1 Mechanism A — Reciprocal Scaling Gauge (Ideal Real-Arithmetic Invariance)
 
-1. `r[sec.watermark.reciprocal-gauge]` **Per-Mode `Op-M` Reciprocal Scaling Gauge:** For each shared Stage III Kautz mode $m$ ([`../dsp/op_m_modal_kautz.md` §4.1](../dsp/op_m_modal_kautz.md#41-stage-iii-architecture--tier-allocation)), scale the shared input coefficient and reciprocally compensate **both** Left and Right complex readouts within the mode's owning tier slice (`0.5 <= kappa_buyer <= 2.0`):
+1. `r[sec.watermark.reciprocal-gauge]` **Per-Mode `Op-M` Reciprocal Scaling Gauge & Layer 1 Cascade-Head Gauge (`apply_cascade_head_gauge`):** For each shared Stage III Kautz mode $m$ ([`../dsp/op_m_modal_kautz.md` §4.1](../dsp/op_m_modal_kautz.md#41-stage-iii-architecture--tier-allocation)), scale the shared input coefficient and reciprocally compensate **both** Left and Right complex readouts within the mode's owning tier slice (`0.5 <= kappa_buyer <= 2.0`):
    $$b_{\gamma,m}^{(\text{buyer})} = \eta_m b_{\gamma,m}^{(\text{master})}, \qquad c_{m,a}^{(\text{buyer})} = \frac{c_{m,a}^{(\text{master})}}{\eta_m}, \qquad a \in \lbrace L, R \rbrace$$
-2. `r[sec.watermark.orthogonal-gauge]` **Block-Diagonal SVD Control Subspace Orthogonal Rotation Gauge ($\mathbf{Q}_{\text{buyer}} \in SO(4) \oplus SO(4)$):** Rotates the head-coordinate subspace consistently across the main projections, interaction mixer, and Kronecker output head modes while preserving lower-tier prefixes and Euclidean trust-region norms.
+   In parallel, **Layer 1 Cascade-Head Gauge** (`apply_cascade_head_gauge`) adds $\boldsymbol{\delta}_{c,g}$ to the Role B `Vec4` blocks (`b = 1..K_t-1`) mapped surjectively via $s = 16c + g = (4r + q) \bmod 32$ onto Tier $t$'s `32` `Vec4` head slices and reciprocally scales Tier $t$'s `W_head` slices across all $1 + D_h$ modes (`0..5` + `Ultra` `5..9`) by $\mathbf{m}_{\text{before}} / \mathbf{m}_{\text{after}}$, preserving `0.000000 ULP` dyadic forward invariance.
+2. `r[sec.watermark.orthogonal-gauge]` **Block-Diagonal SVD Control Subspace Orthogonal Rotation Gauge ($\mathbf{Q}_{\text{buyer}} \in SO(4) \oplus SO(4)$) & Layer 2 Pole-Angle Phase Coding (`apply_phase_coding_watermark`):** Rotates the head-coordinate subspace consistently across the main projections, interaction mixer, and Kronecker output head modes while preserving lower-tier prefixes and Euclidean trust-region norms. Complementing Layer 1, **Layer 2 Kautz & Inter-Stage Pole-Angle Phase Coding** (`PHASE_CODING_MAX_RAD = 8.726646e-4`, `apply_phase_coding_watermark`, `score_phase_coding_arena`, `score_phase_coding_blackbox`) injects a buyer-keyed phase perturbation $\lvert\Delta\theta_m\rvert \le 8.726646 \times 10^{-4}\text{ rad}$ ($\le 0.05^\circ$, `0.00 dB` pole-radius change) via `"DNAM-WM-PHASE-V1"` into each tier's active Stage III Kautz pole angles (`STAGE3_KAUTZ_BASES`) and Stage II lifted inter-stage pole angles (`theta_mid_1` at `4,180`, `theta_mid_2` at `4,212`), surviving black-box re-distillation while remaining `100%` invariant under `quantize_pole_angle_1e2` (`10^{-2} rad` grid).
 
-### 1.2 Mechanism B — Coupled Spread-Spectrum Tardos Watermarking
+### 1.2 Mechanism B — Coupled Spread-Spectrum Tardos Watermarking (`Role A = 0` & `EMR` Envelopes)
 
 `r[sec.watermark.tardos-code]`
 
-Embeds a buyer-specific spread-spectrum Tardos codeword over the Stage II commuted cascade weights in each retained tier (`REQ-8.5`):
+Embeds a buyer-specific spread-spectrum Tardos codeword (`TardosCodebook7680`) over the Stage II Role B commuted cascade weights (`b = 1..K_t-1`) in each retained tier (`REQ-8.5`), while strictly locking **Role A (`b = 0`, indices `0..16`, `768..784`, `2304..2320`, `4608..4624`) to `0.0`** so upstream nonlinear trajectories remain unperturbed and deriving per-tier Arcsine bias $p_i \in [\delta, 1 - \delta]$ via `HMAC-SHA256(shared_seed, tier_idx)` weighted by `compute_emr_masked_tardos_envelopes`:
 $$W_{\text{stage},i}^{(\text{buyer})} = W_{\text{stage},i}^{(\text{master})} + \epsilon \sigma_{W,i} c_i^{(\text{buyer})}$$
 
 ### 1.3 License-Scoped Seed Derivation
@@ -99,7 +100,7 @@ For each retained tier (`Lite..Ultra`), form the gauge-invariant Stage III compo
 [b_early_L[0..15], b_early_R[0..15], (r_low, dr, theta, b_gamma*c_re_l, b_gamma*c_im_l, b_gamma*c_re_r, b_gamma*c_im_r) x M_tier]
 ```
 
-Because `b_gamma * c_re` and `b_gamma * c_im` cancel the Mechanism A multiplier $\eta_m$ in exact arithmetic, this vector is invariant under reciprocal gauge watermarking.
+Because `b_gamma * c_re` and `b_gamma * c_im` cancel the Mechanism A multiplier $\eta_m$ in exact arithmetic—and `extract_structural_hash_224d` quantizes each Kautz pole angle $\theta_m$ onto a $10^{-2}\text{ rad}$ grid via `quantize_pole_angle_1e2`—this vector is invariant under both reciprocal gauge watermarking and black-box re-capture solver jitter.
 
 ---
 

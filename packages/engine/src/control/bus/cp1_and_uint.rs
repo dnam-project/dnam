@@ -332,9 +332,9 @@ mod ckpt_and_control_tests {
         vec::Vec,
     };
 
-    // Empirical TORA Control Bus, 3-Phase Clamping, and `.dnam-ckpt` Verification (`Tests 8A, 8B, 8D, 8E, 8G`).
+    // Empirical TORA Control Bus and 3-Phase Clamping Verification (`Tests 8A, 8B, 8D, 8E`).
     //
-    // Canonical Reference: `docs/specs/dsp/parametric_control_bus.md`, `docs/specs/containers/dnam_binary_format.md`,
+    // Canonical Reference: `docs/specs/dsp/parametric_control_bus.md`
     // and `docs/specs/training/control_space_audit.md`.
     //
     // Verifies:
@@ -344,19 +344,13 @@ mod ckpt_and_control_tests {
     //   `tensor_arena_offset - 128 * P`, `update_header_in_place` preservation of `ControlChannelRecord`
     //   bytes, 64-byte $\mathcal{O}(1)$ `LatentAccumulator64B` delta updates across $P = 32$ controls,
     //   and non-stop Phase-1/2/3 clamping (`[CLAMP-RANGE]`, `[CLAMP-SWITCH]`, `[CLAMP-STABILITY]`).
-    // - `Test 8G`: `LAPACK uplo='U'` Nested Principal Submatrix Prefix Theorem across all 4 tiers
-    //   (`Lite = 64`, `Full = 128`, `Pro = 192`, `Ultra = 256`) and `.dnam-ckpt` `Arena 4` / `Arena 5`
-    //   (`DNCA` / `INPC` / `STMC`) container verification (`verify[container.ckpt.uplo-u]`).
 
     use std::collections::BTreeMap;
     use std::f64::consts::TAU;
 
     use crate::FtzDazGuard;
     use crate::container::{
-        ARENA_OFFSET_ULTRA_END, ARENA4_STEM_BYTES_ULTRA, DNCA_MAGIC, DnamContainerView,
-        build_dnam_container, crc32c_compute, pack_uplo_u_f64, unpack_uplo_u_f64,
-        update_header_in_place, uplo_u_packed_len, verify_ckpt_arena5_calib_stats,
-        verify_ckpt_stem_arena4_crc32c,
+        ARENA_OFFSET_ULTRA_END, DnamContainerView, build_dnam_container, update_header_in_place,
     };
     use crate::control::{
         ControlBus, ControlChannelRecord, ControlClampDescriptor, ControlLatentProjection,
@@ -365,10 +359,7 @@ mod ckpt_and_control_tests {
     use crate::math::ScalarBackend;
     use crate::operators::op_t::{OP_T_LITE_RING_CAPACITY, OpTDelayLine};
     use crate::provenance::DefaultCryptoProvider;
-    use crate::schema::{
-        ControlKind, ControlSchemaDef, ControlUiHints, DnamJsonHeader, StemProvenance,
-        StemRegistryEntry, TensorSliceEntry,
-    };
+    use crate::schema::{ControlKind, ControlSchemaDef, ControlUiHints, DnamJsonHeader};
     use proptest::prelude::*;
 
     /// Test 8A & 8B (`verify[dsp.op-t.transition.dual-mode]`, `verify[dsp.ctrl.basis.lobatto]`): Verifies 3-node Lobatto physical delay interpolation accuracy
@@ -576,122 +567,6 @@ mod ckpt_and_control_tests {
         assert_eq!(&container[table_off..table_off + 3 * 128], &table_snapshot);
     }
 
-    /// Test 8G: Verifies the `LAPACK uplo='U'` Nested Principal Submatrix Prefix Theorem across all
-    /// 4 tiers (`Lite = 64`, `Full = 128`, `Pro = 192`, `Ultra = 256`) and verifies `.dnam-ckpt`
-    /// `Arena 4` stem `CRC32C` and `Arena 5` (`DNCA` / `INPC` / `STMC`) binary container framing.
-    #[test]
-    fn test_8g_dnam_ckpt_uplo_u_prefix_theorem_and_arena4_arena5_validation() {
-        assert_eq!(uplo_u_packed_len(64) * 8, 16_640);
-        assert_eq!(uplo_u_packed_len(128) * 8, 66_048);
-        assert_eq!(uplo_u_packed_len(192) * 8, 148_224);
-        assert_eq!(uplo_u_packed_len(256) * 8, 263_168);
-
-        const N_ULTRA: usize = 256;
-        let mut dense_ultra = vec![0.0_f64; N_ULTRA * N_ULTRA];
-        for i in 0..N_ULTRA {
-            for j in i..N_ULTRA {
-                let val = ((i * 31 + j * 17 + 5) as f64) * 0.001;
-                dense_ultra[i * N_ULTRA + j] = val;
-                dense_ultra[j * N_ULTRA + i] = val;
-            }
-        }
-
-        let mut packed_ultra = vec![0.0_f64; uplo_u_packed_len(N_ULTRA)];
-        pack_uplo_u_f64(&dense_ultra, N_ULTRA, &mut packed_ultra);
-
-        for &n_tier in &[64_usize, 128, 192, 256] {
-            let prefix_len = uplo_u_packed_len(n_tier);
-            let mut unpacked = vec![0.0_f64; n_tier * n_tier];
-            unpack_uplo_u_f64(&packed_ultra[..prefix_len], n_tier, &mut unpacked);
-            for r in 0..n_tier {
-                for c in 0..n_tier {
-                    assert_eq!(unpacked[r * n_tier + c], dense_ultra[r * N_ULTRA + c]);
-                }
-            }
-        }
-
-        let stem_bytes = vec![0x42_u8; ARENA4_STEM_BYTES_ULTRA];
-        let stem_crc = crc32c_compute(&stem_bytes);
-        assert!(
-            verify_ckpt_stem_arena4_crc32c(&stem_bytes, 0, ARENA4_STEM_BYTES_ULTRA, stem_crc)
-                .is_ok()
-        );
-        assert!(
-            verify_ckpt_stem_arena4_crc32c(&stem_bytes, 0, ARENA4_STEM_BYTES_ULTRA, stem_crc ^ 1)
-                .is_err()
-        );
-
-        let a5_len = (64 + 128 + 192) as u32;
-        let mut a5 = vec![0u8; a5_len as usize];
-        a5[0..4].copy_from_slice(&DNCA_MAGIC);
-        a5[4..6].copy_from_slice(&1_u16.to_le_bytes());
-        a5[8..10].copy_from_slice(&1_u16.to_le_bytes());
-        a5[10..12].copy_from_slice(&1_u16.to_le_bytes());
-        a5[12..16].copy_from_slice(&a5_len.to_le_bytes());
-
-        let inpc_pos = 64_usize;
-        a5[inpc_pos..inpc_pos + 4].copy_from_slice(b"INPC");
-        a5[inpc_pos + 56..inpc_pos + 60].copy_from_slice(&128_u32.to_le_bytes());
-        let inpc_crc = crc32c_compute(&a5[inpc_pos + 64..inpc_pos + 128]);
-        a5[inpc_pos + 60..inpc_pos + 64].copy_from_slice(&inpc_crc.to_le_bytes());
-
-        let stmc_pos = 192_usize;
-        a5[stmc_pos..stmc_pos + 4].copy_from_slice(b"STMC");
-        a5[stmc_pos + 116..stmc_pos + 120].copy_from_slice(&192_u32.to_le_bytes());
-        let stmc_crc = crc32c_compute(&a5[stmc_pos + 128..stmc_pos + 192]);
-        a5[stmc_pos + 120..stmc_pos + 124].copy_from_slice(&stmc_crc.to_le_bytes());
-
-        let body_crc = crc32c_compute(&a5[64..]);
-        a5[16..20].copy_from_slice(&body_crc.to_le_bytes());
-        assert_eq!(verify_ckpt_arena5_calib_stats(&a5, 0).unwrap(), 384);
-
-        // Also build a complete .dnam-ckpt container with Arena 4 + Arena 5 and load via DnamContainerView
-        let mut ckpt_hdr = DnamJsonHeader::default_reference();
-        ckpt_hdr.container_kind = "dnam-ckpt".to_string();
-        ckpt_hdr.stems_registry = Some(vec![StemRegistryEntry {
-            stem_id: "stem_0".to_string(),
-            controls_meta: BTreeMap::new(),
-            provenance: StemProvenance {
-                input_pcm_sha256:
-                    "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855".to_string(),
-                target_pcm_sha256:
-                    "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855".to_string(),
-                num_frames: 48_000,
-            },
-            stem_arena4_crc32c: stem_crc,
-            user_metadata: BTreeMap::new(),
-            extracted_physics: None,
-            g_audio_uplo_u_f64: TensorSliceEntry {
-                arena: 4,
-                dtype: "f64".to_string(),
-                packing: Some("uplo_upper_col_major_tier_ordered".to_string()),
-                feature_dim: Some(256),
-                packed_len: Some(32_896),
-                shape: Some(vec![32_896]),
-                byte_offset: 64_000,
-                byte_length: 263_168,
-            },
-            c_audio_tier_f64: TensorSliceEntry {
-                arena: 4,
-                dtype: "f64".to_string(),
-                packing: None,
-                feature_dim: None,
-                packed_len: None,
-                shape: Some(vec![2, 256]),
-                byte_offset: 64_000 + 263_168,
-                byte_length: 4_096,
-            },
-        }]);
-        let mut full_ckpt_arena = vec![0u8; 64_000];
-        full_ckpt_arena.extend_from_slice(&stem_bytes);
-        full_ckpt_arena.extend_from_slice(&a5);
-        let ckpt_container =
-            build_dnam_container(&mut ckpt_hdr, &full_ckpt_arena, &full_ckpt_arena, false).unwrap();
-        let crypto = DefaultCryptoProvider::default();
-        let ckpt_view = DnamContainerView::from_bytes(&ckpt_container, &crypto).unwrap();
-        assert_eq!(ckpt_view.header.container_kind, "dnam-ckpt");
-    }
-
     #[test]
     fn test_theorem_3_unlimited_controls_31_band_eq_and_64_rack() {
         use crate::container::compute_header_crc32c;
@@ -763,14 +638,12 @@ mod ckpt_and_control_tests {
         #![proptest_config(ProptestConfig::with_cases(32))]
 
         /// Property test verifying that `ControlChannelRecord` roundtrips bit-identically through
-        /// 128-byte serialization and that `uplo='U'` packing/unpacking is lossless.
+        /// 128-byte serialization.
         #[test]
-        fn prop_control_record_and_uplo_u_roundtrip(
+        fn prop_control_record_roundtrip(
             u0 in -1.0_f32..1.0_f32,
             w0 in -2.0_f32..2.0_f32,
             v0 in -1.0_f32..1.0_f32,
-            diag in 0.1_f64..10.0_f64,
-            off_diag in -2.0_f64..2.0_f64,
         ) {
             let mut rec = ControlChannelRecord::new();
             rec.clamp.anchor_nodes_norm[1] = u0;
@@ -779,13 +652,6 @@ mod ckpt_and_control_tests {
             let bytes = rec.to_bytes();
             let decoded = ControlChannelRecord::from_bytes(&bytes);
             prop_assert_eq!(decoded, rec);
-
-            let dense = [diag, off_diag, off_diag, diag * 1.5];
-            let mut packed = [0.0_f64; 3];
-            pack_uplo_u_f64(&dense, 2, &mut packed);
-            let mut unpacked = [0.0_f64; 4];
-            unpack_uplo_u_f64(&packed, 2, &mut unpacked);
-            prop_assert_eq!(unpacked, dense);
         }
     }
 

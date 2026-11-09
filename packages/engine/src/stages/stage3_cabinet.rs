@@ -187,6 +187,77 @@ impl Stage3CabinetModals {
         )
     }
 
+    /// Evaluates higher-tier (`t = 1..fir_loop_tiers`) 16-tap segments of the contiguous 64-tap
+    /// Stage III Early FIR against delay offsets `16..31` (`Full`), `32..47` (`Pro`), and `48..63` (`Ultra`),
+    /// scaled by `g_fir` (`0 FDIV`, `0 FSQRT`). Must be called immediately after `step_fir_stereo_lr_taps_with_delayed_tap`.
+    #[allow(clippy::too_many_arguments)]
+    #[inline(always)]
+    pub fn eval_higher_tier_fir_segments<B: crate::math::MathBackend>(
+        &self,
+        right: &Self,
+        s3_fir_sub_l: f32,
+        s3_fir_sub_r: f32,
+        clean_sub_l: f32,
+        clean_sub_r: f32,
+        fir_taps_l: &[[f32; 16]; 4],
+        fir_taps_r: &[[f32; 16]; 4],
+        fir_loop_tiers: usize,
+        g_fir: f32,
+    ) -> ([f32; 4], [f32; 4]) {
+        use crate::math::SimdVec4;
+        let mut out_l = [0.0f32; 4];
+        let mut out_r = [0.0f32; 4];
+        if (g_fir - 1.0).abs() <= 1e-9 {
+            out_l[0] = s3_fir_sub_l;
+            out_r[0] = s3_fir_sub_r;
+        } else {
+            out_l[0] = (s3_fir_sub_l - clean_sub_l) * g_fir + clean_sub_l;
+            out_r[0] = (s3_fir_sub_r - clean_sub_r) * g_fir + clean_sub_r;
+        }
+        let latest_l =
+            (self.fir_write_ptr + STAGE3_FIR_HISTORY_CAPACITY - 1) & STAGE3_FIR_HISTORY_MASK;
+        let latest_r =
+            (right.fir_write_ptr + STAGE3_FIR_HISTORY_CAPACITY - 1) & STAGE3_FIR_HISTORY_MASK;
+        let max_t = fir_loop_tiers.min(4);
+        for t in 1..max_t {
+            let base_delay = t * 16;
+            let tap_chunks_l: &[[f32; 4]; 4] = zerocopy::transmute_ref!(&fir_taps_l[t]);
+            let tap_chunks_r: &[[f32; 4]; 4] = zerocopy::transmute_ref!(&fir_taps_r[t]);
+            let mut acc_l = B::Vec4::zero();
+            let mut acc_r = B::Vec4::zero();
+            for blk in 0..4 {
+                let d = base_delay + blk * 4;
+                let hl = B::Vec4::from_array([
+                    self.fir_history
+                        [(latest_l + STAGE3_FIR_HISTORY_CAPACITY - d) & STAGE3_FIR_HISTORY_MASK],
+                    self.fir_history[(latest_l + STAGE3_FIR_HISTORY_CAPACITY - 1 - d)
+                        & STAGE3_FIR_HISTORY_MASK],
+                    self.fir_history[(latest_l + STAGE3_FIR_HISTORY_CAPACITY - 2 - d)
+                        & STAGE3_FIR_HISTORY_MASK],
+                    self.fir_history[(latest_l + STAGE3_FIR_HISTORY_CAPACITY - 3 - d)
+                        & STAGE3_FIR_HISTORY_MASK],
+                ]);
+                let hr = B::Vec4::from_array([
+                    right.fir_history
+                        [(latest_r + STAGE3_FIR_HISTORY_CAPACITY - d) & STAGE3_FIR_HISTORY_MASK],
+                    right.fir_history[(latest_r + STAGE3_FIR_HISTORY_CAPACITY - 1 - d)
+                        & STAGE3_FIR_HISTORY_MASK],
+                    right.fir_history[(latest_r + STAGE3_FIR_HISTORY_CAPACITY - 2 - d)
+                        & STAGE3_FIR_HISTORY_MASK],
+                    right.fir_history[(latest_r + STAGE3_FIR_HISTORY_CAPACITY - 3 - d)
+                        & STAGE3_FIR_HISTORY_MASK],
+                ]);
+                let tl = B::Vec4::load(&tap_chunks_l[blk]);
+                let tr = B::Vec4::load(&tap_chunks_r[blk]);
+                acc_l = acc_l.fma(hl, tl);
+                acc_r = acc_r.fma(hr, tr);
+            }
+            out_l[t] = acc_l.horizontal_sum() * g_fir;
+            out_r[t] = acc_r.horizontal_sum() * g_fir;
+        }
+        (out_l, out_r)
+    }
+
     /// Evaluates Stage III for input `x` and parallel `clean_sub` feed, returning `(stage3_out, x_delayed_16)`
     /// so external Kautz modal tiers can be driven by the 16-sample-delayed onset tap $x[n - 16]$ (`ref[dsp.stage3.cabinet-bank]`).
     /// Direct callers must hold a [`crate::FtzDazGuard`] for the enclosing batch.

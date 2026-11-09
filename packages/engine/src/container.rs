@@ -9,7 +9,6 @@
 //! and [`docs/containers/checkpoint_and_cache_format.md`](../../../docs/containers/checkpoint_and_cache_format.md).
 
 pub mod builder;
-pub mod ckpt;
 pub mod preamble;
 pub mod strip;
 pub mod view;
@@ -21,18 +20,17 @@ pub use wire::{
     DeclaredDelayHistory, StructuredConditionalBound, StructuredConditionalCurve,
     SwitchControlSpec, V2_DIRECTORY_SIZE, V2_HEADER_OFFSET, V2_PREAMBLE_SIZE, V2ContainerLayout,
     align64_u64, append_dmue_mutable_suffix, build_dmu1_mutable_frame,
-    build_dnck_writer_manifest_message, build_v2_dnck_checkpoint, build_v2_open_dnam_container,
-    compute_dnck_bundle_prefixes, compute_v2_open_retained_prefix_sha256,
+    build_v2_open_dnam_container, compute_v2_open_retained_prefix_sha256,
     cp1_contributor_record_bytes, decode_cp1_contributor_stream,
     decode_cp1_contributor_stream_into_slice, decode_cp1_shared_stream_into_slice,
-    encode_domain_field, eval_ui_midpoint_power_skew, export_runtime_dnam_from_ckpt,
-    is_valid_jcs_unicode_text, parse_and_validate_dmu1_frame, parse_canonical_reference_samples,
+    encode_domain_field, eval_ui_midpoint_power_skew, is_valid_jcs_unicode_text,
+    parse_and_validate_dmu1_frame, parse_canonical_reference_samples,
     parse_strict_json_object_bytes, parse_structured_conditional_bounds,
     parse_structured_conditional_curves, project_immutable_header_value,
     resolve_conditional_safe_interval, select_conditional_calibration_curve, serialize_jcs_value,
     strip_v2_open_dnam_container, validate_canonical_jcs_header_bytes, validate_delay_histories,
     validate_dmu1_frame_no_alloc, validate_mutable_json_schema, validate_stage3_tier_slices,
-    validate_v2_dnam_layout_no_alloc, validate_v2_dnck_checkpoint, validate_v2_open_dnam_layout,
+    validate_v2_dnam_layout_no_alloc, validate_v2_open_dnam_layout,
 };
 
 #[cfg(feature = "crypto")]
@@ -42,13 +40,11 @@ pub use crate::provenance::{
     MAX_SEAL_RECIPIENTS, unseal_dnam_container,
 };
 pub use builder::{build_dnam_container, update_header_in_place};
-pub use ckpt::{
-    ARENA5_HEADER_BYTES, DNCA_MAGIC, pack_uplo_u_f64, unpack_uplo_u_f64, uplo_u_packed_len,
-    verify_ckpt_arena5_calib_stats, verify_ckpt_stem_arena4_crc32c,
-};
 pub use preamble::{DnamPreamble, is_v2_wire_directory_container};
 pub use strip::strip_container_to_tier;
-pub use view::{DnamContainerView, compute_header_crc32c};
+pub use view::{
+    DnamContainerView, SharedControlsExtent, compute_header_crc32c, decode_shared_controls_extent,
+};
 pub use zoh::ZohRescaledParams;
 
 /// Magic bytes for a `.dnam` deployment model container (`0x4D414E44` little-endian).
@@ -89,18 +85,6 @@ pub const ARENA_ULTRA_END_CL: u16 = 1_000;
 
 /// Default 4 KB OS virtual-memory page boundary for `tensor_arena_offset` (`0x1000 = 4,096 B`).
 pub const DEFAULT_PAGE_ALIGNED_ARENA_OFFSET: u32 = 4_096;
-
-/// Per-stem `.dnam-ckpt` byte length for `Lite` ($N=64$: `16,640 B` `G_audio` + `1,024 B` `C_audio` = `17,664 B`).
-pub const ARENA4_STEM_BYTES_LITE: usize = 17_664;
-
-/// Per-stem `.dnam-ckpt` byte length for `Full` ($N=128$: `66,048 B` `G_audio` + `2,048 B` `C_audio` = `68,096 B`).
-pub const ARENA4_STEM_BYTES_FULL: usize = 68_096;
-
-/// Per-stem `.dnam-ckpt` byte length for `Pro` ($N=192$: `148,224 B` `G_audio` + `3,072 B` `C_audio` = `151,296 B`).
-pub const ARENA4_STEM_BYTES_PRO: usize = 151_296;
-
-/// Per-stem `.dnam-ckpt` byte length for `Ultra` ($N=256$: `263,168 B` `G_audio` + `4,096 B` `C_audio` = `267,264 B`).
-pub const ARENA4_STEM_BYTES_ULTRA: usize = 267_264;
 
 // ============================================================================
 // Preamble Flag Bits (`flags: u16`)

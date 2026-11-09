@@ -10,11 +10,17 @@ description = "Pure-Rust Analytical Variable-Projection (VarPro) Two-Sweep Syste
 [lints]
 workspace = true
 
+[features]
+default = ["cli", "solver"]
+cli = ["dep:clap", "solver"]
+solver = ["dep:ndarray", "dep:realfft"]
+wasm-solver = ["dep:ndarray", "dep:realfft"]
+
 [dependencies]
-clap.workspace = true
+clap = { workspace = true, optional = true }
 dnam-engine = { workspace = true, features = ["std"] }
-ndarray.workspace = true
-realfft.workspace = true
+ndarray = { workspace = true, optional = true }
+realfft = { workspace = true, optional = true }
 serde = { workspace = true, features = ["std", "derive"] }
 serde_json = { workspace = true, features = ["std"] }
 sha2.workspace = true
@@ -26,6 +32,7 @@ proptest.workspace = true
 [[bin]]
 name = "dnam-train"
 path = "src/bin/dnam_train.rs"
+required-features = ["cli"]
 
 [[bench]]
 name = "bench_trainer"
