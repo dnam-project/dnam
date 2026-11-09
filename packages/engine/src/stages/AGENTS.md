@@ -11,7 +11,7 @@ Implements the 4-stage rig pipeline and matrix routing core of TORA (`#[forbid(u
 
 | Stage / File | Responsibility | Canonical Spec (SSOT) |
 | :--- | :--- | :--- |
-| [`router.rs`](router.rs) | 8-Port Matrix Router, return aligners, and current clean crossover | [`router_and_stages_topology.md`](../../../../docs/specs/dsp/router_and_stages_topology.md) |
+| [`router.rs`](router.rs), [`topology.rs`](topology.rs) ([`router_and_head.rs`](topology/router_and_head.rs), [`zoh_fir_onset.rs`](topology/zoh_fir_onset.rs)) | 8-Port Matrix Router, return aligners, ZOH/FIR onset & clean crossover | [`router_and_stages_topology.md`](../../../../docs/specs/dsp/router_and_stages_topology.md) |
 | [`stage1_pre.rs`](stage1_pre.rs) | Stage I Pre-Dynamics and envelope-governed input conditioning | [`router_and_stages_topology.md`](../../../../docs/specs/dsp/router_and_stages_topology.md) |
 | [`stage2_cascade.rs`](stage2_cascade.rs) | Stage II Commuted 3-stage nonlinear cascade and 4-filter tone basis | [`op_n_commuted_cascade.md`](../../../../docs/specs/dsp/op_n_commuted_cascade.md) |
 | [`stage3_cabinet.rs`](stage3_cabinet.rs) | Stage III early FIR and modal cabinet synthesis | [`op_m_modal_kautz.md`](../../../../docs/specs/dsp/op_m_modal_kautz.md) |

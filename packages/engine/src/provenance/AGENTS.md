@@ -6,7 +6,7 @@ Implements cryptographic provenance, hardware enclave DRM, and forensic watermar
 
 | File | Responsibility | Canonical Spec (SSOT) |
 | :--- | :--- | :--- |
-| [`security.rs`](security.rs) | `DAU1` envelope, prefix commitments, `OemDeviceCertificate`, RFC 9180 HPKE, `DME1`, watermark seeds & `.dnam-prev` containment | [`provenance_and_enclave_drm.md`](../../../../docs/specs/security/provenance_and_enclave_drm.md), [`watermarking_and_marketplace.md`](../../../../docs/specs/security/watermarking_and_marketplace.md) |
+| [`security.rs`](security.rs) ([`prefix_and_dau1.rs`](security/prefix_and_dau1.rs), [`prefix_delegation_crypto.rs`](security/prefix_delegation_crypto.rs), [`oem_and_drm.rs`](security/oem_and_drm.rs), [`watermark_and_preview.rs`](security/watermark_and_preview.rs)) | `DAU1`, prefix commitments, `OemDeviceCertificate`, HPKE, `DME1`, watermark & `.dnam-prev` | [`provenance_and_enclave_drm.md`](../../../../docs/specs/security/provenance_and_enclave_drm.md), [`watermarking_and_marketplace.md`](../../../../docs/specs/security/watermarking_and_marketplace.md) |
 | [`provider.rs`](provider.rs) | `CryptoProvider` trait, `OpenArenaCryptoProvider`, `RustCryptoProvider`, `VerificationStatus` | [`provenance_and_enclave_drm.md`](../../../../docs/specs/security/provenance_and_enclave_drm.md) |
 | [`verify.rs`](verify.rs) | Current header serialization and `verify_container_provenance` | [`provenance_and_enclave_drm.md`](../../../../docs/specs/security/provenance_and_enclave_drm.md) |
 | [`seal.rs`](seal.rs) | `.dnam-seal` (`DNSL`) outer envelope encryption, unsealing, and OEM device certificates | [`provenance_and_enclave_drm.md`](../../../../docs/specs/security/provenance_and_enclave_drm.md) |
