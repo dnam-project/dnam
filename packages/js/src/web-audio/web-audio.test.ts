@@ -18,7 +18,12 @@ import {
 } from "../internal/coerce.js";
 import { initWasm } from "../internal/native/load.js";
 import { readDistWasmBytes } from "../internal/native/napi.js";
-import { getCompiledWasmModule } from "../internal/native/wasm.js";
+import {
+  compileWasmModule,
+  configureWasmMemoryImport,
+  getCompiledWasmModule,
+  instantiateWasmDriver,
+} from "../internal/native/wasm.js";
 import { Model } from "../model/model.js";
 import {
   CMD_BYPASS_CHANGE,
@@ -272,16 +277,163 @@ describe("WebAudio AudioWorklet Bridge (SAB + Atomics & MessagePort)", () => {
     }
   });
 
-  it("supports initWasm({ module | bytes }) and validates input coercion helpers", async () => {
+  it("supports initWasm({ module | bytes | memory | initialPages | maximumPages | shared }) and imported env.memory", async () => {
     // verify[sdk.ts.api.sync-init]
     // verify[sdk.ts.api.literal-unions-and-options]
+    // verify[sdk.ts.engine.zero-copy-and-async]
     const wasmBytes = readDistWasmBytes();
-    const modFromBytes = await initWasm({ bytes: wasmBytes });
+    const modFromBytes = await initWasm({
+      bytes: wasmBytes,
+      initialPages: 64,
+      maximumPages: 2048,
+    });
     expect(modFromBytes).toBeInstanceOf(WebAssembly.Module);
     expect(getCompiledWasmModule()).toBe(modFromBytes);
 
+    // Verify that dnam.wasm is linked with `--import-memory` (`env.memory`)
+    const imports = WebAssembly.Module.imports(modFromBytes);
+    expect(imports).toContainEqual({
+      module: "env",
+      name: "memory",
+      kind: "memory",
+    });
+
     const modFromModule = await initWasm({ module: modFromBytes });
     expect(modFromModule).toBe(modFromBytes);
+
+    // Test shared: true WebAssembly.Memory (`SharedArrayBuffer` linear memory)
+    const customSharedMem = new WebAssembly.Memory({
+      initial: 18,
+      maximum: 1024,
+      shared: true,
+    });
+    const initialByteLength = customSharedMem.buffer.byteLength;
+    const sharedMod = await initWasm({
+      bytes: wasmBytes,
+      memory: customSharedMem,
+      shared: true,
+    });
+    expect(sharedMod).toBeInstanceOf(WebAssembly.Module);
+    expect(getCompiledWasmModule(true)).toBe(sharedMod);
+
+    using sharedModel = Model.reference({ supportsFreeze: true });
+    expect(sharedModel.name.length).toBeGreaterThan(0);
+    using sharedEngine = sharedModel.createEngine({ tier: "ultra", sampleRate: 192_000 });
+    expect(customSharedMem.buffer.byteLength).toBeGreaterThanOrEqual(initialByteLength);
+    expect(customSharedMem.buffer).toBeInstanceOf(SharedArrayBuffer);
+    const inL = new Float32Array(128).fill(0.15);
+    const inR = new Float32Array(128).fill(-0.15);
+    const outL = new Float32Array(128);
+    const outR = new Float32Array(128);
+    sharedEngine.process([inL, inR], { output: [outL, outR] });
+    expect(outL.some((x) => x !== 0)).toBe(true);
+
+    // Also test DnamAudioNode + DnamAudioWorkletProcessor with sharedWasmMemory: true
+    const mockContext = {
+      sampleRate: 48_000,
+      audioWorklet: {
+        async addModule(_url: string | URL) {},
+      },
+    };
+    using sharedNode = await DnamAudioNode.create(mockContext, sharedModel, {
+      sharedWasmMemory: true,
+      initialMemoryPages: 64,
+      maximumMemoryPages: 1024,
+    });
+    expect(sharedNode.wasmMemory).toBeInstanceOf(WebAssembly.Memory);
+    expect(sharedNode.wasmMemory?.buffer).toBeInstanceOf(SharedArrayBuffer);
+
+    const sharedProc = new DnamAudioWorkletProcessor({
+      processorOptions: {
+        wasmModule: sharedMod,
+        containerBytes: sharedModel.toBytes(),
+        ...(sharedNode.wasmMemory ? { wasmMemory: sharedNode.wasmMemory } : {}),
+        sharedWasmMemory: true,
+      },
+    });
+    expect(sharedProc.wasmMemory).toBe(sharedNode.wasmMemory);
+    expect(sharedProc.process([[inL, inR]], [[outL, outR]])).toBe(true);
+
+    // Verify non-WASM byte buffer passthrough in configureWasmMemoryImport
+    expect(configureWasmMemoryImport(new Uint8Array([1, 2, 3, 4]), true)).toEqual(
+      new Uint8Array([1, 2, 3, 4]),
+    );
+
+    // Verify instantiateWasmDriver recovers when passed an unshared module with shared: true
+    const recoveredSharedDriver = instantiateWasmDriver(modFromBytes, { shared: true });
+    expect(recoveredSharedDriver.memory.buffer).toBeInstanceOf(SharedArrayBuffer);
+
+    // Verify custom WebAssembly.Memory without `maximum` and with `maximum > 4096` pages
+    const noMaxDriver = instantiateWasmDriver(modFromBytes, {
+      memory: new WebAssembly.Memory({ initial: 32 }),
+    });
+    expect(noMaxDriver.memory.buffer.byteLength).toBeGreaterThanOrEqual(32 * 65536);
+
+    const highMaxDriver = instantiateWasmDriver(modFromBytes, {
+      initialPages: 64,
+      maximumPages: 8192,
+    });
+    expect(highMaxDriver.memory.buffer.byteLength).toBeGreaterThanOrEqual(64 * 65536);
+
+    // Verify bounded WebAssembly.Memory OOM in dnam_wasm_alloc throws DnamError cleanly without trapping
+    const tinyMem = new WebAssembly.Memory({ initial: 18, maximum: 22 });
+    const tinyDriver = instantiateWasmDriver(modFromBytes, { memory: tinyMem });
+    expect(() => tinyDriver.validateContainer(new Uint8Array(512 * 1024))).toThrow(DnamError);
+    expect(() =>
+      instantiateWasmDriver(modFromBytes, {
+        memory: new WebAssembly.Memory({ initial: 18, maximum: 20 }),
+      }),
+    ).toThrow(DnamError);
+
+    // Verify instantiateWasmDriver recovers when passed a shared module without explicit shared option
+    const autoSharedDriver = instantiateWasmDriver(sharedMod);
+    expect(autoSharedDriver.memory.buffer).toBeInstanceOf(SharedArrayBuffer);
+
+    // Verify compileWasmModule with pre-compiled shared module and mocked fetch URL
+    expect(await compileWasmModule({ module: sharedMod, memory: customSharedMem })).toBe(sharedMod);
+    expect(await compileWasmModule()).toBeInstanceOf(WebAssembly.Module);
+    const g = globalThis as Record<string, unknown>;
+    const prevFetch = g["fetch"];
+    g["fetch"] = async () => ({
+      ok: true,
+      status: 200,
+      arrayBuffer: async () =>
+        wasmBytes.buffer.slice(wasmBytes.byteOffset, wasmBytes.byteOffset + wasmBytes.byteLength),
+    });
+    try {
+      const fetchedMod = await compileWasmModule({ url: "https://example.invalid/dnam.wasm" });
+      expect(fetchedMod).toBeInstanceOf(WebAssembly.Module);
+    } finally {
+      g["fetch"] = prevFetch;
+    }
+
+    // Verify HTTP error handling in compileWasmModule without poisoning cachedWasmBytes
+    g["fetch"] = async () => ({
+      ok: false,
+      status: 404,
+      arrayBuffer: async () => new ArrayBuffer(0),
+    });
+    try {
+      await expect(
+        compileWasmModule({ url: "https://example.invalid/missing.wasm" }),
+      ).rejects.toThrow(DnamError);
+    } finally {
+      g["fetch"] = prevFetch;
+    }
+
+    // Verify graceful fallback when crossOriginIsolated === false
+    const prevCoi = g["crossOriginIsolated"];
+    g["crossOriginIsolated"] = false;
+    try {
+      await initWasm({ bytes: wasmBytes, shared: true });
+      using fallbackModel = Model.reference();
+      expect(fallbackModel.parameters.length).toBeGreaterThan(0);
+    } finally {
+      g["crossOriginIsolated"] = prevCoi;
+    }
+
+    // Restore default unshared WASM driver
+    await initWasm({ bytes: wasmBytes });
 
     expect(coerceTier(0)).toBe("lite");
     expect(coerceTier("ULTRA")).toBe("ultra");

@@ -35,7 +35,7 @@ export {
   isDnamError,
 } from "./errors.js";
 export { initWasm } from "./internal/native/load.js";
-export type { InitWasmOptions } from "./internal/native/wasm.js";
+export type { InitWasmOptions, WasmMemoryOptions } from "./internal/native/wasm.js";
 export type { ModelSource } from "./model/load.js";
 export {
   type BuildModelOptions,

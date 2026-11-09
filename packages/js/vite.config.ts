@@ -1,4 +1,5 @@
 import { resolve } from "node:path";
+import { playwright } from "@vitest/browser-playwright";
 import { defineConfig } from "vitest/config";
 
 export default defineConfig(({ mode }) => {
@@ -25,6 +26,12 @@ export default defineConfig(({ mode }) => {
   }
 
   return {
+    server: {
+      headers: {
+        "Cross-Origin-Opener-Policy": "same-origin",
+        "Cross-Origin-Embedder-Policy": "require-corp",
+      },
+    },
     build: {
       emptyOutDir: false,
       outDir: "dist",
@@ -53,7 +60,30 @@ export default defineConfig(({ mode }) => {
       },
     },
     test: {
-      include: ["src/**/*.test.ts", "tests/integration/**/*.test.ts"],
+      projects: [
+        {
+          extends: true,
+          test: {
+            name: "node",
+            environment: "node",
+            include: ["src/**/*.test.ts", "tests/integration/**/*.test.ts"],
+            exclude: ["src/**/*.browser.test.ts", "tests/**/*.browser.test.ts"],
+          },
+        },
+        {
+          extends: true,
+          test: {
+            name: "chromium",
+            include: ["src/**/*.browser.test.ts", "tests/**/*.browser.test.ts"],
+            browser: {
+              enabled: true,
+              headless: true,
+              provider: playwright(),
+              instances: [{ browser: "chromium" }],
+            },
+          },
+        },
+      ],
       benchmark: {
         include: ["src/**/*.bench.ts", "tests/integration/**/*.bench.ts"],
       },
@@ -69,6 +99,7 @@ export default defineConfig(({ mode }) => {
           "src/internal/native/driver.ts",
           "src/web-audio/protocol.ts",
           "src/**/*.test.ts",
+          "src/**/*.browser.test.ts",
           "src/**/*.bench.ts",
         ],
         thresholds: {

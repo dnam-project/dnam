@@ -81,4 +81,5 @@ export {
   tiers,
   uploUPackedLength,
   type V2OpenLayoutInfo,
+  type WasmMemoryOptions,
 } from "./node.js";

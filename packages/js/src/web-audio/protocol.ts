@@ -16,6 +16,10 @@ export interface DnamWorkletProcessorOptions {
   readonly backend?: string;
   readonly maxSupportedTier?: number;
   readonly sharedBuffer?: SharedArrayBuffer;
+  readonly wasmMemory?: WebAssembly.Memory;
+  readonly initialMemoryPages?: number;
+  readonly maximumMemoryPages?: number;
+  readonly sharedWasmMemory?: boolean;
   readonly telemetryIntervalBlocks?: number;
 }
 

@@ -60,6 +60,7 @@ const BaseWorkletProcessor: {
  */
 export class DnamAudioWorkletProcessor extends BaseWorkletProcessor {
   readonly #engine: NativeEngineHandle;
+  readonly #wasmMemory: WebAssembly.Memory;
   readonly #shared: WorkletSharedState | undefined;
   readonly #telemetryScratch = new Float64Array(TELEMETRY_F64_LEN);
   readonly #silenceScratch = new Float32Array(128);
@@ -78,7 +79,17 @@ export class DnamAudioWorkletProcessor extends BaseWorkletProcessor {
       typeof globalThis !== "undefined" && "sampleRate" in globalThis
         ? Number((globalThis as unknown as { sampleRate: number }).sampleRate)
         : 48_000;
-    const driver = instantiateWasmDriver(procOpts.wasmModule);
+    const driver = instantiateWasmDriver(procOpts.wasmModule, {
+      ...(procOpts.wasmMemory !== undefined ? { memory: procOpts.wasmMemory } : {}),
+      ...(procOpts.initialMemoryPages !== undefined
+        ? { initialPages: procOpts.initialMemoryPages }
+        : {}),
+      ...(procOpts.maximumMemoryPages !== undefined
+        ? { maximumPages: procOpts.maximumMemoryPages }
+        : {}),
+      ...(procOpts.sharedWasmMemory !== undefined ? { shared: procOpts.sharedWasmMemory } : {}),
+    });
+    this.#wasmMemory = driver.memory;
     this.#engine = driver.createEngine({
       containerBytes: procOpts.containerBytes,
       tier: procOpts.tier ?? 1,
@@ -97,6 +108,13 @@ export class DnamAudioWorkletProcessor extends BaseWorkletProcessor {
     this.port.onmessage = (event: { readonly data: WorkletInboundMessage }) => {
       this.#handleMessage(event.data);
     };
+  }
+
+  /**
+   * Linear `WebAssembly.Memory` instance imported into this processor's `WasmDriver`.
+   */
+  get wasmMemory(): WebAssembly.Memory {
+    return this.#wasmMemory;
   }
 
   #handleMessage(msg: WorkletInboundMessage): void {
@@ -205,11 +223,13 @@ export class DnamAudioWorkletProcessor extends BaseWorkletProcessor {
     const frames = outL.length;
     const outR = outBus[1] ?? outL;
     const inBus = inputs[0];
-    const inL = inBus?.[0] ?? this.#silenceScratch.subarray(0, frames);
-    const inR = inBus?.[1] ?? inL;
+    const inCh0 = inBus?.[0];
+    const inCh1 = inBus?.[1];
+    const inL = inCh0 && inCh0.length === frames ? inCh0 : this.#silenceScratch.subarray(0, frames);
+    const inR = inCh1 && inCh1.length === frames ? inCh1 : inL;
 
     if (outBus.length >= 2) {
-      if (inBus && inBus.length >= 2) {
+      if (inCh0 && inCh0.length === frames && inCh1 && inCh1.length === frames) {
         this.#engine.processStereo(inL, inR, outL, outR);
       } else {
         this.#engine.processMonoToStereo(inL, outL, outR);

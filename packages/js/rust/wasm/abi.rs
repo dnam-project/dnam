@@ -677,7 +677,16 @@ pub(crate) fn with_f32_2_in_2_out<R>(
 #[inline]
 pub(crate) fn alloc_bytes(size: usize, _align: usize) -> usize {
     let num_blocks = size.max(1).div_ceil(64);
-    let blocks = vec![CacheLine64::default(); num_blocks].into_boxed_slice();
+    let mut vec = Vec::new();
+    if vec.try_reserve_exact(num_blocks).is_err() {
+        let _ = set_error(format!(
+            "[DNAM-VALIDATION] Out of WebAssembly linear memory allocating {} bytes",
+            num_blocks.saturating_mul(64)
+        ));
+        return 0;
+    }
+    vec.resize(num_blocks, CacheLine64::default());
+    let blocks = vec.into_boxed_slice();
     let base = blocks.as_bytes().as_ptr() as usize;
     ALLOC_TABLE.with(|table| {
         table.borrow_mut().push(WasmAllocSlot { base, blocks });

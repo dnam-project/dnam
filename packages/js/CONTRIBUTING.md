@@ -17,7 +17,7 @@ Consult [`AGENTS.md`](AGENTS.md) for the module-to-spec discovery table:
    - Uses the modern Rust 2024 `foo.rs` + `foo/bar.rs` module layout (zero `mod.rs` files), enforces `#![deny(unsafe_code)]` at the crate root (`rust/lib.rs`, for `#[napi]` proc-macro expansion and Rust 2024 `#[unsafe(no_mangle)]` C-ABI symbol exports), and enforces `#[forbid(unsafe_code)]` on `core`, `error`, and `wasm::abi` (`ref[sdk.ts.runtime.zero-unsafe]`, `ref[repo.code.type-safety-and-imports]`). Never use `unsafe { ... }` blocks, `unsafe impl Send`, or raw pointer slice aliases anywhere in `rust/`; use `&mut [f32]` / `&mut [f64]` N-API slice parameters and owned `Vec<f32>` snapshots for background `AsyncTask` workers.
    - [`rust/core.rs`](rust/core.rs) + `rust/core/{engine,container,control,provenance,operators}.rs` implement the target-agnostic safe Rust core (`#[forbid(unsafe_code)]`).
    - **Host Target (`#[cfg(not(target_arch = "wasm32"))]` in [`rust/napi.rs`](rust/napi.rs)):** Compiles via `napi` (`napi10`) into `dist/dnam.<platform>-<arch>.node` with zero-copy `Float32Array`, `Float64Array`, and `Uint8Array` borrows plus libuv worker-pool `AsyncTask` support (`processAsync`).
-   - **WASM Target (`#[cfg(target_arch = "wasm32")]` in [`rust/wasm.rs`](rust/wasm.rs)):** Compiles with `RUSTFLAGS="-C target-feature=+simd128"` (`--no-default-features`, omitting `testing`) into `dist/dnam.wasm`.
+   - **WASM Target (`#[cfg(target_arch = "wasm32")]` in [`rust/wasm.rs`](rust/wasm.rs)):** Compiles with `RUSTFLAGS="-C target-feature=+simd128 -C link-arg=--import-memory -C link-arg=--export-memory -C link-arg=--max-memory=268435456 -C opt-level=s"` (`--no-default-features`, omitting `testing`) into `dist/dnam.wasm`.
 3. **Feature-Oriented TypeScript 7 & WebAudio `AudioWorklet` SDK (`src/`):**
    - Conditional `exports` in [`package.json`](package.json) route Node.js 26 LTS (`"node"` -> [`src/node.ts`](src/node.ts)) to `NapiDriver` ([`src/internal/native/napi.ts`](src/internal/native/napi.ts), with synchronous WASM fallback) and Browser/Bundler imports (`"browser"` -> [`src/browser.ts`](src/browser.ts)) to `WasmDriver` ([`src/internal/native/wasm.ts`](src/internal/native/wasm.ts)).
    - Feature directories: `src/model/`, `src/checkpoint/`, `src/engine/`, `src/parameters/`, `src/tempo/`, `src/schema/`, `src/provenance/`, `src/dsp/`, `src/web-audio/`, and private `src/internal/`.
@@ -51,9 +51,9 @@ Root [`biome.json`](../../biome.json) and [`tsconfig.json`](tsconfig.json) enfor
 
 ---
 
-## 4. Testing, Coverage (≥ 95%) & Benchmarks (`vitest` v5 + `fast-check`)
+## 4. Testing, Coverage (≥ 95%) & Benchmarks (`vitest` v5 + `@vitest/browser-playwright` + `fast-check`)
 
-Use **`fast-check`** (`fc.assert(fc.property(...))`) wherever possible across all unit and integration test suites (`src/**/*.test.ts` and `tests/**/*.test.ts`) to verify snake_case $\leftrightarrow$ camelCase codec roundtrips, container header/arena integrity, 3-Phase parameter clamping, ZOH sample-rate rescaling, audio block processing stability, provenance signatures, WebAudio shared-ring state transitions, and N-API vs WASM parity over arbitrary generated inputs.
+Use **`fast-check`** (`fc.assert(fc.property(...))`) wherever possible across all Node (`src/**/*.test.ts`, `tests/integration/**/*.test.ts`) and headless Chromium (`src/**/*.browser.test.ts` via `@vitest/browser-playwright` with COOP/COEP `crossOriginIsolated` headers) test suites to verify snake_case $\leftrightarrow$ camelCase codec roundtrips, container header/arena integrity, 3-Phase parameter clamping, ZOH sample-rate rescaling, audio block processing stability, provenance signatures, WebAudio `OfflineAudioContext` + `AudioWorkletNode` shared-ring state transitions, and N-API vs WASM parity over arbitrary generated inputs.
 
 ```bash
 # 1. Run all js quality gates (format-check, lint, typecheck, build, test)

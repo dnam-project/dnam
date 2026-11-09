@@ -67,6 +67,6 @@ export function withDriver<T>(driver: NativeDriver, fn: () => T): T {
  */
 export async function initWasm(options?: InitWasmOptions): Promise<WebAssembly.Module> {
   const mod = await compileWasmModule(options);
-  setActiveDriver(instantiateWasmDriver(mod));
+  setActiveDriver(instantiateWasmDriver(mod, options));
   return mod;
 }

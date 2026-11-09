@@ -94,4 +94,5 @@ export {
   tiers,
   uploUPackedLength,
   type V2OpenLayoutInfo,
+  type WasmMemoryOptions,
 } from "./public-exports.js";

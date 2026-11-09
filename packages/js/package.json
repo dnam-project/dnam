@@ -76,9 +76,11 @@
   "devDependencies": {
     "@fast-check/vitest": "catalog:",
     "@types/node": "catalog:",
+    "@vitest/browser-playwright": "catalog:",
     "@vitest/coverage-v8": "catalog:",
     "binaryen": "catalog:",
     "fast-check": "catalog:",
+    "playwright": "catalog:",
     "typescript": "catalog:",
     "vite": "catalog:",
     "vitest": "catalog:"

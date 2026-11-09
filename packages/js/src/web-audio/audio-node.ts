@@ -20,7 +20,12 @@ import {
   tierFromIndex,
 } from "../internal/coerce.js";
 import { TELEMETRY_F64_LEN } from "../internal/native/driver.js";
-import { compileWasmModule, getCompiledWasmModule } from "../internal/native/wasm.js";
+import {
+  compileWasmModule,
+  createWasmMemory,
+  isSharedWasmMemory,
+  WASM_MIN_INITIAL_PAGES,
+} from "../internal/native/wasm.js";
 import type { Model } from "../model/model.js";
 import { ControlSpace, defaultNumericValue } from "../parameters/clamp.js";
 import type { ParameterBackend } from "../parameters/parameter.js";
@@ -70,8 +75,23 @@ export interface DnamAudioNodeOptions {
   readonly backend?: Backend | string;
   readonly processorUrl?: string | URL;
   readonly wasmModule?: WebAssembly.Module;
+  readonly wasmMemory?: WebAssembly.Memory;
+  readonly initialMemoryPages?: number;
+  readonly maximumMemoryPages?: number;
+  readonly sharedWasmMemory?: boolean;
   readonly useSharedMemory?: boolean;
   readonly telemetryIntervalBlocks?: number;
+}
+
+function resolveDefaultProcessorUrl(): URL {
+  const metaUrl = import.meta.url;
+  if (metaUrl.includes("/src/web-audio/")) {
+    return new URL(/* @vite-ignore */ "../../dist/web-audio-processor.js", metaUrl);
+  }
+  if (metaUrl.includes("/web-audio/")) {
+    return new URL(/* @vite-ignore */ "../web-audio-processor.js", metaUrl);
+  }
+  return new URL(/* @vite-ignore */ "./web-audio-processor.js", metaUrl);
 }
 
 /**
@@ -84,8 +104,7 @@ export async function registerDnamProcessor(
   if (!context.audioWorklet) {
     return;
   }
-  const url =
-    processorUrl ?? new URL(/* @vite-ignore */ "./web-audio-processor.js", import.meta.url);
+  const url = processorUrl ?? resolveDefaultProcessorUrl();
   await context.audioWorklet.addModule(url);
 }
 
@@ -109,6 +128,7 @@ export class DnamAudioNode<TParams extends ParameterValueMap = Record<string, nu
   #model: Model<TParams>;
   readonly #context: AudioContextLike;
   readonly #workletNode: AudioWorkletNode | undefined;
+  readonly #wasmMemory: WebAssembly.Memory | undefined;
   readonly #port: {
     postMessage(msg: WorkletInboundMessage): void;
     onmessage: ((ev: { readonly data: WorkletOutboundMessage }) => void) | null;
@@ -154,6 +174,21 @@ export class DnamAudioNode<TParams extends ParameterValueMap = Record<string, nu
       this.#shared.initDefaults(defaultNumerics, this.#tierIdx, context.sampleRate);
     }
 
+    const wantSharedWasm = (options?.sharedWasmMemory ?? false) && isSharedMemorySupported();
+    if (options?.wasmMemory) {
+      this.#wasmMemory = options.wasmMemory;
+    } else if (wantSharedWasm) {
+      this.#wasmMemory = createWasmMemory({
+        ...(options?.initialMemoryPages !== undefined
+          ? { initialPages: options.initialMemoryPages }
+          : {}),
+        ...(options?.maximumMemoryPages !== undefined
+          ? { maximumPages: options.maximumMemoryPages }
+          : {}),
+        shared: true,
+      });
+    }
+
     this.#telemetryScratch[0] = this.#tierIdx;
     this.#telemetryScratch[1] = 4; // wasm-simd128
     this.#telemetryScratch[2] = context.sampleRate;
@@ -165,6 +200,14 @@ export class DnamAudioNode<TParams extends ParameterValueMap = Record<string, nu
       this.#telemetryScratch[32 + i] = defaultNumerics[i] ?? 0;
     }
 
+    const isCloneableSharedWasmMem =
+      this.#wasmMemory !== undefined && isSharedWasmMemory(this.#wasmMemory);
+    const derivedInitialPages =
+      options?.initialMemoryPages ??
+      (this.#wasmMemory !== undefined
+        ? Math.max(WASM_MIN_INITIAL_PAGES, Math.ceil(this.#wasmMemory.buffer.byteLength / 65536))
+        : undefined);
+
     const processorOptions: DnamWorkletProcessorOptions = {
       wasmModule,
       containerBytes: model.toBytes(),
@@ -173,6 +216,12 @@ export class DnamAudioNode<TParams extends ParameterValueMap = Record<string, nu
       backend: coerceBackend(options?.backend ?? "auto"),
       maxSupportedTier: this.#maxSupportedTierIdx,
       ...(this.#shared ? { sharedBuffer: this.#shared.buffer } : {}),
+      ...(isCloneableSharedWasmMem && this.#wasmMemory ? { wasmMemory: this.#wasmMemory } : {}),
+      ...(derivedInitialPages !== undefined ? { initialMemoryPages: derivedInitialPages } : {}),
+      ...(options?.maximumMemoryPages !== undefined
+        ? { maximumMemoryPages: options.maximumMemoryPages }
+        : {}),
+      ...(wantSharedWasm || isCloneableSharedWasmMem ? { sharedWasmMemory: true } : {}),
       ...(options?.telemetryIntervalBlocks !== undefined
         ? { telemetryIntervalBlocks: options.telemetryIntervalBlocks }
         : {}),
@@ -251,8 +300,11 @@ export class DnamAudioNode<TParams extends ParameterValueMap = Record<string, nu
     options?: DnamAudioNodeOptions,
   ): Promise<DnamAudioNode<TParams>> {
     await registerDnamProcessor(context, options?.processorUrl);
-    const wasmModule =
-      options?.wasmModule ?? getCompiledWasmModule() ?? (await compileWasmModule());
+    const wantSharedWasm =
+      options?.wasmMemory !== undefined
+        ? isSharedWasmMemory(options.wasmMemory)
+        : (options?.sharedWasmMemory ?? false) && isSharedMemorySupported();
+    const wasmModule = options?.wasmModule ?? (await compileWasmModule({ shared: wantSharedWasm }));
     return new DnamAudioNode<TParams>(context, model, wasmModule, options);
   }
 
@@ -369,6 +421,13 @@ export class DnamAudioNode<TParams extends ParameterValueMap = Record<string, nu
    */
   get workletNode(): AudioWorkletNode | undefined {
     return this.#workletNode;
+  }
+
+  /**
+   * Shared or pre-allocated `WebAssembly.Memory` passed to the worklet processor, when configured.
+   */
+  get wasmMemory(): WebAssembly.Memory | undefined {
+    return this.#wasmMemory;
   }
 
   /**

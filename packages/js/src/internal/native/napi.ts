@@ -20,7 +20,13 @@ import type {
   NativeEngineHandle,
   NativeValidatedContainerInfo,
 } from "./driver.js";
-import { instantiateWasmDriver } from "./wasm.js";
+import {
+  configureWasmMemoryImport,
+  instantiateWasmDriver,
+  setCachedWasmBytes,
+  type WasmDriver,
+  type WasmMemoryOptions,
+} from "./wasm.js";
 
 interface RawNapiEngine {
   reload(containerBytes: Uint8Array, tier?: number, sampleRateHz?: number): void;
@@ -1696,7 +1702,7 @@ function resolveDistDir(): string {
 
 let cachedAddon: RawNapiAddon | undefined;
 let cachedNapiDriver: NapiDriver | undefined;
-let cachedNodeWasmDriver: NativeDriver | undefined;
+let cachedNodeWasmDriver: WasmDriver | undefined;
 
 export function getNapiAddon(): RawNapiAddon {
   if (cachedAddon) {
@@ -1719,17 +1725,23 @@ export function getTestingBindings(): NativeTestingBindings {
 export function readDistWasmBytes(): Uint8Array<ArrayBuffer> {
   const distDir = resolveDistDir();
   const wasmPath = join(distDir, "dnam.wasm");
-  return new Uint8Array(readFileSync(wasmPath));
+  const bytes = new Uint8Array(readFileSync(wasmPath));
+  setCachedWasmBytes(bytes);
+  return bytes;
 }
 
-export function loadNodeWasmDriverSync(): NativeDriver {
-  if (cachedNodeWasmDriver) {
+export function loadNodeWasmDriverSync(options?: WasmMemoryOptions): WasmDriver {
+  if (!options && cachedNodeWasmDriver) {
     return cachedNodeWasmDriver;
   }
   const wasmBytes = readDistWasmBytes();
-  const mod = new WebAssembly.Module(wasmBytes);
-  cachedNodeWasmDriver = instantiateWasmDriver(mod);
-  return cachedNodeWasmDriver;
+  const wantShared = Boolean(options?.shared);
+  const mod = new WebAssembly.Module(configureWasmMemoryImport(wasmBytes, wantShared));
+  const driver = instantiateWasmDriver(mod, options);
+  if (!options) {
+    cachedNodeWasmDriver = driver;
+  }
+  return driver;
 }
 
 export function loadNodeDriverSync(): NativeDriver {

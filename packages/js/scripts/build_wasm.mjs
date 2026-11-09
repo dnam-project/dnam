@@ -41,11 +41,14 @@ if (!existsSync(hostLibPath)) {
 }
 copyFileSync(hostLibPath, destNodeAddon);
 
-// 2. Build WebAssembly SIMD128 binary (`wasm32-unknown-unknown`, omitting `testing` feature, `opt-level = "s"`)
+// 2. Build WebAssembly SIMD128 binary (`wasm32-unknown-unknown`, omitting `testing` feature, `opt-level = "s"`, `--import-memory`)
 const existingWasmRustFlags = process.env["CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS"] ?? "";
 const wasmRustFlags = [
   existingWasmRustFlags,
   "-C target-feature=+simd128",
+  "-C link-arg=--import-memory",
+  "-C link-arg=--export-memory",
+  "-C link-arg=--max-memory=268435456",
   isProfiling ? "" : "-C opt-level=s",
 ]
   .filter(Boolean)

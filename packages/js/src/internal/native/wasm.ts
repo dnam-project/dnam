@@ -28,8 +28,20 @@ function encodeUtf8(str: string): Uint8Array {
   return sharedEncoder ? sharedEncoder.encode(str) : Uint8Array.from(str, (c) => c.charCodeAt(0));
 }
 
+function isSharedBuffer(buf: unknown): boolean {
+  return typeof SharedArrayBuffer !== "undefined" && buf instanceof SharedArrayBuffer;
+}
+
 function decodeUtf8(bytes: Uint8Array): string {
-  return sharedDecoder ? sharedDecoder.decode(bytes) : String.fromCharCode(...bytes);
+  if (!sharedDecoder) {
+    let out = "";
+    for (let i = 0; i < bytes.length; i++) {
+      out += String.fromCharCode(bytes[i] ?? 0);
+    }
+    return out;
+  }
+  const safeBytes = isSharedBuffer(bytes.buffer) ? bytes.slice() : bytes;
+  return sharedDecoder.decode(safeBytes);
 }
 
 export interface RawWasmExports extends WebAssembly.Exports {
@@ -746,6 +758,7 @@ export interface RawWasmExports extends WebAssembly.Exports {
 
 class WasmMemoryArena {
   readonly exports: RawWasmExports;
+  readonly memory: WebAssembly.Memory;
   #cachedBuffer: ArrayBufferLike | undefined;
   #u8View: Uint8Array | undefined;
   #f32View: Float32Array | undefined;
@@ -761,17 +774,26 @@ class WasmMemoryArena {
   #audioPtr = 0;
   #audioCapacityFrames = 0;
 
-  constructor(exports: RawWasmExports) {
+  constructor(exports: RawWasmExports, memory?: WebAssembly.Memory) {
     this.exports = exports;
-    this.smallF64Ptr = exports.dnam_wasm_alloc(64 * 8, 64);
-    this.smallF32Ptr = exports.dnam_wasm_alloc(256 * 4, 64);
-    this.smallU32Ptr = exports.dnam_wasm_alloc(256 * 4, 64);
+    this.memory = memory ?? exports.memory;
+    this.smallF64Ptr = this.alloc(64 * 8);
+    this.smallF32Ptr = this.alloc(256 * 4);
+    this.smallU32Ptr = this.alloc(256 * 4);
     this.#ensureAudioScratch(4096);
   }
 
+  alloc(size: number): number {
+    const ptr = this.exports.dnam_wasm_alloc(size, 64);
+    if (ptr === 0) {
+      this.throwLastError();
+    }
+    return ptr;
+  }
+
   #refreshViews(): void {
-    const buf = this.exports.memory.buffer;
-    if (this.#cachedBuffer !== buf) {
+    const buf = this.memory.buffer;
+    if (this.#cachedBuffer !== buf || this.#u8View?.byteLength !== buf.byteLength) {
       this.#cachedBuffer = buf;
       this.#u8View = new Uint8Array(buf);
       this.#f32View = new Float32Array(buf);
@@ -821,10 +843,11 @@ class WasmMemoryArena {
       return;
     }
     const nextCap = Math.max(4096, 1 << Math.ceil(Math.log2(Math.max(1, frames))));
+    const nextPtr = this.alloc(nextCap * 16);
     if (this.#audioPtr !== 0) {
       this.exports.dnam_wasm_dealloc(this.#audioPtr, this.#audioCapacityFrames * 16, 64);
     }
-    this.#audioPtr = this.exports.dnam_wasm_alloc(nextCap * 16, 64);
+    this.#audioPtr = nextPtr;
     this.#audioCapacityFrames = nextCap;
   }
 
@@ -867,7 +890,7 @@ class WasmMemoryArena {
     if (!data || data.length === 0) {
       return fn(0, 0);
     }
-    const ptr = this.exports.dnam_wasm_alloc(data.length, 64);
+    const ptr = this.alloc(data.length);
     try {
       this.u8().set(data, ptr);
       return fn(ptr, data.length);
@@ -885,7 +908,7 @@ class WasmMemoryArena {
 
   withF32Slice<T>(data: Float32Array, fn: (ptr: number, len: number) => T): T {
     const byteLen = Math.max(4, data.byteLength);
-    const ptr = this.exports.dnam_wasm_alloc(byteLen, 64);
+    const ptr = this.alloc(byteLen);
     try {
       this.f32().set(data, ptr >>> 2);
       return fn(ptr, data.length);
@@ -896,7 +919,7 @@ class WasmMemoryArena {
 
   withF64Slice<T>(data: Float64Array, fn: (ptr: number, len: number) => T): T {
     const byteLen = Math.max(8, data.byteLength);
-    const ptr = this.exports.dnam_wasm_alloc(byteLen, 64);
+    const ptr = this.alloc(byteLen);
     try {
       this.f64().set(data, ptr >>> 3);
       return fn(ptr, data.length);
@@ -910,7 +933,7 @@ class WasmMemoryArena {
     fn: (ptr: number) => T,
   ): { readonly result: T; readonly out: Float64Array } {
     const byteLen = Math.max(8, len * 8);
-    const ptr = this.exports.dnam_wasm_alloc(byteLen, 64);
+    const ptr = this.alloc(byteLen);
     try {
       const result = fn(ptr);
       const start = ptr >>> 3;
@@ -1435,8 +1458,22 @@ export class WasmDriver implements NativeDriver {
   readonly kind = "wasm" as const;
   readonly #mem: WasmMemoryArena;
 
-  constructor(exports: RawWasmExports) {
-    this.#mem = new WasmMemoryArena(exports);
+  constructor(exports: RawWasmExports, memory?: WebAssembly.Memory) {
+    this.#mem = new WasmMemoryArena(exports, memory);
+  }
+
+  /**
+   * Underlying linear `WebAssembly.Memory` imported into and used by this `WasmDriver` instance.
+   */
+  get memory(): WebAssembly.Memory {
+    return this.#mem.memory;
+  }
+
+  /**
+   * Returns `true` when `this.memory` is backed by a `SharedArrayBuffer` (`shared: true`).
+   */
+  get isSharedMemory(): boolean {
+    return isSharedBuffer(this.#mem.memory.buffer);
   }
 
   createEngine(options: CreateNativeEngineOptions): NativeEngineHandle {
@@ -2425,7 +2462,7 @@ export class WasmDriver implements NativeDriver {
       this.#mem.withString(modelId, (mPtr, mLen) =>
         this.#mem.withString(licenseId, (lPtr, lLen) => {
           const outLen = 7680;
-          const outPtr = this.#mem.exports.dnam_wasm_alloc(outLen * 4, 64);
+          const outPtr = this.#mem.alloc(outLen * 4);
           try {
             this.#mem.checkStatus(
               this.#mem.exports.dnam_wasm_generate_tardos_code(
@@ -3095,31 +3132,353 @@ export class WasmDriver implements NativeDriver {
   }
 }
 
-let cachedWasmModule: WebAssembly.Module | undefined;
+/**
+ * Minimum initial 64 KiB WebAssembly linear-memory pages required by `dnam.wasm` (`18` pages = `1.125 MiB`).
+ */
+export const WASM_MIN_INITIAL_PAGES = 18;
+
+/**
+ * Default initial 64 KiB WebAssembly linear-memory pages (`18` pages = `1.125 MiB`, matching
+ * `wasm32` `dlmalloc` `__heap_base` so `memory.grow` commits pages contiguously with zero dead space).
+ */
+export const WASM_DEFAULT_INITIAL_PAGES = 18;
+
+/**
+ * Default maximum 64 KiB WebAssembly linear-memory pages (`4,096` pages = `256 MiB`, so V8
+ * reserves bounded virtual address space upfront without over-reserving multi-GiB cages).
+ */
+export const WASM_DEFAULT_MAXIMUM_PAGES = 4096;
+
+/**
+ * Architectural `wasm32` ceiling in 64 KiB pages (`65,536` pages = `4 GiB`).
+ */
+export const WASM_MAX_PAGES = 65536;
+
+/**
+ * Linear-memory configuration for `new WebAssembly.Memory({ initial, maximum, shared })`
+ * (`ref[sdk.ts.api.sync-init]`, `ref[sdk.ts.engine.zero-copy-and-async]`).
+ */
+export interface WasmMemoryOptions {
+  readonly memory?: WebAssembly.Memory;
+  readonly initialPages?: number;
+  readonly maximumPages?: number;
+  readonly shared?: boolean;
+}
 
 /**
  * Options for `initWasm(...)` (`ref[sdk.ts.api.sync-init]`).
  */
-export interface InitWasmOptions {
+export interface InitWasmOptions extends WasmMemoryOptions {
   readonly module?: WebAssembly.Module;
   readonly bytes?: BufferSource;
   readonly url?: string | URL;
 }
 
 /**
- * Instantiates a synchronous `WasmDriver` from a compiled `WebAssembly.Module`.
+ * Returns `true` if `new WebAssembly.Memory({ initial, maximum, shared: true })` (`SharedArrayBuffer`)
+ * is supported and permitted by the current execution environment (`crossOriginIsolated !== false`).
  */
-export function instantiateWasmDriver(module: WebAssembly.Module): WasmDriver {
-  cachedWasmModule = module;
-  const instance = new WebAssembly.Instance(module, {});
-  return new WasmDriver(instance.exports as RawWasmExports);
+export function isSharedWasmMemorySupported(): boolean {
+  if (typeof SharedArrayBuffer === "undefined" || typeof Atomics === "undefined") {
+    return false;
+  }
+  if (
+    typeof globalThis !== "undefined" &&
+    "crossOriginIsolated" in globalThis &&
+    (globalThis as { crossOriginIsolated?: boolean }).crossOriginIsolated === false
+  ) {
+    return false;
+  }
+  try {
+    const mem = new WebAssembly.Memory({ initial: 1, maximum: 2, shared: true });
+    return isSharedBuffer(mem.buffer);
+  } catch {
+    return false;
+  }
 }
 
 /**
- * Returns the cached compiled `WebAssembly.Module`, if initialized.
+ * Returns `true` when `memory.buffer` is backed by a `SharedArrayBuffer` (`shared: true`).
  */
-export function getCompiledWasmModule(): WebAssembly.Module | undefined {
+export function isSharedWasmMemory(memory: WebAssembly.Memory): boolean {
+  return isSharedBuffer(memory.buffer);
+}
+
+/**
+ * Creates a bounded `WebAssembly.Memory` suitable for `{ env: { memory } }` instantiation of
+ * `dnam.wasm`, supporting optional `shared: true` when permitted by the environment.
+ */
+export function createWasmMemory(options?: WasmMemoryOptions): WebAssembly.Memory {
+  if (options?.memory instanceof WebAssembly.Memory) {
+    return options.memory;
+  }
+  const initial = Math.min(
+    WASM_MAX_PAGES,
+    Math.max(
+      WASM_MIN_INITIAL_PAGES,
+      Math.trunc(options?.initialPages ?? WASM_DEFAULT_INITIAL_PAGES),
+    ),
+  );
+  const maximum = Math.min(
+    WASM_MAX_PAGES,
+    Math.max(initial, Math.trunc(options?.maximumPages ?? WASM_DEFAULT_MAXIMUM_PAGES)),
+  );
+  if (options?.shared && isSharedWasmMemorySupported()) {
+    try {
+      return new WebAssembly.Memory({ initial, maximum, shared: true });
+    } catch {
+      // Fall back cleanly to non-shared WebAssembly.Memory if disallowed by runtime policy.
+    }
+  }
+  return new WebAssembly.Memory({ initial, maximum });
+}
+
+const ENV_MEMORY_IMPORT_PREFIX = [
+  0x01, 0x03, 0x65, 0x6e, 0x76, 0x06, 0x6d, 0x65, 0x6d, 0x6f, 0x72, 0x79, 0x02,
+] as const;
+
+function encodeLeb128U32(val: number): number[] {
+  const out: number[] = [];
+  let v = val >>> 0;
+  do {
+    let b = v & 0x7f;
+    v >>>= 7;
+    if (v !== 0) {
+      b |= 0x80;
+    }
+    out.push(b);
+  } while (v !== 0);
+  return out;
+}
+
+/**
+ * Returns a `Uint8Array` copy of `wasmBytes` whose Section 2 (`Import`) `"env"."memory"` descriptor
+ * matches `shared` and `maxPages`:
+ * - `maxPages !== null` (default `4,096` pages = `256 MiB`): `flags = shared ? 0x03 : 0x01`,
+ *   `min = minPages`, `max = maxPages`, enabling V8 compile-time static guard-page bounds-check elision.
+ * - `maxPages === null`: `flags = 0x00, min = minPages` when `shared === false` (accepts any unshared
+ *   `WebAssembly.Memory` with `initial >= minPages`, with or without `maximum`), or
+ *   `flags = 0x03, min = minPages, max = 65536` when `shared === true`.
+ */
+export function configureWasmMemoryImport(
+  wasmBytes: Uint8Array,
+  shared: boolean,
+  maxPages: number | null = WASM_DEFAULT_MAXIMUM_PAGES,
+): Uint8Array<ArrayBuffer> {
+  if (
+    wasmBytes.length < 8 ||
+    wasmBytes[0] !== 0x00 ||
+    wasmBytes[1] !== 0x61 ||
+    wasmBytes[2] !== 0x73 ||
+    wasmBytes[3] !== 0x6d
+  ) {
+    const copy = new Uint8Array(wasmBytes.length);
+    copy.set(wasmBytes);
+    return copy;
+  }
+
+  let pos = 8;
+  const readLeb128U32 = (): number => {
+    let res = 0;
+    let shift = 0;
+    while (pos < wasmBytes.length) {
+      const b = wasmBytes[pos++] ?? 0;
+      res |= (b & 0x7f) << shift;
+      if ((b & 0x80) === 0) {
+        return res >>> 0;
+      }
+      shift += 7;
+    }
+    return res >>> 0;
+  };
+
+  while (pos < wasmBytes.length) {
+    const secStart = pos;
+    const secId = wasmBytes[pos++] ?? 0;
+    const secLen = readLeb128U32();
+    const payloadStart = pos;
+    const secEnd = payloadStart + secLen;
+    if (secEnd > wasmBytes.length) {
+      break;
+    }
+    if (secId === 2 && secLen >= ENV_MEMORY_IMPORT_PREFIX.length + 2) {
+      let matched = true;
+      for (let i = 0; i < ENV_MEMORY_IMPORT_PREFIX.length; i++) {
+        if (wasmBytes[payloadStart + i] !== ENV_MEMORY_IMPORT_PREFIX[i]) {
+          matched = false;
+          break;
+        }
+      }
+      if (matched) {
+        pos = payloadStart + ENV_MEMORY_IMPORT_PREFIX.length;
+        const oldFlags = wasmBytes[pos++] ?? 0;
+        const minPages = readLeb128U32();
+        if ((oldFlags & 0x01) !== 0) {
+          readLeb128U32();
+        }
+        const restPayload = wasmBytes.subarray(pos, secEnd);
+        const resolvedMax =
+          maxPages !== null
+            ? Math.min(WASM_MAX_PAGES, Math.max(minPages, Math.trunc(maxPages)))
+            : shared
+              ? WASM_MAX_PAGES
+              : null;
+        const newLimits =
+          resolvedMax !== null
+            ? [shared ? 0x03 : 0x01, ...encodeLeb128U32(minPages), ...encodeLeb128U32(resolvedMax)]
+            : [0x00, ...encodeLeb128U32(minPages)];
+        const newPayloadLen =
+          ENV_MEMORY_IMPORT_PREFIX.length + newLimits.length + restPayload.length;
+        const secLenBytes = encodeLeb128U32(newPayloadLen);
+        const out = new Uint8Array(
+          secStart + 1 + secLenBytes.length + newPayloadLen + (wasmBytes.length - secEnd),
+        );
+        let w = 0;
+        out.set(wasmBytes.subarray(0, secStart), w);
+        w += secStart;
+        out[w++] = 2;
+        out.set(secLenBytes, w);
+        w += secLenBytes.length;
+        out.set(
+          wasmBytes.subarray(payloadStart, payloadStart + ENV_MEMORY_IMPORT_PREFIX.length),
+          w,
+        );
+        w += ENV_MEMORY_IMPORT_PREFIX.length;
+        out.set(newLimits, w);
+        w += newLimits.length;
+        out.set(restPayload, w);
+        w += restPayload.length;
+        out.set(wasmBytes.subarray(secEnd), w);
+        return out;
+      }
+    }
+    pos = secEnd;
+  }
+
+  const copy = new Uint8Array(wasmBytes.length);
+  copy.set(wasmBytes);
+  return copy;
+}
+
+let cachedWasmBytes: Uint8Array<ArrayBuffer> | undefined;
+let cachedWasmModule: WebAssembly.Module | undefined;
+let cachedSharedWasmModule: WebAssembly.Module | undefined;
+
+/**
+ * Records raw `dnam.wasm` bytes so both unshared and `shared: true` `WebAssembly.Module` variants
+ * can be compiled on demand.
+ */
+export function setCachedWasmBytes(bytes: Uint8Array): void {
+  cachedWasmBytes = configureWasmMemoryImport(bytes, false);
+}
+
+function shouldRequestSharedMemory(options?: WasmMemoryOptions): boolean {
+  if (options?.memory instanceof WebAssembly.Memory) {
+    return isSharedWasmMemory(options.memory);
+  }
+  return Boolean(options?.shared) && isSharedWasmMemorySupported();
+}
+
+function cacheCompiledModule(mod: WebAssembly.Module, shared: boolean): WebAssembly.Module {
+  if (shared) {
+    cachedSharedWasmModule = mod;
+  } else {
+    cachedWasmModule = mod;
+  }
+  return mod;
+}
+
+/**
+ * Returns the cached compiled `WebAssembly.Module` matching `shared`, if initialized.
+ */
+export function getCompiledWasmModule(shared = false): WebAssembly.Module | undefined {
+  if (shared) {
+    if (!cachedSharedWasmModule && cachedWasmBytes) {
+      try {
+        cachedSharedWasmModule = new WebAssembly.Module(
+          configureWasmMemoryImport(cachedWasmBytes, true),
+        );
+      } catch {
+        // Browser main threads disallow synchronous compilation > 4 KiB; use await compileWasmModule({ shared: true }).
+      }
+    }
+    return cachedSharedWasmModule;
+  }
+  if (!cachedWasmModule && cachedWasmBytes) {
+    try {
+      cachedWasmModule = new WebAssembly.Module(configureWasmMemoryImport(cachedWasmBytes, false));
+    } catch {
+      // Browser main threads disallow synchronous compilation > 4 KiB; use await compileWasmModule().
+    }
+  }
   return cachedWasmModule;
+}
+
+/**
+ * Instantiates a synchronous `WasmDriver` from a compiled `WebAssembly.Module` and a
+ * `WebAssembly.Memory` passed via `{ env: { memory } }`.
+ */
+export function instantiateWasmDriver(
+  module: WebAssembly.Module,
+  options?: WasmMemoryOptions,
+): WasmDriver {
+  const memory = createWasmMemory(options);
+  const wantShared = isSharedWasmMemory(memory);
+
+  try {
+    const instance = new WebAssembly.Instance(module, { env: { memory } });
+    cacheCompiledModule(module, wantShared);
+    return new WasmDriver(instance.exports as RawWasmExports, memory);
+  } catch (err) {
+    const explicitSharedOrCustomMem =
+      options?.shared !== undefined ||
+      options?.memory !== undefined ||
+      (options?.maximumPages !== undefined && options.maximumPages > WASM_DEFAULT_MAXIMUM_PAGES);
+    if (explicitSharedOrCustomMem && cachedWasmBytes) {
+      const useUnbounded =
+        options?.memory instanceof WebAssembly.Memory ||
+        (options?.maximumPages !== undefined && options.maximumPages > WASM_DEFAULT_MAXIMUM_PAGES);
+      try {
+        const compatModule = new WebAssembly.Module(
+          configureWasmMemoryImport(
+            cachedWasmBytes,
+            wantShared,
+            useUnbounded ? null : WASM_DEFAULT_MAXIMUM_PAGES,
+          ),
+        );
+        const instance = new WebAssembly.Instance(compatModule, { env: { memory } });
+        if (!useUnbounded) {
+          cacheCompiledModule(compatModule, wantShared);
+        }
+        return new WasmDriver(instance.exports as RawWasmExports, memory);
+      } catch {
+        // Fall through to alternative memory recovery below.
+      }
+    }
+    if (options?.memory === undefined) {
+      try {
+        const altMemory = createWasmMemory({
+          ...(options?.initialPages !== undefined ? { initialPages: options.initialPages } : {}),
+          ...(options?.maximumPages !== undefined ? { maximumPages: options.maximumPages } : {}),
+          shared: !wantShared,
+        });
+        const instance = new WebAssembly.Instance(module, { env: { memory: altMemory } });
+        cacheCompiledModule(module, isSharedWasmMemory(altMemory));
+        return new WasmDriver(instance.exports as RawWasmExports, altMemory);
+      } catch {
+        // Re-throw original instantiation error below.
+      }
+    }
+    throw err;
+  }
+}
+
+function resolveDefaultWasmUrl(): URL {
+  const metaUrl = import.meta.url;
+  if (metaUrl.includes("/src/internal/native/")) {
+    return new URL(/* @vite-ignore */ "../../../dist/dnam.wasm", metaUrl);
+  }
+  return new URL(/* @vite-ignore */ "./dnam.wasm", metaUrl);
 }
 
 /**
@@ -3127,33 +3486,52 @@ export function getCompiledWasmModule(): WebAssembly.Module | undefined {
  * `BufferSource`, or URL (`ref[sdk.ts.api.sync-init]`).
  */
 export async function compileWasmModule(options?: InitWasmOptions): Promise<WebAssembly.Module> {
+  const wantShared = shouldRequestSharedMemory(options);
+  const useUnbounded =
+    options?.memory instanceof WebAssembly.Memory ||
+    (options?.maximumPages !== undefined && options.maximumPages > WASM_DEFAULT_MAXIMUM_PAGES);
+  const importMaxPages = useUnbounded ? null : WASM_DEFAULT_MAXIMUM_PAGES;
+
   if (options?.module instanceof WebAssembly.Module) {
-    cachedWasmModule = options.module;
-    return options.module;
+    return cacheCompiledModule(options.module, wantShared);
   }
   if (options?.bytes !== undefined) {
-    const bytes = coerceBytes(options.bytes as Uint8Array | ArrayBuffer);
-    const mod = await WebAssembly.compile(bytes as BufferSource);
-    cachedWasmModule = mod;
-    return mod;
+    const rawBytes = coerceBytes(options.bytes as Uint8Array | ArrayBuffer);
+    const mod = await WebAssembly.compile(
+      configureWasmMemoryImport(rawBytes, wantShared, importMaxPages),
+    );
+    setCachedWasmBytes(rawBytes);
+    return useUnbounded ? mod : cacheCompiledModule(mod, wantShared);
   }
-  if (cachedWasmModule && options?.url === undefined) {
-    return cachedWasmModule;
-  }
-  const targetUrl = options?.url ?? new URL(/* @vite-ignore */ "./dnam.wasm", import.meta.url);
-  if (typeof WebAssembly.compileStreaming === "function" && typeof fetch === "function") {
-    try {
-      const resp = await fetch(targetUrl);
-      const mod = await WebAssembly.compileStreaming(resp);
-      cachedWasmModule = mod;
-      return mod;
-    } catch {
-      const resp = await fetch(targetUrl);
-      const buf = await resp.arrayBuffer();
-      const mod = await WebAssembly.compile(buf);
-      cachedWasmModule = mod;
-      return mod;
+  if (options?.url === undefined) {
+    if (!useUnbounded) {
+      const existing = wantShared ? cachedSharedWasmModule : cachedWasmModule;
+      if (existing) {
+        return existing;
+      }
     }
+    if (cachedWasmBytes) {
+      const mod = await WebAssembly.compile(
+        configureWasmMemoryImport(cachedWasmBytes, wantShared, importMaxPages),
+      );
+      return useUnbounded ? mod : cacheCompiledModule(mod, wantShared);
+    }
+  }
+  const targetUrl = options?.url ?? resolveDefaultWasmUrl();
+  if (typeof fetch === "function") {
+    const resp = await fetch(targetUrl);
+    if ("ok" in resp && resp.ok === false) {
+      throw new DnamError(
+        "ERR_DNAM_CONTAINER",
+        `Failed to fetch dnam.wasm from ${String(targetUrl)} (HTTP ${String(resp.status)})`,
+      );
+    }
+    const rawBytes = new Uint8Array(await resp.arrayBuffer());
+    const mod = await WebAssembly.compile(
+      configureWasmMemoryImport(rawBytes, wantShared, importMaxPages),
+    );
+    setCachedWasmBytes(rawBytes);
+    return useUnbounded ? mod : cacheCompiledModule(mod, wantShared);
   }
   throw new DnamError(
     "ERR_DNAM_CONTAINER",
