@@ -1687,17 +1687,39 @@ export class NapiDriver implements NativeDriver {
   }
 }
 
-function resolveDistDir(): string {
+type BuildProfile = "release" | "debug" | "profiling";
+const BUILD_PROFILES: readonly BuildProfile[] = ["release", "debug", "profiling"];
+
+function hasDistArtifacts(dir: string): boolean {
+  const addonFileName = `dnam.${process.platform}-${process.arch}.node`;
+  return BUILD_PROFILES.some(
+    (profile) =>
+      existsSync(join(dir, "wasm", profile, "dnam.wasm")) ||
+      existsSync(join(dir, "native", profile, addonFileName)),
+  );
+}
+
+function resolveRootDistDir(): string {
   const currentDir = dirname(fileURLToPath(import.meta.url));
-  const candidateDist = resolve(currentDir, "../../../dist");
-  if (existsSync(join(candidateDist, "dnam.wasm"))) {
-    return candidateDist;
+  const candidates = [
+    resolve(currentDir, "../../../dist"),
+    resolve(currentDir),
+    resolve(currentDir, "../../dist"),
+  ];
+  for (const candidate of candidates) {
+    if (hasDistArtifacts(candidate)) {
+      return candidate;
+    }
   }
-  const directDist = resolve(currentDir);
-  if (existsSync(join(directDist, "dnam.wasm"))) {
-    return directDist;
+  return candidates[0] ?? resolve(currentDir);
+}
+
+function resolveProfileOrder(): readonly BuildProfile[] {
+  const requested = process.env["DNAM_BUILD_PROFILE"];
+  if (requested === "debug" || requested === "profiling" || requested === "release") {
+    return [requested, ...BUILD_PROFILES.filter((p) => p !== requested)];
   }
-  return resolve(currentDir, "../../dist");
+  return BUILD_PROFILES;
 }
 
 let cachedAddon: RawNapiAddon | undefined;
@@ -1708,8 +1730,17 @@ export function getNapiAddon(): RawNapiAddon {
   if (cachedAddon) {
     return cachedAddon;
   }
-  const distDir = resolveDistDir();
-  const addonPath = join(distDir, `dnam.${process.platform}-${process.arch}.node`);
+  const rootDist = resolveRootDistDir();
+  const addonFileName = `dnam.${process.platform}-${process.arch}.node`;
+  const profiles = resolveProfileOrder();
+  let addonPath = join(rootDist, "native", profiles[0] ?? "release", addonFileName);
+  for (const profile of profiles) {
+    const candidate = join(rootDist, "native", profile, addonFileName);
+    if (existsSync(candidate)) {
+      addonPath = candidate;
+      break;
+    }
+  }
   if (!existsSync(addonPath)) {
     throw new DnamError("ERR_DNAM_CONTAINER", `Native N-API addon not found at ${addonPath}`);
   }
@@ -1723,8 +1754,16 @@ export function getTestingBindings(): NativeTestingBindings {
 }
 
 export function readDistWasmBytes(): Uint8Array<ArrayBuffer> {
-  const distDir = resolveDistDir();
-  const wasmPath = join(distDir, "dnam.wasm");
+  const rootDist = resolveRootDistDir();
+  const profiles = resolveProfileOrder();
+  let wasmPath = join(rootDist, "wasm", profiles[0] ?? "release", "dnam.wasm");
+  for (const profile of profiles) {
+    const candidate = join(rootDist, "wasm", profile, "dnam.wasm");
+    if (existsSync(candidate)) {
+      wasmPath = candidate;
+      break;
+    }
+  }
   const bytes = new Uint8Array(readFileSync(wasmPath));
   setCachedWasmBytes(bytes);
   return bytes;

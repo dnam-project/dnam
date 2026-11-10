@@ -18,7 +18,22 @@
     "node": ">=26.0.0"
   },
   "files": [
-    "dist",
+    "dist/*.js",
+    "dist/*.js.map",
+    "dist/*.d.ts",
+    "dist/*.d.ts.map",
+    "dist/checkpoint",
+    "dist/dsp",
+    "dist/engine",
+    "dist/internal",
+    "dist/model",
+    "dist/parameters",
+    "dist/provenance",
+    "dist/schema",
+    "dist/tempo",
+    "dist/web-audio",
+    "dist/native/release",
+    "dist/wasm/release",
     "README.md"
   ],
   "main": "./dist/node.js",
@@ -71,7 +86,7 @@
       "types": "./dist/web-audio/processor.d.ts",
       "default": "./dist/web-audio-processor.js"
     },
-    "./dnam.wasm": "./dist/dnam.wasm"
+    "./dnam.wasm": "./dist/wasm/release/dnam.wasm"
   },
   "devDependencies": {
     "@fast-check/vitest": "catalog:",

@@ -59,32 +59,29 @@ dbg_macro = "deny"
 todo = "deny"
 needless_range_loop = "allow"
 
+[profile.dev]
+opt-level = 1
+debug = "line-tables-only"
+
 [profile.dev.package."*"]
 opt-level = 2
 
 [profile.release]
 opt-level = 3
 lto = "thin"
-codegen-units = 1
-strip = "symbols"
-
-[profile.wasm-release]
-inherits = "release"
-opt-level = 2
-lto = "thin"
 codegen-units = 16
 panic = "abort"
 strip = "symbols"
 
-[profile.bench]
-opt-level = 3
-lto = "thin"
-codegen-units = 1
-
 [profile.profiling]
 inherits = "release"
 debug = "line-tables-only"
+strip = "none"
+
+[profile.bench]
+opt-level = 3
 lto = "thin"
 codegen-units = 16
+debug = "line-tables-only"
 strip = "none"
 

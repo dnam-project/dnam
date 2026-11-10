@@ -9,9 +9,18 @@ import { initWasm, Model } from "../browser.js";
 import { instantiateWasmDriver } from "../internal/native/wasm.js";
 import { createWasmMemory } from "./index.js";
 
-const unsharedMod = await initWasm({ initialPages: 32, maximumPages: 1024, shared: false });
+const profilingWasmUrl = new URL(
+  /* @vite-ignore */ "../../dist/wasm/profiling/dnam.wasm",
+  import.meta.url,
+);
+const unsharedMod = await initWasm({
+  url: profilingWasmUrl,
+  initialPages: 32,
+  maximumPages: 1024,
+  shared: false,
+});
 const sharedMem = createWasmMemory({ initialPages: 32, maximumPages: 1024, shared: true });
-const sharedMod = await initWasm({ memory: sharedMem, shared: true });
+const sharedMod = await initWasm({ url: profilingWasmUrl, memory: sharedMem, shared: true });
 
 const refModel = Model.reference();
 const refBytes = refModel.toBytes();

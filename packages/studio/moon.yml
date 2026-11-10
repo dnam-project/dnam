@@ -27,7 +27,7 @@ tasks:
     args:
       - "./packages/studio/bin/dnam.mjs"
     deps:
-      - "~:build-rust"
+      - "~:build-rust-debug"
     preset: "utility"
     options:
       runFromWorkspaceRoot: true
@@ -40,7 +40,7 @@ tasks:
       - "exec"
       - "vite"
     deps:
-      - "js:build"
+      - "js:build-ts"
       - "ui:build"
     preset: "server"
 
@@ -51,7 +51,7 @@ tasks:
       - "tauri"
       - "dev"
     deps:
-      - "js:build"
+      - "js:build-ts"
       - "ui:build"
     preset: "server"
 
@@ -123,7 +123,7 @@ tasks:
       - "tsconfig.json"
       - "--noEmit"
     deps:
-      - "js:build"
+      - "js:build-ts"
       - "ui:build"
     inputs:
       - "package.json"
@@ -138,7 +138,7 @@ tasks:
       - "quality"
       - "typecheck"
 
-  build-rust:
+  build-rust-debug:
     type: "build"
     command: "cargo"
     args:
@@ -165,13 +165,40 @@ tasks:
     tags:
       - "build"
 
-  build:
+  build-rust:
+    type: "build"
+    command: "cargo"
+    args:
+      - "build"
+      - "--package"
+      - "dnam-studio"
+      - "--release"
+    inputs:
+      - "Cargo.toml"
+      - "build.rs"
+      - "tauri.conf.json"
+      - "capabilities/**/*"
+      - "icons/**/*"
+      - "isolation/**/*"
+      - "rust/**/*"
+      - "/Cargo.toml"
+      - "/Cargo.lock"
+      - "/packages/engine/Cargo.toml"
+      - "/packages/engine/src/**/*"
+      - "/packages/trainer/Cargo.toml"
+      - "/packages/trainer/src/**/*"
+    options:
+      mutex: "cargo"
+      outputStyle: "buffer-only-failure"
+    tags:
+      - "build"
+
+  build-ts:
     type: "build"
     script: "pnpm exec vite build --mode lib && pnpm exec tsc -p tsconfig.build.json --emitDeclarationOnly"
     deps:
-      - "js:build"
+      - "js:build-ts"
       - "ui:build"
-      - "~:build-rust"
     inputs:
       - "package.json"
       - "tsconfig*.json"
@@ -183,6 +210,17 @@ tasks:
       - "dist/**/*"
     options:
       outputStyle: "buffer-only-failure"
+    tags:
+      - "build"
+
+  build:
+    type: "build"
+    command: "noop"
+    deps:
+      - "js:build"
+      - "ui:build"
+      - "~:build-rust"
+      - "~:build-ts"
     tags:
       - "build"
 
@@ -218,7 +256,7 @@ tasks:
       - "vitest"
       - "run"
     deps:
-      - "~:build"
+      - "~:build-ts"
       - "~:test-rust"
     inputs:
       - "package.json"
@@ -241,7 +279,7 @@ tasks:
       - "playwright"
       - "test"
     deps:
-      - "~:build"
+      - "~:build-ts"
     inputs:
       - "package.json"
       - "playwright.config.ts"
@@ -293,7 +331,7 @@ tasks:
       - "run"
       - "--coverage"
     deps:
-      - "~:build"
+      - "~:build-ts"
       - "~:coverage-rust"
     inputs:
       - "package.json"

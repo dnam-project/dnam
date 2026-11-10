@@ -24,7 +24,7 @@ tasks:
       - "exec"
       - "cosmos"
     deps:
-      - "js:build"
+      - "js:build-ts"
     preset: "server"
 
   cosmos-export:
@@ -34,7 +34,7 @@ tasks:
       - "exec"
       - "cosmos-export"
     deps:
-      - "js:build"
+      - "js:build-ts"
     inputs:
       - "package.json"
       - "tsconfig*.json"
@@ -115,7 +115,7 @@ tasks:
       - "tsconfig.json"
       - "--noEmit"
     deps:
-      - "js:build"
+      - "js:build-ts"
     inputs:
       - "package.json"
       - "tsconfig*.json"
@@ -131,7 +131,7 @@ tasks:
     type: "build"
     script: "pnpm exec vite build --mode lib && pnpm exec tsc -p tsconfig.build.json --emitDeclarationOnly"
     deps:
-      - "js:build"
+      - "js:build-ts"
     inputs:
       - "package.json"
       - "tsconfig*.json"
@@ -155,7 +155,7 @@ tasks:
       - "vitest"
       - "run"
     deps:
-      - "js:build"
+      - "js:build-ts"
     inputs:
       - "package.json"
       - "tsconfig*.json"
@@ -175,7 +175,7 @@ tasks:
       - "run"
       - "--coverage"
     deps:
-      - "js:build"
+      - "js:build-ts"
     inputs:
       - "package.json"
       - "tsconfig*.json"
@@ -197,7 +197,7 @@ tasks:
       - "bench"
       - "--run"
     deps:
-      - "js:build"
+      - "js:build-ts"
     inputs:
       - "package.json"
       - "tsconfig*.json"

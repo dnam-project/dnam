@@ -86,7 +86,7 @@ dnamNode.tempo.set({ bpm: 128, subdivision: "1/8" });
 | `@dnam-project/dnam/dsp` | Universal | Reference TORA DSP kernels (`catmullRomHermiteSlice`, `tankSlice`, `modalSlice`, `unitRotorSlice`, `polyAdaaSlice`, `lobattoBasisSlice`, `rank4FmSlice`, `chebyshevLfoSlice`, `trustRegionSoftclipSlice`, `givensHouseholder8chSlice`, `givensHouseholder16chSlice`) |
 | `@dnam-project/dnam/web-audio` | Browser / Universal | `DnamAudioNode`, `DnamAudioWorkletProcessor`, `WorkletSharedState`, `registerDnamProcessor`, `isSharedMemorySupported` |
 | `@dnam-project/dnam/web-audio/processor` | `AudioWorkletGlobalScope` | Standalone zero-dependency worklet processor bundle (`dist/web-audio-processor.js`) |
-| `@dnam-project/dnam/wasm` | Universal | Compiled `wasm32-unknown-unknown` `+simd128` binary (`dist/dnam.wasm`) |
+| `@dnam-project/dnam/dnam.wasm` | Universal | Compiled `wasm32-unknown-unknown` `+simd128` release binary (`dist/wasm/release/dnam.wasm`) |
 
 ---
 

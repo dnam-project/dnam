@@ -8,7 +8,7 @@
  *   node packages/js/examples/06-web-audio-worklet.ts
  */
 
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { defineModelTypes, Model } from "../dist/node.js";
@@ -21,7 +21,15 @@ const RigSchema = defineModelTypes([
 ] as const);
 
 const dir = dirname(fileURLToPath(import.meta.url));
-const wasmModule = new WebAssembly.Module(readFileSync(resolve(dir, "../dist/dnam.wasm")));
+const releaseWasm = resolve(dir, "../dist/wasm/release/dnam.wasm");
+const debugWasm = resolve(dir, "../dist/wasm/debug/dnam.wasm");
+const profilingWasm = resolve(dir, "../dist/wasm/profiling/dnam.wasm");
+const wasmPath = existsSync(releaseWasm)
+  ? releaseWasm
+  : existsSync(debugWasm)
+    ? debugWasm
+    : profilingWasm;
+const wasmModule = new WebAssembly.Module(readFileSync(wasmPath));
 
 using model = Model.reference<typeof RigSchema.$infer>();
 const mockAudioContext = {

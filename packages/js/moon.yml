@@ -84,6 +84,8 @@ tasks:
       - "-p"
       - "tsconfig.json"
       - "--noEmit"
+    deps:
+      - "~:build-ts"
     inputs:
       - "package.json"
       - "tsconfig*.json"
@@ -96,37 +98,9 @@ tasks:
       - "quality"
       - "typecheck"
 
-  build-rust:
+  build-ts:
     type: "build"
-    command: "node"
-    args:
-      - "./scripts/build_wasm.mjs"
-    inputs:
-      - "Cargo.toml"
-      - "build.rs"
-      - "rust/**/*"
-      - "scripts/build_wasm.mjs"
-      - "/.cargo/config.toml"
-      - "/Cargo.toml"
-      - "/Cargo.lock"
-      - "/packages/engine/Cargo.toml"
-      - "/packages/engine/src/**/*"
-      - "/packages/trainer/Cargo.toml"
-      - "/packages/trainer/src/**/*"
-    outputs:
-      - "dist/dnam.*.node"
-      - "dist/dnam.wasm"
-    options:
-      mutex: "cargo"
-      outputStyle: "buffer-only-failure"
-    tags:
-      - "build"
-
-  build:
-    type: "build"
-    script: "pnpm exec vite build && pnpm exec vite build --mode worklet && pnpm exec tsc -p tsconfig.build.json --emitDeclarationOnly"
-    deps:
-      - "~:build-rust"
+    script: "node -e 'import(\"node:fs\").then(fs=>{if(fs.existsSync(\"dist\"))for(const e of fs.readdirSync(\"dist\"))if(![\"native\",\"wasm\",\"profiles\"].includes(e))fs.rmSync(\"dist/\"+e,{recursive:true,force:true})})' && pnpm exec vite build && pnpm exec vite build --mode worklet && pnpm exec tsc -p tsconfig.build.json --emitDeclarationOnly"
     inputs:
       - "package.json"
       - "tsconfig*.json"
@@ -145,14 +119,107 @@ tasks:
     tags:
       - "build"
 
+  build-rust-debug:
+    type: "build"
+    command: "node"
+    args:
+      - "./scripts/build_wasm.mjs"
+      - "--debug"
+    inputs:
+      - "Cargo.toml"
+      - "build.rs"
+      - "rust/**/*"
+      - "scripts/build_wasm.mjs"
+      - "/.cargo/config.toml"
+      - "/Cargo.toml"
+      - "/Cargo.lock"
+      - "/packages/engine/Cargo.toml"
+      - "/packages/engine/src/**/*"
+      - "/packages/trainer/Cargo.toml"
+      - "/packages/trainer/src/**/*"
+    outputs:
+      - "dist/native/debug/dnam.*.node"
+      - "dist/wasm/debug/dnam.wasm"
+    options:
+      mutex: "cargo"
+      outputStyle: "buffer-only-failure"
+    tags:
+      - "build"
+
+  build-rust:
+    type: "build"
+    command: "node"
+    args:
+      - "./scripts/build_wasm.mjs"
+      - "--release"
+    inputs:
+      - "Cargo.toml"
+      - "build.rs"
+      - "rust/**/*"
+      - "scripts/build_wasm.mjs"
+      - "/.cargo/config.toml"
+      - "/Cargo.toml"
+      - "/Cargo.lock"
+      - "/packages/engine/Cargo.toml"
+      - "/packages/engine/src/**/*"
+      - "/packages/trainer/Cargo.toml"
+      - "/packages/trainer/src/**/*"
+    outputs:
+      - "dist/native/release/dnam.*.node"
+      - "dist/wasm/release/dnam.wasm"
+    options:
+      mutex: "cargo"
+      outputStyle: "buffer-only-failure"
+    tags:
+      - "build"
+
+  build-rust-profiling:
+    type: "build"
+    command: "node"
+    args:
+      - "./scripts/build_wasm.mjs"
+      - "--profiling"
+    inputs:
+      - "Cargo.toml"
+      - "build.rs"
+      - "rust/**/*"
+      - "scripts/build_wasm.mjs"
+      - "/.cargo/config.toml"
+      - "/Cargo.toml"
+      - "/Cargo.lock"
+      - "/packages/engine/Cargo.toml"
+      - "/packages/engine/src/**/*"
+      - "/packages/trainer/Cargo.toml"
+      - "/packages/trainer/src/**/*"
+    outputs:
+      - "dist/native/profiling/dnam.*.node"
+      - "dist/wasm/profiling/dnam.wasm"
+    options:
+      mutex: "cargo"
+      outputStyle: "buffer-only-failure"
+    tags:
+      - "build"
+
+  build:
+    type: "build"
+    command: "noop"
+    deps:
+      - "~:build-rust"
+      - "~:build-ts"
+    tags:
+      - "build"
+
   test:
     command: "pnpm"
     args:
       - "exec"
       - "vitest"
       - "run"
+    env:
+      DNAM_BUILD_PROFILE: "debug"
     deps:
-      - "~:build"
+      - "~:build-rust-debug"
+      - "~:build-ts"
     inputs:
       - "package.json"
       - "tsconfig*.json"
@@ -171,8 +238,11 @@ tasks:
       - "vitest"
       - "run"
       - "--coverage"
+    env:
+      DNAM_BUILD_PROFILE: "debug"
     deps:
-      - "~:build"
+      - "~:build-rust-debug"
+      - "~:build-ts"
     inputs:
       - "package.json"
       - "tsconfig*.json"
@@ -193,8 +263,11 @@ tasks:
       - "vitest"
       - "bench"
       - "--run"
+    env:
+      DNAM_BUILD_PROFILE: "profiling"
     deps:
-      - "~:build"
+      - "~:build-rust-profiling"
+      - "~:build-ts"
     inputs:
       - "package.json"
       - "tsconfig*.json"
@@ -210,9 +283,12 @@ tasks:
 
   profile:
     type: "run"
-    script: "node ./scripts/build_wasm.mjs --profiling && node --cpu-prof --cpu-prof-dir=./dist/profiles ./scripts/profile_sdk.mjs"
+    script: "node --cpu-prof --cpu-prof-dir=./dist/profiles ./scripts/profile_sdk.mjs"
+    env:
+      DNAM_BUILD_PROFILE: "profiling"
     deps:
-      - "~:build"
+      - "~:build-rust-profiling"
+      - "~:build-ts"
     inputs:
       - "package.json"
       - "tsconfig*.json"

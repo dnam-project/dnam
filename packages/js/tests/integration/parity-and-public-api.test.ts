@@ -10,7 +10,7 @@
  * 4. Real-time FFI overhead & WASM binary size budgets (`verify[sdk.ts.perf.profiling-budgets]`).
  */
 
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { dirname, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import fc from "fast-check";
@@ -22,6 +22,7 @@ import {
   getTestingBindings,
   loadNodeDriverSync,
   loadNodeWasmDriverSync,
+  readDistWasmBytes,
 } from "../../src/internal/native/napi.js";
 import * as rootMod from "../../src/node.js";
 import * as parametersMod from "../../src/parameters/index.js";
@@ -276,9 +277,7 @@ describe("Public API surface, 0-ULP behavioral parity, WASM denormals & performa
 
   it("meets real-time 128-frame latency budgets", () => {
     // verify[sdk.ts.perf.profiling-budgets]
-    const dir = dirname(fileURLToPath(import.meta.url));
-    const wasmPath = resolve(dir, "../../dist/dnam.wasm");
-    const wasmSize = statSync(wasmPath).size;
+    const wasmSize = readDistWasmBytes().byteLength;
     expect(wasmSize).toBeGreaterThan(0);
 
     const napiDriver = loadNodeDriverSync();

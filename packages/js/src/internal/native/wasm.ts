@@ -3492,9 +3492,9 @@ export function instantiateWasmDriver(
 function resolveDefaultWasmUrl(): URL {
   const metaUrl = import.meta.url;
   if (metaUrl.includes("/src/internal/native/")) {
-    return new URL(/* @vite-ignore */ "../../../dist/dnam.wasm", metaUrl);
+    return new URL(/* @vite-ignore */ "../../../dist/wasm/debug/dnam.wasm", metaUrl);
   }
-  return new URL(/* @vite-ignore */ "./dnam.wasm", metaUrl);
+  return new URL(/* @vite-ignore */ "./wasm/release/dnam.wasm", metaUrl);
 }
 
 /**

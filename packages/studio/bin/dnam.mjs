@@ -12,7 +12,7 @@ function resolveBinaryPath() {
   const root = resolve(import.meta.dirname, "../../..");
   let bestCandidate = null;
   let bestMtime = -1;
-  for (const profile of ["release", "debug"]) {
+  for (const profile of ["release", "profiling", "debug"]) {
     const candidate = resolve(root, "target", profile, exe);
     if (existsSync(candidate)) {
       const mtime = statSync(candidate).mtimeMs;

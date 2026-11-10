@@ -78,8 +78,8 @@ for (let i = 0; i < jcsIters; i++) {
 const jcsMeanUs = ((performance.now() - tJcs0) * 1000) / jcsIters;
 
 // Now switch active driver to WasmDriver via initWasm and measure WASM SIMD128
-const profilingWasmPath = resolve(pkgRoot, "dist/dnam.profiling.wasm");
-const releaseWasmPath = resolve(pkgRoot, "dist/dnam.wasm");
+const profilingWasmPath = resolve(pkgRoot, "dist/wasm/profiling/dnam.wasm");
+const releaseWasmPath = resolve(pkgRoot, "dist/wasm/release/dnam.wasm");
 const wasmBytes = readFileSync(existsSync(profilingWasmPath) ? profilingWasmPath : releaseWasmPath);
 await nodeSdk.initWasm({ bytes: wasmBytes });
 for (const tier of nodeSdk.tiers) {
@@ -94,4 +94,4 @@ const wasmSize = statSync(wasmSizePath).size;
 console.log("\n=== Auxiliary Operations & Artifact Sizes ===");
 console.log(`- ControlSpace.clampNumericInto (3-Phase): ${clampMeanUs.toFixed(3)} us/call`);
 console.log(`- decodeHeader + encodeHeader + headerToJcs: ${jcsMeanUs.toFixed(2)} us/roundtrip`);
-console.log(`- dist/dnam.wasm binary size: ${(wasmSize / 1024).toFixed(1)} KiB`);
+console.log(`- dist/wasm/release/dnam.wasm binary size: ${(wasmSize / 1024).toFixed(1)} KiB`);
