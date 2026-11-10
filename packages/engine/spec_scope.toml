@@ -95,9 +95,9 @@ reason = "Offline quiet/autonomous/muted evaluation classification owned by trai
 scope = "out-of-scope"
 reason = "Offline companion psychoacoustic metric suite owned by trainer/evaluation suite"
 
-[rules."qual.companion.mr-stft"]
+[rules."qual.companion.mr-iir"]
 scope = "out-of-scope"
-reason = "Offline multi-resolution STFT companion metric owned by trainer/evaluation suite"
+reason = "Offline multi-resolution IIR resonator companion metric owned by trainer/evaluation suite"
 
 [rules."qual.companion.ltas"]
 scope = "out-of-scope"
@@ -977,6 +977,10 @@ reason = "Trainer accelerator/host dual-execution matrix owned by packages/train
 [rules."train.pipeline.dispatch-solve"]
 scope = "out-of-scope"
 reason = "Trainer control-dispatch normal-equation solver owned by packages/trainer"
+
+[rules."train.pipeline.fixtures-matrix"]
+scope = "out-of-scope"
+reason = "Black-box signal-chain fixtures (packages/fixtures) and 4-Tier fixture matrix + DNWB white-box runner verification owned by packages/trainer"
 
 # ==============================================================================
 # 16. Training: Iterative Resume & Caching (`docs/specs/training/iterative_resume_and_caching.md`)

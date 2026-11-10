@@ -1,6 +1,6 @@
 /**
  * Immutable, validated `.dnam` deployment artifact (`Model<TParams>`) supporting inspection,
- * 4 KB in-place header updates, tier prefix stripping, and `Engine` creation
+ * `DMU1` mutable suffix updates, tier prefix stripping, and `Engine` creation
  * (`ref[sdk.ts.model.containers-and-checkpoints]`, `ref[sdk.ts.api.resources-and-data]`).
  *
  * @module
@@ -298,8 +298,8 @@ export class Model<TParams extends ParameterValueMap = Record<string, number | s
   }
 
   /**
-   * Returns a new `Model` with its JSON header updated in-place within the 4 KB page budget
-   * (`ref[sdk.ts.model.containers-and-checkpoints]`).
+   * Returns a new `Model` with its `DMU1` mutable trailer updated in-place (or rebuilt when
+   * unsigned and immutable fields change) (`ref[sdk.ts.model.containers-and-checkpoints]`).
    *
    * Accepts either a replacement `ModelHeader` or an updater callback `(currentHeader) => nextHeader`.
    */

@@ -1,8 +1,7 @@
 //! `.dnam` & `.dnam-ckpt` Hybrid Binary Container Parser, Builder, ZOH Rescaling & `Arena 4` `uplo='U'` Packing (`container`).
 //!
-//! Implements the wire framing, zero-copy `mmap` loader (`< 50 ns` zero-JSON hardware fast-path),
-//! 4 KB page-aligned in-place JSON header editor, Castagnoli `CRC32C` verification,
-//! `.dnam-ckpt` `Arena 4` column-major upper-triangular (`uplo='U'`) sufficient statistics packing,
+//! Implements the canonical `v2.0` 64B-aligned wire framing, zero-copy `mmap` loader (`< 50 ns` zero-JSON hardware fast-path),
+//! `DMU1`/`DMUE` in-place mutable suffix editor, Castagnoli `CRC32C` verification,
 //! and Continuous-Time Zero-Order Hold (ZOH) sample-rate rescaling ($44.1\text{--}96\text{ kHz}$ live,
 //! plus $4\times$ internal ZOH oversampling for offline bounce)
 //! from [`docs/containers/dnam_binary_format.md`](../../../docs/containers/dnam_binary_format.md)
@@ -16,21 +15,24 @@ pub mod wire;
 pub mod zoh;
 
 pub use wire::{
-    CP1_MAGIC, Cp1DecodedRecord, DEFAULT_MAX_MUTABLE_CAPACITY, DMU1_HEADER_SIZE, DMUE_FOOTER_SIZE,
+    CP1_MAGIC, Cp1DecodedRecord, DCRC_MAGIC, DCRC_RECORD_SIZE, DEFAULT_DMU1_TRAILER_CAPACITY,
+    DEFAULT_MAX_MUTABLE_CAPACITY, DMU1_HEADER_SIZE, DMUE_FOOTER_SIZE, DcrcAuthRecord,
     DeclaredDelayHistory, StructuredConditionalBound, StructuredConditionalCurve,
     SwitchControlSpec, V2_DIRECTORY_SIZE, V2_HEADER_OFFSET, V2_PREAMBLE_SIZE, V2ContainerLayout,
     align64_u64, append_dmue_mutable_suffix, build_dmu1_mutable_frame,
-    build_v2_open_dnam_container, compute_v2_open_retained_prefix_sha256,
-    cp1_contributor_record_bytes, decode_cp1_contributor_stream,
-    decode_cp1_contributor_stream_into_slice, decode_cp1_shared_stream_into_slice,
-    encode_domain_field, eval_ui_midpoint_power_skew, is_valid_jcs_unicode_text,
-    parse_and_validate_dmu1_frame, parse_canonical_reference_samples,
-    parse_strict_json_object_bytes, parse_structured_conditional_bounds,
-    parse_structured_conditional_curves, project_immutable_header_value,
-    resolve_conditional_safe_interval, select_conditional_calibration_curve, serialize_jcs_value,
-    strip_v2_open_dnam_container, validate_canonical_jcs_header_bytes, validate_delay_histories,
-    validate_dmu1_frame_no_alloc, validate_mutable_json_schema, validate_stage3_tier_slices,
-    validate_v2_dnam_layout_no_alloc, validate_v2_open_dnam_layout,
+    build_v2_dnam_container_with_profile, build_v2_open_dnam_container,
+    compute_v2_open_retained_prefix_sha256, cp1_contributor_record_bytes,
+    decode_cp1_contributor_stream, decode_cp1_contributor_stream_into_slice,
+    decode_cp1_shared_stream_into_slice, encode_cp1_shared_stream, encode_domain_field,
+    eval_ui_midpoint_power_skew, is_valid_jcs_unicode_text, parse_and_validate_dmu1_frame,
+    parse_canonical_reference_samples, parse_dcrc_record, parse_strict_json_object_bytes,
+    parse_structured_conditional_bounds, parse_structured_conditional_curves,
+    project_immutable_header_value, resolve_conditional_safe_interval,
+    select_conditional_calibration_curve, serialize_jcs_value, strip_v2_open_dnam_container,
+    validate_canonical_jcs_header_bytes, validate_delay_histories, validate_dmu1_frame_no_alloc,
+    validate_mutable_json_schema, validate_stage3_tier_slices, validate_v2_dnam_layout_no_alloc,
+    validate_v2_dnam_layout_with_max_profile, validate_v2_dnam_layout_with_max_profile_no_alloc,
+    validate_v2_open_dnam_layout,
 };
 
 #[cfg(feature = "crypto")]
@@ -39,12 +41,10 @@ pub use crate::provenance::{
     DNSL_MAGIC, DnamSealEnvelopePreamble, DnamSealRecipientSlot, FLAG_SEAL_CHACHA20_FULL,
     MAX_SEAL_RECIPIENTS, unseal_dnam_container,
 };
-pub use builder::{build_dnam_container, update_header_in_place};
-pub use preamble::{DnamPreamble, is_v2_wire_directory_container};
+pub use builder::{build_dnam_container, build_dnam_container_with_cp1, update_header_in_place};
+pub use preamble::DnamPreamble;
 pub use strip::strip_container_to_tier;
-pub use view::{
-    DnamContainerView, SharedControlsExtent, compute_header_crc32c, decode_shared_controls_extent,
-};
+pub use view::{DnamContainerView, SharedControlsExtent, decode_shared_controls_extent};
 pub use zoh::ZohRescaledParams;
 
 /// Magic bytes for a `.dnam` deployment model container (`0x4D414E44` little-endian).
@@ -82,9 +82,6 @@ pub const ARENA_PRO_END_CL: u16 = 566;
 
 /// End of `Arena 0..3 (Ultra)` in 64-byte cache lines (`1,000`).
 pub const ARENA_ULTRA_END_CL: u16 = 1_000;
-
-/// Default 4 KB OS virtual-memory page boundary for `tensor_arena_offset` (`0x1000 = 4,096 B`).
-pub const DEFAULT_PAGE_ALIGNED_ARENA_OFFSET: u32 = 4_096;
 
 // ============================================================================
 // Preamble Flag Bits (`flags: u16`)

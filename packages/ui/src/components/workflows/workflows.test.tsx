@@ -54,15 +54,15 @@ describe("CapturePlanPanel and TrainingTimelinePanel", () => {
           timeline={{
             modelId: "SLO100_Lead",
             status: "running",
-            backendDevice: "Apple MPS (bf16 + fp64 Kronecker)",
+            backendDevice: "Rust Host SIMD (f64 Kronecker)",
             clampedParameterCount: 2,
             history: [
               {
                 epoch: 24,
                 totalEpochs: 40,
-                stage: "Stage 3: Joint End-to-End Fine-Tuning",
+                stage: "Sweep 2: Joint Full-Rig Kronecker Polish",
                 esrLoss: 0.00412,
-                stftLoss: 0.0184,
+                mrIirLoss: 0.0184,
                 maxRgLruRadius: 0.9932,
                 ufdnSpectralNorm: 0.9998,
               },
@@ -90,7 +90,7 @@ describe("CapturePlanPanel and TrainingTimelinePanel", () => {
       </div>,
     );
 
-    await expect.element(page.getByText(/Stage 3: Joint End-to-End Fine-Tuning/)).toBeVisible();
+    await expect.element(page.getByText(/Sweep 2: Joint Full-Rig Kronecker Polish/)).toBeVisible();
     await userEvent.click(page.getByRole("button", { name: "Run dnam-train" }));
     expect(onTrain).toHaveBeenCalledOnce();
     await expectZeroAxeViolations(screen.container);

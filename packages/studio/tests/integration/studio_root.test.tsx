@@ -12,7 +12,7 @@ describe("InteractiveStudioRoot component + IPC integration", () => {
     Reflect.deleteProperty(window, "__TAURI_EVENT_PLUGIN_INTERNALS__");
   });
 
-  it("executes full user journey across Dialog/Opener actions, Rack, Capture, 4-Stage Trainer, and 7 Visualizers", async () => {
+  it("executes full user journey across Dialog/Opener actions, Rack, Capture, Two-Sweep Trainer, and 7 Visualizers", async () => {
     const screen = await render(<InteractiveStudioRoot />);
 
     // 1. Desktop header & Tier 1 actions (Web mode fallback)
@@ -45,14 +45,14 @@ describe("InteractiveStudioRoot component + IPC integration", () => {
       .element(page.getByText(/notification: Captured and aligned stem stem_axis_drive_max/))
       .toBeVisible();
 
-    // 3. 4-Stage Differentiable Trainer workflow: advance epochs to Stage 4 completion
-    await userEvent.click(page.getByRole("tab", { name: "Python Trainer (dnam-train)" }));
+    // 3. Two-Sweep Analytical Trainer workflow: advance sweeps to completion
+    await userEvent.click(page.getByRole("tab", { name: "Rust Trainer (dnam-train)" }));
     const trainBtn = page.getByRole("button", { name: "Run dnam-train" });
     await userEvent.click(trainBtn);
     await expect
       .element(
         page.getByText(
-          "notification: Stage 4 Kronecker .dnam-ckpt Export & CL-01..CL-20 Audit completed",
+          "notification: Sweep 2 Kronecker .dnam-ckpt Export & 3-Phase Audit completed",
         ),
       )
       .toBeVisible();
@@ -160,7 +160,7 @@ describe("InteractiveStudioRoot component + IPC integration", () => {
     await userEvent.click(page.getByRole("button", { name: "Record Stem" }));
     expect(invokedCommands).toContain("notify_studio_event");
 
-    await userEvent.click(page.getByRole("tab", { name: "Python Trainer (dnam-train)" }));
+    await userEvent.click(page.getByRole("tab", { name: "Rust Trainer (dnam-train)" }));
     await userEvent.click(page.getByRole("button", { name: "Run dnam-train" }));
 
     bridgeState.deepLinkHandler?.({ payload: { kind: "model", target: "b7k_ultra" } });

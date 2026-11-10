@@ -65,11 +65,11 @@ export function RotaryKnob({
         <span className="truncate">{label}</span>
         {isRangeClamped ? (
           <span
-            title={`CL-12 Clamped [${effObsMin.toFixed(1)}, ${effObsMax.toFixed(1)}]`}
+            title={`CLAMP-RANGE Clamped [${effObsMin.toFixed(1)}, ${effObsMax.toFixed(1)}]`}
             className="inline-flex items-center gap-0.5 font-mono text-xs text-amber-400"
           >
             <Lock className="size-2.5" />
-            CL-12
+            CLAMP-RANGE
           </span>
         ) : null}
       </div>

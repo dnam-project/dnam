@@ -1,7 +1,7 @@
-//! Workspace, model, control, preset, stem, inspect, render, and `dnam studio` subcommand handlers.
+//! Workspace, model, control, preset, inspect, render, and `dnam studio` subcommand handlers.
 
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use clap::Subcommand;
 use serde_json::json;
@@ -209,60 +209,9 @@ pub enum PresetAction {
     },
 }
 
-/// Subcommands under `dnam stem`.
-#[derive(Debug, Subcommand)]
-pub enum StemAction {
-    /// Register an external wet WAV file as a stem with automatic latency alignment.
-    Add {
-        /// Target model identifier.
-        #[arg(long)]
-        model: String,
-        /// Stem identifier.
-        #[arg(long)]
-        id: String,
-        /// Path to the external wet WAV file.
-        #[arg(long)]
-        wet_wav: PathBuf,
-        /// Control assignments (`--set drive=7.5 --set voice=Crunch`).
-        #[arg(long = "set", short = 'c')]
-        set_controls: Vec<String>,
-    },
-    /// List recorded stems on a model.
-    List {
-        /// Target model identifier.
-        #[arg(long)]
-        model: String,
-    },
-    /// Update control coordinates for an existing stem.
-    Update {
-        /// Target model identifier.
-        #[arg(long)]
-        model: String,
-        /// Stem identifier.
-        #[arg(long)]
-        id: String,
-        /// Updated control assignments (`--set drive=8.0`).
-        #[arg(long = "set", short = 'c')]
-        set_controls: Vec<String>,
-    },
-    /// Remove a stem from a model.
-    Remove {
-        /// Target model identifier.
-        #[arg(long)]
-        model: String,
-        /// Stem identifier.
-        #[arg(long)]
-        id: String,
-        /// Delete the stem WAV file from disk.
-        #[arg(long, default_value_t = false)]
-        delete_files: bool,
-    },
-}
-
 fn parse_control_assignments_for_model(
     model: &ModelManifest,
     tokens: &[String],
-    normalize_ranges: bool,
 ) -> StudioResult<(BTreeMap<String, f32>, BTreeMap<String, usize>)> {
     let mut ranges = BTreeMap::new();
     let mut switches = BTreeMap::new();
@@ -278,17 +227,23 @@ fn parse_control_assignments_for_model(
                 ))
             })?;
             let key = k.trim();
+            if key.is_empty() {
+                return Err(StudioError::Validation(format!(
+                    "Control ID must not be empty in '{trimmed}'"
+                )));
+            }
             let val = v.trim();
-            if let Some(r) = model.ranges.iter().find(|r| r.id == key) {
-                let dial: f32 = val.parse().map_err(|_| {
-                    StudioError::Validation(format!("Invalid numeric value '{val}' for '{key}'"))
-                })?;
-                if normalize_ranges {
-                    let span = (r.max - r.min).max(1e-6);
-                    ranges.insert(key.to_string(), ((dial - r.min) / span).clamp(0.0, 1.0));
-                } else {
-                    ranges.insert(key.to_string(), dial);
-                }
+            if model.ranges.iter().any(|r| r.id == key) {
+                let dial: f32 = val
+                    .parse()
+                    .ok()
+                    .filter(|v: &f32| v.is_finite())
+                    .ok_or_else(|| {
+                        StudioError::Validation(format!(
+                            "Invalid finite numeric value '{val}' for '{key}'"
+                        ))
+                    })?;
+                ranges.insert(key.to_string(), dial);
             } else if let Some(s) = model.switches.iter().find(|s| s.id == key) {
                 if let Some(opt) = s.options.iter().find(|o| o.label == val) {
                     switches.insert(key.to_string(), opt.index);
@@ -302,7 +257,16 @@ fn parse_control_assignments_for_model(
                     )));
                 }
             } else if let Ok(num) = val.parse::<f32>() {
+                if !num.is_finite() {
+                    return Err(StudioError::Validation(format!(
+                        "Non-finite numeric value '{val}' for '{key}'"
+                    )));
+                }
                 ranges.insert(key.to_string(), num);
+            } else {
+                return Err(StudioError::Validation(format!(
+                    "Unknown control '{key}' or invalid numeric value '{val}'"
+                )));
             }
         }
     }
@@ -316,11 +280,59 @@ pub fn run_init(
     author: &str,
     initial_model_id: Option<&str>,
 ) -> StudioResult<String> {
-    let mut proj = DnamProject::init(workspace, name, author)?;
-    if let Some(mid) = initial_model_id
-        && !mid.trim().is_empty()
+    run_init_inner(workspace, None, name, author, initial_model_id)
+}
+
+/// Executes `dnam init` against an explicit user `config_dir`.
+pub fn run_init_with_config_dir(
+    workspace: &Path,
+    config_dir: &Path,
+    name: &str,
+    author: &str,
+    initial_model_id: Option<&str>,
+) -> StudioResult<String> {
+    run_init_inner(workspace, Some(config_dir), name, author, initial_model_id)
+}
+
+fn validate_cli_slug_id(model_id: &str) -> StudioResult<()> {
+    if model_id.is_empty()
+        || model_id != model_id.trim()
+        || model_id == "."
+        || model_id == ".."
+        || model_id.contains(['/', '\\', '\0', ':'])
+        || model_id.chars().any(char::is_control)
     {
-        proj.add_model(mid.trim(), mid.trim(), "Full")?;
+        return Err(StudioError::Validation(format!(
+            "Invalid model_id '{model_id}'"
+        )));
+    }
+    Ok(())
+}
+
+fn run_init_inner(
+    workspace: &Path,
+    config_dir: Option<&Path>,
+    name: &str,
+    author: &str,
+    initial_model_id: Option<&str>,
+) -> StudioResult<String> {
+    let trimmed_mid = initial_model_id.map(str::trim).filter(|s| !s.is_empty());
+    if let Some(raw_mid) = initial_model_id
+        && raw_mid.trim().is_empty()
+    {
+        return Err(StudioError::Validation(
+            "Initial --model-id must not be empty".to_string(),
+        ));
+    }
+    if let Some(mid) = trimmed_mid {
+        validate_cli_slug_id(mid)?;
+    }
+    let mut proj = match config_dir {
+        Some(cfg) => DnamProject::init_with_config_dir(workspace, name, author, cfg)?,
+        None => DnamProject::init(workspace, name, author)?,
+    };
+    if let Some(mid) = trimmed_mid {
+        proj.add_model(mid, mid, "Full")?;
     }
     Ok(format!(
         "Initialized DNAM workspace '{}' at {} (pubkey: {}...)",
@@ -359,6 +371,31 @@ pub fn run_inspect_with_crypto(
     Ok(serde_json::to_string_pretty(&report)?)
 }
 
+fn parse_render_set_overrides(set_controls: &[String]) -> StudioResult<BTreeMap<String, String>> {
+    let mut overrides = BTreeMap::new();
+    for item in set_controls {
+        for part in item.split(',') {
+            let trimmed = part.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            let (k, v) = trimmed.split_once('=').ok_or_else(|| {
+                StudioError::Validation(format!(
+                    "Invalid --set override '{trimmed}'; expected 'id=value'"
+                ))
+            })?;
+            let key = k.trim();
+            if key.is_empty() {
+                return Err(StudioError::Validation(format!(
+                    "Invalid --set override '{trimmed}'; control ID must not be empty"
+                )));
+            }
+            overrides.insert(key.to_string(), v.trim().to_string());
+        }
+    }
+    Ok(overrides)
+}
+
 /// Executes `dnam render`.
 pub fn run_render(
     container_path: &Path,
@@ -368,14 +405,7 @@ pub fn run_render(
     preset: Option<&str>,
     set_controls: &[String],
 ) -> StudioResult<String> {
-    let mut overrides = BTreeMap::new();
-    for item in set_controls {
-        for part in item.split(',') {
-            if let Some((k, v)) = part.trim().split_once('=') {
-                overrides.insert(k.trim().to_string(), v.trim().to_string());
-            }
-        }
-    }
+    let overrides = parse_render_set_overrides(set_controls)?;
     render_wav_with_options(
         container_path,
         input_wav,
@@ -385,7 +415,7 @@ pub fn run_render(
         &overrides,
     )?;
     Ok(format!(
-        "Rendered 24-bit WAV to {} (tier={})",
+        "Rendered 32-bit float WAV to {} (tier={})",
         output_wav.display(),
         tier
     ))
@@ -404,14 +434,7 @@ pub fn run_render_with_crypto(
     device_key_hex: Option<&str>,
     marketplace_pubkey_hex: Option<&str>,
 ) -> StudioResult<String> {
-    let mut overrides = BTreeMap::new();
-    for item in set_controls {
-        for part in item.split(',') {
-            if let Some((k, v)) = part.trim().split_once('=') {
-                overrides.insert(k.trim().to_string(), v.trim().to_string());
-            }
-        }
-    }
+    let overrides = parse_render_set_overrides(set_controls)?;
     render_wav_with_crypto(
         container_path,
         input_wav,
@@ -424,7 +447,7 @@ pub fn run_render_with_crypto(
         marketplace_pubkey_hex,
     )?;
     Ok(format!(
-        "Rendered 24-bit WAV to {} (tier={})",
+        "Rendered 32-bit float WAV to {} (tier={})",
         output_wav.display(),
         tier
     ))
@@ -445,14 +468,7 @@ pub fn run_render_with_bounce_and_crypto(
     device_key_hex: Option<&str>,
     marketplace_pubkey_hex: Option<&str>,
 ) -> StudioResult<String> {
-    let mut overrides = BTreeMap::new();
-    for item in set_controls {
-        for part in item.split(',') {
-            if let Some((k, v)) = part.trim().split_once('=') {
-                overrides.insert(k.trim().to_string(), v.trim().to_string());
-            }
-        }
-    }
+    let overrides = parse_render_set_overrides(set_controls)?;
     render_wav_with_bounce_and_crypto(
         container_path,
         input_wav,
@@ -467,7 +483,7 @@ pub fn run_render_with_bounce_and_crypto(
         marketplace_pubkey_hex,
     )?;
     Ok(format!(
-        "Rendered 24-bit WAV to {} (tier={}, offline_bounce={}, maximize_tier_on_bounce={})",
+        "Rendered 32-bit float WAV to {} (tier={}, offline_bounce={}, maximize_tier_on_bounce={})",
         output_wav.display(),
         tier,
         offline_bounce,
@@ -498,18 +514,39 @@ pub fn run_model(workspace: &Path, action: &ModelAction) -> StudioResult<String>
             ranges,
             switches,
         } => {
+            let mut parsed_ranges = Vec::with_capacity(ranges.len());
+            let mut parsed_switches = Vec::with_capacity(switches.len());
+            let mut seen_ids = std::collections::BTreeSet::new();
+            for r_spec in ranges {
+                let parsed = parse_compact_range_spec(r_spec)?;
+                if !seen_ids.insert(parsed.id.clone()) {
+                    return Err(StudioError::Validation(format!(
+                        "Duplicate control ID '{}' in model add flags",
+                        parsed.id
+                    )));
+                }
+                parsed_ranges.push(parsed);
+            }
+            for s_spec in switches {
+                let parsed = parse_compact_switch_spec(s_spec)?;
+                if !seen_ids.insert(parsed.id.clone()) {
+                    return Err(StudioError::Validation(format!(
+                        "Duplicate control ID '{}' in model add flags",
+                        parsed.id
+                    )));
+                }
+                parsed_switches.push(parsed);
+            }
             let resolved_title = if title.trim().is_empty() {
                 id.as_str()
             } else {
                 title.as_str()
             };
             let model = proj.add_model(id, resolved_title, tier)?;
-            for r_spec in ranges {
-                let parsed = parse_compact_range_spec(r_spec)?;
+            for parsed in parsed_ranges {
                 proj.add_range_control(id, parsed)?;
             }
-            for s_spec in switches {
-                let parsed = parse_compact_switch_spec(s_spec)?;
+            for parsed in parsed_switches {
                 proj.add_switch_control(id, parsed)?;
             }
             Ok(format!(
@@ -638,7 +675,7 @@ pub fn run_preset(workspace: &Path, action: &PresetAction) -> StudioResult<Strin
             set_controls,
         } => {
             let m = proj.load_model(model)?;
-            let (ranges, switches) = parse_control_assignments_for_model(&m, set_controls, false)?;
+            let (ranges, switches) = parse_control_assignments_for_model(&m, set_controls)?;
             proj.add_preset(model, id, label, ranges, switches)?;
             Ok(format!("Added preset '{id}' to model '{model}'"))
         }
@@ -653,7 +690,7 @@ pub fn run_preset(workspace: &Path, action: &PresetAction) -> StudioResult<Strin
             set_controls,
         } => {
             let m = proj.load_model(model)?;
-            let (ranges, switches) = parse_control_assignments_for_model(&m, set_controls, false)?;
+            let (ranges, switches) = parse_control_assignments_for_model(&m, set_controls)?;
             proj.update_preset(
                 model,
                 id,
@@ -674,49 +711,6 @@ pub fn run_preset(workspace: &Path, action: &PresetAction) -> StudioResult<Strin
         PresetAction::Remove { model, id } => {
             proj.remove_preset(model, id)?;
             Ok(format!("Removed preset '{id}' from model '{model}'"))
-        }
-    }
-}
-
-/// Executes `dnam stem`.
-pub fn run_stem(workspace: &Path, action: &StemAction) -> StudioResult<String> {
-    let proj = DnamProject::open(workspace)?;
-    match action {
-        StemAction::Add {
-            model,
-            id,
-            wet_wav,
-            set_controls,
-        } => {
-            let m = proj.load_model(model)?;
-            let (ranges, switches) = parse_control_assignments_for_model(&m, set_controls, true)?;
-            let rec = proj.register_external_stem(model, id, wet_wav, ranges, switches)?;
-            Ok(format!(
-                "Registered stem '{}' on model '{}' (lag={:.2} samples, snr={:.1} dB)",
-                rec.stem_id, model, rec.aligned_lag_samples, rec.snr_db
-            ))
-        }
-        StemAction::List { model } => {
-            let m = proj.load_model(model)?;
-            Ok(serde_json::to_string_pretty(&m.stems)?)
-        }
-        StemAction::Update {
-            model,
-            id,
-            set_controls,
-        } => {
-            let m = proj.load_model(model)?;
-            let (ranges, switches) = parse_control_assignments_for_model(&m, set_controls, true)?;
-            proj.update_stem(model, id, ranges, switches)?;
-            Ok(format!("Updated stem '{id}' on model '{model}'"))
-        }
-        StemAction::Remove {
-            model,
-            id,
-            delete_files,
-        } => {
-            proj.remove_stem(model, id, *delete_files)?;
-            Ok(format!("Removed stem '{id}' from model '{model}'"))
         }
     }
 }
@@ -757,11 +751,12 @@ pub fn run_studio(workspace: &Path, headless_check: bool) -> StudioResult<String
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::capture::{generate_excitation_signal, write_wav_24bit};
+    use crate::capture::write_wav_24bit;
     use dnam_engine::container::{ARENA_OFFSET_ULTRA_END, build_dnam_container};
     use dnam_engine::schema::DnamJsonHeader;
     use std::env;
     use std::fs;
+    use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn temp_dir(tag: &str) -> PathBuf {
@@ -779,8 +774,42 @@ mod tests {
         let dir = temp_dir("ws_cli");
         let ws = dir.as_path();
 
+        let bad_init_dir = dir.join("uninitialized_on_bad_mid");
+        assert!(run_init(&bad_init_dir, "BadWS", "Author", Some("../escape")).is_err());
+        assert!(run_init(&bad_init_dir, "BadWS", "Author", Some("   ")).is_err());
+        assert!(!bad_init_dir.join("dnam.toml").exists());
+
         let init_out = run_init(ws, "MyWS", "Author", Some("init_mod")).expect("run_init");
         assert!(init_out.contains("MyWS"));
+        assert!(run_init(ws, "MyWS2", "Author", None).is_err());
+
+        // Malformed or duplicate -r/-s on model add must NOT leave a half-created model behind
+        for (bad_r, bad_s) in [
+            (vec!["bad_range_spec".to_string()], Vec::new()),
+            (
+                vec!["gain=0..10:5".to_string(), "gain=0..10:6".to_string()],
+                Vec::new(),
+            ),
+            (
+                vec!["gain=0..10:5".to_string()],
+                vec!["gain=off,on:off".to_string()],
+            ),
+        ] {
+            assert!(
+                run_model(
+                    ws,
+                    &ModelAction::Add {
+                        id: "atomic_fail".to_string(),
+                        title: String::new(),
+                        tier: "Full".to_string(),
+                        ranges: bad_r,
+                        switches: bad_s,
+                    },
+                )
+                .is_err()
+            );
+        }
+        assert!(!ws.join("models/atomic_fail").exists());
 
         let st_out = run_status(ws).expect("run_status");
         assert!(st_out.contains("init_mod"));
@@ -980,6 +1009,20 @@ mod tests {
             )
             .is_err()
         );
+        for bad_set in ["drive=NaN", "extra_knob=inf", "voic=lead", "=2.0"] {
+            assert!(
+                run_preset(
+                    ws,
+                    &PresetAction::Update {
+                        model: "amp".to_string(),
+                        id: "p1".to_string(),
+                        label: None,
+                        set_controls: vec![bad_set.to_string()],
+                    }
+                )
+                .is_err()
+            );
+        }
         run_preset(
             ws,
             &PresetAction::Remove {
@@ -989,50 +1032,12 @@ mod tests {
         )
         .expect("preset remove");
 
-        // Stem Add, List, Update, Remove
-        let dry_sig = generate_excitation_signal(48_000, 1024);
-        let ext_wet = ws.join("ext_wet.wav");
-        write_wav_24bit(&ext_wet, &dry_sig, 48_000, 1).expect("write ext_wet");
-        run_stem(
-            ws,
-            &StemAction::Add {
-                model: "amp".to_string(),
-                id: "s_ext".to_string(),
-                wet_wav: ext_wet,
-                set_controls: vec!["gain=6.0,voice=lead".to_string()],
-            },
-        )
-        .expect("stem add");
-        assert!(
-            run_stem(
-                ws,
-                &StemAction::List {
-                    model: "amp".to_string()
-                }
-            )
-            .expect("stem list")
-            .contains("s_ext")
-        );
-        run_stem(
-            ws,
-            &StemAction::Update {
-                model: "amp".to_string(),
-                id: "s_ext".to_string(),
-                set_controls: vec!["gain=9.0".to_string()],
-            },
-        )
-        .expect("stem update");
-        run_stem(
-            ws,
-            &StemAction::Remove {
-                model: "amp".to_string(),
-                id: "s_ext".to_string(),
-                delete_files: true,
-            },
-        )
-        .expect("stem remove");
-
         // Inspect & Render
+        let dry_sig: Vec<f32> = (0..1024)
+            .map(|i| ((i as f32) * 0.05).sin() * 0.25)
+            .collect();
+        let in_wav = ws.join("in.wav");
+        write_wav_24bit(&in_wav, &dry_sig, 48_000, 1).expect("write in_wav");
         let mut header = DnamJsonHeader::default_reference();
         let arena = vec![0u8; ARENA_OFFSET_ULTRA_END as usize];
         let c_bytes =
@@ -1047,14 +1052,36 @@ mod tests {
         let out_wav = ws.join("rendered.wav");
         let render_msg = run_render(
             &c_path,
-            &ws.join("models/amp/stems/input.wav"),
+            &in_wav,
             &out_wav,
             "lite",
             None,
             &["gain=5.0".to_string()],
         )
         .expect("render");
-        assert!(render_msg.contains("Rendered 24-bit WAV"));
+        assert!(render_msg.contains("Rendered 32-bit float WAV"));
+        assert!(
+            run_render(
+                &c_path,
+                &in_wav,
+                &out_wav,
+                "lite",
+                None,
+                &["bad_no_eq".to_string()]
+            )
+            .is_err()
+        );
+        assert!(
+            run_render(
+                &c_path,
+                &in_wav,
+                &out_wav,
+                "lite",
+                None,
+                &["=5.0".to_string()]
+            )
+            .is_err()
+        );
 
         // Studio headless check
         assert!(

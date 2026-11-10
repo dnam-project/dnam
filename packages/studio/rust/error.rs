@@ -13,9 +13,9 @@ pub enum StudioError {
     Json(String),
     /// Invalid user control, preset, or stem specification.
     Validation(String),
-    ///WAV format or alignment failure.
+    /// WAV format or alignment failure.
     Audio(String),
-    /// Python trainer environment (`uv`) or worker execution error.
+    /// Rust trainer worker (`dnam-train`) environment or execution error.
     Trainer(String),
     /// Underlying `dnam-engine` container or DSP error.
     Engine(String),
@@ -29,7 +29,7 @@ impl fmt::Display for StudioError {
             Self::Json(msg) => write!(f, "JSON protocol error: {msg}"),
             Self::Validation(msg) => write!(f, "Validation error: {msg}"),
             Self::Audio(msg) => write!(f, "Audio capture error: {msg}"),
-            Self::Trainer(msg) => write!(f, "Python trainer error: {msg}"),
+            Self::Trainer(msg) => write!(f, "Trainer worker error: {msg}"),
             Self::Engine(msg) => write!(f, "DNAM engine error: {msg}"),
         }
     }
@@ -82,7 +82,7 @@ mod tests {
         );
         assert_eq!(
             StudioError::Trainer("worker failed".to_string()).to_string(),
-            "Python trainer error: worker failed"
+            "Trainer worker error: worker failed"
         );
         assert_eq!(
             StudioError::Engine("invalid magic".to_string()).to_string(),

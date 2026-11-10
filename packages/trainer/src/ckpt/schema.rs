@@ -118,7 +118,75 @@ impl DnamCkptHeader {
 
     /// Validates all structural, alignment, and safety invariants of the checkpoint header.
     pub fn validate(&self) -> Result<(), DnamError> {
-        self.base.validate()
+        self.base.validate()?;
+        self.base.ensure_not_preview_for_daw_host()?;
+        if let Some(stems) = &self.stems_registry {
+            if u16::try_from(stems.len()).is_err() {
+                return Err(DnamError::SchemaValidationError(
+                    "stems_registry exceeds u16::MAX (65535) entries".to_string(),
+                ));
+            }
+            for stem in stems {
+                if stem.stem_id.trim().is_empty() {
+                    return Err(DnamError::SchemaValidationError(
+                        "stems_registry entry stem_id must not be empty".to_string(),
+                    ));
+                }
+                if let Some(phys) = &stem.extracted_physics
+                    && (!phys.detected_grain_size_ms.is_finite()
+                        || phys.detected_grain_size_ms < 0.0
+                        || !phys.detected_pitch_shift_semitones.is_finite()
+                        || phys
+                            .delays_ms
+                            .iter()
+                            .chain(&phys.lfo_freqs_hz)
+                            .any(|&v| !v.is_finite() || v < 0.0)
+                        || phys.decay_gains_lin.iter().any(|&v| !v.is_finite()))
+                {
+                    return Err(DnamError::SchemaValidationError(
+                        "stems_registry extracted_physics contains non-finite or negative value"
+                            .to_string(),
+                    ));
+                }
+                for (off_field, len_field, slice) in [
+                    (
+                        "stems_registry.g_audio_uplo_u_f64.byte_offset",
+                        "stems_registry.g_audio_uplo_u_f64.byte_length",
+                        &stem.g_audio_uplo_u_f64,
+                    ),
+                    (
+                        "stems_registry.c_audio_tier_f64.byte_offset",
+                        "stems_registry.c_audio_tier_f64.byte_length",
+                        &stem.c_audio_tier_f64,
+                    ),
+                ] {
+                    if slice.arena != 4 || slice.byte_length == 0 || slice.dtype != "f64" {
+                        return Err(DnamError::SchemaValidationError(
+                            "stems_registry slice must target arena 4 with non-zero f64 length"
+                                .to_string(),
+                        ));
+                    }
+                    if (slice.byte_offset & 0x3F) != 0 {
+                        return Err(DnamError::UnalignedOffset {
+                            field: off_field,
+                            offset: slice.byte_offset,
+                        });
+                    }
+                    if (slice.byte_length & 0x3F) != 0 {
+                        return Err(DnamError::UnalignedOffset {
+                            field: len_field,
+                            offset: slice.byte_length,
+                        });
+                    }
+                    if slice.byte_offset.checked_add(slice.byte_length).is_none() {
+                        return Err(DnamError::SchemaValidationError(
+                            "stems_registry slice offset + length overflow".to_string(),
+                        ));
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Deserializes a [`DnamCkptHeader`] from UTF-8 JSON bytes in a single non-generic compilation unit.
@@ -206,6 +274,14 @@ mod tests {
     fn test_dnam_ckpt_header_validate_and_normalize() {
         let mut hdr = DnamCkptHeader::default_reference();
         assert_eq!(hdr.base.container_kind, "dnam-ckpt");
+        hdr.base.controls_schema.push(
+            serde_json::from_value(serde_json::json!({
+                "id": "gain", "name": "Gain", "type": "range",
+                "lobatto_degree": 0, "declared_range": [0.0, 10.0],
+                "safe_clamped_range": [0.0, 10.0], "default": 5
+            }))
+            .unwrap(),
+        );
         hdr.validate().unwrap();
 
         let dummy_slice = TensorSliceEntry {
@@ -250,12 +326,78 @@ mod tests {
             prescriptions: vec!["Record stem at gain=10".to_string()],
         });
 
-        let raw_json = serde_json::to_string(&hdr).unwrap();
+        let mut preset_ctrls = BTreeMap::new();
+        if let Some(first_ctrl) = hdr.base.controls_schema.first() {
+            preset_ctrls.insert(first_ctrl.id.clone(), serde_json::json!(4));
+        }
+        hdr.base.presets = vec![dnam_engine::schema::PresetDef {
+            id: "p0".to_string(),
+            name: "Preset 0".to_string(),
+            description: None,
+            controls: preset_ctrls,
+            user_metadata: BTreeMap::new(),
+        }];
+
+        let raw_json = hdr.to_json_string().unwrap();
+        let parsed_str = DnamCkptHeader::from_json_str(&raw_json).unwrap();
+        assert_eq!(parsed_str, hdr);
         let norm_json = DnamCkptHeader::validate_and_normalize_json_str(&raw_json).unwrap();
         let roundtrip: DnamCkptHeader = serde_json::from_str(&norm_json).unwrap();
         assert_eq!(roundtrip.stems_registry.as_ref().unwrap().len(), 1);
         assert!(roundtrip.stems_registry.as_ref().unwrap()[0].enabled);
 
         assert!(DnamCkptHeader::validate_and_normalize_json_str("{not json").is_err());
+        assert!(DnamCkptHeader::validate_and_normalize_json_str(r#"{"unknown_field":1}"#).is_err());
+        let mut with_unknown: serde_json::Value = serde_json::from_str(&raw_json).unwrap();
+        with_unknown["unexpected_top_key"] = serde_json::json!(true);
+        assert!(
+            DnamCkptHeader::validate_and_normalize_json_str(&with_unknown.to_string()).is_err()
+        );
+        assert_eq!(StemProvenance::default().num_frames, 0);
+        assert_eq!(ExtractedPhysics::default().detected_grain_size_ms, 0.0);
+        assert!(AuditReport::default().phase1_clamps.is_empty());
+
+        let mut bad_off = hdr.clone();
+        bad_off.stems_registry.as_mut().unwrap()[0]
+            .g_audio_uplo_u_f64
+            .byte_offset = 10_241;
+        assert!(bad_off.validate().is_err());
+
+        let mut bad_len = hdr.clone();
+        bad_len.stems_registry.as_mut().unwrap()[0]
+            .c_audio_tier_f64
+            .byte_length = 65;
+        assert!(bad_len.validate().is_err());
+
+        let mut bad_ovf = hdr.clone();
+        bad_ovf.stems_registry.as_mut().unwrap()[0]
+            .c_audio_tier_f64
+            .byte_offset = !0x3F_u32;
+        bad_ovf.stems_registry.as_mut().unwrap()[0]
+            .c_audio_tier_f64
+            .byte_length = 64;
+        assert!(bad_ovf.validate().is_err());
+
+        let mut preview_hdr = hdr.clone();
+        preview_hdr.base.container_kind = "preview".to_string();
+        assert!(preview_hdr.validate().is_err());
+
+        let mut empty_id = hdr.clone();
+        empty_id.stems_registry.as_mut().unwrap()[0].stem_id = "  ".to_string();
+        assert!(empty_id.validate().is_err());
+
+        let mut bad_dtype = hdr.clone();
+        bad_dtype.stems_registry.as_mut().unwrap()[0]
+            .g_audio_uplo_u_f64
+            .dtype = "f32".to_string();
+        assert!(bad_dtype.validate().is_err());
+
+        let mut bad_phys = hdr;
+        bad_phys.stems_registry.as_mut().unwrap()[0]
+            .extracted_physics
+            .as_mut()
+            .unwrap()
+            .delays_ms = vec![f32::NAN];
+        assert!(bad_phys.validate().is_err());
     }
 }

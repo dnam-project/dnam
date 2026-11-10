@@ -18,7 +18,7 @@ adrs:
 
 # Psychoacoustic Quality Standard (`bESR`) & 4-Tier Benchmarks
 
-This specification defines the **perceptual quality evaluation framework (`bESR`, `MR-STFT`, `LTAS` spectral tilt, and `SegESR`), device-agnostic noise-floor rules, quiet vs. muted stem classification, and 4-tier (`Lite` / `Full` / `Pro` / `Ultra`) acceptance benchmarks** for **Dynamic Neural Audio Modeler (DNAM)**.
+This specification defines the **perceptual quality evaluation framework (`bESR`, `MR-IIR`, `LTAS` spectral tilt, and `SegESR`), device-agnostic noise-floor rules, quiet vs. muted stem classification, and 4-tier (`Lite` / `Full` / `Pro` / `Ultra`) acceptance benchmarks** for **Dynamic Neural Audio Modeler (DNAM)**.
 
 For the overarching system goals and hardware budgets, see [`../../requirements/system_goals_and_requirements.md`](../../requirements/system_goals_and_requirements.md). For why plain broadband `ESR` and fixed pre-emphasis fail, see [`../../adr/0003-band-balanced-besr-and-noise-qualification.md`](../../adr/0003-band-balanced-besr-and-noise-qualification.md). The relationship between band-specific fitting statistics, noise-floor clipping, and actual output certification is described in [`../training/four_stage_pipeline.md` §2.2](../training/four_stage_pipeline.md#22-sweep-2--joint-full-rig-kronecker-polish--export-certification).
 
@@ -37,7 +37,7 @@ flowchart LR
     Bezout --> BandEval["Per-Channel, Per-Band Noise-Floor Subtracted Ratio:<br/>ESR_b,c = max(0, ||H_b(y_hat_c - y_c)||^2 - gamma_hiss * T * eps_floor,b,c^2)<br/>        / (||H_b y_c||^2 + T * eps_floor,b,c^2)"]
     BandEval --> Combine["Raw Equal-Weight 3-Band Average per Channel:<br/>bESR_c,dB = 10 log10((ESR_LF,c + ESR_MF,c + ESR_HF,c) / 3)<br/>(Bounded within <= 4.77 dB of That Channel's Worst Band)"]
     Combine --> Accept["Tier Acceptance:<br/>Zero Only Qualifying Noise-Limited Band Contributions<br/>Keep the Divisor 3 and Report the Raw Score"]
-    Accept --> MultiMetric["Companion Perceptual Suite:<br/>• 5-Window Floor-Clamped MR-STFT (256..4096)<br/>• 1/3-Octave LTAS Spectral Tilt (Delta EQ_dB)<br/>• Frame-Wise Segmental ESR (SegESR)"]
+    Accept --> MultiMetric["Companion Perceptual Suite:<br/>• 5-Scale Floor-Clamped MR-IIR (256..4096)<br/>• 1/3-Octave LTAS Spectral Tilt (Delta EQ_dB)<br/>• Frame-Wise Segmental ESR (SegESR)"]
 ```
 
 ### 1.1 4th-Order-Flat Bezout Complementary 3-Band Crossover ($H_{\text{LF}} + H_{\text{MF}} + H_{\text{HF}} \equiv I$)
@@ -76,7 +76,7 @@ $$\text{ESR}_{b,c} = \frac{\max\Big(0,\ \big\Vert H_b(z)(\hat{y}_c - y_c) \big\V
    - If the denominator is positive, apply the formula directly; a zero clipped numerator yields a zero band ratio (`-∞ dB`).
    - If the denominator is zero, the band ratio is `0` when error energy is zero and `+∞` (failing band and composite criteria) when error energy is nonzero.
    - Missing noise evidence, empty selections, non-finite inputs, or underflow-erased nonzero energy render certification unavailable rather than passing.
-3. `r[qual.besr.per-output]` **Per-Output Independent Evaluation:** Evaluate every applicable output channel $c$ independently against its tier's composite, per-band, spectral-tilt (`LTAS`), `MR-STFT`, and `SegESR` thresholds. Pooled stereo scores may be displayed for convenience, but every required output channel must pass on its own (since pooling can mask a silent or missing quieter channel).
+3. `r[qual.besr.per-output]` **Per-Output Independent Evaluation:** Evaluate every applicable output channel $c$ independently against its tier's composite, per-band, and spectral-tilt (`LTAS`) acceptance thresholds, as well as its `MR-IIR` and `SegESR` companion diagnostics and monotone non-regression rules. Pooled stereo scores may be displayed for convenience, but every required output channel must pass on its own (since pooling can mask a silent or missing quieter channel).
 
 > [!IMPORTANT]
 > **Mathematical Worst-Band Bound (`4.77 dB` Ceiling):** Because the raw $\text{bESR}$ averages the three band ratios equally ($w_{\text{LF}} = w_{\text{MF}} = w_{\text{HF}} = \frac{1}{3}$), each channel's raw composite $\text{bESR}_{\text{dB}}$ can **never** be more than $10 \log_{10}(3) \approx 4.77\text{ dB}$ better than that channel's single worst frequency band.
@@ -150,7 +150,7 @@ For an independently established exact zero floor and exact-silent target, the s
 
 ---
 
-## 3. Companion Perceptual Metrics (`MR-STFT`, `LTAS` Tilt & `SegESR`)
+## 3. Companion Perceptual Metrics (`MR-IIR`, `LTAS` Tilt & `SegESR`)
 
 `r[qual.companion.suite]`
 
@@ -158,15 +158,19 @@ Three complementary perceptual metrics are evaluated per output channel alongsid
 
 | Diagnostic Metric | Mathematical Formulation | Perceptual & Physical Purpose |
 | :--- | :--- | :--- |
-| **Multi-Resolution Log-STFT (`MR-STFT`)** | Log-magnitude spectral distance across `N_fft ∈ {256, 512, 1024, 2048, 4096}`, clamped to a measured, window-matched spectral floor | Short windows (`256, 512 ≈ 5–10 ms`) lock drum transients, slap-bass pops, and pick attacks; long windows (`2048, 4096 ≈ 42–85 ms`) give `11 Hz` resolution to separate low bass fundamentals (`31 Hz` vs. `41 Hz`) and cabinet resonances. |
+| **Multi-Resolution Log-IIR (`MR-IIR`)** | Log-magnitude spectral distance across 5-scale multi-Q 2nd-order IIR resonator cascades `M ∈ {256, 512, 1024, 2048, 4096}` (`r_M = exp(-π / M)`, hop `H = M / 4`), clamped to a measured, scale-matched spectral floor | Short scales (`256, 512 ≈ 5–10 ms`) lock drum transients, slap-bass pops, and pick attacks; long scales (`2048, 4096 ≈ 42–85 ms`) give high-Q resolution to separate low bass fundamentals (`31 Hz` vs. `41 Hz`) and cabinet resonances. |
 | **1/3-Octave Spectral Tilt (`ΔEQ_dB`)** | Maximum absolute noise-adjusted Long-Term Average Spectrum (`LTAS`) deviation over the 33-band base-10 one-third-octave grid (`20 Hz–20 kHz`, preserving `2–18 kHz` HF); report unadjusted tilt separately | Detects shelving droop or resonant filter tilt that could alter mix placement. |
 | **Segmental Frame-Wise ESR (`SegESR`)** | Duration-weighted mean of noise-adjusted linear frame ESR ratios across active `20 ms` frames, converted to dB | Weights quiet decay frames equally with loud frames without arithmetic-dB distortion. |
 
-### 3.1 Measured MR-STFT Noise Floor
+### 3.1 Measured MR-IIR Noise Floor
 
-`r[qual.companion.mr-stft]`
+`r[qual.companion.mr-iir]`
 
-For each output channel, FFT size $N_{\text{fft}} \in \lbrace 256, 512, 1024, 2048, 4096 \rbrace$, and frequency bin, clamp both target and prediction magnitudes to a validated, window-matched spectral noise floor before taking logarithms (never a fixed `-60 dBFS` floor or target-peak-relative threshold). Keep the floor, window normalization, and frame selection identical across compared models. For an exact zero floor, log-magnitude distance is `0` when both magnitudes are zero and `+∞` when only one is zero.
+For each output channel $c$ at sample rate $f_s \ge 8{,}000\text{ Hz}$, evaluate 5 resonator time-scales $M \in \lbrace 256, 512, 1024, 2048, 4096 \rbrace$ (pole radius $r_M = \exp(-\pi / M)$, hop $H = M / 4$) across $K = 32$ log-spaced probe frequencies $f_k = 20 \cdot (f_{\max} / 20)^{k / (K - 1)}$ over $[20\text{ Hz}, f_{\max}]$ where $f_{\max} = \min(20{,}000\text{ Hz}, 0.45 f_s)$. Step each unity-peak-gain 2nd-order bandpass resonator from zero initial state across the complete aligned timeline before extracting the evaluated post-warmup slice (`ref[qual.besr.finite-timeline]`):
+$$H_{M,k}(z) = \frac{\frac{1}{2}(1 - r_M^2)(1 - z^{-2})}{1 - 2 r_M \cos(2\pi f_k / f_s) z^{-1} + r_M^2 z^{-2}}$$
+Over sliding length-$M$ windows hopped by $H = M / 4$ within the evaluated slice (including the final tail window, or a single partial window when the slice is shorter than $M$), compute target RMS $A_{M,k,h}$, prediction RMS $\hat{A}_{M,k,h}$, and scale-matched resonator-filtered noise floor RMS $\sigma_{M,k,h}$ (never a fixed `-60 dBFS` floor or target-peak-relative threshold). Clamp $\tilde{A}_{M,k,h} = \max(A_{M,k,h}, \sigma_{M,k,h})$ and $\tilde{\hat{A}}_{M,k,h} = \max(\hat{A}_{M,k,h}, \sigma_{M,k,h})$, keeping the floor, resonator normalization, and hop selection identical across compared models:
+$$\mathcal{L}_M = \frac{\sqrt{\sum_{k,h} (\tilde{A}_{M,k,h} - \tilde{\hat{A}}_{M,k,h})^2}}{\sqrt{\sum_{k,h} \tilde{A}_{M,k,h}^2}} + \frac{1}{N_{M}} \sum_{k,h} \left\vert \ln \tilde{A}_{M,k,h} - \ln \tilde{\hat{A}}_{M,k,h} \right\vert, \qquad \mathrm{MR\text{-}IIR}_c = \frac{1}{5} \sum_{M} \mathcal{L}_M$$
+For an exact zero floor ($\sigma_{M,k,h} = 0$), cell log-magnitude distance is `0` when both magnitudes are zero and `+∞` when only one is zero; likewise, the spectral-convergence ratio is `0` when both numerator and denominator are zero and `+∞` when only the denominator is zero. Because floor clamping ($\max(A_{M,k,h}, \sigma_{M,k,h})$) is not noise-power subtraction, finite target-noise realizations exceed $\sigma_{M,k,h}$ with positive expectation on noisy captures; accordingly, `MR-IIR` (and `SegESR`) are enforced via §4's monotone adjacent-tier and old-stem non-regression rules rather than fixed device-agnostic Benchmark Matrix cutoffs.
 
 ### 3.2 Noise-Adjusted LTAS
 
@@ -207,7 +211,7 @@ $$r_{f,c} = \frac{\max(0, R_{f,c} - F_{f,c})}{Y_{f,c} + F_{f,c}}, \qquad w_f = \
 
 `r[qual.tiers.benchmark-matrix]`
 
-Each tier (`Lite`, `Full`, `Pro`, `Ultra`) and output channel is evaluated independently across captured and held-out control settings. In addition to the absolute thresholds below, adjacent retained tiers must satisfy **monotone per-output non-regression**: on identical aligned inputs, targets, controls, and initial state, a higher tier's raw composite and per-band `bESR`, `MR-STFT`, maximum absolute noise-adjusted `LTAS`, excluded-band `LTAS` residuals, and linear `SegESR` must be no worse than the lower tier's.
+Each tier (`Lite`, `Full`, `Pro`, `Ultra`) and output channel is evaluated independently across captured and held-out control settings. In addition to the absolute thresholds below, adjacent retained tiers must satisfy **monotone per-output non-regression**: on identical aligned inputs, targets, controls, and initial state, a higher tier's raw composite and per-band `bESR`, `MR-IIR`, maximum absolute noise-adjusted `LTAS`, excluded-band `LTAS` residuals, and linear `SegESR` must be no worse than the lower tier's.
 
 | DNAM Tier | Target Grade | Noise-Qualified Composite Acceptance | Per-Band Requirement (`LF` / `MF` / `HF` or `≤ NoiseFloor + 1.0 dB`) | Max Absolute Noise-Adjusted LTAS (`dB`) | Multi-Control Unseen Acceptance | Primary Application |
 | :--- | :--- | :---: | :--- | :---: | :---: | :--- |

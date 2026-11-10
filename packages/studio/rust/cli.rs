@@ -1,12 +1,9 @@
 //! Subsystem 6: `clap` v4 Subcommand Router for the `dnam` CLI and Tauri v2 Studio.
 
-pub mod cache_cmd;
-pub mod capture_cmd;
 pub mod format;
-pub mod train_cmd;
 pub mod workspace_cmd;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use clap::{Parser, Subcommand};
 
@@ -32,7 +29,7 @@ pub struct DnamCli {
 /// Top-level `dnam` subcommands.
 #[derive(Debug, Subcommand)]
 pub enum DnamCommand {
-    /// Initialize a new DNAM workspace (`dnam.toml`, `audio/input.wav`, `dist/`, `models/`).
+    /// Initialize a new DNAM workspace (`dnam.toml`, `dist/`, `models/`).
     Init {
         /// Workspace project name.
         #[arg(long, default_value = "DNAM Studio Workspace")]
@@ -44,7 +41,7 @@ pub enum DnamCommand {
         #[arg(long)]
         model_id: Option<String>,
     },
-    /// Show workspace, models, capture calibration, and hardware SIMD status.
+    /// Show workspace, models, and hardware SIMD status.
     Status,
     /// Inspect a `.dnam`, `.dnam-ckpt`, or `.dnam-seal` container's preamble, tiers, controls, and provenance.
     Inspect {
@@ -60,13 +57,13 @@ pub enum DnamCommand {
         #[arg(long)]
         marketplace_pubkey_hex: Option<String>,
     },
-    /// Render `input_wav` through the native Rust SIMD `DnamEngine` and write a 24-bit WAV.
+    /// Render `input_wav` through the native Rust SIMD `DnamEngine` and write a 32-bit float WAV.
     Render {
         /// Path to the `.dnam`, `.dnam-ckpt`, or `.dnam-seal` container.
         container_path: PathBuf,
         /// Input dry WAV path.
         input_wav: PathBuf,
-        /// Output rendered 24-bit WAV path.
+        /// Output rendered 32-bit float WAV path.
         output_wav: PathBuf,
         /// Slimmable tier (`lite`, `full`, `pro`, `ultra`).
         #[arg(long, default_value = "ultra")]
@@ -121,69 +118,6 @@ pub enum DnamCommand {
         #[command(subcommand)]
         action: workspace_cmd::PresetAction,
     },
-    /// Manage recorded stems on a model (`add`, `list`, `update`, `remove`).
-    Stem {
-        /// Stem action.
-        #[command(subcommand)]
-        action: workspace_cmd::StemAction,
-    },
-    /// Manage re-amp hardware/software capture, calibration, excitation generation, and schedules.
-    Capture {
-        /// Capture subcommand.
-        #[command(subcommand)]
-        action: capture_cmd::CaptureAction,
-    },
-    /// Train or iteratively resume a model (`dist/<id>.dnam` + `models/<id>/checkpoint.dnam-ckpt`).
-    Train {
-        /// Model ID to train (optional if `--all-models` or only one model exists).
-        #[arg(long)]
-        model: Option<String>,
-        /// Train all models in the workspace that have recorded stems.
-        #[arg(long)]
-        all_models: bool,
-        /// Optional epoch count override.
-        #[arg(long)]
-        epochs: Option<u32>,
-        /// Ignore any existing `.dnam-ckpt` and train all 4 stages from scratch.
-        #[arg(long)]
-        from_scratch: bool,
-        /// Run Phase 1..3 control clamping audit without full gradient optimization.
-        #[arg(long)]
-        audit_only: bool,
-        /// Force Tier-2 micro-polish during `.dnam-ckpt` resume.
-        #[arg(long)]
-        force_tier2: bool,
-        /// Architecture topology override (`auto`, `core1_only`, `full`).
-        #[arg(long)]
-        topology: Option<String>,
-        /// Training backend (`local` or `remote`).
-        #[arg(long)]
-        backend: Option<String>,
-        /// Accelerator device (`auto`, `cpu`, `cuda`, `rocm`, `mps`, `tpu`).
-        #[arg(long)]
-        device: Option<String>,
-        /// Mixed-precision policy (`auto`, `fp32`, `bf16`, `fp16`).
-        #[arg(long)]
-        precision: Option<String>,
-        /// Skip `Ed25519` creator signing.
-        #[arg(long)]
-        unsigned: bool,
-        /// Emit only the generated `--request-json` file without spawning `dnam-train`.
-        #[arg(long)]
-        dry_run: bool,
-    },
-    /// Manage the isolated `uv` Python trainer virtual environment (`dnam-train`).
-    Trainer {
-        /// Trainer environment action (`status`, `install`, `uninstall`).
-        #[command(subcommand)]
-        action: train_cmd::TrainerAction,
-    },
-    /// Inspect or clear `.dnam-cache` local training sidecar caches (`status`, `clear`).
-    Cache {
-        /// Cache action (`status`, `clear`).
-        #[command(subcommand)]
-        action: cache_cmd::CacheAction,
-    },
     /// Launch the Tauri v2 Desktop Studio GUI window (or inspect Studio launch config).
     Studio {
         /// Print Tauri v2 window & native audio host configuration as JSON without opening a window.
@@ -194,12 +128,30 @@ pub enum DnamCommand {
 
 /// Executes a parsed [`DnamCli`] invocation and returns formatted output lines.
 pub fn execute_cli(cli: &DnamCli) -> StudioResult<String> {
+    execute_cli_inner(cli, None)
+}
+
+/// Executes a parsed [`DnamCli`] invocation against an explicit user `config_dir`.
+pub fn execute_cli_with_config_dir(cli: &DnamCli, config_dir: &Path) -> StudioResult<String> {
+    execute_cli_inner(cli, Some(config_dir))
+}
+
+fn execute_cli_inner(cli: &DnamCli, config_dir: Option<&Path>) -> StudioResult<String> {
     match &cli.command {
         Some(DnamCommand::Init {
             name,
             author,
             model_id,
-        }) => workspace_cmd::run_init(&cli.workspace, name, author, model_id.as_deref()),
+        }) => match config_dir {
+            Some(cfg) => workspace_cmd::run_init_with_config_dir(
+                &cli.workspace,
+                cfg,
+                name,
+                author,
+                model_id.as_deref(),
+            ),
+            None => workspace_cmd::run_init(&cli.workspace, name, author, model_id.as_deref()),
+        },
         Some(DnamCommand::Status) => workspace_cmd::run_status(&cli.workspace),
         Some(DnamCommand::Inspect {
             container_path,
@@ -245,40 +197,6 @@ pub fn execute_cli(cli: &DnamCli) -> StudioResult<String> {
         Some(DnamCommand::Model { action }) => workspace_cmd::run_model(&cli.workspace, action),
         Some(DnamCommand::Control { action }) => workspace_cmd::run_control(&cli.workspace, action),
         Some(DnamCommand::Preset { action }) => workspace_cmd::run_preset(&cli.workspace, action),
-        Some(DnamCommand::Stem { action }) => workspace_cmd::run_stem(&cli.workspace, action),
-        Some(DnamCommand::Capture { action }) => capture_cmd::run_capture(&cli.workspace, action),
-        Some(DnamCommand::Train {
-            model,
-            all_models,
-            epochs,
-            from_scratch,
-            audit_only,
-            force_tier2,
-            topology,
-            backend,
-            device,
-            precision,
-            unsigned,
-            dry_run,
-        }) => train_cmd::run_train(
-            &cli.workspace,
-            train_cmd::TrainCommandArgs {
-                model_id: model.clone(),
-                all_models: *all_models,
-                epochs: *epochs,
-                from_scratch: *from_scratch,
-                audit_only: *audit_only,
-                force_tier2: *force_tier2,
-                topology: topology.clone(),
-                backend: backend.clone(),
-                device: device.clone(),
-                precision: precision.clone(),
-                unsigned: *unsigned,
-                dry_run: *dry_run,
-            },
-        ),
-        Some(DnamCommand::Trainer { action }) => train_cmd::run_trainer_env(&cli.workspace, action),
-        Some(DnamCommand::Cache { action }) => cache_cmd::run_cache(&cli.workspace, action),
         Some(DnamCommand::Studio { headless_check }) => {
             workspace_cmd::run_studio(&cli.workspace, *headless_check)
         }
@@ -361,46 +279,6 @@ mod tests {
         .expect("preset list");
         assert!(!preset_out.is_empty());
 
-        let stem_out = execute_cli(&DnamCli {
-            workspace: dir.clone(),
-            command: Some(DnamCommand::Stem {
-                action: workspace_cmd::StemAction::List {
-                    model: "m1".to_string(),
-                },
-            }),
-        })
-        .expect("stem list");
-        assert!(!stem_out.is_empty());
-
-        let cap_out = execute_cli(&DnamCli {
-            workspace: dir.clone(),
-            command: Some(DnamCommand::Capture {
-                action: capture_cmd::CaptureAction::Backends,
-            }),
-        })
-        .expect("capture backends");
-        assert!(cap_out.contains("anagram"));
-
-        let train_out = execute_cli(&DnamCli {
-            workspace: dir.clone(),
-            command: Some(DnamCommand::Train {
-                model: Some("m1".to_string()),
-                all_models: false,
-                epochs: Some(1),
-                from_scratch: true,
-                audit_only: false,
-                force_tier2: false,
-                topology: None,
-                backend: None,
-                device: None,
-                precision: None,
-                unsigned: true,
-                dry_run: true,
-            }),
-        })
-        .expect("train dry run");
-        assert!(train_out.contains("Wrote training request JSON"));
-
         let studio_out = execute_cli(&DnamCli {
             workspace: dir.clone(),
             command: Some(DnamCommand::Studio {
@@ -449,7 +327,7 @@ mod tests {
             }),
         })
         .expect("render");
-        assert!(rend.contains("Rendered 24-bit WAV"));
+        assert!(rend.contains("Rendered 32-bit float WAV"));
 
         let stripped_path = dir.join("m_pro.dnam");
         let strip_out = execute_cli(&DnamCli {
@@ -463,24 +341,6 @@ mod tests {
         .expect("strip");
         assert!(strip_out.contains("Stripped container"));
         assert!(stripped_path.is_file());
-
-        let tr_st = execute_cli(&DnamCli {
-            workspace: dir.clone(),
-            command: Some(DnamCommand::Trainer {
-                action: train_cmd::TrainerAction::Status,
-            }),
-        })
-        .expect("trainer status");
-        assert!(tr_st.contains("venv_dir"));
-
-        let cache_st = execute_cli(&DnamCli {
-            workspace: dir.clone(),
-            command: Some(DnamCommand::Cache {
-                action: cache_cmd::CacheAction::Status { model: None },
-            }),
-        })
-        .expect("cache status");
-        assert!(cache_st.contains("total_entries"));
 
         let _ = fs::remove_dir_all(&dir);
     }

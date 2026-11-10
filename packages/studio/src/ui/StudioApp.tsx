@@ -134,7 +134,7 @@ export function StudioApp({
           <TabsList aria-label="Studio Workspace Tabs">
             <TabsTrigger value="rack">Rack Audition</TabsTrigger>
             <TabsTrigger value="capture">Capture Schedule</TabsTrigger>
-            <TabsTrigger value="trainer">Python Trainer (dnam-train)</TabsTrigger>
+            <TabsTrigger value="trainer">Rust Trainer (dnam-train)</TabsTrigger>
             <TabsTrigger value="visualizers">Tri-Physics Visualizers</TabsTrigger>
           </TabsList>
 

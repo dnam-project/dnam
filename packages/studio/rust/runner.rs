@@ -1,14 +1,20 @@
-//! Subsystem 3: Native SIMD `.dnam` / `.dnam-ckpt` Container Inspector & 24-Bit WAV Renderer (`dnam-engine`).
+//! Subsystem 3: Native SIMD `.dnam` / `.dnam-ckpt` Container Inspector & 32-Bit Float WAV Renderer (`dnam-engine`).
 
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 
-use dnam_engine::container::{DnamContainerView, FLAG_HAS_CKPT_STEMS, strip_container_to_tier};
+use dnam_engine::container::{
+    DNSL_MAGIC, DnamContainerView, FLAG_HAS_CKPT_STEMS, strip_container_to_tier,
+};
 use dnam_engine::math::{BackendKind, detect_best_backend};
 use dnam_engine::provenance::DefaultCryptoProvider;
 use dnam_engine::{DynamicDnamEngine, Tier};
-use dnam_trainer::ckpt::DnamCkptView;
+use dnam_trainer::ckpt::{
+    DnamCkptView, export_runtime_dnam_from_ckpt, export_runtime_dnam_from_ckpt_with_crypto,
+    strip_dnck_checkpoint_to_tier_with_crypto,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::capture::{read_wav, write_wav_32bit_float};
@@ -78,15 +84,16 @@ pub fn detect_native_backend_str() -> &'static str {
 
 fn decode_hex_32(hex: &str) -> StudioResult<[u8; 32]> {
     let trimmed = hex.trim();
-    if trimmed.len() != 64 {
+    if !trimmed.is_ascii() || trimmed.len() != 64 {
         return Err(StudioError::Validation(format!(
-            "Expected 64 hex chars (32 bytes), got {} chars",
+            "Expected 64 ASCII hex chars (32 bytes), got {} bytes",
             trimmed.len()
         )));
     }
     let mut out = [0_u8; 32];
-    for (i, slot) in out.iter_mut().enumerate() {
-        let pair = &trimmed[i * 2..i * 2 + 2];
+    for (slot, chunk) in out.iter_mut().zip(trimmed.as_bytes().as_chunks::<2>().0) {
+        let pair = std::str::from_utf8(chunk)
+            .map_err(|_| StudioError::Validation("Invalid ASCII hex byte".to_string()))?;
         *slot = u8::from_str_radix(pair, 16)
             .map_err(|_| StudioError::Validation(format!("Invalid hex byte '{pair}'")))?;
     }
@@ -99,9 +106,23 @@ fn build_crypto_provider(
     marketplace_pubkey_hex: Option<&str>,
 ) -> StudioResult<DefaultCryptoProvider> {
     let mut crypto = DefaultCryptoProvider::default();
-    if let (Some(id), Some(key_hex)) = (device_id, device_key_hex) {
-        let secret = decode_hex_32(key_hex)?;
-        crypto = crypto.with_device_key(id.trim(), secret);
+    match (device_id, device_key_hex) {
+        (Some(id), Some(key_hex)) => {
+            let trimmed_id = id.trim();
+            if trimmed_id.is_empty() {
+                return Err(StudioError::Validation(
+                    "Device ID must not be empty".to_string(),
+                ));
+            }
+            let secret = decode_hex_32(key_hex)?;
+            crypto = crypto.with_device_key(trimmed_id, secret);
+        }
+        (Some(_), None) | (None, Some(_)) => {
+            return Err(StudioError::Validation(
+                "Both --device-id and --device-key-hex must be provided together".to_string(),
+            ));
+        }
+        (None, None) => {}
     }
     if let Some(mkt_hex) = marketplace_pubkey_hex {
         let pk = decode_hex_32(mkt_hex)?;
@@ -217,28 +238,94 @@ pub fn inspect_container_bytes_with_crypto(
     })
 }
 
-fn parse_tier_str(tier_str: &str) -> Tier {
+fn parse_tier_str(tier_str: &str) -> StudioResult<Tier> {
     match tier_str.trim().to_ascii_lowercase().as_str() {
-        "lite" | "0" => Tier::Lite,
-        "full" | "1" => Tier::Full,
-        "pro" | "2" => Tier::Pro,
-        _ => Tier::Ultra,
+        "lite" | "0" => Ok(Tier::Lite),
+        "full" | "1" => Ok(Tier::Full),
+        "pro" | "2" => Ok(Tier::Pro),
+        "ultra" | "3" => Ok(Tier::Ultra),
+        other => Err(StudioError::Validation(format!(
+            "Unknown tier '{other}': expected lite, full, pro, or ultra (0..3)"
+        ))),
     }
 }
 
 /// Strips higher slimmable tiers from a `.dnam` or `.dnam-ckpt` container on disk down to `max_tier_str`,
-/// preserving `Ed25519` `tier_arena_sha256` signatures without re-signing.
+/// verifying cryptographic integrity/signatures before and after stripping.
 pub fn strip_container_file(
     input_path: impl AsRef<Path>,
     output_path: impl AsRef<Path>,
     max_tier_str: &str,
 ) -> StudioResult<usize> {
+    strip_container_file_with_crypto(input_path, output_path, max_tier_str, None, None, None)
+}
+
+/// Strips higher slimmable tiers from a `.dnam` or `.dnam-ckpt` container on disk down to `max_tier_str`
+/// with optional OEM device / marketplace cryptographic verification keys.
+pub fn strip_container_file_with_crypto(
+    input_path: impl AsRef<Path>,
+    output_path: impl AsRef<Path>,
+    max_tier_str: &str,
+    device_id: Option<&str>,
+    device_key_hex: Option<&str>,
+    marketplace_pubkey_hex: Option<&str>,
+) -> StudioResult<usize> {
+    let out_ref = output_path.as_ref();
     let bytes = fs::read(input_path)?;
-    let max_tier = parse_tier_str(max_tier_str);
-    let stripped = strip_container_to_tier(&bytes, max_tier)
-        .map_err(|e| StudioError::Engine(format!("{e:?}")))?;
+    let max_tier = parse_tier_str(max_tier_str)?;
+    let crypto = build_crypto_provider(device_id, device_key_hex, marketplace_pubkey_hex)?;
+    if bytes.len() >= 4 && bytes[0..4] == DNSL_MAGIC {
+        return Err(StudioError::Validation(
+            "Cannot strip an EnclaveSealed (.dnam-seal / DNSL) container without re-sealing"
+                .to_string(),
+        ));
+    }
+    let wants_ckpt = out_ref
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case("dnam-ckpt"));
+    let stripped = if bytes.starts_with(b"DNCK") {
+        let ckpt_view = DnamCkptView::from_bytes(&bytes, &crypto)
+            .map_err(|e| StudioError::Engine(format!("{e:?}")))?;
+        let eff_tier = ckpt_view.preamble.highest_tier().min(max_tier);
+        if wants_ckpt {
+            let out = strip_dnck_checkpoint_to_tier_with_crypto(&bytes, eff_tier, &crypto)
+                .map_err(|e| StudioError::Engine(format!("{e:?}")))?;
+            DnamCkptView::from_bytes(&out, &crypto)
+                .map_err(|e| StudioError::Engine(format!("{e:?}")))?;
+            out
+        } else {
+            let dnam_bytes = export_runtime_dnam_from_ckpt_with_crypto(&bytes, &crypto)
+                .map_err(|e| StudioError::Engine(format!("{e:?}")))?;
+            let out = strip_container_to_tier(&dnam_bytes, eff_tier)
+                .map_err(|e| StudioError::Engine(format!("{e:?}")))?;
+            DnamContainerView::from_bytes(&out, &crypto)
+                .map_err(|e| StudioError::Engine(format!("{e:?}")))?;
+            out
+        }
+    } else {
+        if wants_ckpt {
+            return Err(StudioError::Validation(
+                "Cannot write a .dnam-ckpt checkpoint from a runtime .dnam input container"
+                    .to_string(),
+            ));
+        }
+        let view = DnamContainerView::from_bytes(&bytes, &crypto)
+            .map_err(|e| StudioError::Engine(format!("{e:?}")))?;
+        let eff_tier = view.preamble.highest_tier().min(max_tier);
+        let out = strip_container_to_tier(&bytes, eff_tier)
+            .map_err(|e| StudioError::Engine(format!("{e:?}")))?;
+        DnamContainerView::from_bytes(&out, &crypto)
+            .map_err(|e| StudioError::Engine(format!("{e:?}")))?;
+        out
+    };
     let len = stripped.len();
-    fs::write(output_path, stripped)?;
+    if let Some(parent) = out_ref.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(out_ref, stripped)?;
     Ok(len)
 }
 
@@ -308,12 +395,49 @@ pub fn render_wav_with_bounce_and_crypto(
     device_key_hex: Option<&str>,
     marketplace_pubkey_hex: Option<&str>,
 ) -> StudioResult<()> {
-    let container_bytes = fs::read(container_path)?;
+    render_wav_with_bounce_and_crypto_inner(
+        container_path.as_ref(),
+        input_wav_path.as_ref(),
+        output_wav_path.as_ref(),
+        tier_str,
+        preset_id,
+        control_overrides,
+        offline_bounce,
+        maximize_tier_on_bounce,
+        device_id,
+        device_key_hex,
+        marketplace_pubkey_hex,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn render_wav_with_bounce_and_crypto_inner(
+    container_path: &Path,
+    input_wav_path: &Path,
+    output_wav_path: &Path,
+    tier_str: &str,
+    preset_id: Option<&str>,
+    control_overrides: &BTreeMap<String, String>,
+    offline_bounce: bool,
+    maximize_tier_on_bounce: bool,
+    device_id: Option<&str>,
+    device_key_hex: Option<&str>,
+    marketplace_pubkey_hex: Option<&str>,
+) -> StudioResult<()> {
+    let raw_bytes = fs::read(container_path)?;
     let crypto = build_crypto_provider(device_id, device_key_hex, marketplace_pubkey_hex)?;
+    let container_bytes: Cow<'_, [u8]> = if raw_bytes.starts_with(b"DNCK") {
+        Cow::Owned(
+            export_runtime_dnam_from_ckpt_with_crypto(&raw_bytes, &crypto)
+                .map_err(|e| StudioError::Engine(format!("{e:?}")))?,
+        )
+    } else {
+        Cow::Borrowed(raw_bytes.as_slice())
+    };
     let view = DnamContainerView::from_bytes(&container_bytes, &crypto)
         .map_err(|e| StudioError::Engine(format!("{e:?}")))?;
     let input = read_wav(input_wav_path)?;
-    let tier = parse_tier_str(tier_str);
+    let tier = parse_tier_str(tier_str)?;
     let mut engine = DynamicDnamEngine::from_bytes_owned_with_backend_and_crypto(
         &container_bytes,
         tier,
@@ -325,13 +449,15 @@ pub fn render_wav_with_bounce_and_crypto(
     engine.set_offline_bounce(offline_bounce);
     engine.set_maximize_tier_on_bounce(maximize_tier_on_bounce);
 
-    if let Some(pid) = preset_id
-        && let Some(preset) = view
+    if let Some(pid) = preset_id {
+        let preset = view
             .header
             .presets
             .iter()
             .find(|p| p.id == pid || p.name == pid)
-    {
+            .ok_or_else(|| {
+                StudioError::Validation(format!("Preset '{pid}' not found in container"))
+            })?;
         for (idx, ctrl) in view.header.controls_schema.iter().enumerate() {
             if let Some(val) = preset.controls.get(&ctrl.id) {
                 if let Some(num) = val.as_f64() {
@@ -348,38 +474,58 @@ pub fn render_wav_with_bounce_and_crypto(
 
     for (idx, ctrl) in view.header.controls_schema.iter().enumerate() {
         if let Some(raw_val) = control_overrides.get(&ctrl.id) {
-            if let Ok(num_val) = raw_val.parse::<f32>() {
-                if let Some([lo, hi]) = ctrl.declared_range {
-                    let span = (hi - lo).max(1e-6);
-                    let norm = ((num_val - lo) / span).clamp(0.0, 1.0);
-                    engine.set_control_immediate(idx, norm);
+            if let Some(opts) = &ctrl.declared_options {
+                if let Some(pos) = opts.iter().position(|o| o == raw_val) {
+                    engine.set_control_immediate(idx, pos as f32);
+                } else if let Ok(pos) = raw_val.parse::<usize>()
+                    && pos < opts.len()
+                {
+                    engine.set_control_immediate(idx, pos as f32);
                 } else {
-                    engine.set_control_immediate(idx, num_val);
+                    return Err(StudioError::Validation(format!(
+                        "Invalid switch value '{raw_val}' for control '{}'; expected one of {opts:?} or index < {}",
+                        ctrl.id,
+                        opts.len()
+                    )));
                 }
-            } else if let Some(opts) = &ctrl.declared_options
-                && let Some(pos) = opts.iter().position(|o| o == raw_val)
-            {
-                engine.set_control_immediate(idx, pos as f32);
+            } else {
+                let num_val = raw_val
+                    .parse::<f32>()
+                    .ok()
+                    .filter(|v| v.is_finite())
+                    .ok_or_else(|| {
+                        StudioError::Validation(format!(
+                            "Invalid finite range value '{raw_val}' for control '{}'",
+                            ctrl.id
+                        ))
+                    })?;
+                engine.set_control_immediate(idx, num_val);
             }
         }
     }
 
     let num_frames = input.samples.len() / usize::from(input.channels.max(1));
-    let mut mono_in = Vec::with_capacity(num_frames);
+    let mut in_l = Vec::with_capacity(num_frames);
+    let mut in_r = Vec::new();
     if input.channels <= 1 {
-        mono_in.extend_from_slice(&input.samples);
+        in_l.extend_from_slice(&input.samples);
     } else {
+        in_r.reserve(num_frames);
         for chunk in input.samples.chunks_exact(usize::from(input.channels)) {
-            mono_in.push(chunk[0]);
+            in_l.push(chunk[0]);
+            in_r.push(chunk[1]);
         }
     }
 
     let mut out_l = vec![0.0_f32; num_frames];
     let mut out_r = vec![0.0_f32; num_frames];
     if offline_bounce {
-        engine.render_offline_bounce(&mono_in, &mono_in, &mut out_l, &mut out_r);
+        let right_ref = if input.channels >= 2 { &in_r } else { &in_l };
+        engine.render_offline_bounce(&in_l, right_ref, &mut out_l, &mut out_r);
+    } else if input.channels >= 2 {
+        engine.process_block(&in_l, &in_r, &mut out_l, &mut out_r);
     } else {
-        engine.process_mono_to_stereo(&mono_in, &mut out_l, &mut out_r);
+        engine.process_mono_to_stereo(&in_l, &mut out_l, &mut out_r);
     }
 
     let mut stereo_interleaved = Vec::with_capacity(num_frames * 2);
@@ -395,14 +541,22 @@ pub fn render_wav_with_bounce_and_crypto(
     )
 }
 
-/// Renders an input WAV file through a `.dnam` container using native hardware SIMD (`dnam-engine`).
+/// Renders an input WAV file through a `.dnam` or `.dnam-ckpt` container using native hardware SIMD (`dnam-engine`).
 pub fn render_wav_with_container(
     container_path: impl AsRef<Path>,
     input_wav_path: impl AsRef<Path>,
     output_wav_path: impl AsRef<Path>,
     normalized_controls: &[f32],
 ) -> StudioResult<()> {
-    let container_bytes = fs::read(container_path)?;
+    let raw_bytes = fs::read(container_path)?;
+    let container_bytes: Cow<'_, [u8]> = if raw_bytes.starts_with(b"DNCK") {
+        Cow::Owned(
+            export_runtime_dnam_from_ckpt(&raw_bytes)
+                .map_err(|e| StudioError::Engine(format!("{e:?}")))?,
+        )
+    } else {
+        Cow::Borrowed(raw_bytes.as_slice())
+    };
     let input = read_wav(input_wav_path)?;
     let mut engine = DynamicDnamEngine::from_bytes_owned_with_backend(
         &container_bytes,
@@ -417,18 +571,25 @@ pub fn render_wav_with_container(
     }
 
     let num_frames = input.samples.len() / usize::from(input.channels.max(1));
-    let mut mono_in = Vec::with_capacity(num_frames);
+    let mut in_l = Vec::with_capacity(num_frames);
+    let mut in_r = Vec::new();
     if input.channels <= 1 {
-        mono_in.extend_from_slice(&input.samples);
+        in_l.extend_from_slice(&input.samples);
     } else {
+        in_r.reserve(num_frames);
         for chunk in input.samples.chunks_exact(usize::from(input.channels)) {
-            mono_in.push(chunk[0]);
+            in_l.push(chunk[0]);
+            in_r.push(chunk[1]);
         }
     }
 
     let mut out_l = vec![0.0_f32; num_frames];
     let mut out_r = vec![0.0_f32; num_frames];
-    engine.process_mono_to_stereo(&mono_in, &mut out_l, &mut out_r);
+    if input.channels >= 2 {
+        engine.process_block(&in_l, &in_r, &mut out_l, &mut out_r);
+    } else {
+        engine.process_mono_to_stereo(&in_l, &mut out_l, &mut out_r);
+    }
 
     let mut stereo_interleaved = Vec::with_capacity(num_frames * 2);
     for i in 0..num_frames {
@@ -594,7 +755,7 @@ mod tests {
             &BTreeMap::new(),
         )
         .expect("render ultra");
-        let stripped_path = dir.join("ref_pro.dnam");
+        let stripped_path = dir.join("nested_strip").join("ref_pro.dnam");
         let stripped_len =
             strip_container_file(&dnam_path, &stripped_path, "pro").expect("strip to pro");
         assert!(stripped_len < dnam_bytes.len());
@@ -613,6 +774,130 @@ mod tests {
         render_wav_with_container(&dnam_path, &in_stereo_path, &out_wav2, &[0.5])
             .expect("render_wav_with_container stereo");
         assert!(out_wav2.is_file());
+
+        // Exercise realtime (non-bounce) path + crypto hex validation & provider paths
+        let hex32 = "aa".repeat(32);
+        let rep_crypto =
+            inspect_container_with_crypto(&dnam_path, Some("dev-1"), Some(&hex32), Some(&hex32))
+                .expect("inspect with crypto");
+        assert_eq!(rep_crypto.magic, "DNAM");
+        assert!(inspect_container_with_crypto(&dnam_path, Some("d"), Some("short"), None).is_err());
+        assert!(
+            inspect_container_with_crypto(&dnam_path, Some("d"), Some(&"0éa".repeat(16)), None)
+                .is_err()
+        );
+        assert!(
+            inspect_container_with_crypto(&dnam_path, Some("d"), Some(&"zz".repeat(32)), None)
+                .is_err()
+        );
+        render_wav_with_bounce_and_crypto(
+            &dnam_path,
+            &in_stereo_path,
+            &out_wav2,
+            "0",
+            first_preset,
+            &overrides,
+            false,
+            false,
+            Some("dev-1"),
+            Some(&hex32),
+            Some(&hex32),
+        )
+        .expect("render non-bounce stereo with crypto");
+        render_wav_with_bounce_and_crypto(
+            &dnam_path,
+            &in_mono_path,
+            &out_wav2,
+            "3",
+            None,
+            &overrides,
+            false,
+            false,
+            None,
+            None,
+            None,
+        )
+        .expect("render non-bounce mono");
+
+        // Unknown preset_id, unknown tier name, or .dnam -> .dnam-ckpt must return an explicit validation error
+        assert!(strip_container_file(&dnam_path, &stripped_path, "ltie").is_err());
+        assert!(strip_container_file(&dnam_path, dir.join("from_dnam.dnam-ckpt"), "pro").is_err());
+        assert!(
+            render_wav_with_options(
+                &dnam_path,
+                &in_mono_path,
+                &out_wav2,
+                "ltie",
+                None,
+                &overrides
+            )
+            .is_err()
+        );
+        assert!(
+            render_wav_with_options(
+                &dnam_path,
+                &in_mono_path,
+                &out_wav2,
+                "lite",
+                Some("nonexistent_preset"),
+                &overrides,
+            )
+            .is_err()
+        );
+        for ctrl in &view.header.controls_schema {
+            let mut bad_ov = BTreeMap::new();
+            bad_ov.insert(ctrl.id.clone(), "NaN_or_nonexistent_opt".to_string());
+            assert!(
+                render_wav_with_options(
+                    &dnam_path,
+                    &in_mono_path,
+                    &out_wav2,
+                    "lite",
+                    None,
+                    &bad_ov
+                )
+                .is_err()
+            );
+        }
+
+        // .dnam-ckpt (`DNCK`) support in render and strip (both to .dnam-ckpt and to .dnam)
+        render_wav_with_options(
+            &ckpt_path,
+            &in_stereo_path,
+            &out_wav2,
+            "pro",
+            first_preset,
+            &overrides,
+        )
+        .expect("render from .dnam-ckpt");
+        render_wav_with_container(&ckpt_path, &in_stereo_path, &out_wav2, &[0.5, 0.5])
+            .expect("render_wav_with_container from .dnam-ckpt");
+        let stripped_ckpt = dir.join("ref_pro.dnam-ckpt");
+        strip_container_file(&ckpt_path, &stripped_ckpt, "pro").expect("strip ckpt to ckpt");
+        assert!(inspect_container(&stripped_ckpt).unwrap().is_checkpoint);
+        let stripped_dnam_from_ckpt = dir.join("from_ckpt_pro.dnam");
+        strip_container_file(&ckpt_path, &stripped_dnam_from_ckpt, "pro")
+            .expect("strip ckpt to runtime dnam");
+        assert!(
+            !inspect_container(&stripped_dnam_from_ckpt)
+                .unwrap()
+                .is_checkpoint
+        );
+
+        assert!(inspect_container_with_crypto(&dnam_path, Some("dev1"), None, None).is_err());
+        assert!(
+            inspect_container_with_crypto(&dnam_path, None, Some("11".repeat(32).as_str()), None)
+                .is_err()
+        );
+        assert!(
+            inspect_container_with_crypto(
+                &dnam_path,
+                Some("   "),
+                Some("11".repeat(32).as_str()),
+                None
+            )
+            .is_err()
+        );
 
         let _ = fs::remove_dir_all(&dir);
     }

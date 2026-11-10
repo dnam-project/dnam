@@ -121,6 +121,6 @@ flowchart LR
 | Hardware Regime | Detection Condition | Alignment Proxy & Verification Rule |
 | :--- | :--- | :--- |
 | **1. Standard Broadband (`Amps, Drives, Cabs`)** | Broadband dry-to-wet linear correlation `> 0.35` within `locked ± 48` samples | Parabolic sub-sample cross-correlation peak around `locked`; post-alignment polish gated on `c_dry > 0.40`. |
-| **2. Extreme Gated / Wavefolder Fuzz (`Family 1 / Op-N`)** | Broadband linear correlation `≤ 0.35` with high crest/clipping | Causal clipped-fuzz proxy `tanh(5 x_dry)` cross-correlated against `y_wet` within `locked ± 48` samples. |
+| **2. Extreme Gated / Wavefolder Fuzz (`Family 1 / Op-N`)** | Broadband linear correlation `≤ 0.35` with high crest/clipping | Causal clipped-fuzz proxy `LPF_800(tanh(10 * HPF_80(x_dry)))` (`80 Hz` 1-pole HPF, `10x` `tanh` clip, `800 Hz` 1-pole LPF) cross-correlated against `y_wet` within `locked ± 48` samples. |
 | **3. Steep Resonant / High-Pass (`Wah, Phaser, Treble Booster`)** | Low broadband correlation with concentrated upper-band energy | Zero-phase `1.5 kHz` high-pass filtered dry/wet cross-correlation to lock transient leading edges without phase-delay bias. |
 | **4. Modulated Delay / Echo / Reverb (`Op-T[Tank]`)** | Strong delayed repeats or kill-dry wet output | `pulse1_onset_window` leading-edge alignment (or `kill_dry_locked` reference latency when dry feedthrough is absent), preserving intentional effect delay `τ_0,m`. |

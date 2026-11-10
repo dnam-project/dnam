@@ -3,8 +3,8 @@ import { AccelerationBadge, DiscreteSwitch, RotaryKnob, StabilityAuditBadge } fr
 
 function RotaryKnobPlayground() {
   const [value, setValue] = useFixtureInput("Value", 6.5);
-  const [observedMin] = useFixtureInput("Observed Min (CL-12)", 1.5);
-  const [observedMax] = useFixtureInput("Observed Max (CL-12)", 8.5);
+  const [observedMin] = useFixtureInput("Observed Min (CLAMP-RANGE)", 1.5);
+  const [observedMax] = useFixtureInput("Observed Max (CLAMP-RANGE)", 8.5);
   const [domain] = useFixtureSelect("Domain", {
     options: ["core1", "core2", "control"],
     defaultValue: "core1",
@@ -62,6 +62,6 @@ function DiscreteSwitchAndBadgesPlayground() {
 }
 
 export default {
-  "Rotary Knob (CL-12 Range Clamped)": <RotaryKnobPlayground />,
-  "Discrete Switch (CL-13) & Status Badges": <DiscreteSwitchAndBadgesPlayground />,
+  "Rotary Knob (CLAMP-RANGE Clamped)": <RotaryKnobPlayground />,
+  "Discrete Switch (CLAMP-SWITCH) & Status Badges": <DiscreteSwitchAndBadgesPlayground />,
 };

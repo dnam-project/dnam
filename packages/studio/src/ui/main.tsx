@@ -20,8 +20,16 @@ export function InteractiveStudioRoot() {
     if (!isTauri()) {
       return;
     }
-    void invoke("studio_ipc", {
-      req: { command: "get_plugins", args: {} },
+    void invoke<{ ok?: boolean; data?: { lastDeepLink?: DnamDeepLinkRoute | null } }>(
+      "studio_ipc",
+      {
+        req: { command: "get_plugins", args: {} },
+      },
+    ).then((res) => {
+      const initial = res?.data?.lastDeepLink;
+      if (initial) {
+        setDesktopStatus((prev) => prev ?? `deep-link: Routed ${initial.kind} → ${initial.target}`);
+      }
     });
     void invoke<string>("check_studio_update");
     const unlistenPromise = listen<DnamDeepLinkRoute>("dnam-deep-link", (event) => {
@@ -132,12 +140,12 @@ export function InteractiveStudioRoot() {
           const nextEpoch = Math.min(40, lastEpoch + 5 || 10);
           if (nextEpoch >= 40) {
             setDesktopStatus(
-              "notification: Stage 4 Kronecker .dnam-ckpt Export & CL-01..CL-20 Audit completed",
+              "notification: Sweep 2 Kronecker .dnam-ckpt Export & 3-Phase Audit completed",
             );
             if (isTauri()) {
               void invoke("notify_studio_event", {
-                title: "DNAM 4-Stage Trainer Complete",
-                body: "Stage 4 Kronecker .dnam-ckpt exported (CL-01–CL-20 PASS)",
+                title: "DNAM Two-Sweep Trainer Complete",
+                body: "Sweep 2 Kronecker .dnam-ckpt exported (3-Phase Audit PASS)",
               });
             }
           }
@@ -151,10 +159,10 @@ export function InteractiveStudioRoot() {
                 totalEpochs: 40,
                 stage:
                   nextEpoch >= 40
-                    ? "Stage 4: Kronecker .dnam-ckpt Export & CL-01..CL-20 Audit"
-                    : "Stage 3: Joint End-to-End Fine-Tuning",
+                    ? "Sweep 2: Kronecker .dnam-ckpt Export & 3-Phase Audit"
+                    : "Sweep 2: Joint Full-Rig Kronecker Polish",
                 esrLoss: Number((0.0025 * (40 / nextEpoch)).toFixed(5)),
-                stftLoss: Number((0.012 * (40 / nextEpoch)).toFixed(5)),
+                mrIirLoss: Number((0.012 * (40 / nextEpoch)).toFixed(5)),
                 maxRgLruRadius: 0.9914,
                 ufdnSpectralNorm: 0.9999,
               },

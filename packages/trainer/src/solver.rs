@@ -17,10 +17,26 @@ pub const fn tier_feature_dimension(tier: Tier) -> usize {
 }
 
 /// Returns the packed upper-triangular length $N(N + 1)/2$ for a symmetric $N \times N$ Gram matrix
-/// (`ref[container.ckpt.uplo-u]`).
+/// (`ref[container.ckpt.uplo-u]`), avoiding `dim * (dim + 1)` intermediate overflow on 32-bit targets.
 #[must_use]
 pub const fn uplo_u_packed_len(dim: usize) -> usize {
-    dim * (dim + 1) / 2
+    if dim.is_multiple_of(2) {
+        (dim / 2).saturating_mul(dim.saturating_add(1))
+    } else {
+        dim.saturating_mul(dim.div_ceil(2))
+    }
+}
+
+#[inline]
+const fn checked_uplo_u_packed_len(dim: usize) -> Option<usize> {
+    if dim.is_multiple_of(2) {
+        match dim.checked_add(1) {
+            Some(d1) => (dim / 2).checked_mul(d1),
+            None => None,
+        }
+    } else {
+        dim.checked_mul(dim.div_ceil(2))
+    }
 }
 
 /// Maps upper-triangular coordinates `(i, j)` with `0 <= i <= j < dim` to their column-major
@@ -28,7 +44,11 @@ pub const fn uplo_u_packed_len(dim: usize) -> usize {
 #[must_use]
 pub const fn uplo_u_index(i: usize, j: usize) -> usize {
     debug_assert!(i <= j);
-    i + (j * (j + 1)) / 2
+    i + if j.is_multiple_of(2) {
+        (j / 2) * (j + 1)
+    } else {
+        j * j.div_ceil(2)
+    }
 }
 
 /// Accumulates a weighted feature outer product $\mathbf{G} \mathrel{+}= w \boldsymbol{\phi} \boldsymbol{\phi}^\top$
@@ -42,14 +62,19 @@ pub fn accumulate_uplo_u_gram_and_cross(
     weight: f64,
 ) {
     let n = features.len();
-    assert_eq!(packed_gram.len(), uplo_u_packed_len(n));
+    assert_eq!(Some(packed_gram.len()), checked_uplo_u_packed_len(n));
     assert_eq!(cross_corr.len(), n);
-    if weight <= 0.0 {
+    if !weight.is_finite()
+        || weight <= 0.0
+        || !target_lr[0].is_finite()
+        || !target_lr[1].is_finite()
+        || !features.iter().all(|v| v.is_finite())
+    {
         return;
     }
     for j in 0..n {
         let w_fj = weight * features[j];
-        let base = j * (j + 1) / 2;
+        let base = uplo_u_index(0, j);
         for i in 0..=j {
             packed_gram[base + i] += w_fj * features[i];
         }
@@ -67,8 +92,17 @@ pub fn solve_uplo_u_cholesky_2ch(
     ridge_lambda: f64,
 ) -> Result<Vec<[f64; 2]>, &'static str> {
     let n = cross_corr.len();
-    if packed_gram.len() != uplo_u_packed_len(n) {
+    if Some(packed_gram.len()) != checked_uplo_u_packed_len(n) {
         return Err("packed_gram length mismatch");
+    }
+    if !ridge_lambda.is_finite()
+        || ridge_lambda < 0.0
+        || !packed_gram.iter().all(|v| v.is_finite())
+        || !cross_corr
+            .iter()
+            .all(|c| c[0].is_finite() && c[1].is_finite())
+    {
+        return Err("non-finite solver input");
     }
     let lambda = ridge_lambda.max(1.0e-12);
     let mut r_upper = packed_gram.to_vec();
@@ -126,34 +160,84 @@ pub fn solve_uplo_u_cholesky_2ch(
         w[i][1] = s1 / diag;
     }
 
+    if !w.iter().all(|r| r[0].is_finite() && r[1].is_finite()) {
+        return Err("non-finite solver output");
+    }
+
     Ok(w)
 }
 
-/// Evaluates the exact algebraic Bézout identity $(1 - s)^4 + s^4 + 2s(1 - s)(2 - s(1 - s)) \equiv 1$
-/// and returns `(h_low, h_mid, h_high)` (`ref[qual.besr.bezout-crossover]`).
+#[inline]
+fn eval_bezout_degree7_poly(h: f64) -> f64 {
+    let u = if h.is_finite() {
+        h.clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    if u <= 0.5 {
+        let u2 = u * u;
+        let u4 = u2 * u2;
+        u4 * (35.0 - 84.0 * u + 70.0 * u2 - 20.0 * u * u2)
+    } else {
+        let v = 1.0 - u;
+        let v2 = v * v;
+        let v4 = v2 * v2;
+        1.0 - v4 * (35.0 - 84.0 * v + 70.0 * v2 - 20.0 * v * v2)
+    }
+}
+
+/// Evaluates the canonical degree-7 Binomial/Bézout 3-band partition
+/// $B_7(h) = 35 h^4 - 84 h^5 + 70 h^6 - 20 h^7$ ($B_7(h) + B_7(1 - h) \equiv 1$) across ordered
+/// normalized responses $h_1 = (1 - s)^2 \le h_2 = 1 - s^2$ and returns `(h_low, h_mid, h_high)`
+/// (`ref[qual.besr.bezout-crossover]`).
 #[must_use]
 pub fn bezout_three_band_weights(s: f64) -> (f64, f64, f64) {
-    let s_clamped = s.clamp(0.0, 1.0);
+    let s_clamped = if s.is_finite() {
+        s.clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
     let one_minus_s = 1.0 - s_clamped;
-    let h_low = one_minus_s.powi(4);
-    let h_high = s_clamped.powi(4);
-    let h_mid = 2.0 * s_clamped * one_minus_s * (2.0 - s_clamped * one_minus_s);
+    let l1 = eval_bezout_degree7_poly(one_minus_s * one_minus_s);
+    let l2 = eval_bezout_degree7_poly(1.0 - s_clamped * s_clamped);
+    let h_low = l1;
+    let h_mid = (l2 - l1).max(0.0);
+    let h_high = eval_bezout_degree7_poly(s_clamped * s_clamped);
     (h_low, h_mid, h_high)
 }
 
-/// Computes the noise-subtracted Error-to-Signal Ratio (`B-ESR`) with zero-denominator guard
-/// (`ref[qual.besr.noise-subtracted]`, `ref[qual.besr.zero-denominator]`).
+/// Computes the canonical §1.2 sum-denominator noise-subtracted Error-to-Signal Ratio
+/// $\max(0, R - F) / (Y + F)$ with exact zero-denominator semantics (`0.0` when $Y + F = 0, R = 0$;
+/// `+inf` when $Y + F = 0, R > 0$ or on invalid inputs; `ref[qual.besr.noise-subtracted]`,
+/// `ref[qual.besr.zero-denominator]`).
 #[must_use]
 pub fn compute_noise_subtracted_besr(
     err_energy: f64,
     target_energy: f64,
     noise_energy: f64,
-    eps_floor: f64,
 ) -> f64 {
-    let eps = eps_floor.max(1.0e-12);
-    let num = (err_energy - noise_energy).max(0.0);
-    let den = (target_energy - noise_energy).max(eps);
-    num / den
+    if !err_energy.is_finite()
+        || !target_energy.is_finite()
+        || !noise_energy.is_finite()
+        || err_energy < 0.0
+        || target_energy < 0.0
+        || noise_energy < 0.0
+    {
+        return f64::INFINITY;
+    }
+    let denom = target_energy + noise_energy;
+    if denom.is_finite() {
+        if denom > 0.0 {
+            (err_energy - noise_energy).max(0.0) / denom
+        } else if err_energy == 0.0 {
+            0.0
+        } else {
+            f64::INFINITY
+        }
+    } else {
+        let half_denom = 0.5 * target_energy + 0.5 * noise_energy;
+        (0.5 * err_energy - 0.5 * noise_energy).max(0.0) / half_denom
+    }
 }
 
 #[cfg(test)]
@@ -169,7 +253,18 @@ mod tests {
         let mut g = vec![0.0_f64; uplo_u_packed_len(2)];
         let mut c = vec![[0.0_f64; 2]; 2];
         accumulate_uplo_u_gram_and_cross(&mut g, &mut c, &[1.0, 0.0], [2.5, -1.5], 0.0);
+        accumulate_uplo_u_gram_and_cross(&mut g, &mut c, &[1.0, 0.0], [2.5, -1.5], f64::NAN);
+        accumulate_uplo_u_gram_and_cross(&mut g, &mut c, &[f64::NAN, 0.0], [2.5, -1.5], 1.0);
         assert_eq!(g, vec![0.0, 0.0, 0.0]);
+        assert!(solve_uplo_u_cholesky_2ch(&[1.0], &[[f64::NAN, 0.0]], 1.0e-6).is_err());
+        assert!(solve_uplo_u_cholesky_2ch(&[1.0], &[[1.0, 0.0]], f64::NAN).is_err());
+        assert!(solve_uplo_u_cholesky_2ch(&[0.0], &[[1.0e305, 0.0]], 1.0e-12).is_err());
+        assert_eq!(bezout_three_band_weights(f64::NAN), (1.0, 0.0, 0.0));
+
+        assert_eq!(compute_noise_subtracted_besr(0.0, 0.0, 0.0), 0.0);
+        assert!(compute_noise_subtracted_besr(1.0e-15, 0.0, 0.0).is_infinite());
+        assert!(compute_noise_subtracted_besr(-1.0, 1.0, 0.0).is_infinite());
+        assert!((compute_noise_subtracted_besr(0.011, 0.999, 0.001) - 0.01).abs() <= 1.0e-15);
     }
 
     proptest! {

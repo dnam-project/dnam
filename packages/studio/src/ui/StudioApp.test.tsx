@@ -22,15 +22,15 @@ describe("StudioApp Tauri v2 React 19 shell", () => {
       - tablist "Studio Workspace Tabs":
         - tab "Rack Audition" [selected]
         - tab "Capture Schedule"
-        - tab "Python Trainer (dnam-train)"
+        - tab "Rust Trainer (dnam-train)"
         - tab "Tri-Physics Visualizers"
     `);
 
     await userEvent.click(page.getByRole("tab", { name: "Capture Schedule" }));
     await expect.element(page.getByText(/Interactive Re-Amp Capture Schedule/)).toBeVisible();
 
-    await userEvent.click(page.getByRole("tab", { name: "Python Trainer (dnam-train)" }));
-    await expect.element(page.getByText(/4-Stage Differentiable Trainer/)).toBeVisible();
+    await userEvent.click(page.getByRole("tab", { name: "Rust Trainer (dnam-train)" }));
+    await expect.element(page.getByText(/Two-Sweep Analytical Trainer/)).toBeVisible();
 
     await userEvent.click(page.getByRole("tab", { name: "Tri-Physics Visualizers" }));
     await expect.element(page.getByTestId("visualizer-poly-adaa")).toBeVisible();

@@ -35,7 +35,11 @@ pub const ARENA4_STEM_BYTES_ULTRA: usize = 267_264;
 #[inline]
 #[must_use]
 pub const fn uplo_u_packed_len(n_dim: usize) -> usize {
-    (n_dim * (n_dim + 1)) / 2
+    if n_dim.is_multiple_of(2) {
+        (n_dim / 2).saturating_mul(n_dim.saturating_add(1))
+    } else {
+        n_dim.saturating_mul(n_dim.div_ceil(2))
+    }
 }
 
 /// Packs a dense symmetric $N \times N$ row-major matrix `dense_matrix` (`N * N` elements)
@@ -78,13 +82,16 @@ pub fn verify_ckpt_stem_arena4_crc32c(
     stem_byte_len: usize,
     expected_crc32c: u32,
 ) -> Result<(), DnamError> {
-    if arena_bytes.len() < stem_byte_offset + stem_byte_len {
+    let end = stem_byte_offset
+        .checked_add(stem_byte_len)
+        .ok_or_else(|| DnamError::SchemaValidationError("stem offset overflow".to_string()))?;
+    if arena_bytes.len() < end {
         return Err(DnamError::BufferTooSmall {
-            expected: stem_byte_offset + stem_byte_len,
+            expected: end,
             actual: arena_bytes.len(),
         });
     }
-    let slice = &arena_bytes[stem_byte_offset..stem_byte_offset + stem_byte_len];
+    let slice = &arena_bytes[stem_byte_offset..end];
     let computed = crc32c_compute(slice);
     if computed != expected_crc32c {
         return Err(DnamError::Crc32cMismatch {
@@ -108,9 +115,12 @@ pub fn verify_ckpt_arena5_calib_stats(
             offset: arena5_offset as u32,
         });
     }
-    if arena_bytes.len() < arena5_offset + ARENA5_HEADER_BYTES {
+    let min_a5_end = arena5_offset
+        .checked_add(ARENA5_HEADER_BYTES)
+        .ok_or_else(|| DnamError::SchemaValidationError("arena5_offset overflow".to_string()))?;
+    if arena_bytes.len() < min_a5_end {
         return Err(DnamError::BufferTooSmall {
-            expected: arena5_offset + ARENA5_HEADER_BYTES,
+            expected: min_a5_end,
             actual: arena_bytes.len(),
         });
     }
@@ -132,6 +142,12 @@ pub fn verify_ckpt_arena5_calib_stats(
         return Err(DnamError::SchemaValidationError(format!(
             "unsupported Arena 5 version {version} (expected 1)"
         )));
+    }
+    let flags = u16::from_le_bytes([a5[6], a5[7]]);
+    if flags != 0 || a5[20..ARENA5_HEADER_BYTES].iter().any(|&b| b != 0) {
+        return Err(DnamError::SchemaValidationError(
+            "non-zero flags or reserved bytes in Arena 5 DNCA header".to_string(),
+        ));
     }
     let num_inputs = u16::from_le_bytes([a5[8], a5[9]]) as usize;
     let num_stems = u16::from_le_bytes([a5[10], a5[11]]) as usize;
@@ -155,9 +171,12 @@ pub fn verify_ckpt_arena5_calib_stats(
 
     let mut pos = ARENA5_HEADER_BYTES;
     for _ in 0..num_inputs {
-        if pos + 64 > a5.len() {
+        let hdr_end = pos
+            .checked_add(64)
+            .ok_or_else(|| DnamError::SchemaValidationError("Arena 5 pos overflow".to_string()))?;
+        if hdr_end > a5.len() {
             return Err(DnamError::BufferTooSmall {
-                expected: arena5_offset + pos + 64,
+                expected: arena5_offset.saturating_add(hdr_end),
                 actual: arena_bytes.len(),
             });
         }
@@ -169,12 +188,14 @@ pub fn verify_ckpt_arena5_calib_stats(
         let rec_len =
             u32::from_le_bytes([a5[pos + 56], a5[pos + 57], a5[pos + 58], a5[pos + 59]]) as usize;
         let rec_crc = u32::from_le_bytes([a5[pos + 60], a5[pos + 61], a5[pos + 62], a5[pos + 63]]);
-        if rec_len < 64 || (rec_len & 0x3F) != 0 || pos + rec_len > a5.len() {
+        let rec_end = pos.checked_add(rec_len);
+        if rec_len < 64 || (rec_len & 0x3F) != 0 || rec_end.is_none_or(|e| e > a5.len()) {
             return Err(DnamError::SchemaValidationError(
                 "invalid Arena 5 input record byte length".to_string(),
             ));
         }
-        let calc_crc = crc32c_compute(&a5[pos + 64..pos + rec_len]);
+        let rec_end = rec_end.unwrap();
+        let calc_crc = crc32c_compute(&a5[hdr_end..rec_end]);
         if calc_crc != rec_crc {
             return Err(DnamError::Crc32cMismatch {
                 region: "arena5_input_record",
@@ -182,13 +203,16 @@ pub fn verify_ckpt_arena5_calib_stats(
                 computed: calc_crc,
             });
         }
-        pos += rec_len;
+        pos = rec_end;
     }
 
     for _ in 0..num_stems {
-        if pos + 128 > a5.len() {
+        let hdr_end = pos
+            .checked_add(128)
+            .ok_or_else(|| DnamError::SchemaValidationError("Arena 5 pos overflow".to_string()))?;
+        if hdr_end > a5.len() {
             return Err(DnamError::BufferTooSmall {
-                expected: arena5_offset + pos + 128,
+                expected: arena5_offset.saturating_add(hdr_end),
                 actual: arena_bytes.len(),
             });
         }
@@ -202,12 +226,14 @@ pub fn verify_ckpt_arena5_calib_stats(
                 as usize;
         let rec_crc =
             u32::from_le_bytes([a5[pos + 120], a5[pos + 121], a5[pos + 122], a5[pos + 123]]);
-        if rec_len < 128 || (rec_len & 0x3F) != 0 || pos + rec_len > a5.len() {
+        let rec_end = pos.checked_add(rec_len);
+        if rec_len < 128 || (rec_len & 0x3F) != 0 || rec_end.is_none_or(|e| e > a5.len()) {
             return Err(DnamError::SchemaValidationError(
                 "invalid Arena 5 stem record byte length".to_string(),
             ));
         }
-        let calc_crc = crc32c_compute(&a5[pos + 128..pos + rec_len]);
+        let rec_end = rec_end.unwrap();
+        let calc_crc = crc32c_compute(&a5[hdr_end..rec_end]);
         if calc_crc != rec_crc {
             return Err(DnamError::Crc32cMismatch {
                 region: "arena5_stem_record",
@@ -215,7 +241,7 @@ pub fn verify_ckpt_arena5_calib_stats(
                 computed: calc_crc,
             });
         }
-        pos += rec_len;
+        pos = rec_end;
     }
 
     if pos != a5.len() {
@@ -246,7 +272,9 @@ pub fn verify_ckpt_arena4_kronecker_stats(
         dnam_engine::types::Tier::Pro => ARENA4_STEM_BYTES_PRO,
         dnam_engine::types::Tier::Ultra => ARENA4_STEM_BYTES_ULTRA,
     };
-    let expected_total = stem_bytes * num_stems.max(1);
+    let expected_total = stem_bytes
+        .checked_mul(num_stems.max(1))
+        .ok_or_else(|| DnamError::SchemaValidationError("Arena 4 size overflow".to_string()))?;
     if arena4_bytes.len() != stem_bytes && arena4_bytes.len() != expected_total {
         return Err(DnamError::SchemaValidationError(format!(
             "Arena 4 byte length ({}) does not match tier stem_bytes ({stem_bytes}) or expected_total ({expected_total})",
@@ -262,6 +290,260 @@ pub fn verify_ckpt_arena4_kronecker_stats(
         }
     }
     Ok(arena4_bytes.len())
+}
+
+/// Verifies that `slice` is 8-byte aligned and every little-endian `f64` entry is finite.
+pub fn verify_finite_f64_slice(slice: &[u8], field: &'static str) -> Result<(), DnamError> {
+    if (slice.len() & 0x7) != 0 {
+        return Err(DnamError::UnalignedOffset {
+            field,
+            offset: slice.len() as u32,
+        });
+    }
+    for &chunk in slice.as_chunks::<8>().0 {
+        if !f64::from_le_bytes(chunk).is_finite() {
+            return Err(DnamError::SchemaValidationError(format!(
+                "{field} contains non-finite f64 entry"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Validates page-aligned `.dnam-ckpt` `Arena 4` framing, finite `f64` entries, `stems_registry`
+/// slice bounds/CRCs, and absence of unflagged trailing bytes when `has_calib_stats == false`.
+pub fn validate_ckpt_arena4_and_stems_registry(
+    header: &super::schema::DnamCkptHeader,
+    weights_end: usize,
+    stems_end: usize,
+    plain_bytes: &[u8],
+    num_ckpt_stems: u16,
+    has_calib_stats: bool,
+) -> Result<(), DnamError> {
+    if weights_end > stems_end || stems_end > plain_bytes.len() {
+        return Err(DnamError::BufferTooSmall {
+            expected: stems_end.max(weights_end),
+            actual: plain_bytes.len(),
+        });
+    }
+    if ((stems_end - weights_end) & 0x3F) != 0 {
+        return Err(DnamError::UnalignedOffset {
+            field: "arena4_stems_byte_len",
+            offset: (stems_end - weights_end) as u32,
+        });
+    }
+    if !has_calib_stats && stems_end != plain_bytes.len() {
+        return Err(DnamError::SchemaValidationError(
+            "unflagged trailing bytes after Arena 4 stems without FLAG_HAS_CALIB_STATS".to_string(),
+        ));
+    }
+    verify_finite_f64_slice(&plain_bytes[weights_end..stems_end], "arena4_stems")?;
+
+    if let Some(stems) = header.stems_registry.as_ref() {
+        if usize::from(num_ckpt_stems) != stems.len() {
+            return Err(DnamError::SchemaValidationError(format!(
+                "preamble.num_ckpt_stems ({num_ckpt_stems}) != stems_registry.len() ({})",
+                stems.len()
+            )));
+        }
+        for entry in stems {
+            let check_slice =
+                |s: &dnam_engine::schema::TensorSliceEntry| -> Result<(usize, usize), DnamError> {
+                    if s.arena != 4 || s.byte_length == 0 {
+                        return Err(DnamError::SchemaValidationError(
+                            "StemRegistryEntry slice must target arena 4 with non-zero length"
+                                .to_string(),
+                        ));
+                    }
+                    let off = s.byte_offset as usize;
+                    let len = s.byte_length as usize;
+                    if (off & 0x7) != 0 || (len & 0x7) != 0 {
+                        return Err(DnamError::UnalignedOffset {
+                            field: "stem_arena4_slice",
+                            offset: s.byte_offset,
+                        });
+                    }
+                    let end = off.checked_add(len).ok_or_else(|| {
+                        DnamError::SchemaValidationError("stem slice overflow".to_string())
+                    })?;
+                    if off < weights_end || end > stems_end {
+                        return Err(DnamError::BufferTooSmall {
+                            expected: end,
+                            actual: stems_end,
+                        });
+                    }
+                    Ok((off, end))
+                };
+            let (g_off, g_end) = check_slice(&entry.g_audio_uplo_u_f64)?;
+            let (c_off, c_end) = check_slice(&entry.c_audio_tier_f64)?;
+            let span_start = g_off.min(c_off);
+            let span_end = g_end.max(c_end);
+            verify_ckpt_stem_arena4_crc32c(
+                plain_bytes,
+                span_start,
+                span_end - span_start,
+                entry.stem_arena4_crc32c,
+            )?;
+        }
+    } else if num_ckpt_stems != 0 {
+        return Err(DnamError::SchemaValidationError(format!(
+            "preamble.num_ckpt_stems ({num_ckpt_stems}) != stems_registry.len() (0)"
+        )));
+    }
+    Ok(())
+}
+
+/// Assembles and validates a v2.0 `.dnam-ckpt` combined arena (`Arena 0..t` + `Arena 4.0..4.t` +
+/// per-bundle and shared `DNCA` blocks), enforcing `controls_schema` parity, finite `f64` checks
+/// strictly on `Arena 4` slices, `verify_ckpt_arena5_calib_stats` on every `DNCA` block, and
+/// `stems_registry` slice / CRC validation.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn assemble_and_validate_v2_ckpt_arena(
+    bytes: &[u8],
+    tier: u8,
+    max_tier: u8,
+    ends: &[usize],
+    bundle_start: usize,
+    runtime_start: usize,
+    runtime_ends: &[usize; 4],
+    runtime_arena: &[u8],
+    extra_shared: &[u8],
+    header: &mut super::schema::DnamCkptHeader,
+    runtime_num_controls: usize,
+) -> Result<(Vec<u8>, bool, bool), DnamError> {
+    dnam_engine::provenance::enforce_distribution_policy(
+        &header.base,
+        dnam_engine::schema::DnamProtectionProfile::Open,
+    )?;
+    if header.base.controls_schema.len() != runtime_num_controls {
+        return Err(DnamError::SchemaValidationError(format!(
+            "checkpoint controls_schema.len() ({}) != runtime control_records.len() ({runtime_num_controls})",
+            header.base.controls_schema.len()
+        )));
+    }
+    let weights_end = runtime_arena.len();
+    let max_weights_end = runtime_ends
+        .get(usize::from(max_tier))
+        .copied()
+        .and_then(|e| e.checked_sub(runtime_start))
+        .filter(|&m| m >= weights_end)
+        .ok_or_else(|| {
+            DnamError::SchemaValidationError("invalid max_tier runtime arena end".to_string())
+        })?;
+    let weights_shift = max_weights_end - weights_end;
+    let mut ckpt_arena = runtime_arena.to_vec();
+    let mut dnca_tails: Vec<&[u8]> = Vec::new();
+    let (mut prev_rt, mut ckpt_b_start, mut has_arena4_tails) =
+        (runtime_start, bundle_start, false);
+    for (idx, &end_b) in ends.iter().enumerate().take((tier as usize) + 1) {
+        let tail_start = ckpt_b_start
+            .saturating_add(runtime_ends[idx].saturating_sub(prev_rt))
+            .min(end_b);
+        let tail = &bytes[tail_start..end_b];
+        let mut dnca_split = None;
+        let mut off = 0usize;
+        while off + ARENA5_HEADER_BYTES <= tail.len() {
+            let has_rec_magic =
+                off + 68 <= tail.len() && matches!(&tail[off + 64..off + 68], b"INPC" | b"STMC");
+            let ver = u16::from_le_bytes([tail[off + 4], tail[off + 5]]);
+            let flags = u16::from_le_bytes([tail[off + 6], tail[off + 7]]);
+            let decl_len =
+                u32::from_le_bytes(tail[off + 12..off + 16].try_into().unwrap()) as usize;
+            let zero_reserved = tail[off + 20..off + 64].iter().all(|&b| b == 0);
+            let markers = u8::from(ver == 1 && flags == 0)
+                + u8::from(decl_len == tail.len() - off)
+                + u8::from(zero_reserved)
+                + u8::from(has_rec_magic);
+            if tail[off..off + 4] == DNCA_MAGIC && markers >= 2 {
+                dnca_split = Some(off);
+                break;
+            }
+            off += 64;
+        }
+        if let Some(d_off) = dnca_split {
+            verify_finite_f64_slice(&tail[..d_off], "ckpt_bundle_arena4")?;
+            verify_ckpt_arena5_calib_stats(tail, d_off)?;
+            if d_off > 0 {
+                ckpt_arena.extend_from_slice(&tail[..d_off]);
+                has_arena4_tails = true;
+            }
+            dnca_tails.push(&tail[d_off..]);
+        } else if !tail.is_empty() {
+            verify_finite_f64_slice(tail, "ckpt_bundle_arena4")?;
+            ckpt_arena.extend_from_slice(tail);
+            has_arena4_tails = true;
+        }
+        prev_rt = runtime_ends[idx];
+        ckpt_b_start = end_b;
+    }
+
+    let stems_end = ckpt_arena.len();
+    if let Some(stems) = header.stems_registry.as_mut() {
+        let mut retained = Vec::with_capacity(stems.len());
+        for mut entry in stems.drain(..) {
+            let check_s =
+                |s: &dnam_engine::schema::TensorSliceEntry| -> Result<(usize, usize), DnamError> {
+                    if s.arena != 4 || s.byte_length == 0 {
+                        return Err(DnamError::SchemaValidationError(
+                            "StemRegistryEntry slice must target arena 4 with non-zero length"
+                                .to_string(),
+                        ));
+                    }
+                    let (off, len) = (s.byte_offset as usize, s.byte_length as usize);
+                    if (off & 0x7) != 0 || (len & 0x7) != 0 {
+                        return Err(DnamError::UnalignedOffset {
+                            field: "stem_arena4_slice",
+                            offset: s.byte_offset,
+                        });
+                    }
+                    let end = off.checked_add(len).ok_or_else(|| {
+                        DnamError::SchemaValidationError("stem slice overflow".to_string())
+                    })?;
+                    Ok((off, end))
+                };
+            let (g_off, g_end) = check_s(&entry.g_audio_uplo_u_f64)?;
+            let (c_off, c_end) = check_s(&entry.c_audio_tier_f64)?;
+            let (span_start, span_end) = (g_off.min(c_off), g_end.max(c_end));
+            if span_start < max_weights_end {
+                return Err(DnamError::BufferTooSmall {
+                    expected: max_weights_end,
+                    actual: span_start,
+                });
+            }
+            let (rebased_start, rebased_end) =
+                (span_start - weights_shift, span_end - weights_shift);
+            if tier == max_tier || rebased_end <= stems_end {
+                if rebased_end > stems_end {
+                    return Err(DnamError::BufferTooSmall {
+                        expected: rebased_end,
+                        actual: stems_end,
+                    });
+                }
+                verify_ckpt_stem_arena4_crc32c(
+                    &ckpt_arena,
+                    rebased_start,
+                    rebased_end - rebased_start,
+                    entry.stem_arena4_crc32c,
+                )?;
+                let shift_u32 = weights_shift as u32;
+                entry.g_audio_uplo_u_f64.byte_offset -= shift_u32;
+                entry.c_audio_tier_f64.byte_offset -= shift_u32;
+                retained.push(entry);
+            }
+        }
+        *stems = retained;
+    }
+
+    let has_calib = !dnca_tails.is_empty() || !extra_shared.is_empty();
+    for d in dnca_tails {
+        ckpt_arena.extend_from_slice(d);
+    }
+    if !extra_shared.is_empty() {
+        let a5_off = ckpt_arena.len();
+        ckpt_arena.extend_from_slice(extra_shared);
+        verify_ckpt_arena5_calib_stats(&ckpt_arena, a5_off)?;
+    }
+    Ok((ckpt_arena, has_arena4_tails, has_calib))
 }
 
 #[cfg(test)]
@@ -460,5 +742,119 @@ mod tests {
         assert_eq!(coreset_stereo_fp16_bytes, 48_000);
         assert_eq!(coreset_mono_fp16_bytes % 64, 0);
         assert_eq!(coreset_stereo_fp16_bytes % 64, 0);
+
+        // Fail-fast Arena 4 CRC, NaN, non-DNCA extra_shared & strip_dnck_checkpoint_to_tier
+        let crypto = dnam_engine::provenance::DefaultCryptoProvider::default();
+        let mut hdr = crate::ckpt::DnamCkptHeader::default_reference();
+        let arena_ultra = vec![0u8; dnam_engine::container::ARENA_OFFSET_ULTRA_END as usize];
+        let std_ckpt =
+            crate::ckpt::build_dnam_ckpt_container(&mut hdr, &arena_ultra, &arena_ultra, false)
+                .unwrap();
+        let stripped_std =
+            crate::ckpt::strip_dnck_checkpoint_to_tier(&std_ckpt, dnam_engine::Tier::Lite).unwrap();
+        let stripped_view = crate::ckpt::DnamCkptView::from_bytes(&stripped_std, &crypto).unwrap();
+        assert_eq!(
+            stripped_view.preamble.highest_tier(),
+            dnam_engine::Tier::Lite
+        );
+        let exported_std = crate::ckpt::export_runtime_dnam_from_ckpt(&stripped_std).unwrap();
+        assert_eq!(&exported_std[0..4], b"DNAM");
+
+        // Corrupted stem_arena4_crc32c & NaN f64 inside Arena 4 must fail closed in builder and DnamCkptView
+        let slice = dnam_engine::schema::TensorSliceEntry {
+            arena: 4,
+            dtype: "f64".to_string(),
+            packing: Some("uplo_upper_col_major_tier_ordered".to_string()),
+            feature_dim: Some(64),
+            packed_len: Some(2080),
+            shape: None,
+            byte_offset: dnam_engine::container::ARENA_OFFSET_LITE_END,
+            byte_length: 64,
+        };
+        hdr.stems_registry = Some(vec![crate::ckpt::StemRegistryEntry {
+            stem_id: "s0".to_string(),
+            enabled: true,
+            controls_meta: std::collections::BTreeMap::new(),
+            provenance: crate::ckpt::StemProvenance {
+                input_pcm_sha256: "00".repeat(32),
+                target_pcm_sha256: "11".repeat(32),
+                num_frames: 48_000,
+            },
+            stem_arena4_crc32c: crc32c_compute(&[0u8; 64]) ^ 1,
+            user_metadata: std::collections::BTreeMap::new(),
+            extracted_physics: None,
+            g_audio_uplo_u_f64: slice.clone(),
+            c_audio_tier_f64: slice,
+        }]);
+        let mut lite_with_s0 =
+            vec![0u8; (dnam_engine::container::ARENA_OFFSET_LITE_END as usize) + 64];
+        assert!(
+            crate::ckpt::build_dnam_ckpt_container(&mut hdr, &lite_with_s0, &lite_with_s0, false)
+                .is_err()
+        );
+
+        hdr.stems_registry.as_mut().unwrap()[0].stem_arena4_crc32c = crc32c_compute(&[0u8; 64]);
+        let valid_s0_ckpt =
+            crate::ckpt::build_dnam_ckpt_container(&mut hdr, &lite_with_s0, &lite_with_s0, false)
+                .unwrap();
+        assert!(crate::ckpt::DnamCkptView::from_bytes(&valid_s0_ckpt, &crypto).is_ok());
+
+        let off_a4 = dnam_engine::container::ARENA_OFFSET_LITE_END as usize;
+        lite_with_s0[off_a4..off_a4 + 8].copy_from_slice(&f64::NAN.to_le_bytes());
+        hdr.stems_registry.as_mut().unwrap()[0].stem_arena4_crc32c =
+            crc32c_compute(&lite_with_s0[off_a4..off_a4 + 64]);
+        assert!(
+            crate::ckpt::build_dnam_ckpt_container(&mut hdr, &lite_with_s0, &lite_with_s0, false)
+                .is_err()
+        );
+
+        // Non-DNCA extra_shared in v2 DNCK must fail closed in DnamCkptView
+        hdr.stems_registry = None;
+        let hdr_json = serde_json::to_vec(&hdr).unwrap();
+        let bundles: Vec<Vec<u8>> = (0..4u8).map(|t| vec![0x10 + t; 192]).collect();
+        let rt_slices: Vec<&[u8]> = bundles.iter().map(|b| &b[..64]).collect();
+        let rt_dnam = dnam_engine::container::build_v2_open_dnam_container(
+            &hdr_json, &[0u8; 64], &[0u8; 16], &rt_slices, None, 0,
+        )
+        .unwrap();
+        let b_refs: Vec<&[u8]> = bundles.iter().map(Vec::as_slice).collect();
+        let seed = [0x5A_u8; 32];
+        let pk = dnam_engine::provenance::RustCryptoProvider::ed25519_pubkey_from_seed(&seed);
+        let tmp_v2 = crate::ckpt::build_v2_dnck_checkpoint(
+            &hdr_json,
+            &rt_dnam,
+            &[b'C'; 64],
+            &b_refs,
+            &pk,
+            &[0u8; 64],
+            None,
+        )
+        .unwrap();
+        let a_off = u64::from_le_bytes(tmp_v2[64 + 32..64 + 40].try_into().unwrap()) as usize;
+        let pfxs: Vec<[u8; 32]> = (0..4)
+            .map(|i| {
+                tmp_v2[a_off + 43 + 33 * i..a_off + 75 + 33 * i]
+                    .try_into()
+                    .unwrap()
+            })
+            .collect();
+        let msg = crate::ckpt::build_dnck_writer_manifest_message(
+            &pk,
+            &dnam_engine::provenance::sha256_digest(&hdr_json),
+            3,
+            &pfxs,
+        );
+        let sig = dnam_engine::provenance::RustCryptoProvider::ed25519_sign(&seed, &msg);
+        let bad_extra_v2 = crate::ckpt::build_v2_dnck_checkpoint(
+            &hdr_json,
+            &rt_dnam,
+            &[b'C'; 64],
+            &b_refs,
+            &pk,
+            &sig,
+            None,
+        )
+        .unwrap();
+        assert!(crate::ckpt::DnamCkptView::from_bytes(&bad_extra_v2, &crypto).is_err());
     }
 }

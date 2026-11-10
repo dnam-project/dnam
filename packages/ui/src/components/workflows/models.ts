@@ -21,7 +21,7 @@ export interface TrainingEpochPoint {
   readonly totalEpochs: number;
   readonly stage: string;
   readonly esrLoss: number;
-  readonly stftLoss: number;
+  readonly mrIirLoss: number;
   readonly maxRgLruRadius: number;
   readonly ufdnSpectralNorm: number;
 }

@@ -471,6 +471,80 @@ pub fn decode_cp1_shared_stream_into_slice(
     Ok(count)
 }
 
+/// Encodes a slice of [`crate::control::Cp1ContributorSlot`] entries into a self-describing
+/// `CP1\0` stream suitable for Region 4 `shared_extent` (`ref[container.dnam.cp1-profile]`).
+pub fn encode_cp1_shared_stream(
+    slots: &[crate::control::Cp1ContributorSlot],
+) -> Result<Vec<u8>, DnamError> {
+    if slots.is_empty() {
+        return Ok(Vec::new());
+    }
+    reject_if(
+        slots.len() > u16::MAX as usize,
+        "CP1 contributor count exceeds u16::MAX",
+    )?;
+    let has_ultra = slots.iter().any(|s| s.has_ultra);
+    let mut base_len = 0usize;
+    let mut ultra_len = 0usize;
+    for slot in slots {
+        let lanes = slot.lanes as usize;
+        base_len += cp1_contributor_record_bytes(lanes, false)
+            .or_schema_err("invalid contributor lane count")?;
+        if has_ultra {
+            ultra_len += cp1_contributor_record_bytes(lanes, true).unwrap();
+        }
+    }
+    let mut out = Vec::with_capacity(8 + slots.len() * 4 + base_len + ultra_len);
+    out.extend_from_slice(&CP1_MAGIC);
+    out.extend_from_slice(&(slots.len() as u16).to_le_bytes());
+    out.push(u8::from(has_ultra));
+    out.push(0);
+    for slot in slots {
+        let raw_kl = ((slot.ctrl_kind & 0x03) << 2) | (slot.lanes & 0x03);
+        let aux = if slot.ctrl_kind == 2 {
+            (slot.partner_control_id & 0xFF) as u8
+        } else {
+            slot.option_idx
+        };
+        out.extend_from_slice(&slot.control_idx.to_le_bytes());
+        out.push(raw_kl);
+        out.push(aux);
+    }
+    let push_f32 = |buf: &mut Vec<u8>, val: f32| -> Result<(), DnamError> {
+        reject_if(!val.is_finite(), "nonfinite coefficient")?;
+        buf.extend_from_slice(&val.to_le_bytes());
+        Ok(())
+    };
+    for slot in slots {
+        let lanes = slot.lanes as usize;
+        for k in 0..lanes {
+            for r in 0..8 {
+                push_f32(&mut out, slot.main_base[k][r])?;
+            }
+        }
+        for k in 0..lanes {
+            push_f32(&mut out, slot.emb[k])?;
+        }
+        for f in 0..4 {
+            push_f32(&mut out, slot.v_base[f])?;
+        }
+    }
+    if has_ultra {
+        for slot in slots {
+            let lanes = slot.lanes as usize;
+            for k in 0..lanes {
+                for r in 0..8 {
+                    push_f32(&mut out, slot.main_ultra[k][r])?;
+                }
+            }
+            for f in 0..4 {
+                push_f32(&mut out, slot.v_ultra[f])?;
+            }
+        }
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod spec_tests {
     use super::*;
@@ -620,5 +694,38 @@ mod spec_tests {
             decode_cp1_shared_stream_into_slice(&[], &mut slots).unwrap(),
             0
         );
+
+        assert!(encode_cp1_shared_stream(&[]).unwrap().is_empty());
+        let mut s0 = crate::control::Cp1ContributorSlot::zero();
+        s0.lanes = 2;
+        s0.ctrl_kind = 0;
+        s0.control_idx = 5;
+        s0.option_idx = 0xFF;
+        s0.main_base[0][0] = 0.75;
+        s0.emb[1] = -0.25;
+        s0.v_base[0] = 0.5;
+        s0.main_ultra[1][3] = 0.125;
+        s0.v_ultra[2] = -0.5;
+        s0.has_ultra = true;
+        let mut s1 = crate::control::Cp1ContributorSlot::zero();
+        s1.lanes = 1;
+        s1.ctrl_kind = 2;
+        s1.control_idx = 6;
+        s1.partner_control_id = 7;
+        s1.has_ultra = true;
+        let encoded = encode_cp1_shared_stream(&[s0, s1]).unwrap();
+        let mut rt_slots = [crate::control::Cp1ContributorSlot::zero(); 4];
+        let rt_n = decode_cp1_shared_stream_into_slice(&encoded, &mut rt_slots).unwrap();
+        assert_eq!(rt_n, 2);
+        assert_eq!(rt_slots[0].control_idx, 5);
+        assert_eq!(rt_slots[0].main_base[0][0], 0.75);
+        assert_eq!(rt_slots[0].emb[1], -0.25);
+        assert_eq!(rt_slots[0].main_ultra[1][3], 0.125);
+        assert_eq!(rt_slots[1].ctrl_kind, 2);
+        assert_eq!(rt_slots[1].partner_control_id, 7);
+
+        let mut bad_slot = s0;
+        bad_slot.v_base[0] = f32::NAN;
+        assert!(encode_cp1_shared_stream(&[bad_slot]).is_err());
     }
 }

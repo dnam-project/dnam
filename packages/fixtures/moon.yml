@@ -1,0 +1,146 @@
+$schema: "https://moonrepo.dev/schemas/project.json"
+
+id: "fixtures"
+language: "rust"
+layer: "library"
+stack: "systems"
+tags:
+  - "rust"
+  - "dsp"
+  - "fixtures"
+  - "testing"
+
+project:
+  name: "dnam-fixtures"
+  description: "Pure-Rust zero-dependency black-box ground-truth audio signal-chain models and hardware impairment decorators"
+
+dependsOn: []
+
+tasks:
+  format:
+    type: "run"
+    command: "cargo"
+    args:
+      - "fmt"
+      - "--package"
+      - "dnam-fixtures"
+    options:
+      cache: false
+      runInCI: false
+    tags:
+      - "format"
+
+  format-check:
+    command: "cargo"
+    args:
+      - "fmt"
+      - "--package"
+      - "dnam-fixtures"
+      - "--"
+      - "--check"
+    inputs:
+      - "Cargo.toml"
+      - "src/**/*"
+      - "tests/**/*"
+      - "/Cargo.toml"
+    tags:
+      - "quality"
+      - "format"
+
+  lint:
+    command: "cargo"
+    args:
+      - "clippy"
+      - "--package"
+      - "dnam-fixtures"
+      - "--all-targets"
+      - "--"
+      - "-D"
+      - "warnings"
+    inputs:
+      - "Cargo.toml"
+      - "src/**/*"
+      - "tests/**/*"
+      - "/Cargo.toml"
+      - "/Cargo.lock"
+    options:
+      mutex: "cargo"
+    tags:
+      - "quality"
+      - "lint"
+
+  typecheck:
+    command: "cargo"
+    args:
+      - "check"
+      - "--package"
+      - "dnam-fixtures"
+      - "--all-targets"
+    inputs:
+      - "Cargo.toml"
+      - "src/**/*"
+      - "tests/**/*"
+      - "/Cargo.toml"
+      - "/Cargo.lock"
+    options:
+      mutex: "cargo"
+    tags:
+      - "quality"
+      - "typecheck"
+
+  build:
+    type: "build"
+    command: "cargo"
+    args:
+      - "build"
+      - "--package"
+      - "dnam-fixtures"
+      - "--release"
+    inputs:
+      - "Cargo.toml"
+      - "src/**/*"
+      - "/Cargo.toml"
+      - "/Cargo.lock"
+    options:
+      mutex: "cargo"
+      outputStyle: "buffer-only-failure"
+    tags:
+      - "build"
+
+  test:
+    command: "cargo"
+    args:
+      - "test"
+      - "--package"
+      - "dnam-fixtures"
+    inputs:
+      - "Cargo.toml"
+      - "src/**/*"
+      - "tests/**/*"
+      - "/Cargo.toml"
+      - "/Cargo.lock"
+    options:
+      mutex: "cargo"
+    tags:
+      - "test"
+
+  coverage:
+    type: "run"
+    command: "cargo"
+    args:
+      - "llvm-cov"
+      - "--package"
+      - "dnam-fixtures"
+      - "--fail-under-lines"
+      - "95"
+    inputs:
+      - "Cargo.toml"
+      - "src/**/*"
+      - "tests/**/*"
+      - "/Cargo.toml"
+      - "/Cargo.lock"
+    options:
+      mutex: "cargo"
+      runInCI: "skip"
+    tags:
+      - "coverage"

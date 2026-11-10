@@ -25,7 +25,7 @@ export function TrainingTimelinePanel({ timeline, onStartTraining }: TrainingTim
         <div>
           <div className="flex items-center gap-2">
             <Flame className="size-4 text-amber-400" />
-            <CardTitle>4-Stage Differentiable Trainer ({timeline.modelId})</CardTitle>
+            <CardTitle>Two-Sweep Analytical Trainer ({timeline.modelId})</CardTitle>
           </div>
           <CardDescription>
             Non-Stop 3-Phase Control Clamping + Kronecker .dnam-ckpt Solver (
@@ -65,8 +65,10 @@ export function TrainingTimelinePanel({ timeline, onStartTraining }: TrainingTim
               <div className="mt-0.5 font-semibold text-amber-300">{latest.esrLoss.toFixed(5)}</div>
             </div>
             <div className="rounded border border-slate-800 bg-slate-950/60 p-2">
-              <div className="text-xs text-slate-400">MR-STFT Loss</div>
-              <div className="mt-0.5 font-semibold text-cyan-300">{latest.stftLoss.toFixed(5)}</div>
+              <div className="text-xs text-slate-400">MR-IIR Loss</div>
+              <div className="mt-0.5 font-semibold text-cyan-300">
+                {latest.mrIirLoss.toFixed(5)}
+              </div>
             </div>
             <div className="rounded border border-slate-800 bg-slate-950/60 p-2">
               <div className="text-xs text-slate-400">RG-LRU r_max</div>

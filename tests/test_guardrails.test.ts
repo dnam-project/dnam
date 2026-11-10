@@ -32,6 +32,7 @@ const PACKAGES_DIR = path.join(REPO_ROOT, "packages");
 const TESTS_DIR = path.join(REPO_ROOT, "tests");
 
 const EXCLUDED_DIRS = new Set([
+  ".agents",
   ".git",
   ".hg",
   ".svn",
@@ -40,6 +41,7 @@ const EXCLUDED_DIRS = new Set([
   "node_modules",
   "target",
   "dist",
+  "dist-app",
   "build",
   "coverage",
   ".moon",
@@ -846,6 +848,7 @@ describe("DNAM Monorepo Architectural & Documentation Guardrails", () => {
       path.join(PACKAGES_DIR, "engine", "src", "schema"),
       path.join(PACKAGES_DIR, "engine", "tests"),
       path.join(PACKAGES_DIR, "trainer"),
+      path.join(PACKAGES_DIR, "fixtures"),
     ];
     for (const dirPath of proptestDirs) {
       const rsFiles = walkFilesByExtensions(dirPath, new Set([".rs"]));
@@ -1233,20 +1236,495 @@ describe("DNAM Monorepo Architectural & Documentation Guardrails", () => {
     }
     expect(tsViolations).toEqual([]);
 
-    for (const rustLibRel of [
-      "packages/engine/src/lib.rs",
-      "packages/trainer/src/lib.rs",
-      "packages/js/rust/lib.rs",
-      "packages/studio/rust/lib.rs",
-    ]) {
+    const stripRustCommentsAndStrings = (src: string): string => {
+      let out = "";
+      let i = 0;
+      while (i < src.length) {
+        const ch = src[i] ?? "";
+        const next = src[i + 1] ?? "";
+        if (ch === "/" && next === "/") {
+          while (i < src.length && src[i] !== "\n") {
+            i++;
+          }
+          continue;
+        }
+        if (ch === "/" && next === "*") {
+          i += 2;
+          let depth = 1;
+          while (i < src.length && depth > 0) {
+            if (src[i] === "/" && src[i + 1] === "*") {
+              depth++;
+              i += 2;
+            } else if (src[i] === "*" && src[i + 1] === "/") {
+              depth--;
+              i += 2;
+            } else {
+              if (src[i] === "\n") out += "\n";
+              i++;
+            }
+          }
+          out += " ";
+          continue;
+        }
+        const isRawStr = ch === "r" && (next === '"' || next === "#");
+        const isByteRawStr =
+          ch === "b" && next === "r" && (src[i + 2] === '"' || src[i + 2] === "#");
+        if (isRawStr || isByteRawStr) {
+          let hashes = 0;
+          let j = isByteRawStr ? i + 2 : i + 1;
+          while (src[j] === "#") {
+            hashes++;
+            j++;
+          }
+          if (src[j] === '"') {
+            j++;
+            const closing = `"${"#".repeat(hashes)}`;
+            const endIdx = src.indexOf(closing, j);
+            if (endIdx !== -1) {
+              const nlCount = (src.slice(j, endIdx).match(/\n/g) ?? []).length;
+              out += `""${"\n".repeat(nlCount)}`;
+              i = endIdx + closing.length;
+              continue;
+            }
+          }
+        }
+        if (ch === "b" && next === '"') {
+          i++;
+          continue;
+        }
+        const isByteChar = ch === "b" && next === "'";
+        if (ch === "'" || isByteChar) {
+          const q = isByteChar ? i + 1 : i;
+          const c1 = src[q + 1] ?? "";
+          let charEnd = -1;
+          if (c1 === "\\") {
+            const esc = src[q + 2] ?? "";
+            if (esc === "x") {
+              if (src[q + 5] === "'") {
+                charEnd = q + 6;
+              }
+            } else if (esc === "u" && src[q + 3] === "{") {
+              const braceIdx = src.indexOf("}", q + 4);
+              if (braceIdx !== -1 && braceIdx <= q + 12 && src[braceIdx + 1] === "'") {
+                charEnd = braceIdx + 2;
+              }
+            } else if (esc !== "" && esc !== "\n" && esc !== "\r" && src[q + 3] === "'") {
+              charEnd = q + 4;
+            }
+          } else if (c1 !== "" && c1 !== "'" && c1 !== "\n" && c1 !== "\r") {
+            const cp = src.codePointAt(q + 1);
+            const cpLen = cp !== undefined && cp > 0xffff ? 2 : 1;
+            if (src[q + 1 + cpLen] === "'") {
+              charEnd = q + 2 + cpLen;
+            }
+          }
+          if (charEnd !== -1) {
+            out += "''";
+            i = charEnd;
+            continue;
+          }
+          if (isByteChar) {
+            out += "b'";
+            i += 2;
+            continue;
+          }
+        }
+        if (ch === '"') {
+          out += '"';
+          i++;
+          while (i < src.length && src[i] !== '"') {
+            if (src[i] === "\\") {
+              if (src[i + 1] === "\n") out += "\n";
+              i += 2;
+            } else {
+              if (src[i] === "\n") out += "\n";
+              i++;
+            }
+          }
+          out += '"';
+          if (i < src.length) i++;
+          continue;
+        }
+        out += ch;
+        i++;
+      }
+      return out;
+    };
+
+    const crateForbidOrDenyRe = /#\s*!\s*\[\s*(?:forbid|deny)\s*\(\s*unsafe_code\s*\)\s*\]/;
+    for (const rustLibRel of ["packages/engine/src/lib.rs", "packages/js/rust/lib.rs"]) {
       const libPath = path.join(REPO_ROOT, rustLibRel);
       expect(fs.existsSync(libPath), `${rustLibRel} must exist`).toBe(true);
-      const libText = fs.readFileSync(libPath, "utf8");
+      const strippedLib = stripRustCommentsAndStrings(fs.readFileSync(libPath, "utf8"));
       expect(
-        libText.includes("forbid(unsafe_code)") || libText.includes("deny(unsafe_code)"),
-        `${rustLibRel} must declare forbid(unsafe_code) or deny(unsafe_code)`,
+        crateForbidOrDenyRe.test(strippedLib),
+        `${rustLibRel} must declare #![forbid(unsafe_code)] or #![deny(unsafe_code)] in active code`,
       ).toBe(true);
     }
+
+    const strictForbidRootSet = new Set<string>([
+      "packages/fixtures/src/lib.rs",
+      "packages/trainer/src/lib.rs",
+      "packages/studio/rust/lib.rs",
+      "packages/studio/rust/main.rs",
+      "packages/studio/build.rs",
+      "packages/js/build.rs",
+    ]);
+    for (const safePkg of ["fixtures", "trainer", "studio"]) {
+      for (const subDir of ["src/bin", "rust/bin", "tests", "benches", "examples"]) {
+        for (const p of walkFilesByExtensions(
+          path.join(PACKAGES_DIR, safePkg, subDir),
+          new Set([".rs"]),
+        )) {
+          strictForbidRootSet.add(relPath(p));
+        }
+      }
+    }
+    const crateStrictForbidRe = /#\s*!\s*\[\s*forbid\s*\(\s*unsafe_code\s*\)\s*\]/;
+    for (const strictForbidLibRel of [...strictForbidRootSet].sort()) {
+      const libPath = path.join(REPO_ROOT, strictForbidLibRel);
+      expect(fs.existsSync(libPath), `${strictForbidLibRel} must exist`).toBe(true);
+      const strippedRoot = stripRustCommentsAndStrings(fs.readFileSync(libPath, "utf8"));
+      expect(
+        crateStrictForbidRe.test(strippedRoot),
+        `${strictForbidLibRel} must declare #![forbid(unsafe_code)] in active code`,
+      ).toBe(true);
+    }
+
+    // Scan every .rs file across safe-only crates (multi-line, char-literal & block-comment aware)
+    // for allow/warn/expect(unsafe_code), #[unsafe(...)] / #[cfg_attr(..., unsafe(...))], and unsafe blocks/items.
+    const unsafeLintOverrideRe = /\b(?:allow|warn|expect)\s*\([^)]*\bunsafe_code\b/;
+    const unsafeConstructRe =
+      /\bunsafe\s*(?:\{|fn\b|impl\b|trait\b|extern\b)|(?<!r#)\bunsafe\s*\(|#\s*!?\s*\[\s*unsafe\s*\(/;
+    const unsafeBlockOrItemOnlyRe = /\bunsafe\s*(?:\{|fn\b|impl\b|trait\b|extern\b)/;
+    const unsafeViolations: string[] = [];
+    for (const safePkg of ["fixtures", "trainer", "studio"]) {
+      const pkgDir = path.join(PACKAGES_DIR, safePkg);
+      for (const rsFile of walkFilesByExtensions(pkgDir, new Set([".rs"]))) {
+        const stripped = stripRustCommentsAndStrings(fs.readFileSync(rsFile, "utf8"));
+        if (unsafeLintOverrideRe.test(stripped) || unsafeConstructRe.test(stripped)) {
+          unsafeViolations.push(`${relPath(rsFile)}: contains forbidden unsafe construct`);
+        }
+      }
+    }
+    for (const rsFile of walkFilesByExtensions(path.join(PACKAGES_DIR, "js"), new Set([".rs"]))) {
+      const rel = relPath(rsFile);
+      const stripped = stripRustCommentsAndStrings(fs.readFileSync(rsFile, "utf8"));
+      const isWasmExportShim =
+        rel === "packages/js/rust/wasm.rs" ||
+        (rel.startsWith("packages/js/rust/wasm/") && rel !== "packages/js/rust/wasm/abi.rs");
+      if (unsafeBlockOrItemOnlyRe.test(stripped)) {
+        unsafeViolations.push(`${rel}: contains forbidden unsafe block or item`);
+      }
+      if (
+        !isWasmExportShim &&
+        (unsafeLintOverrideRe.test(stripped) || unsafeConstructRe.test(stripped))
+      ) {
+        unsafeViolations.push(`${rel}: contains forbidden unsafe_code override or #[unsafe(...)]`);
+      }
+    }
+    expect(unsafeViolations).toEqual([]);
+
+    // Enforce < 900 line ceiling across all .rs files in fixtures and trainer
+    const lineCeilingViolations: string[] = [];
+    for (const strictPkg of ["fixtures", "trainer"]) {
+      for (const rsFile of walkFilesByExtensions(
+        path.join(PACKAGES_DIR, strictPkg),
+        new Set([".rs"]),
+      )) {
+        const content = fs.readFileSync(rsFile, "utf8");
+        const lineCount = content.endsWith("\n")
+          ? content.split("\n").length - 1
+          : content.split("\n").length;
+        if (lineCount >= 900) {
+          lineCeilingViolations.push(`${relPath(rsFile)} (${lineCount} lines >= 900)`);
+        }
+      }
+    }
+    expect(lineCeilingViolations).toEqual([]);
+
+    // Parse TOML sections strictly (quote-, escape-, and bracket-depth-aware) so zero runtime/build
+    // dependencies can sneak into dnam-fixtures, and dnam-fixtures can ONLY appear inside
+    // [dev-dependencies] in consumer crates.
+    const stripTomlComment = (line: string): string => {
+      let inSingle = false;
+      let inDouble = false;
+      for (let i = 0; i < line.length; i++) {
+        const ch = line[i];
+        if (ch === "'" && !inDouble) {
+          inSingle = !inSingle;
+        } else if (ch === '"' && !inSingle) {
+          let bs = 0;
+          while (i > bs && line[i - 1 - bs] === "\\") {
+            bs++;
+          }
+          if ((bs & 1) === 0) {
+            inDouble = !inDouble;
+          }
+        } else if (ch === "#" && !inSingle && !inDouble) {
+          return line.slice(0, i);
+        }
+      }
+      return line;
+    };
+    const extractTomlTableHeader = (clean: string): string => {
+      const isArrayTable = clean.startsWith("[[");
+      const openLen = isArrayTable ? 2 : 1;
+      expect(
+        isArrayTable
+          ? clean.endsWith("]]") && clean.length > 4
+          : clean.endsWith("]") && clean.length > 2,
+        `Malformed TOML table header: ${clean}`,
+      ).toBe(true);
+      const inner = clean.slice(openLen, clean.length - openLen);
+      let inS = false;
+      let inD = false;
+      for (let i = 0; i < inner.length; i++) {
+        const ch = inner[i];
+        if (ch === "'" && !inD) {
+          inS = !inS;
+        } else if (ch === '"' && !inS) {
+          let bs = 0;
+          while (i > bs && inner[i - 1 - bs] === "\\") {
+            bs++;
+          }
+          if ((bs & 1) === 0) {
+            inD = !inD;
+          }
+        } else if (!inS && !inD && (ch === "[" || ch === "]")) {
+          throw new Error(`Unquoted bracket inside TOML table header: ${clean}`);
+        }
+      }
+      expect(!inS && !inD, `Unterminated quote inside TOML table header: ${clean}`).toBe(true);
+      return inner.trim();
+    };
+    const parseTomlSections = (tomlText: string): Array<{ header: string; body: string }> => {
+      expect(tomlText, "Cargo.toml must not use multi-line triple-quoted strings").not.toMatch(
+        /'''|"""/,
+      );
+      const sections: Array<{ header: string; body: string }> = [];
+      let currentHeader = "";
+      let currentLines: string[] = [];
+      let bracketDepth = 0;
+      let braceDepth = 0;
+      for (const rawLine of tomlText.split("\n")) {
+        const clean = stripTomlComment(rawLine).trim();
+        if (!clean) {
+          continue;
+        }
+        if (bracketDepth === 0 && braceDepth === 0 && clean.startsWith("[")) {
+          sections.push({ header: currentHeader, body: currentLines.join("\n") });
+          currentHeader = extractTomlTableHeader(clean);
+          currentLines = [];
+          continue;
+        }
+        currentLines.push(clean);
+        let inS = false;
+        let inD = false;
+        for (let i = 0; i < clean.length; i++) {
+          const ch = clean[i];
+          if (ch === "'" && !inD) {
+            inS = !inS;
+          } else if (ch === '"' && !inS) {
+            let bs = 0;
+            while (i > bs && clean[i - 1 - bs] === "\\") {
+              bs++;
+            }
+            if ((bs & 1) === 0) {
+              inD = !inD;
+            }
+          } else if (!inS && !inD) {
+            if (ch === "[") bracketDepth++;
+            else if (ch === "]") bracketDepth = Math.max(0, bracketDepth - 1);
+            else if (ch === "{") braceDepth++;
+            else if (ch === "}") braceDepth = Math.max(0, braceDepth - 1);
+          }
+        }
+      }
+      sections.push({ header: currentHeader, body: currentLines.join("\n") });
+      return sections;
+    };
+
+    const allowedFixturesSections = new Set(["", "package", "lib", "lints", "dev-dependencies"]);
+    const fixturesCargo = fs.readFileSync(
+      path.join(PACKAGES_DIR, "fixtures", "Cargo.toml"),
+      "utf8",
+    );
+    for (const sec of parseTomlSections(fixturesCargo)) {
+      expect(
+        allowedFixturesSections.has(sec.header),
+        `packages/fixtures/Cargo.toml must only contain [package], [lib], [lints], and [dev-dependencies], found [${sec.header}]`,
+      ).toBe(true);
+      expect(
+        /(?:^|\n|\.)\s*target\s*(?:=|\.)/.test(sec.body),
+        `packages/fixtures/Cargo.toml must not define target-specific tables/keys in [${sec.header}]`,
+      ).toBe(false);
+      expect(
+        /(?:^|\n|\.)\s*(?:(?:build|dev)-)?dependencies\s*(?:=|\.)/.test(sec.body),
+        `packages/fixtures/Cargo.toml must not define inline or dotted dependency tables in [${sec.header}]`,
+      ).toBe(false);
+    }
+    expect(fixturesCargo).not.toContain("dnam-engine");
+    expect(fixturesCargo).not.toContain("dnam-trainer");
+    expect(fixturesCargo).not.toContain("dnam-studio");
+    expect(fixturesCargo).not.toContain("dnam-js");
+    expect(fixturesCargo).not.toContain("dnam_js");
+
+    const fixturesMoon = fs.readFileSync(path.join(PACKAGES_DIR, "fixtures", "moon.yml"), "utf8");
+    expect(fixturesMoon).toMatch(/^dependsOn:\s*\[\]\s*$/m);
+
+    // Strict V-shaped leaf convergence:
+    // - engine: leaf crate (dependsOn: [], zero dnam-fixtures or dnam-trainer references)
+    // - trainer: engine <- trainer in [dependencies], fixture <- trainer in [dev-dependencies]
+    // - studio & js: zero dnam-fixtures references
+    const fixturesRefRegex = /dnam[-_]fixtures|packages\/fixtures|\.\.\/fixtures/;
+    const engineCargo = fs.readFileSync(path.join(PACKAGES_DIR, "engine", "Cargo.toml"), "utf8");
+    expect(engineCargo).not.toMatch(fixturesRefRegex);
+    expect(engineCargo).not.toMatch(/dnam[-_]trainer|packages\/trainer|\.\.\/trainer/);
+    const engineMoon = fs.readFileSync(path.join(PACKAGES_DIR, "engine", "moon.yml"), "utf8");
+    expect(engineMoon).toMatch(/^dependsOn:\s*\[\]\s*$/m);
+    expect(engineMoon).not.toContain("fixtures");
+
+    const trainerCargo = fs.readFileSync(path.join(PACKAGES_DIR, "trainer", "Cargo.toml"), "utf8");
+    let foundFixturesInTrainerDevDeps = false;
+    let foundEngineInTrainerDeps = false;
+    for (const sec of parseTomlSections(trainerCargo)) {
+      if (fixturesRefRegex.test(sec.header) || fixturesRefRegex.test(sec.body)) {
+        expect(
+          sec.header,
+          `packages/trainer/Cargo.toml must only reference dnam-fixtures in [dev-dependencies], found in [${sec.header}]`,
+        ).toBe("dev-dependencies");
+        foundFixturesInTrainerDevDeps = true;
+      }
+      if (sec.header === "dependencies" && sec.body.includes("dnam-engine")) {
+        foundEngineInTrainerDeps = true;
+      }
+    }
+    expect(
+      foundFixturesInTrainerDevDeps,
+      "packages/trainer/Cargo.toml must list dnam-fixtures in [dev-dependencies] (fixture <- trainer)",
+    ).toBe(true);
+    expect(
+      foundEngineInTrainerDeps,
+      "packages/trainer/Cargo.toml must list dnam-engine in [dependencies] (engine <- trainer)",
+    ).toBe(true);
+
+    const trainerMoon = fs.readFileSync(path.join(PACKAGES_DIR, "trainer", "moon.yml"), "utf8");
+    expect(trainerMoon).toMatch(/^\s*-\s*"engine"\s*$/m);
+    expect(
+      trainerMoon,
+      "packages/trainer/moon.yml must scope fixtures dependency as development",
+    ).toMatch(/-\s*id:\s*"fixtures"\s*\n\s*scope:\s*"development"/);
+
+    for (const nonConsumerPkg of ["studio", "js"]) {
+      const pkgCargo = fs.readFileSync(
+        path.join(PACKAGES_DIR, nonConsumerPkg, "Cargo.toml"),
+        "utf8",
+      );
+      expect(
+        pkgCargo,
+        `packages/${nonConsumerPkg}/Cargo.toml must not depend on dnam-fixtures`,
+      ).not.toMatch(fixturesRefRegex);
+    }
+    for (const nonConsumerMoonPkg of ["studio", "js", "ui"]) {
+      const pkgMoon = fs.readFileSync(
+        path.join(PACKAGES_DIR, nonConsumerMoonPkg, "moon.yml"),
+        "utf8",
+      );
+      expect(
+        pkgMoon,
+        `packages/${nonConsumerMoonPkg}/moon.yml must not depend on fixtures`,
+      ).not.toContain("fixtures");
+    }
+
+    // Zero realfft / rustfft / ndarray / dialoguer across root and package Cargo manifests and Cargo.lock
+    for (const cargoManifest of [
+      path.join(REPO_ROOT, "Cargo.toml"),
+      path.join(REPO_ROOT, "Cargo.lock"),
+      ...["engine", "fixtures", "trainer", "studio", "js"].map((pkg) =>
+        path.join(PACKAGES_DIR, pkg, "Cargo.toml"),
+      ),
+    ]) {
+      const manifestText = fs.readFileSync(cargoManifest, "utf8");
+      expect(manifestText, `${relPath(cargoManifest)} must not depend on realfft`).not.toContain(
+        "realfft",
+      );
+      expect(manifestText, `${relPath(cargoManifest)} must not depend on rustfft`).not.toContain(
+        "rustfft",
+      );
+      expect(manifestText, `${relPath(cargoManifest)} must not depend on ndarray`).not.toContain(
+        "ndarray",
+      );
+      expect(manifestText, `${relPath(cargoManifest)} must not depend on dialoguer`).not.toContain(
+        "dialoguer",
+      );
+    }
+
+    expect(fs.existsSync(path.join(PACKAGES_DIR, "trainer", "src", "metrics.rs"))).toBe(true);
+    expect(fs.existsSync(path.join(PACKAGES_DIR, "trainer", "src", "whitebox.rs"))).toBe(true);
+
+    // ADR-0018 source-level black-box isolation: zero engine/trainer/tier/distillation/DNWB leakage
+    // in packages/fixtures/**/*.rs, and zero dnam_fixtures imports in packages/trainer/src/**/*.rs.
+    const forbiddenFixturesSymbolsRe =
+      /\b(?:Tier|DistillationTarget|internal_nodes|DnwbHeader64B|DNWB|dnam_engine|dnam_trainer)\b/;
+    const fixturesLeakViolations: string[] = [];
+    for (const rsFile of walkFilesByExtensions(
+      path.join(PACKAGES_DIR, "fixtures"),
+      new Set([".rs"]),
+    )) {
+      const stripped = stripRustCommentsAndStrings(fs.readFileSync(rsFile, "utf8"));
+      if (forbiddenFixturesSymbolsRe.test(stripped)) {
+        fixturesLeakViolations.push(relPath(rsFile));
+      }
+    }
+    expect(fixturesLeakViolations).toEqual([]);
+
+    const nonTestFixturesViolations: string[] = [];
+    const nonTestScanDirs = [
+      path.join(PACKAGES_DIR, "trainer", "src"),
+      path.join(PACKAGES_DIR, "engine"),
+      path.join(PACKAGES_DIR, "studio"),
+      path.join(PACKAGES_DIR, "js"),
+    ];
+    const pathOrIncludeFixturesRe =
+      /(?:#\s*\[\s*path\s*=|include(?:_str|_bytes)?\s*!)\s*\(?[^;\n]*fixtures/;
+    for (const scanDir of nonTestScanDirs) {
+      for (const rsFile of walkFilesByExtensions(scanDir, new Set([".rs"]))) {
+        const raw = fs.readFileSync(rsFile, "utf8");
+        const noComments = raw.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/\/\/[^\n]*/g, " ");
+        const stripped = stripRustCommentsAndStrings(raw);
+        if (/\bdnam_fixtures\b/.test(stripped) || pathOrIncludeFixturesRe.test(noComments)) {
+          nonTestFixturesViolations.push(relPath(rsFile));
+        }
+      }
+    }
+    const trainerBuildRs = path.join(PACKAGES_DIR, "trainer", "build.rs");
+    if (fs.existsSync(trainerBuildRs)) {
+      nonTestFixturesViolations.push(relPath(trainerBuildRs));
+    }
+    expect(nonTestFixturesViolations).toEqual([]);
+
+    // Enforce MR-IIR companion rule presence and zero retired MR-STFT references across docs, root & packages
+    expect(collectSpecRules().has("qual.companion.mr-iir")).toBe(true);
+    const retiredMrStftRe = /\bmr[-_]?stft\b/i;
+    const mrStftViolations: string[] = [];
+    for (const rootMd of ["AGENTS.md", "README.md", "CONTRIBUTING.md", "CLA.md"]) {
+      const p = path.join(REPO_ROOT, rootMd);
+      if (fs.existsSync(p) && retiredMrStftRe.test(fs.readFileSync(p, "utf8"))) {
+        mrStftViolations.push(relPath(p));
+      }
+    }
+    for (const rootDir of [DOCS_DIR, PACKAGES_DIR]) {
+      for (const fPath of walkFilesByExtensions(
+        rootDir,
+        new Set([".md", ".rs", ".ts", ".tsx", ".json", ".toml", ".yml"]),
+      )) {
+        if (retiredMrStftRe.test(fs.readFileSync(fPath, "utf8"))) {
+          mrStftViolations.push(relPath(fPath));
+        }
+      }
+    }
+    expect(mrStftViolations).toEqual([]);
 
     const pyFiles = walkFilesByExtensions(REPO_ROOT, new Set([".py"]));
     expect(pyFiles).toEqual([]);

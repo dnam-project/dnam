@@ -1,0 +1,16 @@
+[package]
+name = "dnam-fixtures"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+description = "Pure-Rust zero-dependency black-box ground-truth audio signal-chain models and hardware impairment decorators for DNAM"
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+

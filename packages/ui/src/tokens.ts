@@ -1,6 +1,6 @@
 /**
  * Unified Design Tokens for DNAM Desktop Studio (`packages/studio`)
- * and DNAM Web Studio / Astro Starlight (`packages/web`).
+ * and DNAM WebAudio (`packages/js`) / Astro Starlight (`docs/`).
  */
 
 export interface DnamThemeTokens {

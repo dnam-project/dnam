@@ -64,9 +64,9 @@ $$\mathbf{G}_{T,\text{updated}} = \sum_{s=1}^{S + S_{\text{new}}} \mathbf{G}_{s,
 Each `(stem, tier)` entry in `stems_registry` tracks three separate dependency digests (excluding any tier $> T$ data so higher-tier updates never invalidate lower tiers):
 1. **Trajectory Dependencies:** Input PCM, aligned control/switch event timelines, initial state, sample rate, effective tier, routing (`FullBand64Tap` alignment, `LR4` crossover, send-safe/downstream partition), `Stage I` `H1`/`T1` histories, upstream stage weights, and dispatched stage parameters `θ_0..θ_14`.
 2. **Gram Dependencies:** Trajectory digest + feature preprocessing, sample selection/weights, Gram accumulation semantics, and the streaming SHA-256 **Gram-input fingerprint** ([`../containers/checkpoint_and_cache_format.md` §3.1](../containers/checkpoint_and_cache_format.md#31-gram-input-fingerprint)).
-3. **Cross-Correlation & Certificate Dependencies:** Gram dependencies + target PCM identity, target alignment/preprocessing, and matched noise-floor evidence (`bESR`, `MR-STFT`, `LTAS`, `SegESR`).
+3. **Cross-Correlation & Certificate Dependencies:** Gram dependencies + target PCM identity, target alignment/preprocessing, and matched noise-floor evidence (`bESR`, `MR-IIR`, `LTAS`, `SegESR`).
 
-`r[train.resume.old-stem-nonregression]` **Old-Stem Non-Regression Verification (`REQ-3.2`):** If a candidate update is not proven bit-identical on an old stem, run a bounded validation-only render (without accumulating a second statistics sweep) and verify zero regression across raw composite/per-band `bESR`, `MR-STFT`, maximum absolute noise-adjusted `LTAS`, excluded-band `LTAS` residuals, and linear `SegESR`.
+`r[train.resume.old-stem-nonregression]` **Old-Stem Non-Regression Verification (`REQ-3.2`):** If a candidate update is not proven bit-identical on an old stem, run a bounded validation-only render (without accumulating a second statistics sweep) and verify zero regression across raw composite/per-band `bESR`, `MR-IIR`, maximum absolute noise-adjusted `LTAS`, excluded-band `LTAS` residuals, and linear `SegESR`.
 
 ### 1.3 Windowed Statistics Refresh
 

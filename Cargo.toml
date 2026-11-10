@@ -1,7 +1,7 @@
 [workspace]
 resolver = "3"
-members = ["packages/engine", "packages/trainer", "packages/js", "packages/studio"]
-default-members = ["packages/engine", "packages/trainer", "packages/studio"]
+members = ["packages/engine", "packages/trainer", "packages/fixtures", "packages/js", "packages/studio"]
+default-members = ["packages/engine", "packages/trainer", "packages/fixtures", "packages/studio"]
 
 [workspace.package]
 version = "0.1.0"
@@ -13,15 +13,14 @@ repository = "https://github.com/dnam-project/dnam"
 [workspace.dependencies]
 dnam-engine = { path = "packages/engine", default-features = true }
 dnam-trainer = { path = "packages/trainer", default-features = false }
+dnam-fixtures = { path = "packages/fixtures" }
 serde = { version = "1.0", default-features = false, features = ["derive", "alloc"] }
 serde_json = { version = "1.0", default-features = false, features = ["alloc"] }
 toml = "0.8"
 clap = { version = "4.5", features = ["derive"] }
-dialoguer = { version = "0.12", default-features = false }
 cpal = "0.18"
-ndarray = "0.17"
-realfft = "3.5"
 ed25519-dalek = { version = "2.1", default-features = false, features = ["alloc", "zeroize"] }
+getrandom = "0.3"
 x25519-dalek = { version = "2.0", default-features = false, features = ["static_secrets", "zeroize"] }
 chacha20poly1305 = { version = "0.10", default-features = false, features = ["alloc"] }
 hkdf = { version = "0.12", default-features = false }

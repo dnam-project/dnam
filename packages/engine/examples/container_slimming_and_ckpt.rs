@@ -1,12 +1,12 @@
-//! Example 4: Container Tier Slimming, In-Place 4 KB Header Editing & `.dnam-ckpt` `uplo='U'` Packing
+//! Example 4: Container Tier Slimming, In-Place `DMU1` Mutable Suffix Editing & `DMU1` Framing
 //! (`examples/container_slimming_and_ckpt.rs`).
 //!
 //! Demonstrates:
 //! 1. Stripping an `Ultra` (`64,000 B` arena) `.dnam` container down to `Pro` (`36,224 B`),
 //!    `Full` (`22,336 B`), and `Lite` (`10,752 B`) via [`strip_container_to_tier`] without
 //!    modifying the immutable JSON header.
-//! 2. Editing mutable `presets` and `user_metadata` in place within the 4 KB page-aligned
-//!    header slack via [`update_header_in_place`].
+//! 2. Editing mutable `presets` and `user_metadata` in place within the `DMU1` mutable suffix
+//!    trailer via [`update_header_in_place`].
 //! 3. Round-tripping the v2.0 `DMU1` mutable suffix trailer (`build_dmu1_mutable_frame` /
 //!    `parse_and_validate_dmu1_frame`, `ref[container.dnam.mutable-frame]`).
 //!
@@ -46,7 +46,7 @@ fn main() {
         );
     }
 
-    // 2. Edit user_metadata and presets in place within the 4 KB page-aligned header slack
+    // 2. Edit user_metadata and presets in place within the DMU1 mutable trailer
     let mut editable_container = ultra_container;
     header
         .user_metadata
@@ -59,7 +59,7 @@ fn main() {
         user_metadata: BTreeMap::new(),
     });
     update_header_in_place(&mut editable_container, &header)
-        .expect("in-place 4 KB header update succeeded");
+        .expect("in-place DMU1 mutable trailer update succeeded");
 
     let updated_view = DnamContainerView::from_bytes(&editable_container, &crypto).unwrap();
     println!(

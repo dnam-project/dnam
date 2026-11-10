@@ -22,6 +22,7 @@ pub mod seal;
 pub mod security;
 mod sha256;
 mod verify;
+pub(crate) use verify::canonicalize_jcs_value;
 pub(crate) mod watermark;
 
 pub use security::{

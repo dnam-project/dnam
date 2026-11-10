@@ -4,6 +4,7 @@ target/
 # Node.js / Vite / Vitest / Playwright
 node_modules/
 dist/
+dist-app/
 build/
 coverage/
 .vitest/

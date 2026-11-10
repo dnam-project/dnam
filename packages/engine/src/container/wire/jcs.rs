@@ -119,16 +119,24 @@ fn check_no_duplicate_json_keys(text: &str) -> Result<(), DnamError> {
             b'"' => {
                 let start = i;
                 i += 1;
+                let mut closed = false;
                 while i < bytes.len() {
                     if bytes[i] == b'\\' {
+                        if i + 1 >= bytes.len() {
+                            return Err(DnamError::SchemaValidationError(
+                                "unterminated JSON string escape".to_string(),
+                            ));
+                        }
                         i += 2;
                     } else if bytes[i] == b'"' {
                         i += 1;
+                        closed = true;
                         break;
                     } else {
                         i += 1;
                     }
                 }
+                reject_if(!closed, "unterminated JSON string")?;
                 let raw_str = &text[start..i];
                 if let Some((true, seen, expect_key)) = stack.last_mut()
                     && *expect_key
@@ -331,15 +339,18 @@ mod spec_tests {
             "{\"\u{10000}\":1,\"\u{e000}\":2}"
         );
 
-        // Duplicate keys (including escaped \u0061 == 'a'), surrogates, and noncharacters are rejected
+        // Duplicate keys (including escaped \u0061 == 'a'), surrogates, noncharacters, and unterminated escapes/strings are rejected
         for bad in [
             br#"{"a":1,"\u0061":2}"#.as_slice(),
             br#"{"name":"\ud800"}"#.as_slice(),
             br#"{"name":"\ufdd0"}"#.as_slice(),
             br#"{"name":"\uffff"}"#.as_slice(),
+            b"{\"\\".as_slice(),
+            b"{\"unclosed".as_slice(),
             b"[]".as_slice(),
         ] {
             assert!(parse_strict_json_object_bytes(bad).is_err());
+            assert!(validate_canonical_jcs_header_bytes(bad, true).is_err());
         }
     }
 }

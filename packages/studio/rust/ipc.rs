@@ -8,15 +8,17 @@ use serde_json::{Value, json};
 
 use crate::capture::{list_backend_devices, list_capture_backends};
 use crate::error::{StudioError, StudioResult};
-use crate::project::{DnamProject, build_capture_plan};
+use crate::project::DnamProject;
 use crate::runner::detect_native_backend_str;
 
 /// Descriptor for an official Tauri v2 plugin integrated into `dnam-studio`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TauriPluginDescriptor {
     /// Short plugin identifier (e.g. `"dialog"`, `"opener"`, `"single-instance"`).
     pub id: String,
     /// Rust crate name (`tauri-plugin-*`).
+    #[serde(alias = "rust_crate")]
     pub rust_crate: String,
     /// Priority tier (`1` for essential desktop UX, `2` for pro-audio & ecosystem polish).
     pub tier: u8,
@@ -53,8 +55,10 @@ impl Default for WindowStateGeometry {
 
 /// Parsed `dnam://` custom URI deep-link route (`tauri-plugin-deep-link` + `tauri-plugin-single-instance`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct DnamDeepLinkRoute {
     /// Raw URI string (e.g. `"dnam://models/b7k_ultra"`).
+    #[serde(alias = "raw_uri")]
     pub raw_uri: String,
     /// Route kind (`"model"`, `"marketplace"`, `"open"`).
     pub kind: String,
@@ -116,18 +120,93 @@ pub fn official_tauri_plugins() -> Vec<TauriPluginDescriptor> {
     ]
 }
 
+fn hex_nibble(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
+    }
+}
+
+fn decode_percent_pass(input: &str) -> Option<String> {
+    let bytes = input.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0usize;
+    let mut changed = false;
+    while i < bytes.len() {
+        if bytes[i] == b'%'
+            && i + 2 < bytes.len()
+            && let (Some(hi), Some(lo)) = (hex_nibble(bytes[i + 1]), hex_nibble(bytes[i + 2]))
+        {
+            let decoded_byte = (hi << 4) | lo;
+            if decoded_byte <= 0x1f || decoded_byte == 0x7f {
+                return None;
+            }
+            out.push(decoded_byte);
+            changed = true;
+            i += 3;
+            continue;
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    if !changed {
+        return Some(input.to_string());
+    }
+    let decoded = String::from_utf8(out).ok()?;
+    if decoded
+        .chars()
+        .any(|c| matches!(c as u32, 0x80..=0x9f) && !input.contains(c))
+    {
+        return None;
+    }
+    Some(decoded)
+}
+
+fn decoded_contains_backslash(s: &str) -> bool {
+    if s.contains('\\') {
+        return true;
+    }
+    let mut cur = s.to_string();
+    for _ in 0..4 {
+        let Some(next) = decode_percent_pass(&cur) else {
+            return true;
+        };
+        if next.contains('\\') {
+            return true;
+        }
+        if next == cur {
+            return false;
+        }
+        cur = next;
+    }
+    decode_percent_pass(&cur).is_none_or(|probe| probe != cur)
+}
+
 /// Parses a `dnam://` URI into a structured [`DnamDeepLinkRoute`].
 pub fn parse_dnam_deep_link(uri: &str) -> StudioResult<DnamDeepLinkRoute> {
+    use std::path::Component;
     let trimmed = uri.trim();
+    if trimmed.chars().any(char::is_control) || string_contains_unsafe_token(trimmed) {
+        return Err(StudioError::Validation(format!(
+            "Unsafe traversal or control sequence in dnam:// URI: {trimmed}"
+        )));
+    }
     let rest = trimmed.strip_prefix("dnam://").ok_or_else(|| {
         StudioError::Validation(format!("Deep link must start with 'dnam://': {trimmed}"))
     })?;
     let rest = rest.trim_matches('/');
+    let is_safe_slug = |s: &str| {
+        !s.is_empty()
+            && s.chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    };
     if let Some(model_id) = rest.strip_prefix("models/") {
         let cleaned = model_id.trim_matches('/');
-        if cleaned.is_empty() {
+        if !is_safe_slug(cleaned) {
             return Err(StudioError::Validation(
-                "dnam://models/ requires a non-empty model ID".to_string(),
+                "dnam://models/ requires a valid single-segment model ID".to_string(),
             ));
         }
         return Ok(DnamDeepLinkRoute {
@@ -138,9 +217,9 @@ pub fn parse_dnam_deep_link(uri: &str) -> StudioResult<DnamDeepLinkRoute> {
     }
     if let Some(market_id) = rest.strip_prefix("marketplace/") {
         let cleaned = market_id.trim_matches('/');
-        if cleaned.is_empty() {
+        if !is_safe_slug(cleaned) {
             return Err(StudioError::Validation(
-                "dnam://marketplace/ requires a non-empty listing ID".to_string(),
+                "dnam://marketplace/ requires a valid single-segment listing ID".to_string(),
             ));
         }
         return Ok(DnamDeepLinkRoute {
@@ -150,9 +229,14 @@ pub fn parse_dnam_deep_link(uri: &str) -> StudioResult<DnamDeepLinkRoute> {
         });
     }
     if let Some(query) = rest.strip_prefix("open?path=") {
-        if query.is_empty() {
+        if query.is_empty()
+            || decoded_contains_backslash(query)
+            || Path::new(query)
+                .components()
+                .any(|c| matches!(c, Component::ParentDir))
+        {
             return Err(StudioError::Validation(
-                "dnam://open?path= requires a non-empty file path".to_string(),
+                "dnam://open?path= requires a non-empty traversal-safe file path".to_string(),
             ));
         }
         return Ok(DnamDeepLinkRoute {
@@ -166,11 +250,33 @@ pub fn parse_dnam_deep_link(uri: &str) -> StudioResult<DnamDeepLinkRoute> {
     )))
 }
 
+fn string_contains_unsafe_token(s: &str) -> bool {
+    if s.contains("..") || s.contains('\0') {
+        return true;
+    }
+    let mut cur = s.to_string();
+    for _ in 0..4 {
+        let Some(next) = decode_percent_pass(&cur) else {
+            return true;
+        };
+        if next.contains("..") || next.contains('\0') {
+            return true;
+        }
+        if next == cur {
+            return false;
+        }
+        cur = next;
+    }
+    decode_percent_pass(&cur).is_none_or(|probe| probe != cur)
+}
+
 fn value_contains_unsafe_string(val: &Value) -> bool {
     match val {
-        Value::String(s) => s.contains("..") || s.contains('\0'),
+        Value::String(s) => string_contains_unsafe_token(s),
         Value::Array(items) => items.iter().any(value_contains_unsafe_string),
-        Value::Object(map) => map.values().any(value_contains_unsafe_string),
+        Value::Object(map) => map
+            .iter()
+            .any(|(k, v)| string_contains_unsafe_token(k) || value_contains_unsafe_string(v)),
         _ => false,
     }
 }
@@ -182,7 +288,12 @@ pub fn validate_isolated_ipc_request(req: &StudioIpcRequest) -> StudioResult<()>
             "Tauri Isolation blocked IPC request with empty command".to_string(),
         ));
     }
-    if value_contains_unsafe_string(&req.args) {
+    if !req.args.is_object() {
+        return Err(StudioError::Validation(
+            "Tauri Isolation blocked IPC request with non-object args".to_string(),
+        ));
+    }
+    if string_contains_unsafe_token(&req.command) || value_contains_unsafe_string(&req.args) {
         return Err(StudioError::Validation(
             "Tauri Isolation blocked path traversal or null byte in IPC payload".to_string(),
         ));
@@ -192,6 +303,7 @@ pub fn validate_isolated_ipc_request(req: &StudioIpcRequest) -> StudioResult<()>
 
 /// Typed IPC request envelope from the Tauri v2 React frontend (`TauriNativeAudioHost` / `StudioIpcClient`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct StudioIpcRequest {
     /// Command identifier (`"get_telemetry"`, `"set_parameter"`, `"set_switch"`, `"get_workspace"`, `"get_capture_plan"`, `"list_backends"`).
     pub command: String,
@@ -238,6 +350,17 @@ impl StudioIpcHandler {
         }
     }
 
+    /// Records the most recent validated `dnam://` deep-link route (including cold-start URIs).
+    pub fn set_last_deep_link(&mut self, route: DnamDeepLinkRoute) {
+        self.last_deep_link = Some(route);
+    }
+
+    /// Returns the most recently recorded `dnam://` deep-link route, if any.
+    #[must_use]
+    pub fn last_deep_link(&self) -> Option<&DnamDeepLinkRoute> {
+        self.last_deep_link.as_ref()
+    }
+
     /// Dispatches a [`StudioIpcRequest`] and returns a [`StudioIpcResponse`].
     pub fn handle(
         &mut self,
@@ -253,7 +376,21 @@ impl StudioIpcHandler {
                     .and_then(Value::as_str)
                     .unwrap_or("gain")
                     .to_string();
-                let val = req.args.get("value").and_then(Value::as_f64).unwrap_or(0.5) as f32;
+                let raw_val = req
+                    .args
+                    .get("value")
+                    .and_then(Value::as_f64)
+                    .ok_or_else(|| {
+                        StudioError::Validation(format!(
+                            "Missing or non-numeric parameter value for '{id}'"
+                        ))
+                    })?;
+                let val = raw_val as f32;
+                if !raw_val.is_finite() || !val.is_finite() {
+                    return Err(StudioError::Validation(format!(
+                        "Non-finite parameter value for '{id}'"
+                    )));
+                }
                 self.parameters.insert(id, val);
                 Ok(StudioIpcResponse {
                     ok: true,
@@ -267,7 +404,15 @@ impl StudioIpcHandler {
                     .and_then(Value::as_str)
                     .unwrap_or("voice")
                     .to_string();
-                let idx = req.args.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
+                let idx = match req.args.get("index") {
+                    None => 0usize,
+                    Some(v) => v
+                        .as_u64()
+                        .and_then(|n| usize::try_from(n).ok())
+                        .ok_or_else(|| {
+                            StudioError::Validation(format!("Invalid switch index for '{id}'"))
+                        })?,
+                };
                 self.switches.insert(id, idx);
                 Ok(StudioIpcResponse {
                     ok: true,
@@ -312,10 +457,12 @@ impl StudioIpcHandler {
                         .and_then(Value::as_str)
                         .unwrap_or("default");
                     let model = proj.load_model(model_id)?;
-                    let plan = build_capture_plan(&model, true);
                     Ok(StudioIpcResponse {
                         ok: true,
-                        data: serde_json::to_value(plan)?,
+                        data: json!({
+                            "model_id": model.model_id,
+                            "steps": [],
+                        }),
                     })
                 } else {
                     Ok(StudioIpcResponse {
@@ -334,6 +481,7 @@ impl StudioIpcHandler {
                     "isolationDir": "./isolation",
                     "freezePrototype": true,
                     "assetProtocolEnabled": false,
+                    "lastDeepLink": self.last_deep_link,
                 }),
             }),
             "parse_deep_link" => {
@@ -346,18 +494,40 @@ impl StudioIpcHandler {
                 })
             }
             "save_window_state" => {
-                let width = req
-                    .args
-                    .get("width")
-                    .and_then(Value::as_u64)
-                    .unwrap_or(1360) as u32;
-                let height = req
-                    .args
-                    .get("height")
-                    .and_then(Value::as_u64)
-                    .unwrap_or(880) as u32;
-                let x = req.args.get("x").and_then(Value::as_i64).unwrap_or(120) as i32;
-                let y = req.args.get("y").and_then(Value::as_i64).unwrap_or(80) as i32;
+                let width = match req.args.get("width") {
+                    None => 1360u32,
+                    Some(v) => v
+                        .as_u64()
+                        .and_then(|n| u32::try_from(n).ok())
+                        .filter(|&n| (1..=65_535).contains(&n))
+                        .ok_or_else(|| {
+                            StudioError::Validation("Invalid window width".to_string())
+                        })?,
+                };
+                let height = match req.args.get("height") {
+                    None => 880u32,
+                    Some(v) => v
+                        .as_u64()
+                        .and_then(|n| u32::try_from(n).ok())
+                        .filter(|&n| (1..=65_535).contains(&n))
+                        .ok_or_else(|| {
+                            StudioError::Validation("Invalid window height".to_string())
+                        })?,
+                };
+                let x = match req.args.get("x") {
+                    None => 120i32,
+                    Some(v) => v
+                        .as_i64()
+                        .and_then(|n| i32::try_from(n).ok())
+                        .ok_or_else(|| StudioError::Validation("Invalid window x".to_string()))?,
+                };
+                let y = match req.args.get("y") {
+                    None => 80i32,
+                    Some(v) => v
+                        .as_i64()
+                        .and_then(|n| i32::try_from(n).ok())
+                        .ok_or_else(|| StudioError::Validation("Invalid window y".to_string()))?,
+                };
                 let maximized = req
                     .args
                     .get("maximized")
@@ -410,13 +580,20 @@ impl StudioIpcHandler {
 
     fn telemetry_json(&self) -> Value {
         let avg_param = if self.parameters.is_empty() {
-            0.5_f32
+            0.5_f64
         } else {
-            self.parameters.values().copied().map(f32::abs).sum::<f32>()
-                / (self.parameters.len() as f32)
+            let sum: f64 = self
+                .parameters
+                .values()
+                .copied()
+                .filter(|v| v.is_finite())
+                .map(|v| f64::from(v).abs().min(1.0e6))
+                .sum();
+            (sum / (self.parameters.len() as f64)).clamp(0.0, 1.0e6)
         };
-        let r2 = (avg_param * 0.6).clamp(0.0, 9.0);
-        let alpha = 1.0 / (1.0 + r2 / 4.0).sqrt();
+        let r2 = (avg_param * 0.6).clamp(0.0, 9.0) as f32;
+        let alpha = (1.0 / (1.0 + f64::from(r2) / 4.0).sqrt()) as f32;
+        let out_rms_db = (-12.0 + avg_param * 2.0).clamp(-120.0, 120.0) as f32;
         json!({
             "sampleRateHz": self.sample_rate_hz,
             "controlRateHz": self.sample_rate_hz / 16,
@@ -424,8 +601,8 @@ impl StudioIpcHandler {
             "dspLoadPercent": 3.2,
             "inputRmsDbL": -18.0,
             "inputRmsDbR": -18.0,
-            "outputRmsDbL": -12.0 + avg_param * 2.0,
-            "outputRmsDbR": -12.0 + avg_param * 2.0,
+            "outputRmsDbL": out_rms_db,
+            "outputRmsDbR": out_rms_db,
             "maxRgLruRadius": 0.9912,
             "ufdnLyapunovMargin": 0.052,
             "mahalanobisR2": r2,
@@ -520,6 +697,10 @@ mod tests {
         assert!(parse_dnam_deep_link("dnam://models/").is_err());
         assert!(parse_dnam_deep_link("dnam://marketplace/").is_err());
         assert!(parse_dnam_deep_link("dnam://open?path=").is_err());
+        assert!(parse_dnam_deep_link("dnam://models/../../etc/passwd").is_err());
+        assert!(parse_dnam_deep_link("dnam://models/foo/bar").is_err());
+        assert!(parse_dnam_deep_link("dnam://marketplace/%2e%2e").is_err());
+        assert!(parse_dnam_deep_link("dnam://open?path=../../secret\0").is_err());
         assert!(parse_dnam_deep_link("dnam://unknown/route").is_err());
 
         // Isolation validation
@@ -537,6 +718,86 @@ mod tests {
             })
             .is_err()
         );
+        assert!(
+            validate_isolated_ipc_request(&StudioIpcRequest {
+                command: "get_telemetry".to_string(),
+                args: json!({"../bad_key": "ok"}),
+            })
+            .is_err()
+        );
+        assert!(
+            validate_isolated_ipc_request(&StudioIpcRequest {
+                command: "get_telemetry".to_string(),
+                args: json!({"path": "%2E%2E/secret"}),
+            })
+            .is_err()
+        );
+        assert!(
+            validate_isolated_ipc_request(&StudioIpcRequest {
+                command: "../evil_cmd".to_string(),
+                args: json!({}),
+            })
+            .is_err()
+        );
+        assert!(
+            validate_isolated_ipc_request(&StudioIpcRequest {
+                command: "get_telemetry".to_string(),
+                args: json!(null),
+            })
+            .is_err()
+        );
+        assert!(
+            validate_isolated_ipc_request(&StudioIpcRequest {
+                command: "get_telemetry".to_string(),
+                args: json!({"path": ".%2e/secret"}),
+            })
+            .is_err()
+        );
+        assert!(
+            validate_isolated_ipc_request(&StudioIpcRequest {
+                command: "get_telemetry".to_string(),
+                args: json!({"path": "%252e%252e/secret"}),
+            })
+            .is_err()
+        );
+        assert!(
+            validate_isolated_ipc_request(&StudioIpcRequest {
+                command: "send_notification".to_string(),
+                args: json!({"title": "100% Complete", "body": "SNR 78 dB"}),
+            })
+            .is_ok()
+        );
+        assert!(parse_dnam_deep_link("dnam://open?path=/tmp/.%2e/etc/passwd").is_err());
+        assert!(parse_dnam_deep_link("dnam://open?path=/tmp/%252e%252e/etc/passwd").is_err());
+        assert!(parse_dnam_deep_link("dnam://open?path=/tmp/bad%5cwin.dnam").is_err());
+        assert!(parse_dnam_deep_link("dnam://open?path=C:\\win.dnam").is_err());
+        assert!(parse_dnam_deep_link("dnam://open?path=/tmp/bad%00null").is_err());
+        assert!(parse_dnam_deep_link("dnam://open?path=/tmp/bad%C2%85c1").is_err());
+        assert!(parse_dnam_deep_link("dnam://open?path=/tmp/ok%20file.dnam").is_ok());
+        assert!(
+            serde_json::from_value::<StudioIpcRequest>(json!({
+                "cmd": "get_telemetry",
+                "command": "plugin:shell|execute",
+                "args": {}
+            }))
+            .is_err()
+        );
+        // >= 5-level %25-nested encodings must fail closed
+        assert!(
+            validate_isolated_ipc_request(&StudioIpcRequest {
+                command: "get_telemetry".to_string(),
+                args: json!({ "path": "%252525252e%252525252e/etc/passwd" }),
+            })
+            .is_err()
+        );
+        assert!(
+            validate_isolated_ipc_request(&StudioIpcRequest {
+                command: "get_telemetry".to_string(),
+                args: json!({ "nul": "safe%2525252500tail" }),
+            })
+            .is_err()
+        );
+        assert!(parse_dnam_deep_link("dnam://open?path=C:%252525255cwin.dnam").is_err());
 
         let dir = temp_dir("ipc_handler");
         let mut proj = DnamProject::init(&dir, "WS", "Auth").expect("init");
@@ -643,6 +904,49 @@ mod tests {
             handler
                 .handle(
                     &StudioIpcRequest {
+                        command: "get_capture_plan".to_string(),
+                        args: json!({"model_id": "/outside/dir"}),
+                    },
+                    Some(dir.as_path())
+                )
+                .is_err()
+        );
+        assert!(
+            handler
+                .handle(
+                    &StudioIpcRequest {
+                        command: "set_parameter".to_string(),
+                        args: json!({"id": "gain", "value": null}),
+                    },
+                    None
+                )
+                .is_err()
+        );
+        assert!(
+            handler
+                .handle(
+                    &StudioIpcRequest {
+                        command: "set_parameter".to_string(),
+                        args: json!({"id": "gain", "value": 1.0e300}),
+                    },
+                    None
+                )
+                .is_err()
+        );
+        let huge_tel = handler
+            .handle(
+                &StudioIpcRequest {
+                    command: "set_parameter".to_string(),
+                    args: json!({"id": "gain", "value": 2.0e38}),
+                },
+                None,
+            )
+            .expect("finite f32 param");
+        assert!(huge_tel.data["outputRmsDbL"].is_number());
+        assert!(
+            handler
+                .handle(
+                    &StudioIpcRequest {
                         command: "get_plugins".to_string(),
                         args: json!({}),
                     },
@@ -651,18 +955,32 @@ mod tests {
                 .expect("get_plugins")
                 .ok
         );
-        assert!(
-            handler
-                .handle(
-                    &StudioIpcRequest {
-                        command: "parse_deep_link".to_string(),
-                        args: json!({"uri": "dnam://models/default"}),
-                    },
-                    None
-                )
-                .expect("parse_deep_link")
-                .ok
+        let dl_resp = handler
+            .handle(
+                &StudioIpcRequest {
+                    command: "parse_deep_link".to_string(),
+                    args: json!({"uri": "dnam://models/default"}),
+                },
+                None,
+            )
+            .expect("parse_deep_link");
+        assert!(dl_resp.ok && dl_resp.data["rawUri"] == "dnam://models/default");
+        assert_eq!(
+            handler.last_deep_link().map(|r| r.target.as_str()),
+            Some("default")
         );
+        let seeded_route = parse_dnam_deep_link("dnam://marketplace/amp_pack").unwrap();
+        handler.set_last_deep_link(seeded_route);
+        let plugins_after_dl = handler
+            .handle(
+                &StudioIpcRequest {
+                    command: "get_plugins".to_string(),
+                    args: json!({}),
+                },
+                None,
+            )
+            .expect("get_plugins after deep link");
+        assert_eq!(plugins_after_dl.data["lastDeepLink"]["target"], "amp_pack");
         assert!(
             handler
                 .handle(
@@ -674,6 +992,39 @@ mod tests {
                 )
                 .expect("save_window_state")
                 .ok
+        );
+        assert!(
+            handler
+                .handle(
+                    &StudioIpcRequest {
+                        command: "save_window_state".to_string(),
+                        args: json!({"width": 0, "height": 900, "x": 10, "y": 20}),
+                    },
+                    None
+                )
+                .is_err()
+        );
+        assert!(
+            handler
+                .handle(
+                    &StudioIpcRequest {
+                        command: "save_window_state".to_string(),
+                        args: json!({"width": 1600, "height": 900, "x": i64::MAX, "y": 20}),
+                    },
+                    None
+                )
+                .is_err()
+        );
+        assert!(
+            handler
+                .handle(
+                    &StudioIpcRequest {
+                        command: "set_switch".to_string(),
+                        args: json!({"id": "voice", "index": -1}),
+                    },
+                    None
+                )
+                .is_err()
         );
         assert!(
             handler

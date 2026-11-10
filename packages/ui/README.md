@@ -1,6 +1,6 @@
 # `@dnam-project/ui` — DNAM Unified Design System
 
-Shared React 19, Tailwind CSS v4 (`@tailwindcss/vite`), `shadcn/ui`, and `lucide-react` design system for the **Dynamic Neural Audio Modeler (DNAM)** Tauri v2 Desktop Studio (`packages/studio`) and Astro/Starlight Web Studio (`packages/web`).
+Shared React 19, Tailwind CSS v4 (`@tailwindcss/vite`), `shadcn/ui`, and `lucide-react` design system for the **Dynamic Neural Audio Modeler (DNAM)** Tauri v2 Desktop Studio (`packages/studio`), WebAudio SDK (`packages/js`), and Astro/Starlight Documentation (`docs/`).
 
 ## Exports
 

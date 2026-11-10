@@ -12,15 +12,15 @@ function TrainingTimelineFixture() {
       timeline={{
         modelId: "SLO100_Lead",
         status,
-        backendDevice: "Apple MPS (bf16 + fp64 Kronecker)",
+        backendDevice: "Rust Host SIMD (f64 Kronecker)",
         clampedParameterCount: 2,
         history: [
           {
             epoch: 24,
             totalEpochs: 40,
-            stage: "Stage 3: Joint End-to-End Fine-Tuning",
+            stage: "Sweep 2: Joint Full-Rig Kronecker Polish",
             esrLoss: 0.00412,
-            stftLoss: 0.0184,
+            mrIirLoss: 0.0184,
             maxRgLruRadius: 0.9932,
             ufdnSpectralNorm: 0.9998,
           },
@@ -56,5 +56,5 @@ export default {
       ]}
     />
   ),
-  "4-Stage Differentiable Trainer": <TrainingTimelineFixture />,
+  "Two-Sweep Analytical Trainer": <TrainingTimelineFixture />,
 };

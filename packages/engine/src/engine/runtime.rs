@@ -307,92 +307,73 @@ impl<'a, B: EngineBackend> DnamEngine<'a, B> {
         Ok(())
     }
 
-    /// Hot-swaps a new `.dnam` model in-place with zero heap allocations.
+    /// Hot-swaps a new canonical `v2.0` `.dnam` model in-place with zero heap allocations.
     pub fn reload_model_in_place(
         &mut self,
         bytes: &'a [u8],
         tier: Tier,
         sample_rate_hz: u32,
     ) -> Result<(), DnamError> {
-        if crate::container::is_v2_wire_directory_container(bytes) {
-            let layout = crate::container::validate_v2_dnam_layout_no_alloc(bytes)?;
-            let preamble = DnamPreamble::from_bytes(bytes)?;
-            let arena_slice =
-                &bytes[layout.tier_start..layout.tier_ends[layout.retained_tier as usize]];
-            let shared_extent_slice =
-                &bytes[layout.shared_extent.0..layout.shared_extent.0 + layout.shared_extent.1];
-            let max_avail = Self::detect_max_tier(&preamble, arena_slice.len());
-            let active_tier = tier.min(max_avail).min(self.max_supported_tier);
-            if !self.arena_storage.reload_in_place(arena_slice) {
-                self.arena_storage = crate::memory::ArenaStorage::from_slice_or_copy(arena_slice);
-            }
-            self.control_bus.num_contributors = 0;
-            let p_ctrls = preamble.num_controls as usize;
-            self.control_bus.ensure_control_capacity(p_ctrls);
-            self.control_bus.num_controls = p_ctrls;
-            let desc_bytes_len = p_ctrls * 64;
-            if shared_extent_slice.len() >= desc_bytes_len {
-                for p in 0..p_ctrls {
-                    let off = p * 64;
-                    let mut db = [0u8; 64];
-                    db.copy_from_slice(&shared_extent_slice[off..off + 64]);
-                    self.control_bus.descriptors[p] =
-                        crate::control::ControlClampDescriptor::from_bytes(&db);
-                }
-                let cp1_tail = &shared_extent_slice[desc_bytes_len..];
-                if cp1_tail.len() >= 8
-                    && cp1_tail[0..4] == crate::container::CP1_MAGIC
-                    && let Ok(cnt) = crate::container::decode_cp1_shared_stream_into_slice(
-                        cp1_tail,
-                        &mut self.control_bus.contributors,
-                    )
-                {
-                    self.control_bus.num_contributors = cnt;
-                }
-            }
-            self.preamble = preamble;
-            self.header = None;
-            self.tier = active_tier;
-            self.max_available_tier = max_avail;
-            self.reconfigure_for_sample_rate_with_mode(sample_rate_hz, true)?;
-            return Ok(());
-        }
-
         let preamble = DnamPreamble::from_bytes(bytes)?;
-        if preamble.is_encrypted_arena() {
+        if preamble.magic != crate::container::DNAM_MAGIC {
+            return Err(DnamError::InvalidMagic(preamble.magic));
+        }
+        if preamble.is_encrypted_arena() || bytes[8] > 0 {
             return Err(DnamError::EncryptedArenaRequiresDeviceKey);
         }
-        let arena_off = preamble.tensor_arena_offset as usize;
-        let arena_len = preamble.tensor_arena_byte_len as usize;
-        if bytes.len() < arena_off + arena_len {
-            return Err(DnamError::BufferTooSmall {
-                expected: arena_off + arena_len,
-                actual: bytes.len(),
-            });
-        }
-        let computed_hdr_crc = crate::container::compute_header_crc32c(bytes, arena_off);
-        if computed_hdr_crc != preamble.header_crc32c {
-            return Err(DnamError::Crc32cMismatch {
-                region: "header",
-                expected: preamble.header_crc32c,
-                computed: computed_hdr_crc,
-            });
+        let layout = crate::container::validate_v2_dnam_layout_no_alloc(bytes)?;
+        let auth_slice = &bytes[layout.auth_extent.0..layout.auth_extent.0 + layout.auth_extent.1];
+        let has_dcrc = if let Some(dcrc) = crate::container::parse_dcrc_record(auth_slice)? {
+            let calc_hdr_crc = crate::container::crc32c_update(0, &bytes[..layout.auth_extent.0]);
+            if calc_hdr_crc != dcrc.crc_prefix {
+                return Err(DnamError::Crc32cMismatch {
+                    region: "header",
+                    expected: dcrc.crc_prefix,
+                    computed: calc_hdr_crc,
+                });
+            }
+            true
+        } else {
+            false
+        };
+
+        let arena_slice =
+            &bytes[layout.tier_start..layout.tier_ends[layout.retained_tier as usize]];
+        if has_dcrc {
+            DnamContainerView::verify_arena_prefix_crcs(&preamble, arena_slice)?;
         }
 
-        let max_avail = Self::detect_max_tier(&preamble, arena_len);
+        let shared_extent_slice =
+            &bytes[layout.shared_extent.0..layout.shared_extent.0 + layout.shared_extent.1];
+        let max_avail = Self::detect_max_tier(&preamble, arena_slice.len());
         let active_tier = tier.min(max_avail).min(self.max_supported_tier);
-
-        let raw_arena = &bytes[arena_off..arena_off + arena_len];
-        DnamContainerView::verify_arena_prefix_crcs(&preamble, raw_arena)?;
-        if !self.arena_storage.reload_in_place(raw_arena) {
-            self.arena_storage = crate::memory::ArenaStorage::from_slice_or_copy(raw_arena);
+        if !self.arena_storage.reload_in_place(arena_slice) {
+            self.arena_storage = crate::memory::ArenaStorage::from_slice_or_copy(arena_slice);
         }
         self.control_bus.num_contributors = 0;
         let p_ctrls = preamble.num_controls as usize;
-        if arena_off >= 64 + 128 * p_ctrls {
-            let ctrl_off = arena_off - 128 * p_ctrls;
-            self.control_bus
-                .load_control_records_from_bytes(&bytes[ctrl_off..arena_off], p_ctrls);
+        self.control_bus.ensure_control_capacity(p_ctrls);
+        self.control_bus.num_controls = p_ctrls;
+        if let Some(desc_bytes_len) = p_ctrls.checked_mul(64)
+            && shared_extent_slice.len() >= desc_bytes_len
+        {
+            for p in 0..p_ctrls {
+                let off = p * 64;
+                let mut db = [0u8; 64];
+                db.copy_from_slice(&shared_extent_slice[off..off + 64]);
+                self.control_bus.descriptors[p] =
+                    crate::control::ControlClampDescriptor::from_bytes(&db);
+            }
+            let cp1_tail = &shared_extent_slice[desc_bytes_len..];
+            if cp1_tail.len() >= 8
+                && cp1_tail[0..4] == crate::container::CP1_MAGIC
+                && let Ok(cnt) = crate::container::decode_cp1_shared_stream_into_slice(
+                    cp1_tail,
+                    &mut self.control_bus.contributors,
+                )
+            {
+                self.control_bus.num_contributors = cnt;
+            }
         }
         self.preamble = preamble;
         self.header = None;
@@ -402,106 +383,92 @@ impl<'a, B: EngineBackend> DnamEngine<'a, B> {
         Ok(())
     }
 
-    /// Hot-swaps a model in-place into an owned engine.
+    /// Hot-swaps a canonical `v2.0` `.dnam` model in-place into an owned engine.
     pub fn reload_model_in_place_owned(
         &mut self,
         bytes: &[u8],
         tier: Tier,
         sample_rate_hz: u32,
     ) -> Result<(), DnamError> {
-        if crate::container::is_v2_wire_directory_container(bytes) {
-            let layout = crate::container::validate_v2_dnam_layout_no_alloc(bytes)?;
-            let preamble = DnamPreamble::from_bytes(bytes)?;
-            let arena_slice =
-                &bytes[layout.tier_start..layout.tier_ends[layout.retained_tier as usize]];
-            let shared_extent_slice =
-                &bytes[layout.shared_extent.0..layout.shared_extent.0 + layout.shared_extent.1];
-            let json_slice =
-                &bytes[layout.header_extent.0..layout.header_extent.0 + layout.header_extent.1];
-            let max_avail = Self::detect_max_tier(&preamble, arena_slice.len());
-            let active_tier = tier.min(max_avail).min(self.max_supported_tier);
-            if !self.arena_storage.reload_in_place(arena_slice) {
-                self.arena_storage = crate::memory::ArenaStorage::from_slice_owned(arena_slice);
-            }
-            self.control_bus.num_contributors = 0;
-            let p_ctrls = preamble.num_controls as usize;
-            self.control_bus.ensure_control_capacity(p_ctrls);
-            self.control_bus.num_controls = p_ctrls;
-            let desc_bytes_len = p_ctrls * 64;
-            if shared_extent_slice.len() >= desc_bytes_len {
-                for p in 0..p_ctrls {
-                    let off = p * 64;
-                    let mut db = [0u8; 64];
-                    db.copy_from_slice(&shared_extent_slice[off..off + 64]);
-                    self.control_bus.descriptors[p] =
-                        crate::control::ControlClampDescriptor::from_bytes(&db);
-                }
-                let cp1_tail = &shared_extent_slice[desc_bytes_len..];
-                if cp1_tail.len() >= 8
-                    && cp1_tail[0..4] == crate::container::CP1_MAGIC
-                    && let Ok(cnt) = crate::container::decode_cp1_shared_stream_into_slice(
-                        cp1_tail,
-                        &mut self.control_bus.contributors,
-                    )
-                {
-                    self.control_bus.num_contributors = cnt;
-                }
-            }
-            let parsed_header = crate::schema::DnamJsonHeader::from_json_slice(json_slice).ok();
-            if let Some(ref hdr) = parsed_header {
-                self.freeze_mutes_dry = hdr.io_config.capabilities.freeze_mutes_dry;
-            }
-            self.preamble = preamble;
-            self.header = parsed_header;
-            self.tier = active_tier;
-            self.max_available_tier = max_avail;
-            self.reconfigure_for_sample_rate_with_mode(sample_rate_hz, true)?;
-            return Ok(());
-        }
-
         let preamble = DnamPreamble::from_bytes(bytes)?;
-        if preamble.is_encrypted_arena() {
+        if preamble.magic != crate::container::DNAM_MAGIC {
+            return Err(DnamError::InvalidMagic(preamble.magic));
+        }
+        if preamble.is_encrypted_arena() || bytes[8] > 0 {
             return Err(DnamError::EncryptedArenaRequiresDeviceKey);
         }
-        let arena_off = preamble.tensor_arena_offset as usize;
-        let arena_len = preamble.tensor_arena_byte_len as usize;
-        if bytes.len() < arena_off + arena_len {
-            return Err(DnamError::BufferTooSmall {
-                expected: arena_off + arena_len,
-                actual: bytes.len(),
-            });
-        }
-        let computed_hdr_crc = crate::container::compute_header_crc32c(bytes, arena_off);
-        if computed_hdr_crc != preamble.header_crc32c {
-            return Err(DnamError::Crc32cMismatch {
-                region: "header",
-                expected: preamble.header_crc32c,
-                computed: computed_hdr_crc,
-            });
+        let layout = crate::container::validate_v2_dnam_layout_no_alloc(bytes)?;
+        let auth_slice = &bytes[layout.auth_extent.0..layout.auth_extent.0 + layout.auth_extent.1];
+        let has_dcrc = if let Some(dcrc) = crate::container::parse_dcrc_record(auth_slice)? {
+            let calc_hdr_crc = crate::container::crc32c_update(0, &bytes[..layout.auth_extent.0]);
+            if calc_hdr_crc != dcrc.crc_prefix {
+                return Err(DnamError::Crc32cMismatch {
+                    region: "header",
+                    expected: dcrc.crc_prefix,
+                    computed: calc_hdr_crc,
+                });
+            }
+            true
+        } else {
+            false
+        };
+
+        let arena_slice =
+            &bytes[layout.tier_start..layout.tier_ends[layout.retained_tier as usize]];
+        if has_dcrc {
+            DnamContainerView::verify_arena_prefix_crcs(&preamble, arena_slice)?;
         }
 
-        let max_avail = Self::detect_max_tier(&preamble, arena_len);
+        let shared_extent_slice =
+            &bytes[layout.shared_extent.0..layout.shared_extent.0 + layout.shared_extent.1];
+        let json_slice =
+            &bytes[layout.header_extent.0..layout.header_extent.0 + layout.header_extent.1];
+        let max_avail = Self::detect_max_tier(&preamble, arena_slice.len());
         let active_tier = tier.min(max_avail).min(self.max_supported_tier);
-
-        let raw_arena = &bytes[arena_off..arena_off + arena_len];
-        DnamContainerView::verify_arena_prefix_crcs(&preamble, raw_arena)?;
-        if !self.arena_storage.reload_in_place(raw_arena) {
-            self.arena_storage = crate::memory::ArenaStorage::from_slice_owned(raw_arena);
+        if !self.arena_storage.reload_in_place(arena_slice) {
+            self.arena_storage = crate::memory::ArenaStorage::from_slice_owned(arena_slice);
         }
         self.control_bus.num_contributors = 0;
         let p_ctrls = preamble.num_controls as usize;
-        if arena_off >= 64 + 128 * p_ctrls {
-            let ctrl_off = arena_off - 128 * p_ctrls;
-            self.control_bus
-                .load_control_records_from_bytes(&bytes[ctrl_off..arena_off], p_ctrls);
+        self.control_bus.ensure_control_capacity(p_ctrls);
+        self.control_bus.num_controls = p_ctrls;
+        if let Some(desc_bytes_len) = p_ctrls.checked_mul(64)
+            && shared_extent_slice.len() >= desc_bytes_len
+        {
+            for p in 0..p_ctrls {
+                let off = p * 64;
+                let mut db = [0u8; 64];
+                db.copy_from_slice(&shared_extent_slice[off..off + 64]);
+                self.control_bus.descriptors[p] =
+                    crate::control::ControlClampDescriptor::from_bytes(&db);
+            }
+            let cp1_tail = &shared_extent_slice[desc_bytes_len..];
+            if cp1_tail.len() >= 8
+                && cp1_tail[0..4] == crate::container::CP1_MAGIC
+                && let Ok(cnt) = crate::container::decode_cp1_shared_stream_into_slice(
+                    cp1_tail,
+                    &mut self.control_bus.contributors,
+                )
+            {
+                self.control_bus.num_contributors = cnt;
+            }
         }
-        let json_len = preamble.json_header_byte_len as usize;
-        let parsed_header = if json_len > 0 && 64 + json_len <= arena_off {
-            crate::schema::DnamJsonHeader::from_json_slice(&bytes[64..64 + json_len]).ok()
-        } else {
-            None
-        };
-        if let Some(ref hdr) = parsed_header {
+        let mut parsed_header = crate::schema::DnamJsonHeader::from_json_slice(json_slice).ok();
+        if let Some(ref mut hdr) = parsed_header {
+            let mutable_slice =
+                &bytes[layout.mutable_extent.0..layout.mutable_extent.0 + layout.mutable_extent.1];
+            if let Ok(dmu_val) = crate::container::parse_and_validate_dmu1_frame(mutable_slice) {
+                if let Some(presets_val) = dmu_val.get("presets")
+                    && let Ok(p) = serde_json::from_value(presets_val.clone())
+                {
+                    hdr.presets = p;
+                }
+                if let Some(um_val) = dmu_val.get("user_metadata")
+                    && let Ok(um) = serde_json::from_value(um_val.clone())
+                {
+                    hdr.user_metadata = um;
+                }
+            }
             self.freeze_mutes_dry = hdr.io_config.capabilities.freeze_mutes_dry;
         }
         self.preamble = preamble;
@@ -710,14 +677,23 @@ mod tests {
                 .is_err()
         );
 
-        // Error: header crc mismatch
+        // Error: header crc mismatch (corrupt a byte in Region 3 JCS header)
         let mut bad_crc = container.clone();
-        bad_crc[60] ^= 0xAA;
-        assert!(
-            owned_engine
-                .reload_model_in_place_owned(&bad_crc, Tier::Lite, 48000)
-                .is_err()
-        );
+        bad_crc[192] ^= 0xAA;
+        assert!(matches!(
+            owned_engine.reload_model_in_place_owned(&bad_crc, Tier::Lite, 48000),
+            Err(DnamError::Crc32cMismatch {
+                region: "header",
+                ..
+            })
+        ));
+        assert!(matches!(
+            engine.reload_model_in_place(&bad_crc, Tier::Lite, 48000),
+            Err(DnamError::Crc32cMismatch {
+                region: "header",
+                ..
+            })
+        ));
 
         // Error: arena crc mismatch in reload_model_in_place and reload_model_in_place_owned
         let preamble = DnamPreamble::from_bytes(&container).unwrap();

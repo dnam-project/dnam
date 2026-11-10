@@ -1,6 +1,5 @@
 //! RFC 8785 JCS `immutable_header_sha256` & 2-Certificate `Ed25519` Verification.
 
-use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;
 
@@ -12,7 +11,7 @@ use super::provider::{CryptoProvider, VerificationStatus};
 use super::sha256::{decode_hex_array, encode_hex, sha256_digest};
 
 /// Recursively canonicalizes a `serde_json::Value` per RFC 8785 JSON Canonicalization Scheme (JCS).
-fn canonicalize_jcs_value(val: &serde_json::Value, out: &mut String) {
+pub(crate) fn canonicalize_jcs_value(val: &serde_json::Value, out: &mut String) {
     match val {
         serde_json::Value::Null => out.push_str("null"),
         serde_json::Value::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
@@ -39,11 +38,10 @@ fn canonicalize_jcs_value(val: &serde_json::Value, out: &mut String) {
             out.push(']');
         }
         serde_json::Value::Object(map) => {
-            // Collect into BTreeMap for strict UTF-16/UTF-8 lexicographical key sorting
-            let mut sorted: BTreeMap<&str, &serde_json::Value> = BTreeMap::new();
-            for (k, v) in map {
-                sorted.insert(k.as_str(), v);
-            }
+            // Sort keys by RFC 8785 UTF-16 code-unit lexicographical order
+            let mut sorted: Vec<(&str, &serde_json::Value)> =
+                map.iter().map(|(k, v)| (k.as_str(), v)).collect();
+            sorted.sort_by(|(a, _), (b, _)| a.encode_utf16().cmp(b.encode_utf16()));
             out.push('{');
             for (i, (k, v)) in sorted.iter().enumerate() {
                 if i > 0 {
@@ -547,6 +545,7 @@ mod tests {
     use super::*;
     use crate::provenance::DefaultCryptoProvider;
     use crate::schema::PresetDef;
+    use alloc::collections::BTreeMap;
 
     #[test]
     fn test_immutable_header_jcs_excludes_mutable_presets_and_user_metadata() {

@@ -40,7 +40,7 @@ function ButtonAndBadgeShowcase() {
           <Badge variant="core1">Core 1</Badge>
           <Badge variant="core2">Core 2</Badge>
           <Badge variant="control">Control Bus</Badge>
-          <Badge variant="safe">CL-01..CL-20 Safe</Badge>
+          <Badge variant="safe">3-Phase Safe</Badge>
           <Badge variant="warn">Trust Region</Badge>
           <Badge variant="danger">Clip Guard</Badge>
         </div>

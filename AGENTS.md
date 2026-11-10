@@ -9,8 +9,8 @@
 
 ## 2. Core Cross-Cutting Architectural Invariants
 
-1. **Zero Pipeline Stalls or Nondeterministic Calls in Real-Time Loops (`REQ-6.2`, `REQ-6.3`):** Never use `FDIV`, `FSQRT`, integer division (`IDIV`/`DIV`/`SDIV`/`UDIV`), `libm` calls (including `fmodf`), unbounded loops, heap allocations, blocking locks, or uncached OS syscalls in $48\text{ kHz}$ or $3\text{ kHz}$ loops; use the algebraic factorizations in [`op_n_commuted_cascade.md`](docs/specs/dsp/op_n_commuted_cascade.md) and [`op_m_modal_kautz.md`](docs/specs/dsp/op_m_modal_kautz.md).
-2. **Unconditional BIBO, Lyapunov, $\mathcal{H}_2$ & Zero-DC Stability:** Enforce all registered stability bounds in [`control_space_audit.md`](docs/specs/training/control_space_audit.md).
+1. **Zero Stalls or Nondeterministic Calls in Real-Time Loops (`REQ-6.2`, `REQ-6.3`):** Never use `FDIV`, `FSQRT`, integer division (`IDIV`/`DIV`/`SDIV`/`UDIV`), `libm` calls (including `fmodf`), unbounded loops, heap allocations, locks, or uncached syscalls in $48\text{ kHz}$ or $3\text{ kHz}$ loops; use [`op_n_commuted_cascade.md`](docs/specs/dsp/op_n_commuted_cascade.md) and [`op_m_modal_kautz.md`](docs/specs/dsp/op_m_modal_kautz.md).
+2. **Unconditional BIBO, Lyapunov, $\mathcal{H}_2$ & Zero-DC Stability:** Enforce all stability bounds in [`control_space_audit.md`](docs/specs/training/control_space_audit.md).
 3. **Non-Stop 3-Phase Control Clamping:** Automatically clamp unobserved ranges, switches, and corners per [`parametric_control_bus.md`](docs/specs/dsp/parametric_control_bus.md) without pausing training.
 4. **Fail-Fast & 64B-Aligned Containers:** Validate all `.dnam` and `.dnam-ckpt` containers, `Ed25519` signatures, and `uplo='U'` stem statistics per [`dnam_binary_format.md`](docs/specs/containers/dnam_binary_format.md).
 
@@ -24,9 +24,10 @@
 | **Design System (`packages/ui/`)** | [`ui/AGENTS.md`](packages/ui/AGENTS.md), [`ui/CONTRIBUTING.md`](packages/ui/CONTRIBUTING.md) | [`control_space_audit.md`](docs/specs/training/control_space_audit.md), [`watermarking_and_marketplace.md`](docs/specs/security/watermarking_and_marketplace.md) |
 | **CLI & Studio (`packages/studio/`)** | [`studio/AGENTS.md`](packages/studio/AGENTS.md), [`studio/CONTRIBUTING.md`](packages/studio/CONTRIBUTING.md) | [`capture_and_alignment.md`](docs/specs/training/capture_and_alignment.md), [`dnam_binary_format.md`](docs/specs/containers/dnam_binary_format.md) |
 | **Trainer (`packages/trainer/`)** | [`trainer/AGENTS.md`](packages/trainer/AGENTS.md), [`trainer/CONTRIBUTING.md`](packages/trainer/CONTRIBUTING.md) | [`four_stage_pipeline.md`](docs/specs/training/four_stage_pipeline.md), [`control_space_audit.md`](docs/specs/training/control_space_audit.md) |
+| **Fixtures (`packages/fixtures/`)** | [`fixtures/AGENTS.md`](packages/fixtures/AGENTS.md), [`fixtures/CONTRIBUTING.md`](packages/fixtures/CONTRIBUTING.md) | [`four_stage_pipeline.md`](docs/specs/training/four_stage_pipeline.md), [`capture_and_alignment.md`](docs/specs/training/capture_and_alignment.md) |
 
 ## 4. Maintaining `AGENTS.md` & Documentation
 
-- **Root `README.md` Audience:** Keep [`README.md`](README.md) tailored for DNAM's target audience (musicians, tone creators, and producers first, plus a concise OEM/SDK overview); keep developer setup and internal specs in [`CONTRIBUTING.md`](CONTRIBUTING.md), package `README.md`s, and [`docs/`](docs/index.md).
+- **Root `README.md` Audience:** Keep [`README.md`](README.md) tailored for musicians, tone creators, and producers first (plus a concise OEM/SDK overview); keep developer setup and internal specs in [`CONTRIBUTING.md`](CONTRIBUTING.md), package `README.md`s, and [`docs/`](docs/index.md).
 - **Zero Duplication:** Keep `AGENTS.md` files strictly as routing maps (`< 5,000` B root, `< 2,500` B scoped).
-- **Single Source of Truth:** Document every equation, stability rule (`r[...]`), or workflow rule in its canonical `docs/` file per [`docs/CONTRIBUTING.md`](docs/CONTRIBUTING.md) and [`CONTRIBUTING.md`](CONTRIBUTING.md).
+- **Single Source of Truth:** Document every equation, stability rule (`r[...]`), or workflow rule in its canonical `docs/` file per [`docs/CONTRIBUTING.md`](docs/CONTRIBUTING.md).

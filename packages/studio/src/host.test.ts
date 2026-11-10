@@ -41,5 +41,15 @@ describe("TauriNativeAudioHost", () => {
     expect(seenR2.length).toBeGreaterThanOrEqual(2);
     expect(host.getTelemetry().sampleRateHz).toBe(48_000);
     unsub();
+
+    // Clamps > f32::MAX, sanitizes NaN switch index, and suppresses rejected IPC promises cleanly
+    const failingClient = new StudioIpcClient(async () => {
+      throw new Error("simulated IPC failure");
+    });
+    const resilientHost = new TauriNativeAudioHost({ ipcClient: failingClient });
+    resilientHost.setParameter("drive", 1e300);
+    expect(resilientHost.getParameter("drive")).toBeLessThanOrEqual(3.4028234663852886e38);
+    resilientHost.setSwitchIndex("voice", Number.NaN);
+    expect(resilientHost.getSwitchIndex("voice")).toBe(0);
   });
 });

@@ -55,7 +55,7 @@ export function StabilityAuditBadge({
       {allSafe ? <ShieldCheck className="size-3" /> : <ShieldAlert className="size-3" />}
       <span>
         {allSafe
-          ? `CL-01..CL-20 Verified (r_max=${maxRgLruRadius.toFixed(4)})`
+          ? `3-Phase Audit Verified (r_max=${maxRgLruRadius.toFixed(4)})`
           : `Trust Region Active (R²=${mahalanobisR2.toFixed(2)})`}
       </span>
     </Badge>

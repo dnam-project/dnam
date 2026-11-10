@@ -14,6 +14,9 @@ use dnam_studio::ipc::{
 };
 
 #[cfg(all(feature = "desktop", not(coverage)))]
+use dnam_studio::project::{default_user_config_dir, write_private_studio_export_file};
+
+#[cfg(all(feature = "desktop", not(coverage)))]
 #[tauri::command]
 fn studio_ipc(
     state: tauri::State<'_, Mutex<StudioIpcHandler>>,
@@ -28,13 +31,14 @@ fn studio_ipc(
 #[tauri::command]
 fn prepare_studio_export() -> Result<String, String> {
     eprintln!("[DNAM Studio IPC] prepare_studio_export called");
-    let dir = std::env::temp_dir().join("dnam_studio_exports");
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let path = dir.join("reference_tri_physics_mk1.dnam");
-    if !path.exists() {
-        std::fs::write(&path, b"DNAM\x01\x00\x00\x00reference_tri_physics_mk1")
-            .map_err(|e| e.to_string())?;
-    }
+    let dir = default_user_config_dir().join("exports");
+    let path = write_private_studio_export_file(
+        &dir,
+        "reference_tri_physics_mk1.dnam",
+        b"DNAM\x01\x00\x00\x00reference_tri_physics_mk1",
+        false,
+    )
+    .map_err(|e| e.to_string())?;
     Ok(path.display().to_string())
 }
 
@@ -43,14 +47,12 @@ fn prepare_studio_export() -> Result<String, String> {
 fn prepare_studio_report(app: tauri::AppHandle) -> Result<String, String> {
     use tauri_plugin_opener::OpenerExt;
     eprintln!("[DNAM Studio IPC] prepare_studio_report called");
-    let dir = std::env::temp_dir().join("dnam_studio_exports");
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let path = dir.join("telemetry_report.html");
+    let dir = default_user_config_dir().join("exports");
     let html = r#"<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <title>DNAM Tri-Physics Telemetry & CL-01..CL-20 Audit Report</title>
+  <title>DNAM Tri-Physics Telemetry & 3-Phase Stability Audit Report</title>
   <style>
     body { background: #020617; color: #f8fafc; font-family: system-ui, sans-serif; padding: 2rem; }
     .card { background: #0f172a; border: 1px solid #1e293b; border-radius: 0.75rem; padding: 1.5rem; max-width: 720px; }
@@ -61,17 +63,19 @@ fn prepare_studio_report(app: tauri::AppHandle) -> Result<String, String> {
 <body>
   <div class="card">
     <h1>DNAM Studio — Tri-Physics Convergence & Stability Report</h1>
-    <p><span class="badge">CL-01..CL-20 PASS</span></p>
+    <p><span class="badge">3-Phase Stability Audit PASS</span></p>
     <ul>
       <li><strong>Model:</strong> Tri-Physics Reference Master MK1 (<code>reference_tri_physics_mk1</code>)</li>
-      <li><strong>Stage 4 ESR Loss:</strong> -41.8 dB (Full Tier)</li>
-      <li><strong>Max RG-LRU Pole Radius (CL-03):</strong> 0.9914 (&le; 0.9995)</li>
-      <li><strong>M-UFDN Unitary Spectral Norm (CL-07):</strong> 0.9999 (&le; 1.0000)</li>
+      <li><strong>Sweep 2 ESR Loss:</strong> -41.8 dB (Full Tier)</li>
+      <li><strong>Max Modal Pole Radius:</strong> 0.9914 (&le; 0.9995)</li>
+      <li><strong>Feedback Matrix Spectral Norm:</strong> 0.9999 (&le; 1.0000)</li>
     </ul>
   </div>
 </body>
 </html>"#;
-    std::fs::write(&path, html).map_err(|e| e.to_string())?;
+    let path =
+        write_private_studio_export_file(&dir, "telemetry_report.html", html.as_bytes(), true)
+            .map_err(|e| e.to_string())?;
     let path_str = path.display().to_string();
     app.opener()
         .open_path(&path_str, None::<&str>)
@@ -88,6 +92,18 @@ fn notify_studio_event(
     body: String,
 ) -> Result<StudioIpcResponse, String> {
     use tauri_plugin_notification::NotificationExt;
+    let resp = {
+        let mut guard = state.lock().map_err(|e| e.to_string())?;
+        guard
+            .handle(
+                &StudioIpcRequest {
+                    command: "send_notification".to_string(),
+                    args: serde_json::json!({ "title": &title, "body": &body }),
+                },
+                None,
+            )
+            .map_err(|e| e.to_string())?
+    };
     eprintln!("[DNAM Studio IPC] notify_studio_event: {title} — {body}");
     let _ = app
         .notification()
@@ -95,16 +111,7 @@ fn notify_studio_event(
         .title(&title)
         .body(&body)
         .show();
-    let mut guard = state.lock().map_err(|e| e.to_string())?;
-    guard
-        .handle(
-            &StudioIpcRequest {
-                command: "send_notification".to_string(),
-                args: serde_json::json!({ "title": title, "body": body }),
-            },
-            None,
-        )
-        .map_err(|e| e.to_string())
+    Ok(resp)
 }
 
 #[cfg(all(feature = "desktop", not(coverage)))]

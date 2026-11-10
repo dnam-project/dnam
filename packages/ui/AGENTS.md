@@ -1,6 +1,6 @@
 # `packages/ui` — Unified Design System (`@dnam-project/ui`) Routing Guide
 
-**`@dnam-project/ui`** provides the shared React 19, Tailwind CSS v4 (`@tailwindcss/vite`), `shadcn/ui` (Base UI / `@base-ui/react`), and `lucide-react` component library used across `packages/studio` and `packages/web`.
+**`@dnam-project/ui`** provides the shared React 19, Tailwind CSS v4 (`@tailwindcss/vite`), `shadcn/ui` (Base UI / `@base-ui/react`), and `lucide-react` component library used across `packages/studio`, `packages/js` WebAudio hosts, and Astro Starlight (`docs/`).
 
 ## 1. Key Modules
 

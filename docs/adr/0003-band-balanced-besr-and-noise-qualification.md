@@ -34,7 +34,7 @@ Similarly, a 1st-order (`-6 dB/oct`) high-pass filter at `2.5 kHz` attenuates `8
 
 | Mechanism | Canonical Selection | Counterexample to Naive Formulation |
 | :--- | :--- | :--- |
-| **Noise-Adjusted `bESR`, `LTAS` & `SegESR` (`ref[qual.besr.noise-subtracted]`, `ref[qual.besr.joint-intervals]`, `ref[qual.companion.ltas]`, `ref[qual.companion.seg-esr]`)** | Per-output evaluation (`γ_hiss = 1.0`, sum denominator), 33-band base-10 1/3-octave `LTAS` (`20 Hz–20 kHz` preserving `2–18 kHz` HF), duration-weighted linear `SegESR` across rate runs, and rectangular joint energy-interval qualification bounds. | Pooled stereo `bESR` hides a missing quiet channel; arithmetic dB averaging of frame ESRs turns one `-180 dB` frame + one `0 dB` frame into `-90 dB`; target-only endpoint checks miss interior qualification jumps when `Y g` crosses `F`. |
+| **Noise-Adjusted `bESR`, `MR-IIR`, `LTAS` & `SegESR` (`ref[qual.besr.noise-subtracted]`, `ref[qual.besr.joint-intervals]`, `ref[qual.companion.mr-iir]`, `ref[qual.companion.ltas]`, `ref[qual.companion.seg-esr]`)** | Per-output evaluation (`γ_hiss = 1.0`, sum denominator), 5-scale 32-probe unity-peak bandpass resonator bank `MR-IIR` (`M ∈ {256..4096}`), 33-band base-10 1/3-octave `LTAS` (`20 Hz–20 kHz` preserving `2–18 kHz` HF), duration-weighted linear `SegESR` across rate runs, and rectangular joint energy-interval qualification bounds. | Pooled stereo `bESR` hides a missing quiet channel; arithmetic dB averaging of frame ESRs turns one `-180 dB` frame + one `0 dB` frame into `-90 dB`; target-only endpoint checks miss interior qualification jumps when `Y g` crosses `F`. |
 
 ## 3. Statistical Noise-Floor & Calibration Profiles
 

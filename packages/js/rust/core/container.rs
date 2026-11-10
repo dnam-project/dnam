@@ -6,15 +6,15 @@ use std::collections::BTreeMap;
 use dnam_engine::Tier;
 use dnam_engine::container::{
     ARENA_OFFSET_ULTRA_END, DnamContainerView, DnamPreamble, build_dmu1_mutable_frame,
-    build_dnam_container, crc32c_compute, parse_and_validate_dmu1_frame,
-    project_immutable_header_value, serialize_jcs_value, strip_container_to_tier,
-    strip_v2_open_dnam_container, update_header_in_place, validate_v2_open_dnam_layout,
+    build_dnam_container, build_dnam_container_with_cp1, crc32c_compute,
+    parse_and_validate_dmu1_frame, project_immutable_header_value, serialize_jcs_value,
+    strip_container_to_tier, strip_v2_open_dnam_container, update_header_in_place,
+    validate_v2_open_dnam_layout,
 };
 use dnam_engine::provenance::{RustCryptoProvider, decode_hex_array};
 use dnam_engine::schema::{
     ControlCalibration, ControlCalibrationRole, ControlKind, ControlSchemaDef, ControlUiHints,
-    DnamJsonHeader, DnamProtectionProfile, PresetDef, SchemaVersion, TempoSubdivision,
-    TensorSliceEntry,
+    DnamJsonHeader, PresetDef, SchemaVersion, TempoSubdivision, TensorSliceEntry,
 };
 use dnam_trainer::ckpt::{
     AuditReport, DnamCkptHeader, DnamCkptView, ExtractedPhysics, StemProvenance, StemRegistryEntry,
@@ -62,17 +62,10 @@ pub fn validate_container_with_key_core(
     if container_bytes.starts_with(b"DNCK") {
         let view = DnamCkptView::from_bytes(container_bytes, &crypto)
             .map_err(|e| format_tagged_dnam_error(&e))?;
-        let json_end = 64_usize.saturating_add(view.preamble.json_header_byte_len as usize);
-        let header_json = if view.protection_profile != DnamProtectionProfile::EnclaveSealed
-            && container_bytes.len() >= json_end
-            && let Ok(raw_str) = core::str::from_utf8(&container_bytes[64..json_end])
-        {
-            raw_str.to_string()
-        } else {
-            view.header
-                .to_json_string()
-                .map_err(|e| validation_err(e.to_string()))?
-        };
+        let header_json = view
+            .header
+            .to_json_string()
+            .map_err(|e| validation_err(e.to_string()))?;
         return Ok(ValidatedContainerInfo {
             preamble: view.preamble,
             magic_str: String::from_utf8_lossy(&view.preamble.magic).into_owned(),
@@ -84,17 +77,10 @@ pub fn validate_container_with_key_core(
     }
     let view = DnamContainerView::from_bytes(container_bytes, &crypto)
         .map_err(|e| format_tagged_dnam_error(&e))?;
-    let json_end = 64_usize.saturating_add(view.preamble.json_header_byte_len as usize);
-    let header_json = if view.protection_profile != DnamProtectionProfile::EnclaveSealed
-        && container_bytes.len() >= json_end
-        && let Ok(raw_str) = core::str::from_utf8(&container_bytes[64..json_end])
-    {
-        raw_str.to_string()
-    } else {
-        view.header
-            .to_json_string()
-            .map_err(|e| validation_err(e.to_string()))?
-    };
+    let header_json = view
+        .header
+        .to_json_string()
+        .map_err(|e| validation_err(e.to_string()))?;
 
     Ok(ValidatedContainerInfo {
         preamble: view.preamble,
@@ -306,11 +292,43 @@ pub fn update_header_in_place_core(
     container_bytes: &[u8],
     new_header_json: &str,
 ) -> Result<Vec<u8>, String> {
-    let new_header: DnamJsonHeader = DnamJsonHeader::from_json_str(new_header_json)
+    let mut new_header: DnamJsonHeader = DnamJsonHeader::from_json_str(new_header_json)
         .map_err(|e| validation_err(e.to_string()))?;
     let mut buf = container_bytes.to_vec();
-    update_header_in_place(&mut buf, &new_header).map_err(|e| format_tagged_dnam_error(&e))?;
-    Ok(buf)
+    match update_header_in_place(&mut buf, &new_header) {
+        Ok(()) => Ok(buf),
+        Err(in_place_err) => {
+            if container_bytes.starts_with(b"DNSL") {
+                return Err(format_tagged_dnam_error(&in_place_err));
+            }
+            let Ok(layout) = validate_v2_open_dnam_layout(container_bytes) else {
+                return Err(format_tagged_dnam_error(&in_place_err));
+            };
+            let auth_slice =
+                &container_bytes[layout.auth_extent.0..layout.auth_extent.0 + layout.auth_extent.1];
+            if layout.protection_profile != 0
+                || layout.auth_kind != 0
+                || auth_slice.starts_with(b"DAU1")
+            {
+                return Err(format_tagged_dnam_error(&in_place_err));
+            }
+            let crypto = RustCryptoProvider::new();
+            let existing_view = DnamContainerView::from_bytes(container_bytes, &crypto)
+                .map_err(|e| format_tagged_dnam_error(&e))?;
+            if existing_view.header.metadata.signatures.is_some() {
+                return Err(format_tagged_dnam_error(&in_place_err));
+            }
+            let arena = existing_view.arena_storage.as_bytes();
+            build_dnam_container_with_cp1(
+                &mut new_header,
+                arena,
+                arena,
+                false,
+                &existing_view.cp1_contributors,
+            )
+            .map_err(|e| format_tagged_dnam_error(&e))
+        }
+    }
 }
 
 pub fn strip_container_to_tier_core(

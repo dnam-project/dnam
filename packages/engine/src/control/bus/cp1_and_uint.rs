@@ -548,29 +548,32 @@ mod ckpt_and_control_tests {
         assert!((cb.clamped_values[1] - 9.37).abs() < 1e-5);
         assert_ne!(cb.active_clamp_mask & (1 << 1), 0);
 
-        // Verify ControlChannelRecord table at tensor_arena_offset - 128 * P survives update_header_in_place
+        // Verify Region 4 shared_extent ControlClampDescriptor[0..P] table survives update_header_in_place
         let arena = vec![0u8; ARENA_OFFSET_ULTRA_END as usize];
         let mut container = build_dnam_container(&mut header, &arena, &arena, false).unwrap();
         let crypto = DefaultCryptoProvider::default();
         let view_before = DnamContainerView::from_bytes(&container, &crypto).unwrap();
-        let table_off = view_before.control_table_offset();
-        assert_eq!(
-            table_off,
-            (view_before.preamble.tensor_arena_offset as usize) - 3 * 128
-        );
-        let table_snapshot = container[table_off..table_off + 3 * 128].to_vec();
+        assert_eq!(view_before.clamp_descriptors.len(), 3);
+        let layout = crate::container::validate_v2_open_dnam_layout(&container).unwrap();
+        let shared_off = layout.shared_extent.0;
+        let shared_len = layout.shared_extent.1;
+        assert_eq!(shared_len, 3 * 64);
+        let table_snapshot = container[shared_off..shared_off + shared_len].to_vec();
 
         header
             .user_metadata
             .insert("tag".to_string(), serde_json::json!("preserved"));
         update_header_in_place(&mut container, &header).unwrap();
-        assert_eq!(&container[table_off..table_off + 3 * 128], &table_snapshot);
+        assert_eq!(
+            &container[shared_off..shared_off + shared_len],
+            &table_snapshot
+        );
     }
 
     #[test]
     fn test_theorem_3_unlimited_controls_31_band_eq_and_64_rack() {
-        use crate::container::compute_header_crc32c;
-        use crate::control::ControlLatentProjection;
+        use crate::container::build_dnam_container_with_cp1;
+        use crate::control::Cp1ContributorSlot;
         use crate::{DnamEngine, Tier};
 
         for &num_ctrls in &[31_usize, 64_usize] {
@@ -597,26 +600,25 @@ mod ckpt_and_control_tests {
                 })
                 .collect();
 
+            let last_p = num_ctrls - 1;
+            let mut slot = Cp1ContributorSlot::zero();
+            slot.lanes = 1;
+            slot.ctrl_kind = 0;
+            slot.control_idx = last_p as u16;
+            slot.option_idx = 0xFF;
+            slot.main_base[0] = [0.5, -0.25, 0.1, 0.2, 0.3, -0.1, 0.05, 0.15];
+            slot.emb[0] = 1.0;
+            slot.v_base = [0.4, 0.2, -0.3, 0.1];
+
             let arena = vec![0u8; ARENA_OFFSET_ULTRA_END as usize];
-            let mut container = build_dnam_container(&mut header, &arena, &arena, false).unwrap();
+            let container =
+                build_dnam_container_with_cp1(&mut header, &arena, &arena, false, &[slot]).unwrap();
 
             let crypto = DefaultCryptoProvider::default();
             let view0 = DnamContainerView::from_bytes(&container, &crypto).unwrap();
             assert_eq!(view0.preamble.num_controls as usize, num_ctrls);
             assert_eq!(view0.control_records.len(), num_ctrls);
-
-            // Populate CL 1 (ControlLatentProjection) of the last control record (p = num_ctrls - 1)
-            let ctrl_off = view0.control_table_offset();
-            let arena_off = view0.preamble.tensor_arena_offset as usize;
-            let last_p = num_ctrls - 1;
-            let proj = ControlLatentProjection {
-                w_main: [0.5, -0.25, 0.1, 0.2, 0.3, -0.1, 0.05, 0.15],
-                v_factors: [0.4, 0.2, -0.3, 0.1, 0.0, 0.0, 0.0, 0.0],
-            };
-            let rec_off = ctrl_off + last_p * 128;
-            container[rec_off + 64..rec_off + 128].copy_from_slice(&proj.to_bytes());
-            let new_hdr_crc = compute_header_crc32c(&container, arena_off);
-            container[0x3C..0x40].copy_from_slice(&new_hdr_crc.to_le_bytes());
+            assert_eq!(view0.cp1_contributors.len(), 1);
 
             let mut engine =
                 DnamEngine::<ScalarBackend>::from_bytes(&container, Tier::Lite, 48_000).unwrap();
@@ -656,7 +658,7 @@ mod ckpt_and_control_tests {
     }
 
     #[test]
-    fn test_update_header_in_place_recompiles_control_clamp_records() {
+    fn test_update_header_in_place_updates_control_user_metadata_and_rejects_immutable_edits() {
         use crate::container::{DnamContainerView, update_header_in_place};
         use crate::provenance::DefaultCryptoProvider;
 
@@ -683,14 +685,25 @@ mod ckpt_and_control_tests {
         let arena = vec![0u8; ARENA_OFFSET_ULTRA_END as usize];
         let mut container = build_dnam_container(&mut header, &arena, &arena, false).unwrap();
 
-        // Update safe_clamped_range via update_header_in_place and verify ControlChannelRecord[0].clamp updates
-        header.controls_schema[0].safe_clamped_range = Some([2.5, 7.5]);
+        // Immutable safe_clamped_range edits must be rejected by update_header_in_place
+        let mut bad_header = header.clone();
+        bad_header.controls_schema[0].safe_clamped_range = Some([2.5, 7.5]);
+        assert!(update_header_in_place(&mut container, &bad_header).is_err());
+
+        // Mutable control_user_metadata edits succeed via DMU1 while preserving safe_clamped_range
+        header.controls_schema[0]
+            .user_metadata
+            .insert("midi_cc".to_string(), serde_json::json!(14));
         update_header_in_place(&mut container, &header).unwrap();
 
         let crypto = DefaultCryptoProvider::default();
         let view = DnamContainerView::from_bytes(&container, &crypto).unwrap();
         assert_eq!(view.control_records.len(), 1);
-        assert!((view.control_records[0].clamp.safe_min_base - 2.5).abs() < 1e-5);
-        assert!((view.control_records[0].clamp.safe_max_base - 7.5).abs() < 1e-5);
+        assert!((view.control_records[0].clamp.safe_min_base - 1.0).abs() < 1e-5);
+        assert!((view.control_records[0].clamp.safe_max_base - 9.0).abs() < 1e-5);
+        assert_eq!(
+            view.header.controls_schema[0].user_metadata.get("midi_cc"),
+            Some(&serde_json::json!(14))
+        );
     }
 }

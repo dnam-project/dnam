@@ -704,7 +704,7 @@ mod arch_spec_integration {
         let v2_container = dnam_engine::container::build_v2_open_dnam_container(
             &hdr_bytes,
             &[0u8; 64],
-            b"DAU1-AUTH",
+            &[0u8; 64],
             &[&t0, &t1, &t2, &t3],
             None,
             0,
@@ -725,7 +725,7 @@ mod arch_spec_integration {
         let prev_container = dnam_engine::container::build_v2_open_dnam_container(
             &prev_hdr_bytes,
             &[0u8; 64],
-            b"DAU1-AUTH",
+            &[0u8; 64],
             &[&t0],
             None,
             0,
@@ -901,7 +901,7 @@ mod arch_spec_integration {
             let v2_container = dnam_engine::container::build_v2_open_dnam_container(
                 &hdr_bytes,
                 &[0u8; 64],
-                b"DAU1-PROP",
+                &[0u8; 64],
                 &[&t0, &t1, &t2, &t3],
                 None,
                 0,

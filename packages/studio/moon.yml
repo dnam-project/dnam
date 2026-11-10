@@ -28,6 +28,8 @@ tasks:
       - "./packages/studio/bin/dnam.mjs"
     deps:
       - "~:build-rust-debug"
+    env:
+      DNAM_CARGO_PROFILE: "debug"
     preset: "utility"
     options:
       runFromWorkspaceRoot: true
@@ -71,9 +73,11 @@ tasks:
       - "build.rs"
       - "package.json"
       - "playwright.config.ts"
+      - "tauri.conf.json"
       - "tsconfig*.json"
       - "vite.config.ts"
       - "bin/**/*"
+      - "capabilities/**/*"
       - "rust/**/*"
       - "src/**/*"
       - "tests/**/*"
@@ -86,6 +90,8 @@ tasks:
 
   lint:
     script: "pnpm exec biome check . && cargo clippy --package dnam-studio --all-targets -- -D warnings"
+    deps:
+      - "~:build-ts"
     inputs:
       - "Cargo.toml"
       - "build.rs"
@@ -96,6 +102,7 @@ tasks:
       - "vite.config.ts"
       - "bin/**/*"
       - "capabilities/**/*"
+      - "icons/**/*"
       - "isolation/**/*"
       - "rust/**/*"
       - "src/**/*"
@@ -115,25 +122,34 @@ tasks:
       - "lint"
 
   typecheck:
-    command: "pnpm"
-    args:
-      - "exec"
-      - "tsc"
-      - "-p"
-      - "tsconfig.json"
-      - "--noEmit"
+    script: "pnpm exec tsc -p tsconfig.json --noEmit && cargo check --package dnam-studio --all-targets"
     deps:
       - "js:build-ts"
       - "ui:build"
+      - "~:build-ts"
     inputs:
+      - "Cargo.toml"
+      - "build.rs"
       - "package.json"
       - "playwright.config.ts"
+      - "tauri.conf.json"
       - "tsconfig*.json"
       - "vite.config.ts"
+      - "capabilities/**/*"
+      - "icons/**/*"
+      - "isolation/**/*"
+      - "rust/**/*"
       - "src/**/*"
-      - "tests/**/*.ts"
-      - "tests/**/*.tsx"
+      - "tests/**/*"
+      - "/Cargo.toml"
+      - "/Cargo.lock"
       - "/pnpm-lock.yaml"
+      - "/packages/engine/Cargo.toml"
+      - "/packages/engine/src/**/*"
+      - "/packages/trainer/Cargo.toml"
+      - "/packages/trainer/src/**/*"
+    options:
+      mutex: "cargo"
     tags:
       - "quality"
       - "typecheck"
@@ -145,6 +161,8 @@ tasks:
       - "build"
       - "--package"
       - "dnam-studio"
+    deps:
+      - "~:build-ts"
     inputs:
       - "Cargo.toml"
       - "build.rs"
@@ -160,6 +178,7 @@ tasks:
       - "/packages/trainer/Cargo.toml"
       - "/packages/trainer/src/**/*"
     options:
+      cache: false
       mutex: "cargo"
       outputStyle: "buffer-only-failure"
     tags:
@@ -173,6 +192,8 @@ tasks:
       - "--package"
       - "dnam-studio"
       - "--release"
+    deps:
+      - "~:build-ts"
     inputs:
       - "Cargo.toml"
       - "build.rs"
@@ -188,6 +209,7 @@ tasks:
       - "/packages/trainer/Cargo.toml"
       - "/packages/trainer/src/**/*"
     options:
+      cache: false
       mutex: "cargo"
       outputStyle: "buffer-only-failure"
     tags:
@@ -195,11 +217,12 @@ tasks:
 
   build-ts:
     type: "build"
-    script: "pnpm exec vite build --mode lib && pnpm exec tsc -p tsconfig.build.json --emitDeclarationOnly"
+    script: "pnpm exec vite build --mode lib && pnpm exec tsc -p tsconfig.build.json --emitDeclarationOnly && pnpm exec vite build"
     deps:
       - "js:build-ts"
       - "ui:build"
     inputs:
+      - "index.html"
       - "package.json"
       - "tsconfig*.json"
       - "vite.config.ts"
@@ -208,6 +231,7 @@ tasks:
       - "/pnpm-lock.yaml"
     outputs:
       - "dist/**/*"
+      - "dist-app/**/*"
     options:
       outputStyle: "buffer-only-failure"
     tags:
@@ -230,11 +254,14 @@ tasks:
       - "test"
       - "--package"
       - "dnam-studio"
+    deps:
+      - "~:build-ts"
     inputs:
       - "Cargo.toml"
       - "build.rs"
       - "tauri.conf.json"
       - "capabilities/**/*"
+      - "icons/**/*"
       - "isolation/**/*"
       - "rust/**/*"
       - "tests/**/*.rs"
@@ -263,6 +290,7 @@ tasks:
       - "tsconfig*.json"
       - "vite.config.ts"
       - "bin/**/*"
+      - "isolation/**/*"
       - "src/**/*"
       - "tests/**/*.ts"
       - "tests/**/*.tsx"
@@ -302,11 +330,14 @@ tasks:
       - "dnam-studio"
       - "--fail-under-lines"
       - "95"
+    deps:
+      - "~:build-ts"
     inputs:
       - "Cargo.toml"
       - "build.rs"
       - "tauri.conf.json"
       - "capabilities/**/*"
+      - "icons/**/*"
       - "isolation/**/*"
       - "rust/**/*"
       - "tests/**/*.rs"
@@ -337,6 +368,8 @@ tasks:
       - "package.json"
       - "tsconfig*.json"
       - "vite.config.ts"
+      - "bin/**/*"
+      - "isolation/**/*"
       - "src/**/*"
       - "tests/**/*.ts"
       - "tests/**/*.tsx"

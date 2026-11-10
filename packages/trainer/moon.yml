@@ -17,6 +17,8 @@ project:
 
 dependsOn:
   - "engine"
+  - id: "fixtures"
+    scope: "development"
 
 tasks:
   cli:
@@ -85,6 +87,8 @@ tasks:
       - "/Cargo.lock"
       - "/packages/engine/Cargo.toml"
       - "/packages/engine/src/**/*"
+      - "/packages/fixtures/Cargo.toml"
+      - "/packages/fixtures/src/**/*"
     options:
       mutex: "cargo"
     tags:
@@ -108,6 +112,8 @@ tasks:
       - "/Cargo.lock"
       - "/packages/engine/Cargo.toml"
       - "/packages/engine/src/**/*"
+      - "/packages/fixtures/Cargo.toml"
+      - "/packages/fixtures/src/**/*"
     options:
       mutex: "cargo"
     tags:
@@ -150,6 +156,8 @@ tasks:
       - "/Cargo.lock"
       - "/packages/engine/Cargo.toml"
       - "/packages/engine/src/**/*"
+      - "/packages/fixtures/Cargo.toml"
+      - "/packages/fixtures/src/**/*"
     options:
       mutex: "cargo"
     tags:
@@ -173,6 +181,8 @@ tasks:
       - "/Cargo.lock"
       - "/packages/engine/Cargo.toml"
       - "/packages/engine/src/**/*"
+      - "/packages/fixtures/Cargo.toml"
+      - "/packages/fixtures/src/**/*"
     options:
       mutex: "cargo"
       runInCI: "skip"
@@ -194,6 +204,8 @@ tasks:
       - "/Cargo.lock"
       - "/packages/engine/Cargo.toml"
       - "/packages/engine/src/**/*"
+      - "/packages/fixtures/Cargo.toml"
+      - "/packages/fixtures/src/**/*"
     options:
       cache: false
       mutex: "cargo"

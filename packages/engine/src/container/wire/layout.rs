@@ -29,6 +29,66 @@ pub const DMU1_HEADER_SIZE: usize = 16;
 pub const DMUE_FOOTER_SIZE: usize = 16;
 /// Maximum default mutable frame capacity for bounded structural validation (`4,096 B`).
 pub const DEFAULT_MAX_MUTABLE_CAPACITY: usize = 4_096;
+/// Default `DMU1` mutable frame capacity (`4,080 B`) so `DMU1 (4,080 B) + DMUE (16 B) == 4,096 B` (`% 64 == 0`).
+pub const DEFAULT_DMU1_TRAILER_CAPACITY: usize = DEFAULT_MAX_MUTABLE_CAPACITY - DMUE_FOOTER_SIZE;
+/// Magic bytes for a 64-byte local Castagnoli `CRC32C` integrity record in an unsigned v2 `auth_extent`.
+pub const DCRC_MAGIC: [u8; 4] = *b"DCRC";
+/// Fixed byte size of a `DCRC` local integrity record (`64 B`).
+pub const DCRC_RECORD_SIZE: usize = 64;
+
+/// Local 64-byte Castagnoli `CRC32C` integrity record stored in `auth_extent` for non-`DAU1` v2 `.dnam` containers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DcrcAuthRecord {
+    pub crc_prefix: u32,
+    pub crc_tiers: [u32; 4],
+    pub num_controls: u16,
+    pub flags_hint: u16,
+    pub tail_time_ms_bits: u32,
+}
+
+impl DcrcAuthRecord {
+    /// Serializes this 64-byte `DCRC` record into little-endian bytes.
+    #[inline]
+    pub fn to_bytes(&self) -> [u8; DCRC_RECORD_SIZE] {
+        let mut out = [0u8; DCRC_RECORD_SIZE];
+        out[0..4].copy_from_slice(&DCRC_MAGIC);
+        out[4..8].copy_from_slice(&self.crc_prefix.to_le_bytes());
+        out[8..12].copy_from_slice(&self.crc_tiers[0].to_le_bytes());
+        out[12..16].copy_from_slice(&self.crc_tiers[1].to_le_bytes());
+        out[16..20].copy_from_slice(&self.crc_tiers[2].to_le_bytes());
+        out[20..24].copy_from_slice(&self.crc_tiers[3].to_le_bytes());
+        out[24..26].copy_from_slice(&self.num_controls.to_le_bytes());
+        out[26..28].copy_from_slice(&self.flags_hint.to_le_bytes());
+        out[28..32].copy_from_slice(&self.tail_time_ms_bits.to_le_bytes());
+        out
+    }
+}
+
+/// Parses a `DCRC` local integrity record if `auth_slice` starts with `b"DCRC"`.
+pub fn parse_dcrc_record(auth_slice: &[u8]) -> Result<Option<DcrcAuthRecord>, DnamError> {
+    if auth_slice.len() < 4 || auth_slice[0..4] != DCRC_MAGIC {
+        return Ok(None);
+    }
+    reject_if(
+        auth_slice.len() != DCRC_RECORD_SIZE || auth_slice[32..64].iter().any(|&b| b != 0),
+        "invalid DCRC auth record",
+    )?;
+    let u32_at = |off: usize| -> u32 {
+        u32::from_le_bytes([
+            auth_slice[off],
+            auth_slice[off + 1],
+            auth_slice[off + 2],
+            auth_slice[off + 3],
+        ])
+    };
+    Ok(Some(DcrcAuthRecord {
+        crc_prefix: u32_at(4),
+        crc_tiers: [u32_at(8), u32_at(12), u32_at(16), u32_at(20)],
+        num_controls: u16::from_le_bytes([auth_slice[24], auth_slice[25]]),
+        flags_hint: u16::from_le_bytes([auth_slice[26], auth_slice[27]]),
+        tail_time_ms_bits: u32_at(28),
+    }))
+}
 
 /// Domain-separated binary field encoder `F(label, value) = u32le(len(label)) || label || u64le(len(value)) || value`
 /// (`ref[container.dnam.wire-framing]`, `ref[sec.sig.prefix-delegation]`).
@@ -69,9 +129,10 @@ pub struct V2ContainerLayout {
     pub mutable_extent: (usize, usize),
 }
 
-/// Builds a canonical v2.0 Open `.dnam` container (`magic = b"DNAM"`, `version = (2, 0)`,
-/// `ref[container.dnam.open-layout]`).
-pub fn build_v2_open_dnam_container(
+/// Builds a canonical v2.0 `.dnam` container (`magic = b"DNAM"`, `version = (2, 0)`) with an
+/// explicit `protection_profile` (`0 = Open`, `1 = DeviceAllowlisted`, `2 = EnclaveSealed`).
+pub fn build_v2_dnam_container_with_profile(
+    protection_profile: u8,
     header_bytes: &[u8],
     shared_bytes: &[u8],
     auth_bytes: &[u8],
@@ -80,12 +141,13 @@ pub fn build_v2_open_dnam_container(
     auth_kind: u8,
 ) -> Result<Vec<u8>, DnamError> {
     reject_if(
-        header_bytes.is_empty()
+        protection_profile > 2
+            || header_bytes.is_empty()
             || auth_bytes.is_empty()
             || tier_slices.is_empty()
             || tier_slices.len() > 4
             || auth_kind > 1,
-        "invalid v2 open container inputs",
+        "invalid v2 container inputs",
     )?;
     for slice in tier_slices {
         reject_if(
@@ -95,25 +157,37 @@ pub fn build_v2_open_dnam_container(
     }
     let header_offset = V2_HEADER_OFFSET as u64;
     let header_len = header_bytes.len() as u64;
-    let shared_offset = align64_u64(header_offset + header_len).unwrap();
+    let shared_offset = header_offset
+        .checked_add(header_len)
+        .and_then(align64_u64)
+        .or_schema_err("header extent overflow")?;
     let shared_len = shared_bytes.len() as u64;
-    let auth_offset = align64_u64(shared_offset + shared_len).unwrap();
+    let auth_offset = shared_offset
+        .checked_add(shared_len)
+        .and_then(align64_u64)
+        .or_schema_err("shared extent overflow")?;
     let auth_len = auth_bytes.len() as u64;
-    let tier_start = align64_u64(auth_offset + auth_len).unwrap();
+    let tier_start = auth_offset
+        .checked_add(auth_len)
+        .and_then(align64_u64)
+        .or_schema_err("auth extent overflow")?;
 
     let mut ends = [0u64; 4];
     let mut cur_end = tier_start;
     for (i, slice) in tier_slices.iter().enumerate() {
-        cur_end = cur_end.checked_add(slice.len() as u64).unwrap();
+        cur_end = cur_end
+            .checked_add(slice.len() as u64)
+            .or_schema_err("tier extent overflow")?;
         ends[i] = cur_end;
     }
+    reject_if(cur_end > (u32::MAX as u64), "container exceeds u32::MAX")?;
 
     let mut out = vec![0u8; cur_end as usize];
     // 1. 64B Preamble
     out[0..4].copy_from_slice(b"DNAM");
     out[4..6].copy_from_slice(&2u16.to_le_bytes());
     out[6..8].copy_from_slice(&0u16.to_le_bytes());
-    out[8] = 0; // protection_profile = Open
+    out[8] = protection_profile;
     out[9] = auth_kind;
     out[10] = (tier_slices.len() - 1) as u8;
     out[11] = 0;
@@ -164,6 +238,27 @@ pub fn build_v2_open_dnam_container(
     };
     append_dmue_mutable_suffix(&mut out, m_bytes);
     Ok(out)
+}
+
+/// Builds a canonical v2.0 Open `.dnam` container (`magic = b"DNAM"`, `version = (2, 0)`,
+/// `ref[container.dnam.open-layout]`).
+pub fn build_v2_open_dnam_container(
+    header_bytes: &[u8],
+    shared_bytes: &[u8],
+    auth_bytes: &[u8],
+    tier_slices: &[&[u8]],
+    mutable_frame_bytes: Option<&[u8]>,
+    auth_kind: u8,
+) -> Result<Vec<u8>, DnamError> {
+    build_v2_dnam_container_with_profile(
+        0,
+        header_bytes,
+        shared_bytes,
+        auth_bytes,
+        tier_slices,
+        mutable_frame_bytes,
+        auth_kind,
+    )
 }
 
 /// Appends `mutable_frame` and the 16-byte `DMUE` footer to `container_prefix` (`ref[container.dnam.mutable-frame]`).
@@ -338,9 +433,12 @@ pub fn validate_mutable_json_schema(doc: &Value) -> Result<(), DnamError> {
     Ok(())
 }
 
-/// Validates a v2.0 Open `.dnam` container's physical layout without heap allocation (`ref[container.dnam.open-layout]`,
-/// `ref[container.dnam.preamble-directory]`, `ref[container.dnam.mutable-frame]`).
-pub fn validate_v2_dnam_layout_no_alloc(data: &[u8]) -> Result<V2ContainerLayout, DnamError> {
+/// Validates a v2.0 `.dnam` container's physical layout up to `max_profile` (`0..=2`) without heap allocation.
+pub fn validate_v2_dnam_layout_with_max_profile_no_alloc(
+    data: &[u8],
+    max_profile: u8,
+) -> Result<V2ContainerLayout, DnamError> {
+    reject_if(max_profile > 2, "invalid max_profile")?;
     reject_if(data.len() < V2_HEADER_OFFSET, "short structure")?;
     let magic: [u8; 4] = data[0..4].try_into().unwrap();
     let major = u16::from_le_bytes([data[4], data[5]]);
@@ -353,7 +451,7 @@ pub fn validate_v2_dnam_layout_no_alloc(data: &[u8]) -> Result<V2ContainerLayout
     reject_if(
         magic != *b"DNAM"
             || (major, minor) != (2, 0)
-            || profile != 0
+            || profile > max_profile
             || auth_kind > 1
             || maximum > 3
             || reserved != 0
@@ -392,21 +490,25 @@ pub fn validate_v2_dnam_layout_no_alloc(data: &[u8]) -> Result<V2ContainerLayout
         .checked_add(header_length)
         .or_schema_err("header extent overflow")?;
     reject_if(
-        Some(shared_offset) != align64_u64(header_end),
+        header_end > (u32::MAX as u64) || Some(shared_offset) != align64_u64(header_end),
         "invalid directory",
     )?;
     let shared_end = shared_offset
         .checked_add(shared_length)
         .or_schema_err("shared extent overflow")?;
     reject_if(
-        Some(auth_offset) != align64_u64(shared_end) || auth_length == 0,
+        shared_end > (u32::MAX as u64)
+            || Some(auth_offset) != align64_u64(shared_end)
+            || auth_length == 0,
         "invalid directory",
     )?;
     let auth_end = auth_offset
         .checked_add(auth_length)
         .or_schema_err("auth extent overflow")?;
     reject_if(
-        Some(tier_start) != align64_u64(auth_end),
+        auth_end > (u32::MAX as u64)
+            || Some(tier_start) != align64_u64(auth_end)
+            || tier_start > (u32::MAX as u64),
         "invalid tier start",
     )?;
 
@@ -414,7 +516,7 @@ pub fn validate_v2_dnam_layout_no_alloc(data: &[u8]) -> Result<V2ContainerLayout
     for (index, &end) in ends_u64.iter().enumerate() {
         if index <= (maximum as usize) {
             reject_if(
-                end <= previous || !end.is_multiple_of(64),
+                end <= previous || !end.is_multiple_of(64) || end > (u32::MAX as u64),
                 "invalid tier end",
             )?;
             previous = end;
@@ -480,12 +582,26 @@ pub fn validate_v2_dnam_layout_no_alloc(data: &[u8]) -> Result<V2ContainerLayout
     })
 }
 
+/// Validates a v2.0 Open `.dnam` container's physical layout without heap allocation (`ref[container.dnam.open-layout]`,
+/// `ref[container.dnam.preamble-directory]`, `ref[container.dnam.mutable-frame]`).
+pub fn validate_v2_dnam_layout_no_alloc(data: &[u8]) -> Result<V2ContainerLayout, DnamError> {
+    validate_v2_dnam_layout_with_max_profile_no_alloc(data, 0)
+}
+
+/// Validates a v2.0 `.dnam` container's physical layout and strict RFC 8259 `DMU1` mutable JSON object up to `max_profile`.
+pub fn validate_v2_dnam_layout_with_max_profile(
+    data: &[u8],
+    max_profile: u8,
+) -> Result<V2ContainerLayout, DnamError> {
+    let layout = validate_v2_dnam_layout_with_max_profile_no_alloc(data, max_profile)?;
+    parse_and_validate_dmu1_frame(&data[layout.mutable_extent.0..data.len() - DMUE_FOOTER_SIZE])?;
+    Ok(layout)
+}
+
 /// Validates a v2.0 Open `.dnam` container's physical layout (`ref[container.dnam.open-layout]`,
 /// `ref[container.dnam.preamble-directory]`, `ref[container.dnam.mutable-frame]`).
 pub fn validate_v2_open_dnam_layout(data: &[u8]) -> Result<V2ContainerLayout, DnamError> {
-    let layout = validate_v2_dnam_layout_no_alloc(data)?;
-    parse_and_validate_dmu1_frame(&data[layout.mutable_extent.0..data.len() - DMUE_FOOTER_SIZE])?;
-    Ok(layout)
+    validate_v2_dnam_layout_with_max_profile(data, 0)
 }
 
 /// Strips a validated v2.0 Open `.dnam` container to `target_tier <= retained_tier` without re-signing

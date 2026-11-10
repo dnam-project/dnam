@@ -29,7 +29,7 @@ describe("rotary SVG geometry", () => {
 });
 
 describe("RotaryKnob, DiscreteSwitch, and StatusBadges", () => {
-  it("renders RotaryKnob with CL-12 observed bounds and fires slider updates", async () => {
+  it("renders RotaryKnob with CLAMP-RANGE observed bounds and fires slider updates", async () => {
     const onKnobChange = vi.fn();
     const screen = await render(
       <div>
@@ -56,7 +56,7 @@ describe("RotaryKnob, DiscreteSwitch, and StatusBadges", () => {
     await expectZeroAxeViolations(screen.container);
   });
 
-  it("renders DiscreteSwitch with CL-13 clamping, matches ARIA snapshot, and fires selection", async () => {
+  it("renders DiscreteSwitch with CLAMP-SWITCH clamping, matches ARIA snapshot, and fires selection", async () => {
     const onSwitchChange = vi.fn();
     const screen = await render(
       <DiscreteSwitch
@@ -102,7 +102,7 @@ describe("RotaryKnob, DiscreteSwitch, and StatusBadges", () => {
       </div>,
     );
 
-    await expect.element(page.getByText(/CL-01\.\.CL-20 Verified/)).toBeVisible();
+    await expect.element(page.getByText(/3-Phase Audit Verified/)).toBeVisible();
     await expect.element(page.getByText(/Trust Region Active/)).toBeVisible();
     await expectZeroAxeViolations(screen.container);
   });

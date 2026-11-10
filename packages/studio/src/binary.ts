@@ -1,8 +1,13 @@
-import { existsSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { resolve } from "node:path";
+
+export type CargoBuildProfile = "release" | "profiling" | "debug";
+
+const ALLOWED_PROFILES: ReadonlySet<string> = new Set(["release", "profiling", "debug"]);
 
 export interface ResolveBinaryOptions {
   readonly envOverride?: string | undefined;
+  readonly profile?: CargoBuildProfile | string | undefined;
   readonly workspaceRoot?: string | undefined;
   readonly platform?: NodeJS.Platform | undefined;
 }
@@ -15,7 +20,8 @@ export function dnamExecutableName(platform: NodeJS.Platform = process.platform)
 }
 
 /**
- * Resolves the compiled `dnam` Rust binary path from environment override or Cargo target dirs.
+ * Resolves the compiled `dnam` Rust binary path from environment override, pinned Cargo profile,
+ * or newest existing Cargo target profile binary.
  */
 export function resolveDnamBinaryPath(options: ResolveBinaryOptions = {}): string {
   const envPath = options.envOverride ?? process.env["DNAM_BINARY_PATH"];
@@ -24,15 +30,24 @@ export function resolveDnamBinaryPath(options: ResolveBinaryOptions = {}): strin
   }
   const exe = dnamExecutableName(options.platform);
   const root = options.workspaceRoot ?? resolve(import.meta.dirname, "../../..");
-  const releaseCandidate = resolve(root, "target", "release", exe);
-  if (existsSync(releaseCandidate)) {
-    return releaseCandidate;
+  const rawProfile = options.profile ?? process.env["DNAM_CARGO_PROFILE"];
+  const pinnedProfile = rawProfile?.trim();
+  if (pinnedProfile && ALLOWED_PROFILES.has(pinnedProfile)) {
+    return resolve(root, "target", pinnedProfile, exe);
   }
-  const debugCandidate = resolve(root, "target", "debug", exe);
-  if (existsSync(debugCandidate)) {
-    return debugCandidate;
+  let bestCandidate: string | null = null;
+  let bestMtime = -1;
+  for (const profile of ["release", "profiling", "debug"]) {
+    const candidate = resolve(root, "target", profile, exe);
+    if (existsSync(candidate)) {
+      const mtime = statSync(candidate).mtimeMs;
+      if (mtime > bestMtime) {
+        bestMtime = mtime;
+        bestCandidate = candidate;
+      }
+    }
   }
-  return exe;
+  return bestCandidate ?? exe;
 }
 
 /**

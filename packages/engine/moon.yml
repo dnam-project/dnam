@@ -13,6 +13,8 @@ project:
   name: "dnam-engine"
   description: "Pure Rust #![no_std] + alloc, zero-audio-alloc real-time SIMD audio engine for DNAM"
 
+dependsOn: []
+
 tasks:
   format:
     type: "run"

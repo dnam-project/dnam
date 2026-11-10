@@ -5,7 +5,11 @@
 use alloc::string::ToString;
 use alloc::vec::Vec;
 
-use crate::container::{DNAM_MAGIC, DNCK_MAGIC, DnamPreamble, crc32c_update};
+use crate::container::{
+    DNAM_MAGIC, DNCK_MAGIC, crc32c_update, parse_and_validate_dmu1_frame,
+    validate_mutable_json_schema, validate_v2_dnam_layout_with_max_profile,
+    validate_v2_dnam_layout_with_max_profile_no_alloc,
+};
 use crate::provenance::chacha20::chacha20_xor_arena_blocks;
 use crate::provenance::provider::CryptoProvider;
 use crate::provenance::sha256::{decode_hex_array, encode_hex, sha256_digest};
@@ -254,7 +258,7 @@ pub fn seal_dnam_container(
     use super::provider::RustCryptoProvider;
     use super::verify::verify_oem_device_certificate;
 
-    if inner_dnam_bytes.len() < 4096 || (inner_dnam_bytes.len() & 0x3F) != 0 {
+    if inner_dnam_bytes.len() < 256 || (inner_dnam_bytes.len() & 0x3F) != 0 {
         return Err(DnamError::UnalignedOffset {
             field: "inner_dnam_bytes.len",
             offset: inner_dnam_bytes.len() as u32,
@@ -266,19 +270,24 @@ pub fn seal_dnam_container(
         ));
     }
 
-    // 1. Parse and validate the inner .dnam preamble & JSON header
-    let inner_preamble = DnamPreamble::from_bytes(inner_dnam_bytes)?;
-    let arena_off = inner_preamble.tensor_arena_offset as usize;
-    let arena_len = inner_preamble.tensor_arena_byte_len as usize;
-    let json_len = inner_preamble.json_header_byte_len as usize;
-    if arena_off < 64 + json_len || inner_dnam_bytes.len() < arena_off + arena_len {
-        return Err(DnamError::BufferTooSmall {
-            expected: arena_off + arena_len,
-            actual: inner_dnam_bytes.len(),
-        });
-    }
-    let inner_header = DnamJsonHeader::from_json_slice(&inner_dnam_bytes[64..64 + json_len])
+    // 1. Parse and validate the inner canonical v2.0 .dnam layout, JCS header, and DMU1 trailer
+    let layout = validate_v2_dnam_layout_with_max_profile(inner_dnam_bytes, 2)?;
+    let json_slice =
+        &inner_dnam_bytes[layout.header_extent.0..layout.header_extent.0 + layout.header_extent.1];
+    let mut inner_header = DnamJsonHeader::from_json_slice(json_slice)
         .map_err(|e| DnamError::InvalidJsonHeader(e.to_string()))?;
+    let mutable_slice = &inner_dnam_bytes
+        [layout.mutable_extent.0..layout.mutable_extent.0 + layout.mutable_extent.1];
+    let dmu_val = parse_and_validate_dmu1_frame(mutable_slice)?;
+    validate_mutable_json_schema(&dmu_val)?;
+    if let Some(presets_val) = dmu_val.get("presets") {
+        inner_header.presets = serde_json::from_value(presets_val.clone())
+            .map_err(|e| DnamError::SchemaValidationError(e.to_string()))?;
+    }
+    if let Some(um_val) = dmu_val.get("user_metadata") {
+        inner_header.user_metadata = serde_json::from_value(um_val.clone())
+            .map_err(|e| DnamError::SchemaValidationError(e.to_string()))?;
+    }
     inner_header.validate()?;
 
     // 2. Enforce creator-signed DistributionPolicy for EnclaveSealed and every recipient certificate
@@ -321,16 +330,15 @@ pub fn seal_dnam_container(
     }
 
     // 4. Nested Double Encryption:
-    //    Pass A: Encrypt Arena 0..2 with domain-separated inner arena key (cek_inner, nonce_inner)
-    //    Pass B: Encrypt entire inner .dnam container (preamble + JSON + Arena 0..2) with (cek_32, chacha20_nonce_96)
+    //    Pass A: Encrypt retained tier arena slices with domain-separated inner arena key (cek_inner, nonce_inner)
+    //    Pass B: Encrypt entire inner .dnam container with (cek_32, chacha20_nonce_96)
     let mut encrypted_payload = inner_dnam_bytes.to_vec();
-    let highest_end = inner_preamble
-        .arena_end_for_tier(inner_preamble.highest_tier())
-        .min(arena_len);
+    let arena_off = layout.tier_start;
+    let retained_end = layout.tier_ends[layout.retained_tier as usize];
     let (cek_inner, nonce_inner) =
         derive_nested_inner_arena_key_and_nonce(cek_32, chacha20_nonce_96);
     chacha20_xor_arena_blocks(
-        &mut encrypted_payload[arena_off..arena_off + highest_end],
+        &mut encrypted_payload[arena_off..retained_end],
         &cek_inner,
         &nonce_inner,
         0,
@@ -381,7 +389,7 @@ pub fn unseal_dnam_container<C: CryptoProvider>(
         ));
     }
     let payload_len = preamble.inner_dnam_byte_len as usize;
-    if payload_len < 4096 || (payload_len & 0x3F) != 0 {
+    if payload_len < 256 || (payload_len & 0x3F) != 0 {
         return Err(DnamError::UnalignedOffset {
             field: "inner_dnam_byte_len",
             offset: preamble.inner_dnam_byte_len,
@@ -463,23 +471,18 @@ pub fn unseal_dnam_container<C: CryptoProvider>(
         ));
     }
 
-    if (preamble.flags & crate::container::FLAG_ENCRYPTED_ARENA) != 0 {
-        let inner_preamble = DnamPreamble::from_bytes(&plain_dnam)?;
-        let arena_off = inner_preamble.tensor_arena_offset as usize;
-        let arena_len = inner_preamble.tensor_arena_byte_len as usize;
-        let highest_end = inner_preamble
-            .arena_end_for_tier(inner_preamble.highest_tier())
-            .min(arena_len);
-        if plain_dnam.len() >= arena_off + highest_end {
-            let (cek_inner, nonce_inner) =
-                derive_nested_inner_arena_key_and_nonce(&cek_outer, &preamble.chacha20_nonce_96);
-            chacha20_xor_arena_blocks(
-                &mut plain_dnam[arena_off..arena_off + highest_end],
-                &cek_inner,
-                &nonce_inner,
-                0,
-            )?;
-        }
+    if (preamble.flags & crate::container::FLAG_ENCRYPTED_ARENA) != 0 && inner_magic == DNAM_MAGIC {
+        let layout = validate_v2_dnam_layout_with_max_profile_no_alloc(&plain_dnam, 2)?;
+        let arena_off = layout.tier_start;
+        let retained_end = layout.tier_ends[layout.retained_tier as usize];
+        let (cek_inner, nonce_inner) =
+            derive_nested_inner_arena_key_and_nonce(&cek_outer, &preamble.chacha20_nonce_96);
+        chacha20_xor_arena_blocks(
+            &mut plain_dnam[arena_off..retained_end],
+            &cek_inner,
+            &nonce_inner,
+            0,
+        )?;
     }
 
     Ok(plain_dnam)

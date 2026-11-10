@@ -123,5 +123,5 @@ flowchart LR
 - [`ADR-0009: RFC 8785 JCS Header Digest, Prefix-Composable Signatures, RFC 9180 HPKE & Rank-r Preview Containment`](0009-jcs-prefix-signing-hpke-and-preview-containment.md)
 - [`ADR-0016: Closed-Loop Feedback-Adaptive Disjoint-Comb Stimulus, Mode A/B Control Sweeps & Acoustic Null Homing`](0016-codesigned-disjoint-comb-stimulus-and-null-homing-capture.md)
 - [`ADR-0017: Pure-Rust Analytical VarPro Solver, 256-D Schur Re-Balancing & EMR-Weighted MM-Cholesky KKT`](0017-pure-rust-analytical-varpro-solver-and-planar-decoupling.md)
-- [`ADR-0018: Pure-Rust Signal-Chain Fixtures Crate (dnam-fixtures), Dual-Mode White-Box Distillation & Python Retirement`](0018-signal-chain-fixtures-crate-and-whitebox-distillation.md)
+- [`ADR-0018: Pure-Rust Black-Box Signal-Chain Fixtures Crate (dnam-fixtures), Dual-Mode White-Box Distillation & Python Retirement`](0018-signal-chain-fixtures-crate-and-whitebox-distillation.md)
 

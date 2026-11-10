@@ -37,9 +37,12 @@ export function DiscreteSwitch({
       <div className="mb-2 flex items-center justify-between text-xs font-medium text-slate-300">
         <span>{label}</span>
         {hasClampedStates ? (
-          <span className="inline-flex items-center gap-0.5 font-mono text-xs text-amber-400">
+          <span
+            title="CLAMP-SWITCH"
+            className="inline-flex items-center gap-0.5 font-mono text-xs text-amber-400"
+          >
             <Lock className="size-2.5" />
-            CL-13
+            CLAMP-SWITCH
           </span>
         ) : null}
       </div>

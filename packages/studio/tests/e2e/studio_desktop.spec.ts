@@ -2,7 +2,7 @@ import AxeBuilder from "@axe-core/playwright";
 import { expect, test } from "@playwright/test";
 
 test.describe("DNAM Desktop Studio End-to-End (Playwright E2E)", () => {
-  test("boots full Studio index.html and completes Rack, Capture, 4-Stage Trainer, Visualizers, and WCAG 2.1 AA audit", async ({
+  test("boots full Studio index.html and completes Rack, Capture, Two-Sweep Trainer, Visualizers, and WCAG 2.1 AA audit", async ({
     page,
   }) => {
     await page.goto("/");
@@ -57,13 +57,11 @@ test.describe("DNAM Desktop Studio End-to-End (Playwright E2E)", () => {
       page.getByText(/notification: Captured and aligned stem stem_axis_drive_max/),
     ).toBeVisible();
 
-    // 4. 4-Stage Differentiable Trainer workflow
-    await page.getByRole("tab", { name: "Python Trainer (dnam-train)" }).click();
+    // 4. Two-Sweep Analytical Trainer workflow
+    await page.getByRole("tab", { name: "Rust Trainer (dnam-train)" }).click();
     await page.getByRole("button", { name: "Run dnam-train" }).click();
     await expect(
-      page.getByText(
-        "notification: Stage 4 Kronecker .dnam-ckpt Export & CL-01..CL-20 Audit completed",
-      ),
+      page.getByText("notification: Sweep 2 Kronecker .dnam-ckpt Export & 3-Phase Audit completed"),
     ).toBeVisible();
 
     // 5. Interactive Tri-Physics Visualizers workflow

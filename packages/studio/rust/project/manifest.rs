@@ -5,8 +5,6 @@ use std::collections::BTreeMap;
 use dnam_engine::schema::{ControlCalibration, DistributionPolicy};
 use serde::{Deserialize, Serialize};
 
-use crate::capture::TargetExcitationProfile;
-
 fn default_output_mode() -> String {
     "stereo".to_string()
 }
@@ -79,9 +77,6 @@ pub struct CaptureSettings {
     /// Step-1 unity reference level in dBFS (`0.0` default).
     #[serde(default)]
     pub unity_ref_dbfs: f32,
-    /// Probed target device excitation profile used to synthesize `models/<id>/stems/input.wav`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub excitation_profile: Option<TargetExcitationProfile>,
     /// Whether auto-unity leveling at default controls (`u = 0`) is enabled (`true` default).
     #[serde(default = "default_true")]
     pub auto_unity_leveling: bool,
@@ -117,7 +112,6 @@ impl Default for CaptureSettings {
             noise_floor_dbfs: -96.0,
             send_gain_db: 0.0,
             unity_ref_dbfs: 0.0,
-            excitation_profile: None,
             auto_unity_leveling: true,
             leveling_metric: "rms_dbfs".to_string(),
             target_gain_db: 0.0,

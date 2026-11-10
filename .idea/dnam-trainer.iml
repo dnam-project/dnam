@@ -8,5 +8,7 @@
     </content>
     <orderEntry type="inheritedJdk" />
     <orderEntry type="sourceFolder" forTests="false" />
+    <orderEntry type="module" module-name="engine" exported="" />
+    <orderEntry type="module" module-name="dnam-fixtures" scope="TEST" />
   </component>
 </module>

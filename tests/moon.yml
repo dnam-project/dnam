@@ -117,6 +117,7 @@ tasks:
       - "run"
       - "tests/test_guardrails.test.ts"
     inputs:
+      - "*.md"
       - "*.ts"
       - "tsconfig.json"
       - "/AGENTS.md"
@@ -125,17 +126,20 @@ tasks:
       - "/CLA.md"
       - "/LICENSE"
       - "/Cargo.toml"
+      - "/Cargo.lock"
       - "/package.json"
       - "/pnpm-lock.yaml"
       - "/biome.json"
+      - "/mise.toml"
+      - "/.moon/*.yml"
       - "/docs/**/*.md"
-      - "/packages/**/AGENTS.md"
-      - "/packages/**/CONTRIBUTING.md"
-      - "/packages/**/README.md"
-      - "/packages/engine/spec_scope.toml"
+      - "/packages/**/*.{toml,yml,json,html}"
+      - "/packages/**/*.md"
+      - "/packages/**/*.mjs"
       - "/packages/**/*.rs"
       - "/packages/**/*.ts"
       - "/packages/**/*.tsx"
+      - "/**/*.py"
     options:
       runFromWorkspaceRoot: true
     tags:

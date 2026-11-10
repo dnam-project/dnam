@@ -14,7 +14,7 @@ export function ClampAuditVisualizer({ r2 = 1.2, onR2Change }: ClampAuditVisuali
     <Card data-testid="visualizer-clamp-audit">
       <CardHeader className="flex flex-col gap-1.5 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <CardTitle>Safety: Non-Stop 3-Phase Clamping & CL-01..CL-20 Registry</CardTitle>
+          <CardTitle>Safety: Non-Stop 3-Phase Clamping & Stability Audit</CardTitle>
           <CardDescription>
             Phase 1 (Range/Switch/Poles), Phase 2 (Mahalanobis Trust Region), Phase 3 (Conditional
             Corners)

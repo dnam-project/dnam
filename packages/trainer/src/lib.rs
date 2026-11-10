@@ -8,11 +8,21 @@
 
 pub mod audit;
 pub mod ckpt;
+pub mod metrics;
+pub mod resampler;
 pub mod solver;
 pub mod targets;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod whitebox;
 
+pub use resampler::{
+    CANONICAL_TRAINER_SAMPLE_RATE_HZ, resample_48k_to_arbitrary_rate, resample_arbitrary_rate,
+    resample_arbitrary_rate_to_48k, resample_control_trajectory, resampled_frame_len,
+    scale_freeze_window,
+};
 pub use targets::{
-    DistillationTarget, StemResponse, StemStimulus, StemStimulusBatch, StimulusFrame,
+    CaptureBitDepth, DistillationTarget, StemResponse, StemStimulus, StemStimulusBatch,
+    StimulusFrame,
 };
 
 #[cfg(feature = "cli")]
@@ -34,7 +44,7 @@ pub const CORESET_FP16_STEREO_BYTES: usize = CORESET_FP16_FRAMES_PER_STEM * 4;
 
 /// Command-line interface for the `dnam-train` analytical Two-Sweep system-identification binary.
 #[cfg(feature = "cli")]
-#[derive(Debug, Clone, Parser, PartialEq, Eq)]
+#[derive(Debug, Clone, Parser, PartialEq)]
 #[command(
     name = "dnam-train",
     version,
@@ -56,9 +66,16 @@ pub enum TrainerCommand {
         #[arg(long, default_value = "ultra")]
         max_tier: String,
     },
+    /// Serve a persistent stream of out-of-process `64 B` `DNWB` white-box requests over `stdin`/`stdout`.
+    DnwbServe {
+        /// Worker engine (`spice` or `faust`).
+        #[arg(long, default_value = "faust")]
+        runner: String,
+    },
 }
 
 /// Summary returned by executing a `TrainerCli` invocation.
+#[cfg_attr(not(feature = "cli"), allow(dead_code))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CliExecutionReport {
     /// Selected maximum slimmable tier.
@@ -67,6 +84,8 @@ pub struct CliExecutionReport {
     pub feature_dim: usize,
     /// Packed `uplo='U'` Gram matrix element count `N * (N + 1) / 2`.
     pub packed_gram_len: usize,
+    /// Whether `stdout` was already consumed by a binary `DNWB` pipe response.
+    pub binary_pipe_mode: bool,
 }
 
 /// Parses and executes a `dnam-train` CLI argument sequence.
@@ -77,8 +96,25 @@ where
     T: Into<std::ffi::OsString> + Clone,
 {
     let cli = TrainerCli::try_parse_from(args).map_err(|err| err.to_string())?;
+    run_cli_parsed(cli)
+}
+
+#[cfg(feature = "cli")]
+fn run_cli_parsed(cli: TrainerCli) -> Result<CliExecutionReport, String> {
+    let mut binary_pipe_mode = false;
     let tier_str = match &cli.command {
         Some(TrainerCommand::Check { max_tier }) => max_tier.as_str(),
+        #[cfg(not(target_arch = "wasm32"))]
+        Some(TrainerCommand::DnwbServe { runner }) => {
+            binary_pipe_mode = true;
+            let mut stdin = std::io::stdin().lock();
+            let mut stdout = std::io::stdout().lock();
+            run_dnwb_serve_io(runner, &mut stdin, &mut stdout)?
+        }
+        #[cfg(target_arch = "wasm32")]
+        Some(TrainerCommand::DnwbServe { .. }) => {
+            return Err(String::from("dnwb-serve is not supported on wasm32"));
+        }
         None => "ultra",
     };
     let max_tier = parse_tier_name(tier_str)?;
@@ -88,7 +124,40 @@ where
         max_tier,
         feature_dim,
         packed_gram_len,
+        binary_pipe_mode,
     })
+}
+
+#[cfg(all(feature = "cli", not(target_arch = "wasm32")))]
+fn run_dnwb_serve_io<R: std::io::Read, W: std::io::Write>(
+    runner: &str,
+    reader: &mut R,
+    writer: &mut W,
+) -> Result<&'static str, String> {
+    match runner.trim().to_ascii_lowercase().as_str() {
+        "spice" => {
+            let mut target = whitebox::SpiceRunner::new("cli_worker.cir", 5_000);
+            whitebox::serve_dnwb_stream_with_switches(reader, writer, &mut target, |t, sw| {
+                t.set_switches(sw)
+            })
+            .map_err(|e| format!("{e:?}"))?;
+        }
+        "faust" => {
+            let json = r#"{"ui":[{"type":"vgroup","label":"W","items":[{"type":"hslider","label":"Drive","init":0.5,"min":0.0,"max":1.0,"step":0.01},{"type":"hslider","label":"Tone","init":0.5,"min":0.0,"max":1.0,"step":0.01}]}]}"#;
+            let mut target = whitebox::FaustRunner::from_faust_json("cli_worker.dsp", json, 5_000)
+                .map_err(|e| format!("{e:?}"))?;
+            whitebox::serve_dnwb_stream_with_switches(reader, writer, &mut target, |t, sw| {
+                t.set_switches(sw)
+            })
+            .map_err(|e| format!("{e:?}"))?;
+        }
+        other => {
+            return Err(format!(
+                "unknown dnwb-serve runner '{other}' (expected 'spice' or 'faust')"
+            ));
+        }
+    }
+    Ok("ultra")
 }
 
 /// Parses a case-insensitive tier identifier (`lite`, `full`, `pro`, `ultra`) into [`Tier`].
@@ -106,16 +175,41 @@ pub fn parse_tier_name(name: &str) -> Result<Tier, String> {
 /// (`ref[container.ckpt.gram-fingerprint]`).
 #[must_use]
 pub fn compute_gram_input_fingerprint(feature_dim: u32, frames: &[(u64, f64, &[f64])]) -> [u8; 32] {
+    let expected_len = feature_dim as usize;
+    let mut prev_frame_idx: Option<u64> = None;
     let mut hasher = Sha256::new();
     hasher.update(b"DNAM-GRAM-INPUT-v1\0");
     hasher.update(feature_dim.to_le_bytes());
     hasher.update([2u8, 2u8]); // feature_type=2 (f64), weight_type=2 (f64)
     for (frame_idx, weight, row) in frames {
+        assert_eq!(
+            row.len(),
+            expected_len,
+            "compute_gram_input_fingerprint requires row.len() ({}) == feature_dim ({expected_len})",
+            row.len()
+        );
+        assert!(
+            weight.is_finite() && *weight >= 0.0,
+            "compute_gram_input_fingerprint requires finite nonnegative weight, got {weight}"
+        );
+        if let Some(prev) = prev_frame_idx {
+            assert!(
+                *frame_idx > prev,
+                "compute_gram_input_fingerprint requires strictly increasing frame_idx ({frame_idx} <= {prev})"
+            );
+        }
+        prev_frame_idx = Some(*frame_idx);
+        let canon_w = if *weight == 0.0 { 0.0_f64 } else { *weight };
         hasher.update([1u8]);
         hasher.update(frame_idx.to_le_bytes());
-        hasher.update(weight.to_le_bytes());
+        hasher.update(canon_w.to_le_bytes());
         for &val in *row {
-            hasher.update(val.to_le_bytes());
+            assert!(
+                val.is_finite(),
+                "compute_gram_input_fingerprint requires finite feature values, got {val}"
+            );
+            let canon_v = if val == 0.0 { 0.0_f64 } else { val };
+            hasher.update(canon_v.to_le_bytes());
         }
     }
     hasher.update([0u8]);
@@ -123,8 +217,8 @@ pub fn compute_gram_input_fingerprint(feature_dim: u32, frames: &[(u64, f64, &[f
     hasher.finalize().into()
 }
 
-/// Quantizes an `f32` scalar to IEEE-754 binary16 (`fp16`) bits and back for `DNCA` coreset storage
-/// (`ref[container.dnca.coreset-fp16]`).
+/// Quantizes an `f32` scalar to IEEE-754 binary16 (`fp16`) bits using round-to-nearest-even (`RNE`)
+/// and full 10-bit subnormal encoding (`ref[container.dnca.coreset-fp16]`).
 #[must_use]
 pub fn f32_to_fp16_bits(value: f32) -> u16 {
     let bits = value.to_bits();
@@ -132,16 +226,31 @@ pub fn f32_to_fp16_bits(value: f32) -> u16 {
     let exp = ((bits >> 23) & 0xff) as i32;
     let mant = bits & 0x007f_ffff;
     if exp == 0xff {
-        return sign | 0x7c00 | u16::from(mant != 0);
+        if mant == 0 {
+            return sign | 0x7c00;
+        }
+        return sign | 0x7e00 | ((mant >> 13) as u16);
+    }
+    if exp == 0 {
+        return sign;
     }
     let half_exp = exp - 127 + 15;
     if half_exp >= 0x1f {
         return sign | 0x7c00;
     }
     if half_exp <= 0 {
-        return sign;
+        if half_exp < -10 {
+            return sign;
+        }
+        let sig = mant | 0x0080_0000;
+        let shift = (14 - half_exp) as u32;
+        let half_way = 1_u32 << (shift - 1);
+        let lsb = (sig >> shift) & 1;
+        let sub_mant = ((sig + (half_way - 1) + lsb) >> shift) as u16;
+        return sign | sub_mant;
     }
-    let rounded_mant = ((mant + 0x0000_1000) >> 13) as u16;
+    let lsb = (mant >> 13) & 1;
+    let rounded_mant = ((mant + 0x0000_0fff + lsb) >> 13) as u16;
     sign | (((half_exp as u16) << 10) + rounded_mant)
 }
 
@@ -192,6 +301,38 @@ mod tests {
 
         assert!(parse_tier_name("unknown").is_err());
         assert!(run_cli_from_args(["dnam-train", "--invalid-flag"]).is_err());
+        assert!(run_cli_from_args(["dnam-train", "dnwb-serve", "--runner", "bogus"]).is_err());
+
+        #[cfg(all(feature = "cli", not(target_arch = "wasm32")))]
+        {
+            let stim = StemStimulus {
+                stem_id: String::from("cli_io"),
+                sample_rate_hz: 48_000,
+                in_1: vec![0.1, -0.1],
+                in_2: None,
+                in_3: None,
+                in_4: None,
+                control_values: vec![0.5, 0.5],
+                control_trajectories: None,
+                freeze_transition_window: None,
+            };
+            let mut req = Vec::new();
+            whitebox::write_dnwb_stimulus_request_with_switches(
+                &mut req,
+                whitebox::DnwbCommand::RenderStem,
+                &stim,
+                &[1],
+            )
+            .unwrap();
+            for r_kind in ["spice", "faust"] {
+                let mut out = Vec::new();
+                assert_eq!(
+                    run_dnwb_serve_io(r_kind, &mut std::io::Cursor::new(&req), &mut out).unwrap(),
+                    "ultra"
+                );
+                assert!(!out.is_empty());
+            }
+        }
     }
 
     #[test]
@@ -212,8 +353,27 @@ mod tests {
         assert!(fp16_bits_to_f32(f32_to_fp16_bits(f32::INFINITY)).is_infinite());
         assert!(fp16_bits_to_f32(f32_to_fp16_bits(f32::NAN)).is_nan());
         assert!(fp16_bits_to_f32(f32_to_fp16_bits(1.0e6)).is_infinite());
+        // Subnormal encoding & round-to-nearest-even (RNE) verification
+        assert_eq!(f32_to_fp16_bits(2.0_f32.powi(-24)), 0x0001);
+        assert_eq!(f32_to_fp16_bits(-2.0_f32.powi(-24)), 0x8001);
+        assert_eq!(
+            fp16_bits_to_f32(f32_to_fp16_bits(2.0_f32.powi(-20))),
+            2.0_f32.powi(-20)
+        );
+        assert_eq!(f32_to_fp16_bits(2.0_f32.powi(-25)), 0x0000); // exact halfway -> even 0
+        assert_eq!(f32_to_fp16_bits(3.0 * 2.0_f32.powi(-25)), 0x0002); // exact halfway -> even 2
+        // Normal RNE ties: 1.0 + 2^-11 rounds to even 1.0 (0x3c00); 1.0 + 3 * 2^-11 rounds to even 1.0 + 2^-9 (0x3c02)
+        assert_eq!(f32_to_fp16_bits(1.0 + 2.0_f32.powi(-11)), 0x3c00);
+        assert_eq!(f32_to_fp16_bits(1.0 + 3.0 * 2.0_f32.powi(-11)), 0x3c02);
         assert_eq!(fp16_bits_to_f32(0x0001), 2.0_f32.powi(-24));
         assert_eq!(fp16_bits_to_f32(0x8001), -2.0_f32.powi(-24));
+    }
+
+    #[test]
+    #[should_panic(expected = "finite feature values")]
+    fn test_gram_fingerprint_rejects_nan_feature() {
+        let bad_row = [f64::NAN];
+        let _ = compute_gram_input_fingerprint(1, &[(0, 1.0, &bad_row)]);
     }
 
     proptest! {

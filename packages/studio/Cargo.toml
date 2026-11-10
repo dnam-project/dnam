@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Unified Rust/Node dnam CLI, Capture Engine, Python Trainer Bridge, and Tauri v2 Desktop Studio for Dynamic Neural Audio Modeler (DNAM)"
+description = "Unified Rust/Node dnam CLI, Capture Engine, Trainer CLI Bridge, and Tauri v2 Desktop Studio for Dynamic Neural Audio Modeler (DNAM)"
 
 [lib]
 name = "dnam_studio"
@@ -39,12 +39,10 @@ serde = { workspace = true, features = ["std", "derive"] }
 serde_json = { workspace = true, features = ["std"] }
 toml.workspace = true
 clap.workspace = true
-dialoguer.workspace = true
 cpal.workspace = true
-ndarray.workspace = true
-realfft.workspace = true
 sha2.workspace = true
 ed25519-dalek.workspace = true
+getrandom.workspace = true
 tauri = { workspace = true, optional = true }
 tauri-plugin-dialog = { workspace = true, optional = true }
 tauri-plugin-opener = { workspace = true, optional = true }

@@ -4,17 +4,13 @@
 use std::collections::BTreeMap;
 use std::env;
 use std::fs;
-use std::io::Read as _;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static ATOMIC_TMP_SEQ: AtomicU64 = AtomicU64::new(0);
 
 use ed25519_dalek::SigningKey;
-use sha2::{Digest, Sha256};
 
-use crate::capture::{
-    TargetExcitationProfile, align_hardware_latency, apply_subsample_shift_fft, compute_pcm_sha256,
-    generate_excitation_signal_with_profile, read_wav, write_wav_24bit, write_wav_32bit_float,
-};
 use crate::error::{StudioError, StudioResult};
 use crate::project::manifest::{
     CaptureSettings, ControlRangeSpec, ControlSwitchOptionSpec, ControlSwitchSpec,
@@ -35,6 +31,9 @@ models/*/.dnam-cache/
 ";
 
 fn ensure_gitignore_has_dnam_cache(root: &Path) {
+    if ensure_no_symlink_components_under(root, Path::new(".gitignore")).is_err() {
+        return;
+    }
     let gitignore_path = root.join(".gitignore");
     if !gitignore_path.is_file() {
         return;
@@ -52,8 +51,85 @@ fn ensure_gitignore_has_dnam_cache(root: &Path) {
             }
         }
         if changed {
-            let _ = fs::write(&gitignore_path, text);
+            let _ = atomic_write_text(&gitignore_path, &text);
         }
+    }
+}
+
+fn resolve_os_config_dir_from_vars(
+    home: PathBuf,
+    appdata: Option<&str>,
+    xdg: Option<&str>,
+    target_os: &str,
+) -> PathBuf {
+    match target_os {
+        "macos" => home
+            .join("Library")
+            .join("Application Support")
+            .join("dnam"),
+        "windows" => match appdata.map(str::trim).filter(|s| !s.is_empty()) {
+            Some(dir) => PathBuf::from(dir).join("dnam"),
+            None => home.join("AppData").join("Roaming").join("dnam"),
+        },
+        _ => match xdg.map(str::trim).filter(|s| !s.is_empty()) {
+            Some(dir) => PathBuf::from(dir).join("dnam"),
+            None => home.join(".config").join("dnam"),
+        },
+    }
+}
+
+fn try_default_user_config_dir() -> StudioResult<PathBuf> {
+    if let Ok(env_dir) = env::var("DNAM_CONFIG_DIR") {
+        let trimmed = env_dir.trim();
+        if !trimmed.is_empty() {
+            return Ok(PathBuf::from(trimmed));
+        }
+    }
+
+    #[cfg(test)]
+    {
+        Ok(env::temp_dir()
+            .join(format!("dnam_studio_unit_cfg_{}", std::process::id()))
+            .join("dnam"))
+    }
+
+    #[cfg(not(test))]
+    {
+        let appdata = env::var("APPDATA").ok().filter(|s| !s.trim().is_empty());
+        let xdg = env::var("XDG_CONFIG_HOME")
+            .ok()
+            .filter(|s| !s.trim().is_empty());
+        let home = env::var("HOME")
+            .ok()
+            .filter(|s| !s.trim().is_empty())
+            .or_else(|| {
+                env::var("USERPROFILE")
+                    .ok()
+                    .filter(|s| !s.trim().is_empty())
+            });
+        let os = std::env::consts::OS;
+        if os == "windows"
+            && let Some(ad) = appdata.as_deref()
+        {
+            return Ok(PathBuf::from(ad.trim()).join("dnam"));
+        }
+        if os != "macos"
+            && os != "windows"
+            && let Some(x) = xdg.as_deref()
+        {
+            return Ok(PathBuf::from(x.trim()).join("dnam"));
+        }
+        let Some(home_str) = home else {
+            return Err(StudioError::Validation(
+                "Cannot resolve user config directory: set HOME, USERPROFILE, XDG_CONFIG_HOME, APPDATA, or DNAM_CONFIG_DIR".to_string(),
+            ));
+        };
+        Ok(resolve_os_config_dir_from_vars(
+            PathBuf::from(home_str.trim()),
+            appdata.as_deref(),
+            xdg.as_deref(),
+            os,
+        ))
     }
 }
 
@@ -63,40 +139,150 @@ fn ensure_gitignore_has_dnam_cache(root: &Path) {
 /// - Windows: `%APPDATA%\dnam` (or `~/AppData/Roaming/dnam`)
 /// - Linux / POSIX: `${XDG_CONFIG_HOME:-~/.config}/dnam`
 pub fn default_user_config_dir() -> PathBuf {
-    if let Ok(env_dir) = env::var("DNAM_CONFIG_DIR") {
-        let trimmed = env_dir.trim();
-        if !trimmed.is_empty() {
-            return PathBuf::from(trimmed);
+    try_default_user_config_dir().unwrap_or_else(|_| PathBuf::from(".dnam-config"))
+}
+
+#[cfg(unix)]
+const UNIX_O_NOFOLLOW: i32 = {
+    #[cfg(any(
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "freebsd",
+        target_os = "dragonfly",
+        target_os = "netbsd",
+        target_os = "openbsd"
+    ))]
+    {
+        0x0100
+    }
+    #[cfg(all(
+        target_os = "linux",
+        any(target_arch = "arm", target_arch = "aarch64", target_arch = "m68k")
+    ))]
+    {
+        0o100000
+    }
+    #[cfg(all(
+        target_os = "linux",
+        not(any(target_arch = "arm", target_arch = "aarch64", target_arch = "m68k"))
+    ))]
+    {
+        0o400000
+    }
+};
+
+fn resolve_dir_against_cwd(dir: &Path) -> StudioResult<PathBuf> {
+    use std::path::Component;
+    for comp in dir.components() {
+        if matches!(comp, Component::ParentDir) {
+            return Err(StudioError::Validation(format!(
+                "Refusing parent-directory traversal in private path: {}",
+                dir.display()
+            )));
         }
     }
-
-    let home = env::var("HOME")
-        .or_else(|_| env::var("USERPROFILE"))
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| env::temp_dir());
-
-    if cfg!(target_os = "macos") {
-        return home
-            .join("Library")
-            .join("Application Support")
-            .join("dnam");
+    if dir.is_absolute() {
+        Ok(dir.to_path_buf())
+    } else {
+        let cwd = env::current_dir()?;
+        if dir.as_os_str().is_empty() {
+            Ok(cwd)
+        } else {
+            Ok(cwd.join(dir))
+        }
     }
-    if cfg!(target_os = "windows") {
-        if let Ok(appdata) = env::var("APPDATA") {
-            let trimmed = appdata.trim();
-            if !trimmed.is_empty() {
-                return PathBuf::from(trimmed).join("dnam");
+}
+
+fn verify_dir_ancestors_no_symlinks(dir: &Path, require_exists: bool) -> StudioResult<()> {
+    use std::path::Component;
+    let target = resolve_dir_against_cwd(dir)?;
+    let mut acc = PathBuf::new();
+    let mut normal_depth = 0usize;
+    for comp in target.components() {
+        acc.push(comp);
+        if matches!(
+            comp,
+            Component::Prefix(_) | Component::RootDir | Component::CurDir
+        ) {
+            continue;
+        }
+        if matches!(comp, Component::ParentDir) {
+            return Err(StudioError::Validation(format!(
+                "Refusing parent-directory traversal in private path: {}",
+                target.display()
+            )));
+        }
+        normal_depth += 1;
+        if target.is_absolute()
+            && normal_depth == 1
+            && matches!(comp.as_os_str().to_str(), Some("tmp" | "var" | "etc"))
+        {
+            continue;
+        }
+        match fs::symlink_metadata(&acc) {
+            Ok(meta) if meta.file_type().is_symlink() || !meta.is_dir() => {
+                return Err(StudioError::Validation(format!(
+                    "Refusing to traverse symlink or non-directory ancestor: {}",
+                    acc.display()
+                )));
+            }
+            Ok(meta) => {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt as _;
+                    let mode = meta.permissions().mode();
+                    if (mode & 0o002) != 0 && (mode & 0o1000) == 0 {
+                        return Err(StudioError::Validation(format!(
+                            "Refusing world-writable non-sticky ancestor directory: {}",
+                            acc.display()
+                        )));
+                    }
+                }
+            }
+            Err(err) if !require_exists && err.kind() == std::io::ErrorKind::NotFound => break,
+            Err(err) => return Err(err.into()),
+        }
+    }
+    Ok(())
+}
+
+fn ensure_private_dir_no_symlink_ancestors(dir: &Path) -> StudioResult<()> {
+    let target = resolve_dir_against_cwd(dir)?;
+    verify_dir_ancestors_no_symlinks(&target, false)?;
+    fs::create_dir_all(&target)?;
+    verify_dir_ancestors_no_symlinks(&target, true)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let is_implicit_cwd = dir
+            .components()
+            .all(|c| matches!(c, std::path::Component::CurDir));
+        if is_implicit_cwd {
+            let meta = fs::symlink_metadata(&target)?;
+            if meta.file_type().is_symlink()
+                || !meta.is_dir()
+                || (meta.permissions().mode() & 0o022) != 0
+            {
+                return Err(StudioError::Validation(format!(
+                    "Refusing group/world-writable working directory for private file: {}",
+                    target.display()
+                )));
+            }
+        } else {
+            fs::set_permissions(&target, fs::Permissions::from_mode(0o700))?;
+            let meta = fs::symlink_metadata(&target)?;
+            if meta.file_type().is_symlink()
+                || !meta.is_dir()
+                || (meta.permissions().mode() & 0o077) != 0
+            {
+                return Err(StudioError::Validation(format!(
+                    "Private directory must be owned by current user with 0700 permissions: {}",
+                    target.display()
+                )));
             }
         }
-        return home.join("AppData").join("Roaming").join("dnam");
     }
-    if let Ok(xdg) = env::var("XDG_CONFIG_HOME") {
-        let trimmed = xdg.trim();
-        if !trimmed.is_empty() {
-            return PathBuf::from(trimmed).join("dnam");
-        }
-    }
-    home.join(".config").join("dnam")
+    Ok(())
 }
 
 /// Loads or generates the reusable 32-byte creator `Ed25519` keypair in the user config directory
@@ -113,44 +299,132 @@ pub fn ensure_creator_ed25519_keypair(
     {
         PathBuf::from(env_key.trim())
     } else {
-        default_user_config_dir()
+        try_default_user_config_dir()?
             .join("keys")
             .join("creator_ed25519.key")
     };
 
-    let seed_bytes: [u8; 32] = if resolved.is_file() {
-        let raw_bytes = fs::read(&resolved)?;
-        if raw_bytes.len() == 32 {
-            let mut arr = [0_u8; 32];
-            arr.copy_from_slice(&raw_bytes);
-            arr
-        } else {
-            let raw_text = String::from_utf8(raw_bytes).map_err(|_| {
-                StudioError::Validation(format!(
-                    "Invalid Ed25519 secret seed in {}: expected 64 hex chars or 32 raw bytes",
-                    resolved.display()
-                ))
-            })?;
-            decode_hex_32(raw_text.trim()).ok_or_else(|| {
-                StudioError::Validation(format!(
-                    "Invalid Ed25519 secret seed in {}: expected 64 hex chars (32 bytes)",
-                    resolved.display()
-                ))
-            })?
+    if let Some(parent) = resolved.parent() {
+        verify_dir_ancestors_no_symlinks(parent, false)?;
+    }
+
+    let exists_regular = match fs::symlink_metadata(&resolved) {
+        Ok(meta) if meta.file_type().is_symlink() => {
+            return Err(StudioError::Validation(format!(
+                "Refusing to follow symlink for Ed25519 secret key: {}",
+                resolved.display()
+            )));
+        }
+        Ok(meta) if meta.is_file() => true,
+        Ok(_) => {
+            return Err(StudioError::Validation(format!(
+                "Ed25519 secret key path is not a regular file: {}",
+                resolved.display()
+            )));
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => false,
+        Err(err) => return Err(err.into()),
+    };
+
+    if exists_regular {
+        if let Some(parent) = resolved.parent() {
+            verify_dir_ancestors_no_symlinks(parent, true)?;
         }
     } else {
         if let Some(parent) = resolved.parent() {
-            fs::create_dir_all(parent)?;
+            ensure_private_dir_no_symlink_ancestors(parent)?;
         }
-        let generated = generate_csprng_seed_32();
+        let generated = generate_csprng_seed_32()?;
         let hex_line = format!("{}\n", encode_hex(&generated));
-        fs::write(&resolved, hex_line)?;
+        let seq = ATOMIC_TMP_SEQ.fetch_add(1, Ordering::Relaxed);
+        let tmp_path = resolved.with_extension(format!("key.tmp.{}_{}", std::process::id(), seq));
+        {
+            use std::io::Write as _;
+            let mut opts = fs::OpenOptions::new();
+            opts.write(true).create_new(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt as _;
+                opts.mode(0o600);
+            }
+            let mut file = opts.open(&tmp_path)?;
+            if let Err(err) = file.write_all(hex_line.as_bytes()) {
+                let _ = fs::remove_file(&tmp_path);
+                return Err(err.into());
+            }
+        }
+        match fs::hard_link(&tmp_path, &resolved) {
+            Ok(()) => {
+                let _ = fs::remove_file(&tmp_path);
+            }
+            Err(_) if fs::symlink_metadata(&resolved).is_err() => {
+                if let Err(err) = fs::rename(&tmp_path, &resolved) {
+                    let _ = fs::remove_file(&tmp_path);
+                    return Err(err.into());
+                }
+            }
+            Err(_) => {
+                let _ = fs::remove_file(&tmp_path);
+            }
+        }
+    }
+
+    let raw_bytes = {
+        use std::io::Read as _;
+        let mut opts = fs::OpenOptions::new();
+        opts.read(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt as _;
+            opts.custom_flags(UNIX_O_NOFOLLOW);
+        }
+        let file = opts.open(&resolved)?;
+        let fmeta = file.metadata()?;
+        if !fmeta.is_file() {
+            return Err(StudioError::Validation(format!(
+                "Refusing to read non-regular Ed25519 secret key: {}",
+                resolved.display()
+            )));
+        }
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt as _;
-            let _ = fs::set_permissions(&resolved, fs::Permissions::from_mode(0o600));
+            if (fmeta.permissions().mode() & 0o077) != 0 {
+                return Err(StudioError::Validation(format!(
+                    "Refusing to load Ed25519 secret key with group/world permissions (expected 0600): {}",
+                    resolved.display()
+                )));
+            }
+            if let Err(err) = file.set_permissions(fmeta.permissions())
+                && err.kind() == std::io::ErrorKind::PermissionDenied
+            {
+                return Err(StudioError::Validation(format!(
+                    "Refusing to load Ed25519 secret key not owned by current user: {}",
+                    resolved.display()
+                )));
+            }
         }
-        generated
+        let mut buf = Vec::with_capacity(128);
+        file.take(4096).read_to_end(&mut buf)?;
+        buf
+    };
+    let seed_bytes: [u8; 32] = if raw_bytes.len() == 32 {
+        let mut arr = [0_u8; 32];
+        arr.copy_from_slice(&raw_bytes);
+        arr
+    } else {
+        let raw_text = String::from_utf8(raw_bytes).map_err(|_| {
+            StudioError::Validation(format!(
+                "Invalid Ed25519 secret seed in {}: expected 64 hex chars or 32 raw bytes",
+                resolved.display()
+            ))
+        })?;
+        decode_hex_32(raw_text.trim()).ok_or_else(|| {
+            StudioError::Validation(format!(
+                "Invalid Ed25519 secret seed in {}: expected 64 hex chars (32 bytes)",
+                resolved.display()
+            ))
+        })?
     };
 
     let signing_key = SigningKey::from_bytes(&seed_bytes);
@@ -158,21 +432,11 @@ pub fn ensure_creator_ed25519_keypair(
     Ok((resolved, seed_bytes, pub_hex))
 }
 
-fn generate_csprng_seed_32() -> [u8; 32] {
+fn generate_csprng_seed_32() -> StudioResult<[u8; 32]> {
     let mut buf = [0_u8; 32];
-    if let Ok(mut urandom) = fs::File::open("/dev/urandom")
-        && urandom.read_exact(&mut buf).is_ok()
-    {
-        return buf;
-    }
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    let mut hasher = Sha256::new();
-    hasher.update(nanos.to_le_bytes());
-    hasher.update(std::process::id().to_le_bytes());
-    hasher.finalize().into()
+    getrandom::fill(&mut buf)
+        .map_err(|err| std::io::Error::other(format!("OS CSPRNG failure: {err}")))?;
+    Ok(buf)
 }
 
 fn humanize_id(id: &str) -> String {
@@ -216,22 +480,13 @@ pub fn parse_compact_range_spec(spec: &str) -> StudioResult<ControlRangeSpec> {
             .trim()
             .parse()
             .map_err(|_| StudioError::Validation(format!("Invalid max value in '{spec}'")))?;
-        if max <= min {
-            return Err(StudioError::Validation(format!(
-                "Range min ({min}) must be strictly less than max ({max}) in '{spec}'"
-            )));
-        }
         let default_value: f32 = match def_opt {
             Some(d) => d.parse().map_err(|_| {
                 StudioError::Validation(format!("Invalid default value in '{spec}'"))
             })?,
             None => 0.5 * (min + max),
         };
-        if default_value < min || default_value > max {
-            return Err(StudioError::Validation(format!(
-                "Default value {default_value} is outside declared range [{min}, {max}] in '{spec}'"
-            )));
-        }
+        validate_range_bounds(min, max, default_value, spec)?;
         return Ok(ControlRangeSpec {
             id: id.to_string(),
             label: humanize_id(id),
@@ -277,11 +532,7 @@ pub fn parse_compact_range_spec(spec: &str) -> StudioResult<ControlRangeSpec> {
     let default_value: f32 = bounds_and_def[1]
         .parse()
         .map_err(|_| StudioError::Validation(format!("Invalid default value in '{spec}'")))?;
-    if max <= min || default_value < min || default_value > max {
-        return Err(StudioError::Validation(format!(
-            "Range bounds must satisfy min <= default <= max and min < max in '{spec}'"
-        )));
-    }
+    validate_range_bounds(min, max, default_value, spec)?;
     let unit = parts
         .get(3)
         .map(|u| u.trim().to_string())
@@ -425,20 +676,46 @@ impl DnamProject {
     /// `.gitignore`, and provisioning the user's `Ed25519` creator keypair in
     /// `default_user_config_dir()`.
     pub fn init(root_dir: impl AsRef<Path>, name: &str, author: &str) -> StudioResult<Self> {
-        Self::init_inner(root_dir.as_ref(), name, author)
+        Self::init_inner(root_dir.as_ref(), name, author, None)
     }
 
-    fn init_inner(root_dir: &Path, name: &str, author: &str) -> StudioResult<Self> {
+    /// Initializes a new DNAM workspace at `root_dir`, provisioning the creator `Ed25519` keypair
+    /// inside an explicit `config_dir` (`<config_dir>/keys/creator_ed25519.key`).
+    pub fn init_with_config_dir(
+        root_dir: impl AsRef<Path>,
+        name: &str,
+        author: &str,
+        config_dir: impl AsRef<Path>,
+    ) -> StudioResult<Self> {
+        Self::init_inner(root_dir.as_ref(), name, author, Some(config_dir.as_ref()))
+    }
+
+    fn init_inner(
+        root_dir: &Path,
+        name: &str,
+        author: &str,
+        config_dir: Option<&Path>,
+    ) -> StudioResult<Self> {
         let root = root_dir.to_path_buf();
+        for rel in ["dist", "models", ".gitignore", "dnam.toml"] {
+            ensure_no_symlink_components_under(&root, Path::new(rel))?;
+        }
+        if fs::symlink_metadata(root.join("dnam.toml")).is_ok() {
+            return Err(StudioError::Validation(format!(
+                "DNAM workspace already initialized at {}",
+                root.display()
+            )));
+        }
         fs::create_dir_all(root.join("dist"))?;
         fs::create_dir_all(root.join("models"))?;
 
         let gitignore_path = root.join(".gitignore");
         if !gitignore_path.exists() {
-            fs::write(&gitignore_path, WORKSPACE_GITIGNORE)?;
+            atomic_write_text(&gitignore_path, WORKSPACE_GITIGNORE)?;
         }
 
-        let (_, _, pub_hex) = ensure_creator_ed25519_keypair(None)?;
+        let explicit_key = config_dir.map(|cfg| cfg.join("keys").join("creator_ed25519.key"));
+        let (_, _, pub_hex) = ensure_creator_ed25519_keypair(explicit_key.as_deref())?;
 
         let manifest = DnamProjectManifest {
             schema_version: "1.0".to_string(),
@@ -467,6 +744,7 @@ impl DnamProject {
 
     fn open_inner(root_dir: &Path) -> StudioResult<Self> {
         let root = root_dir.to_path_buf();
+        ensure_no_symlink_components_under(&root, Path::new("dnam.toml"))?;
         let manifest_path = root.join("dnam.toml");
         let content = fs::read_to_string(&manifest_path)?;
         let manifest: DnamProjectManifest =
@@ -478,14 +756,6 @@ impl DnamProject {
         })
     }
 
-    /// Returns the resolved path to a model's local sidecar calibration cache (`models/<model_id>/.dnam-cache`).
-    pub fn model_cache_dir(&self, model_id: &str) -> PathBuf {
-        self.root_dir
-            .join("models")
-            .join(model_id)
-            .join(".dnam-cache")
-    }
-
     /// Returns the workspace root directory.
     pub fn root_dir(&self) -> &Path {
         &self.root_dir
@@ -494,15 +764,6 @@ impl DnamProject {
     /// Returns the workspace manifest.
     pub fn manifest(&self) -> &DnamProjectManifest {
         &self.manifest
-    }
-
-    /// Returns the resolved path to a model's probe-optimized dry excitation WAV (`models/<model_id>/stems/input.wav`).
-    pub fn model_dry_input_wav_path(&self, model_id: &str) -> PathBuf {
-        self.root_dir
-            .join("models")
-            .join(model_id)
-            .join("stems")
-            .join("input.wav")
     }
 
     /// Updates capture calibration settings on `model_id` and saves `models/<model_id>/model.toml`.
@@ -522,32 +783,9 @@ impl DnamProject {
         self.save_model(&model)
     }
 
-    /// Updates full 2-step calibration settings on `model_id` including `send_gain_db` and [`TargetExcitationProfile`] and saves `models/<model_id>/model.toml`.
-    #[allow(clippy::too_many_arguments)]
-    pub fn update_calibration_with_profile(
-        &self,
-        model_id: &str,
-        backend: &str,
-        device_id: &str,
-        send_gain_db: f32,
-        latency_samples: i32,
-        noise_floor_dbfs: f32,
-        unity_ref_dbfs: f32,
-        profile: TargetExcitationProfile,
-    ) -> StudioResult<()> {
-        let mut model = self.load_model(model_id)?;
-        model.capture.backend = backend.to_string();
-        model.capture.device_id = device_id.to_string();
-        model.capture.send_gain_db = send_gain_db;
-        model.capture.calibrated_latency_samples = latency_samples;
-        model.capture.noise_floor_dbfs = noise_floor_dbfs;
-        model.capture.unity_ref_dbfs = unity_ref_dbfs;
-        model.capture.excitation_profile = Some(profile);
-        self.save_model(&model)
-    }
-
     /// Atomically persists `dnam.toml`.
     pub fn save(&self) -> StudioResult<()> {
+        ensure_no_symlink_components_under(&self.root_dir, Path::new("dnam.toml"))?;
         let encoded =
             toml::to_string_pretty(&self.manifest).map_err(|e| StudioError::Toml(e.to_string()))?;
         atomic_write_text(&self.root_dir.join("dnam.toml"), &encoded)
@@ -571,16 +809,23 @@ impl DnamProject {
         title: &str,
         tier: &str,
     ) -> StudioResult<ModelManifest> {
-        if model_id.trim().is_empty() || model_id.contains('/') || model_id.contains('\\') {
+        validate_model_id(model_id)?;
+        let rel_model_dir = Path::new("models").join(model_id);
+        ensure_no_symlink_components_under(&self.root_dir, &rel_model_dir.join("model.toml"))?;
+        if self.manifest.models.iter().any(|m| m == model_id)
+            || fs::symlink_metadata(self.root_dir.join(&rel_model_dir).join("model.toml")).is_ok()
+        {
             return Err(StudioError::Validation(format!(
-                "Invalid model_id '{model_id}'"
+                "Model '{model_id}' already exists in workspace"
             )));
         }
-        let model_dir = self.root_dir.join("models").join(model_id);
-        fs::create_dir_all(model_dir.join("stems"))?;
-        fs::create_dir_all(model_dir.join("dist"))?;
-        fs::create_dir_all(model_dir.join("reports"))?;
-        fs::create_dir_all(model_dir.join("renders"))?;
+        for sub in ["stems", "dist", "reports", "renders"] {
+            ensure_no_symlink_components_under(&self.root_dir, &rel_model_dir.join(sub))?;
+        }
+        let model_dir = self.root_dir.join(&rel_model_dir);
+        for sub in ["stems", "dist", "reports", "renders"] {
+            fs::create_dir_all(model_dir.join(sub))?;
+        }
 
         let model = ModelManifest {
             model_id: model_id.to_string(),
@@ -677,11 +922,21 @@ impl DnamProject {
 
     /// Removes `model_id` from `dnam.toml` and optionally deletes `models/<model_id>`.
     pub fn remove_model(&mut self, model_id: &str, delete_files: bool) -> StudioResult<()> {
+        validate_model_id(model_id)?;
+        if !self.manifest.models.iter().any(|m| m == model_id) {
+            return Err(StudioError::Validation(format!(
+                "Model '{model_id}' not found in workspace"
+            )));
+        }
+        let rel_dir = Path::new("models").join(model_id);
+        if delete_files {
+            ensure_no_symlink_components_under(&self.root_dir, &rel_dir)?;
+        }
         self.manifest.models.retain(|m| m != model_id);
         self.save()?;
         if delete_files {
-            let model_dir = self.root_dir.join("models").join(model_id);
-            if model_dir.exists() {
+            let model_dir = self.root_dir.join(&rel_dir);
+            if model_dir.is_dir() {
                 fs::remove_dir_all(model_dir)?;
             }
         }
@@ -690,28 +945,41 @@ impl DnamProject {
 
     /// Loads `models/<model_id>/model.toml`.
     pub fn load_model(&self, model_id: &str) -> StudioResult<ModelManifest> {
-        let path = self
-            .root_dir
-            .join("models")
-            .join(model_id)
-            .join("model.toml");
+        validate_model_id(model_id)?;
+        let rel = Path::new("models").join(model_id).join("model.toml");
+        ensure_no_symlink_components_under(&self.root_dir, &rel)?;
+        let path = self.root_dir.join(&rel);
         let content = fs::read_to_string(&path)?;
-        toml::from_str(&content).map_err(|e| StudioError::Toml(e.to_string()))
+        let parsed: ModelManifest =
+            toml::from_str(&content).map_err(|e| StudioError::Toml(e.to_string()))?;
+        if parsed.model_id != model_id {
+            return Err(StudioError::Validation(format!(
+                "Model manifest '{}' declares mismatched model_id '{}'",
+                rel.display(),
+                parsed.model_id
+            )));
+        }
+        Ok(parsed)
     }
 
     /// Atomically writes `models/<model_id>/model.toml`.
     pub fn save_model(&self, model: &ModelManifest) -> StudioResult<()> {
-        let model_dir = self.root_dir.join("models").join(&model.model_id);
+        validate_model_id(&model.model_id)?;
+        let rel_dir = Path::new("models").join(&model.model_id);
+        let rel_file = rel_dir.join("model.toml");
+        ensure_no_symlink_components_under(&self.root_dir, &rel_file)?;
+        let model_dir = self.root_dir.join(&rel_dir);
         fs::create_dir_all(&model_dir)?;
         let encoded =
             toml::to_string_pretty(model).map_err(|e| StudioError::Toml(e.to_string()))?;
-        atomic_write_text(&model_dir.join("model.toml"), &encoded)
+        atomic_write_text(&self.root_dir.join(&rel_file), &encoded)
     }
 
     /// Adds a continuous range control to `model_id`.
     pub fn add_range_control(&self, model_id: &str, spec: ControlRangeSpec) -> StudioResult<()> {
         let mut model = self.load_model(model_id)?;
         model.ranges.retain(|r| r.id != spec.id);
+        model.switches.retain(|s| s.id != spec.id);
         model.ranges.push(spec);
         self.save_model(&model)
     }
@@ -719,6 +987,7 @@ impl DnamProject {
     /// Adds a discrete switch control to `model_id`.
     pub fn add_switch_control(&self, model_id: &str, spec: ControlSwitchSpec) -> StudioResult<()> {
         let mut model = self.load_model(model_id)?;
+        model.ranges.retain(|r| r.id != spec.id);
         model.switches.retain(|s| s.id != spec.id);
         model.switches.push(spec);
         self.save_model(&model)
@@ -752,6 +1021,7 @@ impl DnamProject {
                     StudioError::Validation(format!("Invalid range default '{def_s}'"))
                 })?;
             }
+            validate_range_bounds(r.min, r.max, r.default_value, control_id)?;
             return self.save_model(&model);
         }
         if let Some(s) = model.switches.iter_mut().find(|s| s.id == control_id) {
@@ -791,6 +1061,13 @@ impl DnamProject {
                     )));
                 }
             }
+            if s.default_index >= s.options.len() {
+                return Err(StudioError::Validation(format!(
+                    "Switch default index {} is out of bounds for {} options on '{control_id}'",
+                    s.default_index,
+                    s.options.len()
+                )));
+            }
             return self.save_model(&model);
         }
         Err(StudioError::Validation(format!(
@@ -821,6 +1098,14 @@ impl DnamProject {
         ranges: BTreeMap<String, f32>,
         switches: BTreeMap<String, usize>,
     ) -> StudioResult<()> {
+        if preset_id.is_empty()
+            || preset_id != preset_id.trim()
+            || preset_id.chars().any(char::is_control)
+        {
+            return Err(StudioError::Validation(format!(
+                "Invalid preset_id '{preset_id}'"
+            )));
+        }
         let mut model = self.load_model(model_id)?;
         model.presets.retain(|p| p.id != preset_id);
         model.presets.push(PresetSpec {
@@ -878,83 +1163,24 @@ impl DnamProject {
 
     /// Registers a captured dry/wet stem in `model_id`.
     pub fn register_stem(&self, model_id: &str, stem: StemRecord) -> StudioResult<()> {
+        validate_workspace_relative_path(&stem.dry_wav_path)?;
+        if !Path::new(&stem.dry_wav_path)
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| e.eq_ignore_ascii_case("wav"))
+        {
+            return Err(StudioError::Validation(format!(
+                "Stem dry WAV path '{}' must end with '.wav'",
+                stem.dry_wav_path
+            )));
+        }
+        ensure_no_symlink_components_under(&self.root_dir, Path::new(&stem.dry_wav_path))?;
+        validate_model_stem_wav_path(model_id, &stem.wet_wav_path)?;
+        ensure_no_symlink_components_under(&self.root_dir, Path::new(&stem.wet_wav_path))?;
         let mut model = self.load_model(model_id)?;
         model.stems.retain(|s| s.stem_id != stem.stem_id);
         model.stems.push(stem);
         self.save_model(&model)
-    }
-
-    /// Registers an external wet WAV file as a stem on `model_id`, aligning it against the workspace dry excitation.
-    pub fn register_external_stem(
-        &self,
-        model_id: &str,
-        stem_id: &str,
-        wet_wav_path: &Path,
-        normalized_ranges: BTreeMap<String, f32>,
-        switches: BTreeMap<String, usize>,
-    ) -> StudioResult<StemRecord> {
-        let model = self.load_model(model_id)?;
-        let dry_rel = format!("models/{model_id}/stems/input.wav");
-        let dry_path = self.model_dry_input_wav_path(model_id);
-        let wet_wav = read_wav(wet_wav_path)?;
-        if !dry_path.is_file() {
-            let synth = generate_excitation_signal_with_profile(
-                self.manifest.project.sample_rate_hz,
-                wet_wav.samples.len().max(2_048),
-                model.capture.excitation_profile.as_ref(),
-            );
-            write_wav_24bit(&dry_path, &synth, self.manifest.project.sample_rate_hz, 1)?;
-        }
-        let dry_wav = read_wav(&dry_path)?;
-        let min_len = dry_wav.samples.len().min(wet_wav.samples.len());
-        if min_len == 0 {
-            return Err(StudioError::Audio(
-                "External wet WAV contains 0 samples".to_string(),
-            ));
-        }
-        let locked_lag = if model.capture.calibrated_latency_samples != 0 {
-            Some(model.capture.calibrated_latency_samples)
-        } else {
-            None
-        };
-        let align = align_hardware_latency(
-            &dry_wav.samples[..min_len],
-            &wet_wav.samples[..min_len],
-            64,
-            locked_lag,
-            self.manifest.project.sample_rate_hz,
-            Some(model.capture.noise_floor_dbfs),
-        )?;
-        let aligned_wet =
-            apply_subsample_shift_fft(&wet_wav.samples[..min_len], align.subsample_lag_samples);
-        let wet_rel = format!("models/{model_id}/stems/{stem_id}.wav");
-        let wet_dest = self.root_dir.join(&wet_rel);
-        write_wav_32bit_float(
-            &wet_dest,
-            &aligned_wet,
-            wet_wav.sample_rate_hz,
-            wet_wav.channels,
-        )?;
-        let peak_lin = aligned_wet
-            .iter()
-            .fold(1e-9_f32, |acc, &x| acc.max(x.abs()));
-        let peak_dbfs = 20.0 * peak_lin.log10();
-        let rec = StemRecord {
-            stem_id: stem_id.to_string(),
-            dry_wav_path: dry_rel,
-            wet_wav_path: wet_rel,
-            normalized_ranges,
-            switches,
-            pcm_sha256: compute_pcm_sha256(&aligned_wet),
-            dry_pcm_sha256: compute_pcm_sha256(&dry_wav.samples[..min_len]),
-            aligned_lag_samples: align.subsample_lag_samples,
-            snr_db: align.snr_db,
-            noise_floor_dbfs: align.noise_floor_dbfs,
-            clean_pad_db: 0.0,
-            peak_dbfs,
-        };
-        self.register_stem(model_id, rec.clone())?;
-        Ok(rec)
     }
 
     /// Updates control coordinates on an existing stem.
@@ -998,20 +1224,224 @@ impl DnamProject {
         let removed = model.stems.remove(pos);
         self.save_model(&model)?;
         if delete_files {
-            let p = self.root_dir.join(&removed.wet_wav_path);
-            if p.is_file() {
-                let _ = fs::remove_file(p);
+            let rel_wet = Path::new(&removed.wet_wav_path);
+            if validate_model_stem_wav_path(model_id, &removed.wet_wav_path).is_ok()
+                && ensure_no_symlink_components_under(&self.root_dir, rel_wet).is_ok()
+            {
+                let p = self.root_dir.join(rel_wet);
+                if p.is_file() {
+                    let _ = fs::remove_file(p);
+                }
             }
         }
         Ok(())
     }
 }
 
-fn atomic_write_text(path: &Path, content: &str) -> StudioResult<()> {
-    let tmp_path = path.with_extension("tmp");
-    fs::write(&tmp_path, content)?;
-    fs::rename(&tmp_path, path)?;
+fn ensure_no_symlink_components_under(root: &Path, rel: &Path) -> StudioResult<()> {
+    use std::path::Component;
+    verify_dir_ancestors_no_symlinks(root, false)?;
+    let mut cur = resolve_dir_against_cwd(root)?;
+    for comp in rel.components() {
+        if matches!(comp, Component::ParentDir) {
+            return Err(StudioError::Validation(format!(
+                "Refusing parent-directory traversal in workspace path '{}'",
+                rel.display()
+            )));
+        }
+        cur.push(comp);
+        match fs::symlink_metadata(&cur) {
+            Ok(meta) if meta.file_type().is_symlink() => {
+                return Err(StudioError::Validation(format!(
+                    "Refusing symlink path component '{}'",
+                    cur.display()
+                )));
+            }
+            Ok(_) => {}
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => break,
+            Err(err) => return Err(err.into()),
+        }
+    }
     Ok(())
+}
+
+fn validate_model_stem_wav_path(model_id: &str, rel_path: &str) -> StudioResult<()> {
+    validate_model_id(model_id)?;
+    validate_workspace_relative_path(rel_path)?;
+    let p = Path::new(rel_path);
+    let prefix = Path::new("models").join(model_id).join("stems");
+    let rest = p.strip_prefix(&prefix).map_err(|_| {
+        StudioError::Validation(format!(
+            "Wet stem WAV '{rel_path}' must reside under '{}'",
+            prefix.display()
+        ))
+    })?;
+    let has_wav_ext = p
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case("wav"));
+    if rest.as_os_str().is_empty() || !has_wav_ext {
+        return Err(StudioError::Validation(format!(
+            "Wet stem WAV '{rel_path}' must be a '.wav' file under '{}'",
+            prefix.display()
+        )));
+    }
+    Ok(())
+}
+
+fn validate_range_bounds(
+    min: f32,
+    max: f32,
+    default_value: f32,
+    context: &str,
+) -> StudioResult<()> {
+    if !min.is_finite()
+        || !max.is_finite()
+        || !default_value.is_finite()
+        || min >= max
+        || default_value < min
+        || default_value > max
+    {
+        return Err(StudioError::Validation(format!(
+            "Finite range bounds min <= default <= max with min < max required in '{context}'"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_model_id(model_id: &str) -> StudioResult<()> {
+    use std::path::Component;
+    if model_id.is_empty()
+        || model_id != model_id.trim()
+        || model_id == "."
+        || model_id == ".."
+        || model_id.contains(['/', '\\', '\0', ':'])
+        || !matches!(
+            Path::new(model_id)
+                .components()
+                .collect::<Vec<_>>()
+                .as_slice(),
+            [Component::Normal(_)]
+        )
+    {
+        return Err(StudioError::Validation(format!(
+            "Invalid model_id '{model_id}'"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_workspace_relative_path(rel_path: &str) -> StudioResult<()> {
+    use std::path::Component;
+    if rel_path.is_empty() || rel_path != rel_path.trim() || rel_path.contains(['\\', '\0', ':']) {
+        return Err(StudioError::Validation(format!(
+            "Invalid workspace-relative path '{rel_path}'"
+        )));
+    }
+    let components: Vec<Component<'_>> = Path::new(rel_path).components().collect();
+    if components.is_empty() || !components.iter().all(|c| matches!(c, Component::Normal(_))) {
+        return Err(StudioError::Validation(format!(
+            "Invalid workspace-relative path '{rel_path}'"
+        )));
+    }
+    Ok(())
+}
+
+fn atomic_write_text(path: &Path, content: &str) -> StudioResult<()> {
+    use std::io::Write as _;
+    let seq = ATOMIC_TMP_SEQ.fetch_add(1, Ordering::Relaxed);
+    let tmp_path = path.with_extension(format!("tmp.{}_{}", std::process::id(), seq));
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&tmp_path)?;
+    if let Err(err) = file.write_all(content.as_bytes()) {
+        let _ = fs::remove_file(&tmp_path);
+        return Err(err.into());
+    }
+    drop(file);
+    if let Err(err) = fs::rename(&tmp_path, path) {
+        let _ = fs::remove_file(&tmp_path);
+        return Err(err.into());
+    }
+    Ok(())
+}
+
+/// Atomically writes an export or report file into a per-user private directory (`0o700`),
+/// rejecting symlinks on both the directory and target file (`O_CREAT | O_EXCL`).
+pub fn write_private_studio_export_file(
+    export_dir: &Path,
+    filename: &str,
+    content: &[u8],
+    overwrite: bool,
+) -> StudioResult<PathBuf> {
+    use std::io::Write as _;
+    use std::path::Component;
+
+    if filename.is_empty()
+        || filename != filename.trim()
+        || filename.contains(['/', '\\', '\0', ':'])
+    {
+        return Err(StudioError::Validation(format!(
+            "Invalid export filename '{filename}'"
+        )));
+    }
+    let comps: Vec<Component<'_>> = Path::new(filename).components().collect();
+    if comps.len() != 1 || !matches!(comps[0], Component::Normal(_)) {
+        return Err(StudioError::Validation(format!(
+            "Invalid export filename '{filename}'"
+        )));
+    }
+
+    ensure_private_dir_no_symlink_ancestors(export_dir)?;
+
+    let target = export_dir.join(filename);
+    match fs::symlink_metadata(&target) {
+        Ok(meta) if meta.file_type().is_symlink() => {
+            return Err(StudioError::Validation(format!(
+                "Refusing to follow symlink at export path: {}",
+                target.display()
+            )));
+        }
+        Ok(meta) if !meta.is_file() => {
+            return Err(StudioError::Validation(format!(
+                "Export target is not a regular file: {}",
+                target.display()
+            )));
+        }
+        Ok(_) if !overwrite => return Ok(target),
+        Ok(_) => {}
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => return Err(err.into()),
+    }
+
+    let seq = ATOMIC_TMP_SEQ.fetch_add(1, Ordering::Relaxed);
+    let tmp_path = target.with_extension(format!("tmp.{}_{}", std::process::id(), seq));
+    let mut opts = fs::OpenOptions::new();
+    opts.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        opts.mode(0o600);
+    }
+    let mut file = opts.open(&tmp_path)?;
+    if let Err(err) = file.write_all(content) {
+        let _ = fs::remove_file(&tmp_path);
+        return Err(err.into());
+    }
+    drop(file);
+    if let Err(err) = fs::rename(&tmp_path, &target) {
+        let _ = fs::remove_file(&tmp_path);
+        return Err(err.into());
+    }
+    let final_meta = fs::symlink_metadata(&target)?;
+    if final_meta.file_type().is_symlink() || !final_meta.is_file() {
+        return Err(StudioError::Validation(format!(
+            "Export target violated regular-file invariant: {}",
+            target.display()
+        )));
+    }
+    Ok(target)
 }
 
 fn encode_hex(bytes: &[u8]) -> String {
@@ -1092,6 +1522,26 @@ mod tests {
     fn test_ed25519_keypair_and_compact_parsers() {
         let dir = temp_dir("keys_parsers");
         assert!(default_user_config_dir().ends_with("dnam"));
+        assert_eq!(
+            resolve_os_config_dir_from_vars(PathBuf::from("/u"), None, None, "macos"),
+            PathBuf::from("/u/Library/Application Support/dnam")
+        );
+        assert_eq!(
+            resolve_os_config_dir_from_vars(PathBuf::from("/u"), Some("/ad"), None, "windows"),
+            PathBuf::from("/ad/dnam")
+        );
+        assert_eq!(
+            resolve_os_config_dir_from_vars(PathBuf::from("/u"), None, None, "windows"),
+            PathBuf::from("/u/AppData/Roaming/dnam")
+        );
+        assert_eq!(
+            resolve_os_config_dir_from_vars(PathBuf::from("/u"), None, Some("/xdg"), "linux"),
+            PathBuf::from("/xdg/dnam")
+        );
+        assert_eq!(
+            resolve_os_config_dir_from_vars(PathBuf::from("/u"), None, None, "linux"),
+            PathBuf::from("/u/.config/dnam")
+        );
 
         let key_path = dir.join("nested_keys").join("creator.key");
         let (p1, seed1, pub1) =
@@ -1104,9 +1554,20 @@ mod tests {
         assert_eq!(seed1, seed2);
         assert_eq!(pub1, pub2);
 
-        // Raw 32-byte binary key file is also supported
+        // Raw 32-byte binary key file is also supported (when mode is 0600 on Unix)
         let raw_key_path = dir.join("raw32.key");
         fs::write(&raw_key_path, seed1).expect("write raw 32B key");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let world_readable_key = dir.join("world_readable.key");
+            fs::write(&world_readable_key, seed1).expect("write 0644 key");
+            fs::set_permissions(&world_readable_key, fs::Permissions::from_mode(0o644))
+                .expect("chmod 0644");
+            assert!(ensure_creator_ed25519_keypair(Some(&world_readable_key)).is_err());
+            fs::set_permissions(&raw_key_path, fs::Permissions::from_mode(0o600))
+                .expect("chmod 0600 raw32");
+        }
         let (_, seed3, pub3) =
             ensure_creator_ed25519_keypair(Some(&raw_key_path)).expect("load raw 32B key");
         assert_eq!(seed3, seed1);
@@ -1115,9 +1576,15 @@ mod tests {
         // Invalid key length raises Validation error (both UTF-8 hex and non-UTF-8 binary)
         let bad_key = dir.join("bad.key");
         fs::write(&bad_key, "001122\n").expect("write bad key");
-        assert!(ensure_creator_ed25519_keypair(Some(&bad_key)).is_err());
         let bad_bin_key = dir.join("bad_bin.key");
         fs::write(&bad_bin_key, [0xff_u8, 0xfe, 0xfd]).expect("write bad bin key");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            fs::set_permissions(&bad_key, fs::Permissions::from_mode(0o600)).unwrap();
+            fs::set_permissions(&bad_bin_key, fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        assert!(ensure_creator_ed25519_keypair(Some(&bad_key)).is_err());
         assert!(ensure_creator_ed25519_keypair(Some(&bad_bin_key)).is_err());
 
         // Compact range parser (=/: and :/@ formats + error branches)
@@ -1133,6 +1600,9 @@ mod tests {
         assert!(parse_compact_range_spec("drive=10").is_err());
         assert!(parse_compact_range_spec("drive=10..0").is_err());
         assert!(parse_compact_range_spec("drive=0..10:15").is_err());
+        assert!(parse_compact_range_spec("drive=NaN..10").is_err());
+        assert!(parse_compact_range_spec("drive=-inf..inf").is_err());
+        assert!(parse_compact_range_spec("drive:Drive:0..10@NaN").is_err());
         assert!(parse_compact_range_spec("drive=0..10:not_a_num").is_err());
         assert!(parse_compact_range_spec("drive").is_err());
         assert!(parse_compact_range_spec(":Label:0..10@5").is_err());
@@ -1169,11 +1639,51 @@ mod tests {
         let dir = temp_dir("crud");
         let mut proj = DnamProject::init(&dir, "Test Pedal Pack", "peter").expect("init");
         assert_eq!(proj.root_dir(), dir.as_path());
+        assert!(DnamProject::init(&dir, "Dup", "Author").is_err());
 
+        // Legacy .gitignore without trailing newline gets .dnam-cache/ rules appended on open()
+        fs::write(dir.join(".gitignore"), "# minimal").unwrap();
         let reloaded = DnamProject::open(&dir).expect("open");
         assert_eq!(reloaded.manifest().project.name, "Test Pedal Pack");
+        let gi = fs::read_to_string(dir.join(".gitignore")).unwrap();
+        assert!(gi.contains("models/*/.dnam-cache/") && gi.contains("\n.dnam-cache/\n"));
+
+        // Default user config keypair & relative/implicit-cwd path helpers
+        let (_, def_seed, def_pub) = ensure_creator_ed25519_keypair(None).expect("default key");
+        assert_eq!(def_seed.len(), 32);
+        assert_eq!(def_pub.len(), 64);
+        assert!(
+            resolve_dir_against_cwd(Path::new(""))
+                .unwrap()
+                .is_absolute()
+        );
+        assert!(
+            resolve_dir_against_cwd(Path::new("."))
+                .unwrap()
+                .is_absolute()
+        );
+        assert!(
+            resolve_dir_against_cwd(Path::new("rel_child"))
+                .unwrap()
+                .ends_with("rel_child")
+        );
+        assert!(resolve_dir_against_cwd(Path::new("../escape")).is_err());
+        ensure_private_dir_no_symlink_ancestors(Path::new("")).unwrap();
+        ensure_private_dir_no_symlink_ancestors(Path::new(".")).unwrap();
+
+        let cfg_ws = dir.join("sub_ws_cfg");
+        let cfg_dir = dir.join("custom_cfg");
+        let _ = DnamProject::init_with_config_dir(&cfg_ws, "Cfg WS", "Auth", &cfg_dir)
+            .expect("init_with_config_dir");
+        let _ = fs::remove_dir_all(&cfg_ws);
 
         assert!(proj.add_model("", "Bad", "Full").is_err());
+        for bad_id in [".", "..", "/abs", "a/b", "a\\b", "bad:id", " lead", "a\0b"] {
+            assert!(proj.add_model(bad_id, "Bad", "Full").is_err());
+            assert!(proj.remove_model(bad_id, true).is_err());
+            assert!(proj.load_model(bad_id).is_err());
+        }
+        assert!(dir.join("dnam.toml").is_file() && dir.join("models").is_dir());
         let _ = proj
             .add_model("b7k_drive", "B7K Drive", "Full")
             .expect("add model");
@@ -1202,6 +1712,29 @@ mod tests {
 
         proj.update_calibration("b7k_drive", "usb", "cpal_0", 32, -92.0)
             .expect("update cal");
+        let pol_m = proj
+            .update_model_distribution_policy(
+                "b7k_drive",
+                &[
+                    "open".to_string(),
+                    "device_allowlisted".to_string(),
+                    "enclave_sealed".to_string(),
+                ],
+                &["darkglass".to_string()],
+            )
+            .expect("update distribution policy");
+        assert_eq!(
+            pol_m
+                .distribution_policy
+                .as_ref()
+                .unwrap()
+                .allowed_oem_vendors,
+            vec!["darkglass".to_string()]
+        );
+        assert!(
+            proj.update_model_distribution_policy("b7k_drive", &["bogus".to_string()], &[])
+                .is_err()
+        );
         assert_eq!(
             proj.load_model("b7k_drive")
                 .expect("load")
@@ -1243,6 +1776,36 @@ mod tests {
         .expect("update switch by label");
         proj.update_control("b7k_drive", "attack", None, None, None, Some("0"), None)
             .expect("update switch by index");
+        proj.update_control("b7k_drive", "attack", None, None, None, Some("2"), None)
+            .expect("set switch default index 2");
+        assert!(
+            proj.update_control(
+                "b7k_drive",
+                "attack",
+                None,
+                None,
+                None,
+                None,
+                Some("clean,lead")
+            )
+            .is_err()
+        );
+        assert!(
+            proj.update_control(
+                "b7k_drive",
+                "drive",
+                None,
+                Some(10.0),
+                Some(0.0),
+                None,
+                None
+            )
+            .is_err()
+        );
+        assert!(
+            proj.update_control("b7k_drive", "drive", None, None, None, Some("NaN"), None)
+                .is_err()
+        );
         assert!(
             proj.update_control(
                 "b7k_drive",
@@ -1272,30 +1835,37 @@ mod tests {
                 .is_err()
         );
         assert!(proj.remove_control("b7k_drive", "missing").is_err());
+        assert!(
+            proj.add_preset("b7k_drive", "", "Bad", BTreeMap::new(), BTreeMap::new())
+                .is_err()
+        );
         assert!(proj.remove_preset("b7k_drive", "missing").is_err());
         assert!(
             proj.update_preset("b7k_drive", "missing", Some("X"), None, None)
                 .is_err()
         );
 
-        // External stem registration, update, and removal
-        let ext_wet = dir.join("ext_wet.wav");
-        let sig: Vec<f32> = (0..2048).map(|i| ((i as f32) * 0.05).sin() * 0.3).collect();
-        write_wav_24bit(&ext_wet, &sig, 48_000, 1).expect("write ext wet");
-
+        // Stem registration, update, and removal
         let mut stem_ranges = BTreeMap::new();
         stem_ranges.insert("drive".to_string(), 0.5);
-        let rec = proj
-            .register_external_stem(
-                "b7k_drive",
-                "s_00",
-                &ext_wet,
-                stem_ranges.clone(),
-                BTreeMap::new(),
-            )
-            .expect("register external stem");
-        assert_eq!(rec.stem_id, "s_00");
-        assert!(proj.model_dry_input_wav_path("b7k_drive").is_file());
+        proj.register_stem(
+            "b7k_drive",
+            StemRecord {
+                stem_id: "s_00".to_string(),
+                dry_wav_path: "models/b7k_drive/stems/input.wav".to_string(),
+                wet_wav_path: "models/b7k_drive/stems/s_00.wav".to_string(),
+                normalized_ranges: stem_ranges.clone(),
+                switches: BTreeMap::new(),
+                pcm_sha256: "0".repeat(64),
+                dry_pcm_sha256: "0".repeat(64),
+                aligned_lag_samples: 0.0,
+                snr_db: 80.0,
+                noise_floor_dbfs: -96.0,
+                clean_pad_db: 0.0,
+                peak_dbfs: -3.0,
+            },
+        )
+        .expect("register stem");
 
         stem_ranges.insert("drive".to_string(), 0.8);
         let up_s = proj
@@ -1310,6 +1880,286 @@ mod tests {
         proj.remove_stem("b7k_drive", "s_00", true)
             .expect("remove stem");
         assert!(proj.remove_stem("b7k_drive", "s_00", false).is_err());
+        for (bad_dry, bad_wet) in [
+            (
+                "models/b7k_drive/stems/input.txt",
+                "models/b7k_drive/stems/s.wav",
+            ),
+            ("models/b7k_drive/stems/input.wav", "other/s.wav"),
+            (
+                "models/b7k_drive/stems/input.wav",
+                "models/b7k_drive/stems/s.txt",
+            ),
+        ] {
+            assert!(
+                proj.register_stem(
+                    "b7k_drive",
+                    StemRecord {
+                        stem_id: "bad_ext".to_string(),
+                        dry_wav_path: bad_dry.to_string(),
+                        wet_wav_path: bad_wet.to_string(),
+                        normalized_ranges: BTreeMap::new(),
+                        switches: BTreeMap::new(),
+                        pcm_sha256: "0".repeat(64),
+                        dry_pcm_sha256: "0".repeat(64),
+                        aligned_lag_samples: 0.0,
+                        snr_db: 80.0,
+                        noise_floor_dbfs: -96.0,
+                        clean_pad_db: 0.0,
+                        peak_dbfs: -3.0,
+                    },
+                )
+                .is_err()
+            );
+        }
+        assert!(
+            proj.register_stem(
+                "b7k_drive",
+                StemRecord {
+                    stem_id: "bad_stem".to_string(),
+                    dry_wav_path: "../escape.wav".to_string(),
+                    wet_wav_path: "/abs/escape.wav".to_string(),
+                    normalized_ranges: BTreeMap::new(),
+                    switches: BTreeMap::new(),
+                    pcm_sha256: "0".repeat(64),
+                    dry_pcm_sha256: "0".repeat(64),
+                    aligned_lag_samples: 0.0,
+                    snr_db: 80.0,
+                    noise_floor_dbfs: -96.0,
+                    clean_pad_db: 0.0,
+                    peak_dbfs: -3.0,
+                }
+            )
+            .is_err()
+        );
+
+        for bad_wet in ["dnam.toml", "models/b7k_drive/stems/not_wav.toml"] {
+            assert!(
+                proj.register_stem(
+                    "b7k_drive",
+                    StemRecord {
+                        stem_id: "bad_wet".to_string(),
+                        dry_wav_path: "models/b7k_drive/stems/input.wav".to_string(),
+                        wet_wav_path: bad_wet.to_string(),
+                        normalized_ranges: BTreeMap::new(),
+                        switches: BTreeMap::new(),
+                        pcm_sha256: "0".repeat(64),
+                        dry_pcm_sha256: "0".repeat(64),
+                        aligned_lag_samples: 0.0,
+                        snr_db: 80.0,
+                        noise_floor_dbfs: -96.0,
+                        clean_pad_db: 0.0,
+                        peak_dbfs: -3.0,
+                    }
+                )
+                .is_err()
+            );
+        }
+
+        // Tampered model.toml pointing wet_wav_path at dnam.toml must NOT unlink dnam.toml
+        let mut tampered = proj.load_model("b7k_drive").expect("load tampered");
+        tampered.stems.push(StemRecord {
+            stem_id: "tampered_manifest".to_string(),
+            dry_wav_path: "models/b7k_drive/stems/input.wav".to_string(),
+            wet_wav_path: "dnam.toml".to_string(),
+            normalized_ranges: BTreeMap::new(),
+            switches: BTreeMap::new(),
+            pcm_sha256: "0".repeat(64),
+            dry_pcm_sha256: "0".repeat(64),
+            aligned_lag_samples: 0.0,
+            snr_db: 80.0,
+            noise_floor_dbfs: -96.0,
+            clean_pad_db: 0.0,
+            peak_dbfs: -3.0,
+        });
+        proj.save_model(&tampered).expect("save tampered");
+        proj.remove_stem("b7k_drive", "tampered_manifest", true)
+            .expect("remove tampered stem safely");
+        assert!(dir.join("dnam.toml").is_file());
+
+        // Intermediate directory symlink under models/<id>/stems must be rejected & never delete external files
+        #[cfg(unix)]
+        {
+            let ext_dir = temp_dir("ext_symlink_target");
+            let ext_wav = ext_dir.join("victim.wav");
+            fs::write(&ext_wav, b"keep").expect("write victim");
+            let stems_dir = dir.join("models").join("b7k_drive").join("stems");
+            let _ = fs::remove_dir_all(&stems_dir);
+            std::os::unix::fs::symlink(&ext_dir, &stems_dir).expect("symlink stems");
+            assert!(
+                proj.register_stem(
+                    "b7k_drive",
+                    StemRecord {
+                        stem_id: "sym_stem".to_string(),
+                        dry_wav_path: "models/b7k_drive/input.wav".to_string(),
+                        wet_wav_path: "models/b7k_drive/stems/victim.wav".to_string(),
+                        normalized_ranges: BTreeMap::new(),
+                        switches: BTreeMap::new(),
+                        pcm_sha256: "0".repeat(64),
+                        dry_pcm_sha256: "0".repeat(64),
+                        aligned_lag_samples: 0.0,
+                        snr_db: 80.0,
+                        noise_floor_dbfs: -96.0,
+                        clean_pad_db: 0.0,
+                        peak_dbfs: -3.0,
+                    }
+                )
+                .is_err()
+            );
+            let mut m2 = proj.load_model("b7k_drive").expect("load m2");
+            m2.stems.push(StemRecord {
+                stem_id: "sym_stem".to_string(),
+                dry_wav_path: "models/b7k_drive/input.wav".to_string(),
+                wet_wav_path: "models/b7k_drive/stems/victim.wav".to_string(),
+                normalized_ranges: BTreeMap::new(),
+                switches: BTreeMap::new(),
+                pcm_sha256: "0".repeat(64),
+                dry_pcm_sha256: "0".repeat(64),
+                aligned_lag_samples: 0.0,
+                snr_db: 80.0,
+                noise_floor_dbfs: -96.0,
+                clean_pad_db: 0.0,
+                peak_dbfs: -3.0,
+            });
+            proj.save_model(&m2).expect("save m2");
+            proj.remove_stem("b7k_drive", "sym_stem", true)
+                .expect("remove sym_stem without deleting external target");
+            assert!(ext_wav.is_file());
+            let _ = fs::remove_file(&stems_dir);
+            let _ = fs::remove_dir_all(&ext_dir);
+        }
+
+        // Reject tampered model.toml declaring mismatched model_id & non-.wav dry_wav_path
+        proj.add_model("victim_m", "Victim", "Lite")
+            .expect("add victim_m");
+        assert!(
+            proj.register_stem(
+                "victim_m",
+                StemRecord {
+                    stem_id: "bad_dry".to_string(),
+                    dry_wav_path: "dnam.toml".to_string(),
+                    wet_wav_path: "models/victim_m/stems/s0.wav".to_string(),
+                    normalized_ranges: BTreeMap::new(),
+                    switches: BTreeMap::new(),
+                    pcm_sha256: "0".repeat(64),
+                    dry_pcm_sha256: "0".repeat(64),
+                    aligned_lag_samples: 0.0,
+                    snr_db: 80.0,
+                    noise_floor_dbfs: -96.0,
+                    clean_pad_db: 0.0,
+                    peak_dbfs: -3.0,
+                }
+            )
+            .is_err()
+        );
+        let victim_toml = fs::read_to_string(dir.join("models/victim_m/model.toml")).unwrap();
+        fs::write(dir.join("models/b7k_drive/model.toml"), &victim_toml).unwrap();
+        assert!(proj.load_model("b7k_drive").is_err());
+
+        // Reject re-initializing existing workspace, duplicate add_model, unregistered remove_model, and empty preset_id
+        assert!(DnamProject::init(&dir, "Clobber", "attacker").is_err());
+        assert!(proj.add_model("victim_m", "Duplicate", "Lite").is_err());
+        assert!(proj.remove_model("unregistered_model", true).is_err());
+        assert!(
+            proj.add_preset("victim_m", "", "Empty", BTreeMap::new(), BTreeMap::new())
+                .is_err()
+        );
+        assert!(
+            proj.add_preset("victim_m", " pad ", "Pad", BTreeMap::new(), BTreeMap::new())
+                .is_err()
+        );
+
+        // Private export writer + symlinked/non-regular key & export rejection
+        let exp_dir = dir.join("private_exports");
+        let exp_p1 = write_private_studio_export_file(&exp_dir, "ref.dnam", b"v1", false).unwrap();
+        assert_eq!(fs::read(&exp_p1).unwrap(), b"v1");
+        let exp_p2 = write_private_studio_export_file(&exp_dir, "ref.dnam", b"v2", false).unwrap();
+        assert_eq!(fs::read(&exp_p2).unwrap(), b"v1");
+        let exp_p3 = write_private_studio_export_file(&exp_dir, "ref.dnam", b"v2", true).unwrap();
+        assert_eq!(fs::read(&exp_p3).unwrap(), b"v2");
+        assert!(write_private_studio_export_file(&exp_dir, "../bad.dnam", b"x", true).is_err());
+        assert!(write_private_studio_export_file(&exp_dir, "  ", b"x", true).is_err());
+        assert!(write_private_studio_export_file(&exp_dir, ".", b"x", true).is_err());
+        assert!(write_private_studio_export_file(&exp_p3, "nested.dnam", b"x", true).is_err());
+        let sub_target = exp_dir.join("dir_target.dnam");
+        fs::create_dir_all(&sub_target).unwrap();
+        assert!(write_private_studio_export_file(&exp_dir, "dir_target.dnam", b"x", true).is_err());
+        assert!(ensure_creator_ed25519_keypair(Some(&sub_target)).is_err());
+        #[cfg(unix)]
+        {
+            let sym_key = dir.join("sym.key");
+            std::os::unix::fs::symlink(dir.join("dnam.toml"), &sym_key).unwrap();
+            assert!(ensure_creator_ed25519_keypair(Some(&sym_key)).is_err());
+
+            let sym_key_dir = dir.join("sym_key_dir");
+            std::os::unix::fs::symlink(&exp_dir, &sym_key_dir).unwrap();
+            assert!(ensure_creator_ed25519_keypair(Some(&sym_key_dir.join("new.key"))).is_err());
+            assert!(
+                ensure_creator_ed25519_keypair(Some(
+                    &sym_key_dir.join("sub_keys").join("nested.key")
+                ))
+                .is_err()
+            );
+            let existing_key_in_exp = exp_dir.join("existing.key");
+            fs::write(&existing_key_in_exp, format!("{}\n", "42".repeat(32))).unwrap();
+            {
+                use std::os::unix::fs::PermissionsExt as _;
+                fs::set_permissions(&existing_key_in_exp, fs::Permissions::from_mode(0o600))
+                    .unwrap();
+            }
+            assert!(
+                ensure_creator_ed25519_keypair(Some(&sym_key_dir.join("existing.key"))).is_err()
+            );
+            assert!(
+                write_private_studio_export_file(
+                    &sym_key_dir.join("sub_exports"),
+                    "out.dnam",
+                    b"x",
+                    true
+                )
+                .is_err()
+            );
+            assert!(
+                write_private_studio_export_file(
+                    &exp_dir.join("..").join("private_exports"),
+                    "out.dnam",
+                    b"x",
+                    true
+                )
+                .is_err()
+            );
+
+            let sym_exp_target = exp_dir.join("sym_report.html");
+            std::os::unix::fs::symlink(dir.join("dnam.toml"), &sym_exp_target).unwrap();
+            assert!(
+                write_private_studio_export_file(&exp_dir, "sym_report.html", b"html", true)
+                    .is_err()
+            );
+
+            // Symlinked workspace root & un-sticky world-writable ancestor directory are rejected
+            let sym_ws = dir.join("sym_ws");
+            std::os::unix::fs::symlink(&exp_dir, &sym_ws).unwrap();
+            assert!(DnamProject::init(&sym_ws, "Sym", "Auth").is_err());
+            assert!(DnamProject::open(&sym_ws).is_err());
+
+            let ww_dir = dir.join("world_writable_ancestor");
+            fs::create_dir_all(&ww_dir).unwrap();
+            {
+                use std::os::unix::fs::PermissionsExt as _;
+                fs::set_permissions(&ww_dir, fs::Permissions::from_mode(0o777)).unwrap();
+            }
+            assert!(
+                ensure_creator_ed25519_keypair(Some(&ww_dir.join("sub").join("k.key"))).is_err()
+            );
+            assert!(
+                write_private_studio_export_file(&ww_dir.join("sub"), "out.dnam", b"x", true)
+                    .is_err()
+            );
+            {
+                use std::os::unix::fs::PermissionsExt as _;
+                fs::set_permissions(&ww_dir, fs::Permissions::from_mode(0o700)).unwrap();
+            }
+        }
 
         let _ = fs::remove_dir_all(&dir);
     }

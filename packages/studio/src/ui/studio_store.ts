@@ -90,15 +90,15 @@ export const DEFAULT_STUDIO_VIEW_MODEL: StudioWorkspaceViewModel = {
   trainingTimeline: {
     modelId: "TriPhysics_Master_MK1",
     status: "completed",
-    backendDevice: "Apple MPS (bf16 + fp64 Kronecker .dnam-ckpt)",
+    backendDevice: "Rust Host SIMD (f64 Kronecker .dnam-ckpt)",
     clampedParameterCount: 2,
     history: [
       {
         epoch: 40,
         totalEpochs: 40,
-        stage: "Stage 4: Kronecker .dnam-ckpt Export & CL-01..CL-20 Audit",
+        stage: "Sweep 2: Kronecker .dnam-ckpt Export & 3-Phase Audit",
         esrLoss: 0.00294,
-        stftLoss: 0.0142,
+        mrIirLoss: 0.0142,
         maxRgLruRadius: 0.9912,
         ufdnSpectralNorm: 0.9999,
       },

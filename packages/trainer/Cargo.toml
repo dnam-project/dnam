@@ -13,20 +13,19 @@ workspace = true
 [features]
 default = ["cli", "solver"]
 cli = ["dep:clap", "solver"]
-solver = ["dep:ndarray", "dep:realfft"]
-wasm-solver = ["dep:ndarray", "dep:realfft"]
+solver = []
+wasm-solver = []
 
 [dependencies]
 clap = { workspace = true, optional = true }
 dnam-engine = { workspace = true, features = ["std"] }
-ndarray = { workspace = true, optional = true }
-realfft = { workspace = true, optional = true }
 serde = { workspace = true, features = ["std", "derive"] }
 serde_json = { workspace = true, features = ["std"] }
 sha2.workspace = true
 
 [dev-dependencies]
 criterion.workspace = true
+dnam-fixtures.workspace = true
 proptest.workspace = true
 
 [[bin]]

@@ -3,6 +3,8 @@ import { spawnSync } from "node:child_process";
 import { existsSync, statSync } from "node:fs";
 import { resolve } from "node:path";
 
+const ALLOWED_PROFILES = new Set(["release", "profiling", "debug"]);
+
 function resolveBinaryPath() {
   const envPath = process.env.DNAM_BINARY_PATH?.trim();
   if (envPath) {
@@ -10,6 +12,10 @@ function resolveBinaryPath() {
   }
   const exe = process.platform === "win32" ? "dnam.exe" : "dnam";
   const root = resolve(import.meta.dirname, "../../..");
+  const pinnedProfile = process.env.DNAM_CARGO_PROFILE?.trim();
+  if (pinnedProfile && ALLOWED_PROFILES.has(pinnedProfile)) {
+    return resolve(root, "target", pinnedProfile, exe);
+  }
   let bestCandidate = null;
   let bestMtime = -1;
   for (const profile of ["release", "profiling", "debug"]) {
@@ -25,8 +31,13 @@ function resolveBinaryPath() {
   return bestCandidate ?? exe;
 }
 
-const result = spawnSync(resolveBinaryPath(), process.argv.slice(2), {
+const binPath = resolveBinaryPath();
+const result = spawnSync(binPath, process.argv.slice(2), {
   cwd: process.env.MOON_WORKING_DIR ?? process.env.INIT_CWD ?? process.cwd(),
   stdio: "inherit",
 });
+if (result.error) {
+  process.stderr.write(`Failed to execute dnam binary (${binPath}): ${result.error.message}\n`);
+  process.exit(1);
+}
 process.exit(result.status ?? 1);

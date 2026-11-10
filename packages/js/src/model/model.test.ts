@@ -142,9 +142,10 @@ describe("Model, Checkpoint & GramMatrix", () => {
         expect(() => GramMatrix.fromDense(dense4x4, 0)).toThrow(DnamError);
         expect(() => gram.toDense({ tierDimension: 99 })).toThrow(DnamError);
 
-        // V2 layout / bundle error handling on v1 container
-        expect(() => exported.validateOpenLayout()).toThrow(DnamError);
-        expect(() => Checkpoint.validateV2Bundle(ckpt.toBytes())).toThrow(DnamError);
+        // Canonical v2.0 layout / bundle validation and invalid-buffer rejection
+        expect(exported.validateOpenLayout().retainedTier).toBe(3);
+        expect(Checkpoint.validateV2Bundle(ckpt.toBytes()).retainedTier).toBe(3);
+        expect(() => Checkpoint.validateV2Bundle(new Uint8Array(64))).toThrow(DnamError);
       });
     },
   );

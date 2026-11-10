@@ -26,7 +26,11 @@
       ]);
 
       const ALLOWED_PLUGIN_PREFIXES = [
+        "plugin:__TAURI_CHANNEL__|fetch",
         "plugin:core|",
+        "plugin:resources|",
+        "plugin:app|",
+        "plugin:path|",
         "plugin:event|",
         "plugin:window|",
         "plugin:webview|",
@@ -39,36 +43,332 @@
         "plugin:process|restart",
       ];
 
-      function containsUnsafeString(value) {
-        if (typeof value === "string") {
-          return value.includes("..") || value.includes("\0");
+      const ENVELOPE_META_KEYS = new Set([
+        "cmd",
+        "command",
+        "payload",
+        "args",
+        "callback",
+        "error",
+        "options",
+        "__tauriModule",
+      ]);
+
+      const UTF8_ENCODER = new TextEncoder();
+      const UTF8_DECODER = new TextDecoder("utf-8", { fatal: true });
+
+      function hexDigitValue(byte) {
+        if (byte >= 0x30 && byte <= 0x39) return byte - 0x30;
+        if (byte >= 0x41 && byte <= 0x46) return byte - 0x41 + 10;
+        if (byte >= 0x61 && byte <= 0x66) return byte - 0x61 + 10;
+        return -1;
+      }
+
+      function decodePercentPass(input) {
+        const bytes = UTF8_ENCODER.encode(input);
+        const out = [];
+        let changed = false;
+        for (let i = 0; i < bytes.length; ) {
+          if (bytes[i] === 0x25 && i + 2 < bytes.length) {
+            const hi = hexDigitValue(bytes[i + 1]);
+            const lo = hexDigitValue(bytes[i + 2]);
+            if (hi >= 0 && lo >= 0) {
+              const decodedByte = (hi << 4) | lo;
+              if (decodedByte <= 0x1f || decodedByte === 0x7f) {
+                return null;
+              }
+              out.push(decodedByte);
+              changed = true;
+              i += 3;
+              continue;
+            }
+          }
+          out.push(bytes[i]);
+          i += 1;
         }
-        if (Array.isArray(value)) {
-          return value.some(containsUnsafeString);
+        if (!changed) {
+          return input;
         }
-        if (value !== null && typeof value === "object") {
-          return Object.values(value).some(containsUnsafeString);
+        try {
+          const decoded = UTF8_DECODER.decode(new Uint8Array(out));
+          for (let j = 0; j < decoded.length; j += 1) {
+            const code = decoded.charCodeAt(j);
+            if (code >= 0x80 && code <= 0x9f && !input.includes(decoded[j])) {
+              return null;
+            }
+          }
+          return decoded;
+        } catch {
+          return null;
+        }
+      }
+
+      function isUnsafeText(value) {
+        if (value.includes("..") || value.includes("\0")) {
+          return true;
+        }
+        let cur = value;
+        for (let pass = 0; pass < 4; pass += 1) {
+          const next = decodePercentPass(cur);
+          if (next === null || next.includes("..") || next.includes("\0")) {
+            return true;
+          }
+          if (next === cur) {
+            return false;
+          }
+          cur = next;
+        }
+        const probe = decodePercentPass(cur);
+        return probe === null || probe !== cur;
+      }
+
+      function decodedContainsBackslash(value) {
+        if (value.includes("\\")) {
+          return true;
+        }
+        let cur = value;
+        for (let pass = 0; pass < 4; pass += 1) {
+          const next = decodePercentPass(cur);
+          if (next === null || next.includes("\\")) {
+            return true;
+          }
+          if (next === cur) {
+            return false;
+          }
+          cur = next;
+        }
+        const probe = decodePercentPass(cur);
+        return probe === null || probe !== cur;
+      }
+
+      function isValidDnamDeepLink(uri) {
+        const trimmed = uri.trim();
+        for (let i = 0; i < trimmed.length; i += 1) {
+          const code = trimmed.charCodeAt(i);
+          if (code <= 0x1f || (code >= 0x7f && code <= 0x9f)) {
+            return false;
+          }
+        }
+        if (isUnsafeText(trimmed) || !trimmed.startsWith("dnam://")) {
+          return false;
+        }
+        const rest = trimmed.slice("dnam://".length).replace(/^\/+|\/+$/g, "");
+        if (rest.startsWith("models/")) {
+          const target = rest.slice("models/".length).replace(/^\/+|\/+$/g, "");
+          return /^[A-Za-z0-9_-]+$/.test(target);
+        }
+        if (rest.startsWith("marketplace/")) {
+          const target = rest.slice("marketplace/".length).replace(/^\/+|\/+$/g, "");
+          return /^[A-Za-z0-9_-]+$/.test(target);
+        }
+        if (rest.startsWith("open?path=")) {
+          const target = rest.slice("open?path=".length);
+          return target.length > 0 && !decodedContainsBackslash(target);
         }
         return false;
       }
 
-      window.__TAURI_ISOLATION_HOOK__ = (payload) => {
-        if (!payload || typeof payload !== "object") {
+      function isPlainObject(value) {
+        if (value === null || typeof value !== "object" || Array.isArray(value)) {
+          return false;
+        }
+        const proto = Object.getPrototypeOf(value);
+        return proto === Object.prototype || proto === null;
+      }
+
+      function sanitizeCloneValue(value, seen) {
+        if (typeof value === "string") {
+          if (isUnsafeText(value)) {
+            throw new Error("Tauri Isolation blocked path traversal or null byte in IPC payload");
+          }
+          return value;
+        }
+        if (typeof value === "number") {
+          if (!Number.isFinite(value)) {
+            throw new Error("Tauri Isolation blocked non-finite parameter value");
+          }
+          return value;
+        }
+        if (typeof value === "boolean" || value === null) {
+          return value;
+        }
+        if (Array.isArray(value)) {
+          if (Object.getPrototypeOf(value) !== Array.prototype || Object.getOwnPropertySymbols(value).length > 0) {
+            throw new Error("Tauri Isolation blocked non-plain array in IPC payload");
+          }
+          if (seen.has(value)) {
+            throw new Error("Tauri Isolation blocked cyclic IPC payload");
+          }
+          seen.add(value);
+          try {
+            const names = Object.getOwnPropertyNames(value);
+            for (const name of names) {
+              if (name === "length") continue;
+              const idx = Number(name);
+              if (!Number.isInteger(idx) || idx < 0 || idx >= value.length || String(idx) !== name) {
+                throw new Error("Tauri Isolation blocked non-index property on array in IPC payload");
+              }
+              const desc = Object.getOwnPropertyDescriptor(value, name);
+              if (!desc || desc.get !== undefined || desc.set !== undefined || !desc.enumerable) {
+                throw new Error("Tauri Isolation blocked accessor property in IPC payload");
+              }
+            }
+            const clonedArr = [];
+            for (let i = 0; i < value.length; i += 1) {
+              clonedArr.push(sanitizeCloneValue(value[i], seen));
+            }
+            return clonedArr;
+          } finally {
+            seen.delete(value);
+          }
+        }
+        if (isPlainObject(value)) {
+          return sanitizeCloneObject(value, seen);
+        }
+        throw new Error("Tauri Isolation blocked unsupported non-plain value in IPC payload");
+      }
+
+      function sanitizeCloneObject(obj, seen) {
+        if (!isPlainObject(obj) || Object.getOwnPropertySymbols(obj).length > 0) {
           throw new Error("Tauri Isolation blocked non-object IPC payload");
         }
-        const cmd = typeof payload.cmd === "string" ? payload.cmd : payload.command;
+        if (seen.has(obj)) {
+          throw new Error("Tauri Isolation blocked cyclic IPC payload");
+        }
+        seen.add(obj);
+        try {
+          const out = {};
+          for (const key of Object.getOwnPropertyNames(obj)) {
+            if (key === "__proto__" || key === "constructor" || key === "prototype") {
+              throw new Error("Tauri Isolation blocked forbidden prototype key in IPC payload");
+            }
+            if (isUnsafeText(key)) {
+              throw new Error("Tauri Isolation blocked path traversal or null byte in IPC payload");
+            }
+            const desc = Object.getOwnPropertyDescriptor(obj, key);
+            if (!desc || desc.get !== undefined || desc.set !== undefined || !desc.enumerable) {
+              throw new Error("Tauri Isolation blocked accessor or non-enumerable property in IPC payload");
+            }
+            if (key === "toJSON" || typeof desc.value === "function") {
+              throw new Error("Tauri Isolation blocked function or toJSON hook in IPC payload");
+            }
+            if (desc.value !== undefined) {
+              Object.defineProperty(out, key, {
+                value: sanitizeCloneValue(desc.value, seen),
+                enumerable: true,
+                writable: true,
+                configurable: true,
+              });
+            }
+          }
+          return out;
+        } finally {
+          seen.delete(obj);
+        }
+      }
+
+      function validateEnvelope(payload) {
+        const clean = sanitizeCloneObject(payload, new Set());
+        const hasCmd = clean.cmd !== undefined;
+        const hasCommand = clean.command !== undefined;
+        if (hasCmd && typeof clean.cmd !== "string") {
+          throw new Error("Tauri Isolation blocked non-string cmd field");
+        }
+        if (hasCommand && typeof clean.command !== "string") {
+          throw new Error("Tauri Isolation blocked non-string command field");
+        }
+        if (hasCmd && hasCommand && clean.cmd !== clean.command) {
+          throw new Error("Tauri Isolation blocked conflicting cmd/command fields");
+        }
+        const cmd = typeof clean.cmd === "string" ? clean.cmd : clean.command;
         if (typeof cmd !== "string" || cmd.length === 0) {
           throw new Error("Tauri Isolation blocked IPC payload missing command");
         }
-        const isAllowedPlugin = ALLOWED_PLUGIN_PREFIXES.some((prefix) => cmd.startsWith(prefix));
+        const isAllowedPlugin = ALLOWED_PLUGIN_PREFIXES.some((entry) =>
+          entry.endsWith("|") ? cmd.startsWith(entry) : cmd === entry,
+        );
         if (!ALLOWED_COMMANDS.has(cmd) && !isAllowedPlugin) {
           throw new Error(`Tauri Isolation blocked unauthorized IPC command: ${cmd}`);
         }
-        if (containsUnsafeString(payload)) {
-          throw new Error("Tauri Isolation blocked path traversal or null byte in IPC payload");
+        if (clean.args !== undefined && !isPlainObject(clean.args)) {
+          throw new Error("Tauri Isolation blocked non-object args field");
         }
-        return payload;
-      };
+        const allowNullPayload = cmd === "plugin:__TAURI_CHANNEL__|fetch" && clean.payload === null;
+        if (clean.payload !== undefined && !allowNullPayload && !isPlainObject(clean.payload)) {
+          throw new Error(
+            cmd === "studio_ipc"
+              ? "Tauri Isolation blocked malformed studio_ipc request"
+              : "Tauri Isolation blocked non-object payload field",
+          );
+        }
+        if (clean.payload !== undefined && clean.args !== undefined) {
+          throw new Error("Tauri Isolation blocked conflicting payload and args fields");
+        }
+        if (
+          (clean.payload !== undefined || clean.args !== undefined) &&
+          Object.keys(clean).some((k) => !ENVELOPE_META_KEYS.has(k))
+        ) {
+          throw new Error("Tauri Isolation blocked unexpected top-level fields alongside payload/args");
+        }
+        const effectiveArgs = isPlainObject(clean.payload)
+          ? clean.payload
+          : clean.args !== undefined
+            ? clean.args
+            : clean;
+        if (cmd === "studio_ipc") {
+          if (clean.payload !== undefined && Object.keys(clean.payload).some((k) => k !== "req")) {
+            throw new Error("Tauri Isolation blocked malformed studio_ipc request");
+          }
+          if (clean.args !== undefined && Object.keys(clean.args).some((k) => k !== "req")) {
+            throw new Error("Tauri Isolation blocked malformed studio_ipc request");
+          }
+          if (
+            clean.payload === undefined &&
+            clean.args === undefined &&
+            Object.keys(clean).some((k) => !ENVELOPE_META_KEYS.has(k) && k !== "req")
+          ) {
+            throw new Error("Tauri Isolation blocked malformed studio_ipc request");
+          }
+          const nestedReq = effectiveArgs.req;
+          if (!isPlainObject(nestedReq)) {
+            throw new Error("Tauri Isolation blocked malformed studio_ipc request");
+          }
+          const nestedKeys = Object.keys(nestedReq);
+          if (
+            nestedReq.cmd !== undefined ||
+            typeof nestedReq.command !== "string" ||
+            nestedReq.command.length === 0 ||
+            !isPlainObject(nestedReq.args) ||
+            !nestedKeys.every((k) => k === "command" || k === "args")
+          ) {
+            throw new Error("Tauri Isolation blocked malformed studio_ipc request");
+          }
+          const nestedCmd = nestedReq.command;
+          if (nestedCmd === "studio_ipc" || !ALLOWED_COMMANDS.has(nestedCmd)) {
+            throw new Error(`Tauri Isolation blocked unauthorized IPC command: ${nestedCmd}`);
+          }
+          validateEnvelope(nestedReq);
+        }
+        if (
+          cmd === "set_parameter" &&
+          (typeof effectiveArgs.value !== "number" ||
+            !Number.isFinite(effectiveArgs.value) ||
+            Math.abs(effectiveArgs.value) > 3.4028234663852886e38)
+        ) {
+          throw new Error("Tauri Isolation blocked non-finite or out-of-range f32 parameter value");
+        }
+        if (cmd === "parse_deep_link") {
+          if (typeof effectiveArgs.uri !== "string" || !effectiveArgs.uri.trim().startsWith("dnam://")) {
+            throw new Error("Tauri Isolation blocked non-dnam:// deep link URI");
+          }
+          if (!isValidDnamDeepLink(effectiveArgs.uri)) {
+            throw new Error("Tauri Isolation blocked invalid dnam:// deep link URI");
+          }
+        }
+        return clean;
+      }
+
+      window.__TAURI_ISOLATION_HOOK__ = validateEnvelope;
     </script>
   </body>
 </html>

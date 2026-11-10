@@ -1,6 +1,6 @@
 /**
  * Pluggable real-time audio & telemetry bridge shared across:
- * 1. `packages/web` (`WebAudioWorkletHost` -> WebAssembly SIMD128 `AudioWorklet`)
+ * 1. `packages/js` & `docs/` (`WebAudioWorkletHost` -> WebAssembly SIMD128 `AudioWorklet`)
  * 2. `packages/studio` (`TauriNativeAudioHost` -> Native Rust `dnam-engine` ARM SME / NEON / AVX2+FMA)
  */
 

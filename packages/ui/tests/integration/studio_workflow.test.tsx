@@ -84,7 +84,7 @@ describe("Cross-feature Studio workflow integration", () => {
               timeline={{
                 modelId: "SLO100_Lead",
                 status: "running",
-                backendDevice: "Apple MPS",
+                backendDevice: "Rust Host SIMD",
                 clampedParameterCount: 1,
                 history: [],
               }}

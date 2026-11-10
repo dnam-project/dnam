@@ -34,6 +34,7 @@ DNAM is organized as a multi-language workspace across `docs/`, `packages/*`, an
 | **Rust SIMD Engine (`dnam-engine`)** | `packages/engine/` | [`packages/engine/AGENTS.md`](packages/engine/AGENTS.md) | [`packages/engine/CONTRIBUTING.md`](packages/engine/CONTRIBUTING.md) |
 | **TypeScript / WebAudio SDK (`@dnam-project/dnam`)** | `packages/js/` | [`packages/js/AGENTS.md`](packages/js/AGENTS.md) | [`packages/js/CONTRIBUTING.md`](packages/js/CONTRIBUTING.md) |
 | **Pure-Rust Two-Sweep Trainer (`dnam-trainer`)** | `packages/trainer/` | [`packages/trainer/AGENTS.md`](packages/trainer/AGENTS.md) | [`packages/trainer/CONTRIBUTING.md`](packages/trainer/CONTRIBUTING.md) |
+| **Black-Box Ground-Truth Audio Fixtures (`dnam-fixtures`)** | `packages/fixtures/` | [`packages/fixtures/AGENTS.md`](packages/fixtures/AGENTS.md) | [`packages/fixtures/CONTRIBUTING.md`](packages/fixtures/CONTRIBUTING.md) |
 | **Design System & Visualizers (`@dnam-project/ui`)** | `packages/ui/` | [`packages/ui/AGENTS.md`](packages/ui/AGENTS.md) | [`packages/ui/CONTRIBUTING.md`](packages/ui/CONTRIBUTING.md) |
 | **CLI & Desktop Studio (`@dnam-project/studio`)** | `packages/studio/` | [`packages/studio/AGENTS.md`](packages/studio/AGENTS.md) | [`packages/studio/CONTRIBUTING.md`](packages/studio/CONTRIBUTING.md) |
 | **Project Guardrail Suite (`dnam-tests`)** | `tests/` | [`tests/AGENTS.md`](tests/AGENTS.md) | [`docs/CONTRIBUTING.md`](docs/CONTRIBUTING.md) |
@@ -50,7 +51,7 @@ DNAM uses **`mise`** ([`mise.toml`](mise.toml)) to provision toolchains and **`m
 # Install pinned toolchains (moon, node, pnpm, rust)
 mise install
 
-# Run the unified `dnam` CLI (`init`, `model`, `capture`, `train`, `inspect`, `studio`)
+# Run the unified `dnam` CLI (`init`, `status`, `model`, `control`, `preset`, `render`, `strip`, `inspect`, `studio`)
 moon run studio:cli -- --help
 
 # Run the pure-Rust Two-Sweep VarPro / Cholesky trainer worker CLI (`dnam-train`)
@@ -84,6 +85,7 @@ moon run studio:test-e2e
 # Check a single project via moon
 moon check engine
 moon check trainer
+moon check fixtures
 moon check js
 moon check ui
 moon check studio
@@ -106,7 +108,7 @@ moon check tests
 5. **Safe-Rust-First & Strict `#[allow(unsafe_code)]` Discipline (`ref[repo.code.type-safety-and-imports]`):**
    - Never be lazy and reach for `#[allow(unsafe_code)]` or `unsafe` (`UnsafeCell`, `AtomicPtr`, raw pointer casts, or `get_unchecked`) when a 100% safe Rust design exists (such as `AtomicU64` word arrays for lock-free SPSC rings and seqlocks, ping-pong slot indices, disjoint struct field borrows, `zerocopy::transmute!`, or checked `napi` buffer views).
    - `#[allow(unsafe_code)]` may **only** be used when **(a)** it is strictly unavoidable at a hardware/OS intrinsic or C-ABI boundary (`packages/engine/src/{math,types,memory,ffi}.rs`), or **(b)** benchmarks prove that the safe Rust version causes a high performance impact on a real-time hot path **and** the `unsafe` version can be formally guaranteed sound with an explicit `// SAFETY:` proof.
-   - All language SDK and application Rust crates (`packages/js/rust/`, `packages/studio/rust/`, `packages/trainer/`) and all algorithmic/host modules in `packages/engine/src/` (`operators`, `stages`, `control`, `container`, `provenance`, `schema`, `engine`, `dynamic`, `host`) must remain 100% safe Rust with zero `#[allow(unsafe_code)]`.
+   - All language SDK and application Rust crates (`packages/js/rust/`, `packages/studio/rust/`, `packages/trainer/`, `packages/fixtures/`) and all algorithmic/host modules in `packages/engine/src/` (`operators`, `stages`, `control`, `container`, `provenance`, `schema`, `engine`, `dynamic`, `host`) must remain 100% safe Rust with zero `#[allow(unsafe_code)]`.
 6. **Zero Duplicated Engine Logic in Language SDKs (`packages/js/`):**
    - Language SDKs (`@dnam-project/dnam`) and their FFI shims (`packages/js/rust/`) must **never** reimplement DSP math, ZOH rescaling, 3-Phase control clamping, Lobatto calibration inversion, schema validation, RFC 8785 JCS canonicalization, or provenance signature assembly in TypeScript (`ref[sdk.ts.runtime.dual-target-drivers]`).
    - Delegate 100% of domain logic to `dnam-engine` in Rust; keep SDK host-language layers strictly focused on idiomatic ergonomics, casing/type coercion, and zero-copy buffer/handle lifecycles.
@@ -133,7 +135,7 @@ DNAM enforces a **Progressive-Disclosure Documentation Architecture** and a **Si
 3. **Offloading Rule (Never Wordsmith `AGENTS.md` to Fit Byte Budgets):**
    - When an `AGENTS.md` file approaches its byte budget as new modules are added, **do not** try to compress or reword implementation details inside `AGENTS.md`. Instead, offload non-routing information to its canonical destination:
      - **System requirements (`REQ-*`), normative specifications (`r[...]`), psychoacoustic metrics (`bESR`), stability clamps, and MADR rationales (`ADR-NNNN`)** $\to$ Offload to [`docs/`](docs/index.md) using the templates in [`docs/templates/`](docs/templates/spec_template.md) (see [§5.2](#52-single-source-of-truth-ssot-documentation-map) and [`docs/CONTRIBUTING.md`](docs/CONTRIBUTING.md)).
-     - **Package architecture invariants, compiler/runtime flags (`#[forbid(unsafe_code)]`, `zerocopy`, `faer`), workbench setup, and verification commands (`moon check <pkg>`)** $\to$ Offload to `packages/<pkg>/CONTRIBUTING.md`.
+     - **Package architecture invariants, compiler/runtime flags (`#[forbid(unsafe_code)]`, `#![no_std]`, `zerocopy`), workbench setup, and verification commands (`moon check <pkg>`)** $\to$ Offload to `packages/<pkg>/CONTRIBUTING.md`.
      - **Public API examples and CLI command/flag references** $\to$ Offload to `packages/<pkg>/README.md`.
      - **Root landing page ([`README.md`](README.md))** $\to$ Keep tailored for DNAM's target audience (musicians, tone creators, and producers first, with a concise overview for hardware OEMs and plugin/SDK integrators); developer setup, `moon` commands, and internal DSP/spec details belong in [`CONTRIBUTING.md`](CONTRIBUTING.md), `packages/<pkg>/README.md`, and [`docs/`](docs/index.md).
      - **Directory-level module growth** $\to$ Delegate file-level routing rows to a subsystem `AGENTS.md` (e.g., `src/<subsystem>/AGENTS.md`) and link the subsystem from the parent `packages/<pkg>/AGENTS.md`.

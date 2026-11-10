@@ -42,12 +42,6 @@ pub struct SchemaVersion {
 }
 
 impl SchemaVersion {
-    /// Initial `1.0.0` schema release.
-    pub const V1_0_0: Self = Self::new(1, 0, 0);
-
-    /// `1.1.0` schema release adding optional `.dnam-ckpt` Arena 4 (`FLAG_HAS_CALIB_STATS`).
-    pub const V1_1_0: Self = Self::new(1, 1, 0);
-
     /// Canonical `2.0.0` schema release (`ref[container.dnam.formats]`).
     pub const V2_0_0: Self = Self::new(2, 0, 0);
 
@@ -170,10 +164,10 @@ const fn default_sample_rate() -> u32 {
     48_000
 }
 
-/// Top-level UTF-8 JSON header located at byte offset `0x40` of a `.dnam` or `.dnam-ckpt` container.
+/// Top-level UTF-8 JSON header in Region 3 of a canonical `v2.0` `.dnam` or `.dnam-ckpt` container.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct DnamJsonHeader {
-    /// Semantic version of the container schema (`"1.0.0"`).
+    /// Semantic version of the container schema (`"2.0.0"`).
     #[serde(default = "default_version")]
     pub version: String,
     /// Container kind: `"dnam"` or `"dnam-ckpt"`.

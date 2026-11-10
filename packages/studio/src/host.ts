@@ -121,9 +121,10 @@ export class TauriNativeAudioHost implements DnamAudioHost {
   }
 
   public setParameter(id: string, value: number): void {
-    const safeVal = Number.isFinite(value) ? value : 0.0;
+    const F32_MAX = 3.4028234663852886e38;
+    const safeVal = Number.isFinite(value) ? clampNumber(value, -F32_MAX, F32_MAX) : 0.0;
     this.parameters.set(id, safeVal);
-    void this.ipcClient.setParameter(id, safeVal);
+    void this.ipcClient.setParameter(id, safeVal).catch(() => {});
 
     const r2 = clampNumber(Math.abs(safeVal) * 0.35, 0.0, 9.0);
     const alpha = 1.0 / Math.sqrt(1.0 + r2 / 4.0);
@@ -140,9 +141,11 @@ export class TauriNativeAudioHost implements DnamAudioHost {
   }
 
   public setSwitchIndex(id: string, index: number): void {
-    const safeIdx = Math.max(0, Math.trunc(index));
+    const safeIdx = Number.isFinite(index)
+      ? Math.max(0, Math.min(0xffff_ffff, Math.trunc(index)))
+      : 0;
     this.switches.set(id, safeIdx);
-    void this.ipcClient.setSwitch(id, safeIdx);
+    void this.ipcClient.setSwitch(id, safeIdx).catch(() => {});
     this.telemetryState = { ...this.telemetryState };
     this.notify();
   }

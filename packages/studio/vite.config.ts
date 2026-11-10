@@ -41,13 +41,13 @@ export default defineConfig(({ mode }) => {
         ignored: ["**/rust/**", "**/src-tauri/**", "**/target/**"],
       },
     },
-    ...(mode === "lib"
-      ? {
-          build: {
+    build:
+      mode === "lib"
+        ? {
             emptyOutDir: true,
             outDir: "dist",
             target: buildTarget,
-            minify: isTauriBuild ? (!isTauriDebug ? "esbuild" : false) : false,
+            minify: isTauriBuild ? !isTauriDebug : false,
             sourcemap: isTauriBuild ? isTauriDebug : true,
             lib: {
               entry: {
@@ -68,9 +68,14 @@ export default defineConfig(({ mode }) => {
                 /^node:/,
               ],
             },
+          }
+        : {
+            emptyOutDir: true,
+            outDir: "dist-app",
+            target: buildTarget,
+            minify: isTauriBuild ? !isTauriDebug : true,
+            sourcemap: isTauriBuild ? isTauriDebug : true,
           },
-        }
-      : {}),
     test: {
       projects: [
         {
