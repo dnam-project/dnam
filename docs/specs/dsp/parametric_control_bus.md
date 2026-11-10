@@ -15,6 +15,7 @@ adrs:
   - ADR-0007
   - ADR-0011
   - ADR-0015
+  - ADR-0019
 ---
 
 # Self-Similar 3 kHz Dual-Rate Control Plane & Parametric Control Bus
@@ -54,7 +55,7 @@ At each control boundary (decimation stride $K_{\text{ctrl}}(f_{s,\text{eff}}) =
 
 1. **Completed-Block 4-Band Asymmetric Ballistic Envelope Bank:** Collect rectified band peaks $|x_b[k]| = \max_{0 \le m < K_{\text{ctrl}}} |x_b[K_{\text{ctrl}}k + m]|$ over the completed block ($b \in \lbrace \text{Low}, \text{Mid}, \text{High}, \text{Aux Key} \rbrace$) and update:
    $$e_b[k] = \alpha_b[k] e_b[k-1] + (1 - \alpha_b[k]) |x_b[k]|, \qquad \alpha_b[k] = \mathrm{select}\big(|x_b[k]| > e_b[k-1],\ \alpha_{\text{att},b},\ \alpha_{\text{rel},b}\big)$$
-2. **Quadrature LFO 0 & 1 Rotors:** Advance the two independent `Q0.192` LFO phase accumulators by the previous window's effective increment and map their top 32 bits to unit phasors via the quadrant-reduced contractive rotor ([`op_m_modal_kautz.md` §1.2](op_m_modal_kautz.md#12-contractive-finite-precision-rotor)). Zero increments hold oscillator state bit-for-bit.
+2. **Quadrature LFO 0 & 1 Rotors:** Advance the two independent `Q0.192` LFO phase accumulators by the previous window's effective increment and map their top 32 bits to unit phasors via the quadrant-reduced contractive rotor ([`op_m_modal_kautz.md` §1.2](op_m_modal_kautz.md#12-contractive-finite-precision-rotor)). Zero increments hold oscillator state bit-for-bit, and `ControlBus<B>` caches the converted signed 3-word `u64` `Q0.192` increment (`lfo_cached_angle_bits: [u32; 2]`, `lfo_cached_q192_inc: [Option<(bool, [u64; 3])>; 2]`) so `q0_192_phase_increment_from_f32_bits` is skipped whenever an LFO's frequency increment `lfo_angle_bits` is unchanged (`ADR-0019`).
 3. `r[dsp.ctrl.op-m.rate-retime]` **Single-Rate-Change Window Retiming:** On an admitted effective-rate transition from $(f_o, K_o)$ to $(f_n, K_n)$ after $c \in \lbrace 0, \dots, K_o - 1 \rbrace$ old-rate samples, retain partial band peaks, LFO phases, and envelope states, completing the first mixed window after $d = \mathrm{round}((K_o - c)K_n / K_o)$ new-rate samples with actual duration $\Delta t = c/f_o + d/f_n$.
 
 #### Host Automation Timing
@@ -86,6 +87,7 @@ To prevent `f32` rounding from placing clipped vectors outside the exact Euclide
 1. **Bit-Preserving `f32 <-> f64` Conversion:** Widen `f32` bit patterns (including subnormals via leading-zero shift `p + 874`) directly to IEEE-754 `f64` bits without executing hardware `f32` instructions subject to FTZ/DAZ, and round `f64` outputs back to `f32` bits using integer significand shifts (`M >> 29` for normals, `M >> (-E - 97)` for subnormals, ties-to-even).
 2. **Outward-Rounded Energy & Output Check:** Using `nextup` (`bits + 1` on positive `f64`), form outward denominator bound $S = \mathrm{add-up}(\epsilon, \sum_i x_i^2)$ and exact $R^2 = \rho_{\max}^2$. Accept scale $t \in [0, 1]$ with rounded `f32` output $v_i = \mathrm{RN}_{32}(x_i t)$ only when both $\mathrm{mul-up}(\mathrm{mul-up}(t, t), S) \le R^2$ and $\sum_i v_i^2 \le R^2$.
 3. **6-Step Newton Fast Path & 32-Step Bisection Fallback:** Seed $y_0 = 2^{-\lfloor (E_s + 2)/2 \rfloor}$ from the unbiased exponent $E_s$ of $S$, iterate $y_{k+1} = \mathrm{fl}_{64}(y_k(1.5 - 0.5 S y_k^2))$ six times, and test $t_{\text{fast}} = \min(1 - 2^{-20}, \rho_{\max} y_6 (1 - 2^{-20}))$. If accepted, return $v_i$; otherwise bisect `32` times over $[0, \min(1, 2^{E_r + 1 - E})]$. For normal radii, relative scale contraction is $< 9.57 \times 10^{-7}$ and vector error is $< 1.185 \times 10^{-6} \rho_{\max}$.
+4. `r[dsp.ctrl.op-n.static-and-interior-fastpath]` **Static-Control Basis Skip & Interior Trust-Ball Fast Exit ([`ADR-0019`](../../adr/0019-simd-kernel-architecture-and-realtime-execution-optimizations.md)):** When `is_dirty == false` at a `3 kHz` boundary (`0` user controls moved during the completed sub-block), `ControlBus<B>::tick_3khz_with_detectors` skips `evaluate_static_control_basis` (Lobatto basis, contributor deltas, and FM projection), retaining the cached `z_head`, `z_stage`, and `ctrl_basis_4` latents (`0` static control MACs, `REQ-6.1`). When `trust_clip_outward_4d` is invoked and the `f64` squared norm satisfies $\sum_{i=0}^3 z_i^2 + 10^{-9} < \rho_{\max}^2$ (with finite norm and $\rho_{\max} > 0$), it returns `z` immediately without executing `trust_clip_outward_checked_bits::<4>` Newton/bisection iterations.
 
 ---
 
@@ -214,6 +216,8 @@ Each micro-ramped parameter $\theta_i[n]$ (`§3.2`) combines with its base stage
 Using $\alpha_{\text{ramp}}(f_{s,\text{eff}}) = 1.0 / K_{\text{ctrl}}(f_{s,\text{eff}})$ precomputed in cold `set_sample_rate()`:
 $$\Delta\boldsymbol{\theta}[k] = \big(\boldsymbol{\theta}_{\text{stage}}[k+1] - \boldsymbol{\theta}_{\text{stage}}[k]\big) \times \alpha_{\text{ramp}}(f_{s,\text{eff}}), \qquad \boldsymbol{\theta}_{\text{stage}}[n] = \boldsymbol{\theta}_{\text{stage}}[n-1] + \Delta\boldsymbol{\theta}[k]$$
 Clamp each ramp within its endpoint interval and snap the final sample of the block to $\boldsymbol{\theta}_{\text{stage}}[k+1]$.
+
+`r[dsp.ctrl.dispatch.sparse-and-active-ramps]` **Sparse `W_ctrl` Row Evaluation & Active-Parameter Micro-Ramping ([`ADR-0019`](../../adr/0019-simd-kernel-architecture-and-realtime-execution-optimizations.md)):** At each `3 kHz` control boundary, `ControlBus<B>::evaluate_tank_modulation` skips any `q_8` column whose magnitude is $\le 10^{-12}$ and restricts `W_ctrl` stage-row evaluation to rows `3..12` (`2..13` when `live_analog_drift_enabled && !offline_bounce && sigma_drift > 0.0`), while `compute_micro_ramp_deltas_12` and `step_micro_ramp_12` step the 3 active `B::Vec4` groups (`theta_stage[0..12]`) per `48 kHz` audio sample.
 
 ---
 

@@ -9,7 +9,7 @@
 
 ## 2. Core Cross-Cutting Architectural Invariants
 
-1. **Zero `FSQRT` / `FDIV` in Real-Time Loops:** Never use division, square-root, or `libm` transcendentals in $48\text{ kHz}$ or $3\text{ kHz}$ loops; use the algebraic factorizations in [`op_n_commuted_cascade.md`](docs/specs/dsp/op_n_commuted_cascade.md) and [`op_m_modal_kautz.md`](docs/specs/dsp/op_m_modal_kautz.md).
+1. **Zero Pipeline Stalls or Nondeterministic Calls in Real-Time Loops (`REQ-6.2`, `REQ-6.3`):** Never use `FDIV`, `FSQRT`, integer division (`IDIV`/`DIV`/`SDIV`/`UDIV`), `libm` calls (including `fmodf`), unbounded loops, heap allocations, blocking locks, or uncached OS syscalls in $48\text{ kHz}$ or $3\text{ kHz}$ loops; use the algebraic factorizations in [`op_n_commuted_cascade.md`](docs/specs/dsp/op_n_commuted_cascade.md) and [`op_m_modal_kautz.md`](docs/specs/dsp/op_m_modal_kautz.md).
 2. **Unconditional BIBO, Lyapunov, $\mathcal{H}_2$ & Zero-DC Stability:** Enforce all registered stability bounds in [`control_space_audit.md`](docs/specs/training/control_space_audit.md).
 3. **Non-Stop 3-Phase Control Clamping:** Automatically clamp unobserved ranges, switches, and corners per [`parametric_control_bus.md`](docs/specs/dsp/parametric_control_bus.md) without pausing training.
 4. **Fail-Fast & 64B-Aligned Containers:** Validate all `.dnam` and `.dnam-ckpt` containers, `Ed25519` signatures, and `uplo='U'` stem statistics per [`dnam_binary_format.md`](docs/specs/containers/dnam_binary_format.md).

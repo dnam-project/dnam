@@ -1108,5 +1108,61 @@ reason = "TypeScript SDK (packages/js) contract verified by TypeScript test suit
 scope = "out-of-scope"
 reason = "TypeScript SDK (packages/js) contract verified by TypeScript test suite"
 
+# ==============================================================================
+# ADR-0019: Two-Level SIMD Trait Architecture & Real-Time Loop Optimizations
+# ==============================================================================
+[rules."repo.code.realtime-disassembly-audit"]
+scope = "engine"
+
+[rules."repo.code.explicit-simd-and-coverage"]
+scope = "out-of-scope"
+reason = "Repository-wide static source guardrail for coverage(off) and math/ macro_rules! verified in tests/test_guardrails.test.ts"
+
+[rules."arch.simd.two-level-traits"]
+scope = "engine"
+
+[rules."arch.simd.single-library-dispatch"]
+scope = "engine"
+
+[rules."arch.simd.zero-stall-lowering"]
+scope = "engine"
+
+[rules."dsp.op-m.recurrence.stereo-simd"]
+scope = "engine"
+
+[rules."dsp.op-m.rotor.angle-wrap-and-retune"]
+scope = "engine"
+
+[rules."dsp.op-m.tracker.stereo-batching"]
+scope = "engine"
+
+[rules."dsp.op-n.polyadaa.stereo-and-rail-guard"]
+scope = "engine"
+
+[rules."dsp.op-n.stage2.conv6-simd"]
+scope = "engine"
+
+[rules."dsp.op-t.reader.contiguous-fp16x4"]
+scope = "engine"
+
+[rules."dsp.op-t.guard.incremental-counters"]
+scope = "engine"
+
+[rules."dsp.stage3.mirrored-fir-simd"]
+scope = "engine"
+
+[rules."dsp.stage4.simd-tank-loop"]
+scope = "engine"
+
+[rules."dsp.head.precollapse-and-zerocopy"]
+scope = "engine"
+
+[rules."dsp.ctrl.op-n.static-and-interior-fastpath"]
+scope = "engine"
+
+[rules."dsp.ctrl.dispatch.sparse-and-active-ramps"]
+scope = "engine"
+
+
 
 

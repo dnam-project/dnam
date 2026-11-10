@@ -3,10 +3,7 @@
 //! Canonical Reference: `docs/specs/dsp/op_n_commuted_cascade.md` §4 & `docs/specs/dsp/router_and_stages_topology.md` §2.2.
 
 use super::Stage2CommutedCascade;
-use crate::math::{
-    DefaultMathBackend, MathBackend, SimdVec4, flush_recursive_state_f32,
-    flush_recursive_state_vec4,
-};
+use crate::math::flush_recursive_state_f32;
 
 /// 4-Filter Tone Basis Filter State: `[Direct, LPF_80, LPF_400, HPF_1200]`.
 #[derive(Clone, Copy, Debug)]
@@ -87,25 +84,25 @@ impl ToneBasisFilters {
 
         // LPF 80 Hz
         let s_lpf80 = self.alpha_80 * self.lpf80_state + (1.0 - self.alpha_80) * x;
-        self.lpf80_state = flush_recursive_state_f32(s_lpf80);
 
         // LPF 400 Hz
         let s_lpf400 = self.alpha_400 * self.lpf400_state + (1.0 - self.alpha_400) * x;
-        self.lpf400_state = flush_recursive_state_f32(s_lpf400);
 
         // HPF 1200 Hz (y[n] = alpha * y[n-1] + alpha * (x[n] - x[n-1]))
         let s_hpf1200 =
             self.alpha_1200 * self.hpf1200_state + self.alpha_1200 * (x - self.hpf1200_x1);
-        type V = <DefaultMathBackend as MathBackend>::Vec4;
-        let mut flushed = [0.0f32; 4];
-        flush_recursive_state_vec4(V::from_array([s_lpf80, s_lpf400, s_hpf1200, x]))
-            .store(&mut flushed);
-        self.lpf80_state = flushed[0];
-        self.lpf400_state = flushed[1];
-        self.hpf1200_state = flushed[2];
-        self.hpf1200_x1 = flushed[3];
+        self.lpf80_state = flush_recursive_state_f32(s_lpf80);
+        self.lpf400_state = flush_recursive_state_f32(s_lpf400);
+        self.hpf1200_state = flush_recursive_state_f32(s_hpf1200);
+        self.hpf1200_x1 = flush_recursive_state_f32(x);
 
         [s_direct, s_lpf80, s_lpf400, s_hpf1200]
+    }
+
+    /// Advances a stereo pair (`self` = Left, `right` = Right) of tone-basis filters by one sample.
+    #[inline(always)]
+    pub fn step_stereo(&mut self, right: &mut Self, x_l: f32, x_r: f32) -> ([f32; 4], [f32; 4]) {
+        (self.step(x_l), right.step(x_r))
     }
 }
 
@@ -423,59 +420,99 @@ impl Stage2CommutedCascade {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     #[inline(always)]
-    pub(crate) fn step_interstage_filter(
-        state: &mut [f32; 6],
+    pub(crate) fn step_interstage_filter_stereo(
+        state_l: &mut [f32; 6],
+        state_r: &mut [f32; 6],
         poles: &[f32; 6],
         gains: &[f32; 3],
-        x: f32,
-        a_even: f32,
-    ) -> (f32, f32, f32, f32, f32, f32) {
+        x_l: f32,
+        a_even_l: f32,
+        x_r: f32,
+        a_even_r: f32,
+    ) -> (f32, f32) {
         let a_hpf = poles[0];
         let a_sh = poles[1];
         let a_rc = poles[2];
         let m_re = poles[3];
         let m_im = poles[4];
         let m_bg = poles[5];
+        let one_minus_sh = 1.0 - a_sh;
+        let one_minus_rc = 1.0 - a_rc;
+        let g0 = gains[0];
+        let g1 = gains[1];
+        let g2 = gains[2];
 
-        let hpf_y = a_hpf * (state[1] + x - state[0]);
-        let lpf_sh = a_sh * state[2] + (1.0 - a_sh) * x;
-        let shelf_hi = x - lpf_sh;
-        let next_re = m_re * state[3] - m_im * state[4] + m_bg * x;
-        let next_im = m_im * state[3] + m_re * state[4];
-        let next_rc = a_rc * state[5] + (1.0 - a_rc) * a_even;
+        let hpf_y_l = a_hpf * (state_l[1] + x_l - state_l[0]);
+        let lpf_sh_l = a_sh * state_l[2] + one_minus_sh * x_l;
+        let shelf_hi_l = x_l - lpf_sh_l;
+        let prev_re_l = state_l[3];
+        let prev_im_l = state_l[4];
+        let next_re_l = m_re * prev_re_l - m_im * prev_im_l + m_bg * x_l;
+        let next_im_l = m_im * prev_re_l + m_re * prev_im_l;
+        let next_rc_l = a_rc * state_l[5] + one_minus_rc * a_even_l;
 
-        state[0] = flush_recursive_state_f32(x);
-        state[1] = flush_recursive_state_f32(hpf_y);
-        state[2] = flush_recursive_state_f32(lpf_sh);
-        state[3] = flush_recursive_state_f32(next_re);
-        state[4] = flush_recursive_state_f32(next_im);
-        state[5] = flush_recursive_state_f32(next_rc);
+        let hpf_y_r = a_hpf * (state_r[1] + x_r - state_r[0]);
+        let lpf_sh_r = a_sh * state_r[2] + one_minus_sh * x_r;
+        let shelf_hi_r = x_r - lpf_sh_r;
+        let prev_re_r = state_r[3];
+        let prev_im_r = state_r[4];
+        let next_re_r = m_re * prev_re_r - m_im * prev_im_r + m_bg * x_r;
+        let next_im_r = m_im * prev_re_r + m_re * prev_im_r;
+        let next_rc_r = a_rc * state_r[5] + one_minus_rc * a_even_r;
 
-        let y = x + gains[0] * shelf_hi + gains[1] * next_re - gains[2] * next_rc;
-        (y, hpf_y, shelf_hi, next_re, next_im, next_rc)
+        state_l[0] = flush_recursive_state_f32(x_l);
+        state_l[1] = flush_recursive_state_f32(hpf_y_l);
+        state_l[2] = flush_recursive_state_f32(lpf_sh_l);
+        state_l[3] = flush_recursive_state_f32(next_re_l);
+        state_l[4] = flush_recursive_state_f32(next_im_l);
+        state_l[5] = flush_recursive_state_f32(next_rc_l);
+
+        state_r[0] = flush_recursive_state_f32(x_r);
+        state_r[1] = flush_recursive_state_f32(hpf_y_r);
+        state_r[2] = flush_recursive_state_f32(lpf_sh_r);
+        state_r[3] = flush_recursive_state_f32(next_re_r);
+        state_r[4] = flush_recursive_state_f32(next_im_r);
+        state_r[5] = flush_recursive_state_f32(next_rc_r);
+
+        let y_l = x_l + g0 * shelf_hi_l + g1 * next_re_l - g2 * next_rc_l;
+        let y_r = x_r + g0 * shelf_hi_r + g1 * next_re_r - g2 * next_rc_r;
+        (y_l, y_r)
     }
 
     #[inline(always)]
-    pub(crate) fn step_branch_shaper(
-        state: &mut [f32; 3],
+    pub(crate) fn step_branch_shaper_stereo(
+        state_l: &mut [f32; 3],
+        state_r: &mut [f32; 3],
         poles: &[f32; 2],
         params: &[f32; 4],
-        x: f32,
-    ) -> (f32, f32, f32) {
+        x_l: f32,
+        x_r: f32,
+    ) -> ((f32, f32, f32), (f32, f32, f32)) {
         let a_lpf = poles[0];
         let a_hpf = poles[1];
         let drive = params[2];
         let asym = params[3];
+        let one_minus_lpf = 1.0 - a_lpf;
 
-        let lpf_y = a_lpf * state[0] + (1.0 - a_lpf) * x;
-        let hpf_y = a_hpf * (state[2] + x - state[1]);
-        state[0] = flush_recursive_state_f32(lpf_y);
-        state[1] = flush_recursive_state_f32(x);
-        state[2] = flush_recursive_state_f32(hpf_y);
+        let lpf_y_l = a_lpf * state_l[0] + one_minus_lpf * x_l;
+        let lpf_y_r = a_lpf * state_r[0] + one_minus_lpf * x_r;
+        let hpf_y_l = a_hpf * (state_l[2] + x_l - state_l[1]);
+        let hpf_y_r = a_hpf * (state_r[2] + x_r - state_r[1]);
+        state_l[0] = flush_recursive_state_f32(lpf_y_l);
+        state_l[1] = flush_recursive_state_f32(x_l);
+        state_l[2] = flush_recursive_state_f32(hpf_y_l);
+        state_r[0] = flush_recursive_state_f32(lpf_y_r);
+        state_r[1] = flush_recursive_state_f32(x_r);
+        state_r[2] = flush_recursive_state_f32(hpf_y_r);
 
-        let u_bp = ((hpf_y - 0.35 * lpf_y) * drive).clamp(-1.0, 1.0);
-        let nl_bp = u_bp * (1.5 - 0.5 * u_bp * u_bp) + asym * u_bp * u_bp * (1.0 - u_bp * u_bp);
-        (nl_bp, lpf_y, hpf_y)
+        let u_bp_l = ((hpf_y_l - 0.35 * lpf_y_l) * drive).clamp(-1.0, 1.0);
+        let u_bp_r = ((hpf_y_r - 0.35 * lpf_y_r) * drive).clamp(-1.0, 1.0);
+        let u2_l = u_bp_l * u_bp_l;
+        let u2_r = u_bp_r * u_bp_r;
+        let nl_bp_l = u_bp_l * (1.5 - 0.5 * u2_l) + asym * u2_l * (1.0 - u2_l);
+        let nl_bp_r = u_bp_r * (1.5 - 0.5 * u2_r) + asym * u2_r * (1.0 - u2_r);
+        ((nl_bp_l, lpf_y_l, hpf_y_l), (nl_bp_r, lpf_y_r, hpf_y_r))
     }
 }

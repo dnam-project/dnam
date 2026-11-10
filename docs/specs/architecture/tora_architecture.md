@@ -24,6 +24,7 @@ requirements:
 adrs:
   - ADR-0002
   - ADR-0015
+  - ADR-0019
 ---
 
 # Tri-Operator Recurrent Architecture (`TORA`) System Overview
@@ -159,9 +160,9 @@ All block-processing entry points enforce round-to-nearest, ties-to-even (`RNE`)
 
 | Target Architecture | Hardware Control Register Policy (`FtzDazGuard`) |
 | :--- | :--- |
-| **`aarch64`** | Save `FPCR`; clear `RMode` bits `23:22` and exception trap-enable bits `8:12, 15`; set `FZ` bit `24`; if `AH` bit `1` is set (`FEAT_AFP`), set `FIZ` bit `0`; restore saved `FPCR` on exit. |
-| **`x86_64`** | Save `MXCSR`; clear `RC` bits `14:13` and sticky flags `0:5`; set `FTZ` (`15`), `DAZ` (`6`), and exception masks `7:12`; restore saved `MXCSR` on exit. |
-| **WebAssembly / Portable** | Standard WASM enforces `RNE` with gradual underflow; apply branchless 4-lane `SimdVec4::flush_subnormal` (`v128` exponent-mask zeroing, `exp == 0 -> ±0.0f32`) to persistent recursive-state writebacks while preserving sign, normals, infinities, and `NaN` payloads. |
+| **`aarch64`** | Save `FPCR`; clear `RMode` bits `23:22` and exception trap-enable bits `8:12, 15`; set `FZ` bit `24`; if `AH` bit `1` is set (`FEAT_AFP`), set `FIZ` bit `0`; restore saved `FPCR` on exit. Per-sample recursive-state software flushing (`flush_recursive_state_f32` / `flush_recursive_state_vec4`) compiles to a zero-cost no-op because hardware `FZ` is active throughout the callback. |
+| **`x86_64`** | Save `MXCSR`; clear `RC` bits `14:13` and sticky flags `0:5`; set `FTZ` (`15`), `DAZ` (`6`), and exception masks `7:12`; restore saved `MXCSR` on exit. Per-sample recursive-state software flushing (`flush_recursive_state_f32` / `flush_recursive_state_vec4`) compiles to a zero-cost no-op because hardware `FTZ`/`DAZ` is active throughout the callback. |
+| **WebAssembly / Portable** | Standard WASM enforces `RNE` with gradual underflow; apply branchless 4-lane `SimdVec4::flush_subnormal` (`v128` exponent-mask zeroing, `exp == 0 -> ±0.0f32`) in `flush_recursive_state_f32` / `flush_recursive_state_vec4` to persistent recursive-state writebacks while preserving sign, normals, infinities, and `NaN` payloads. |
 
 #### Finite-Precision Range and Saturation Policy
 
@@ -251,6 +252,17 @@ NEON 128-Bit Vector Layout:
 | **`Pro`** | Tier `2` | `12` channels (`Ch 0..11`) | `3×` SIMD vectors | `1.5×` SIMD vectors (`8 + 4`) |
 | **`Ultra`** | Tier `3` | `16` channels (`Ch 0..15`) | `4×` SIMD vectors | `2×` SIMD vectors |
 
+1. `r[arch.simd.two-level-traits]` **Two-Level SIMD Trait Hierarchy & Domain-Scoped Backend Traits ([`ADR-0019`](../../adr/0019-simd-kernel-architecture-and-realtime-execution-optimizations.md)):**
+   - **Level 1 (`math/backend.rs`):** `SimdVec4` defines the portable 4-lane `f32` register abstraction—including broadcast lane multiply-accumulate `fma_lane::<const LANE: usize>` (`vfmaq_laneq_f32` on NEON), simultaneous stereo 4-lane horizontal reduction `horizontal_sum_pair(v0, v1) -> (f32, f32)` (`vpaddq_f32` on NEON, `_mm_hadd_ps` on SSE3+/AVX2), interleaved stereo pair broadcast `splat_pair(a, b) -> [a, b, a, b]`, orthogonal pair swap `pair_swap_neg([v0, v1, v2, v3]) -> [-v1, v0, -v3, v2]`, and `flush_subnormal` (paired with `flush_recursive_state_vec4`)—while `MathBackend` (`Crc32cBackend`) provides $4\times 4$ matrix-vector tile accumulation `fma_mat4x4_vec4`, batch 4-lane IEEE-754 half-precision conversion `f32x4_to_fp16x4` / `fp16x4_to_f32x4` (`vcvt_f16_f32` / `vcvt_f32_f16` on NEON, `_mm_cvtps_ph` / `_mm_cvtph_ps` on `F16C`), hardware `CRC32C` (`__crc32cd`/`__crc32cb` on ARM64 `+crc`, `_mm_crc32_u64`/`_mm_crc32_u8` on `SSE4.2+`), `fast_unit_phasor`, and unfused 2-step Newton-Raphson `rsqrt_nr2_f32` / `rsqrt_nr2_pair_f32`.
+   - **Level 2 (Domain-Scoped Backend Traits):** Higher-level DSP traits (`OpMBackend`, `OpNBackend`, `OpTBackend`, `Stage2Backend`, `Stage3Backend`, `FeatureBusBackend`, `StageBackend`, `EngineBackend`) are defined inside their respective domain modules (`operators/`, `stages/`, `engine/`) rather than `math/`, enforcing a strict one-way dependency DAG (`engine -> stages -> operators -> math`) while allowing `X86Avx2FmaBackend` and `ArmSmeBackend` to override wide multi-vector kernels (`tile_dot64`, `tile_dot64_stereo`, `dot16_stereo`, `conv6_taps_{1..4}groups`, `tracker_exp_scales_f32`).
+2. `r[arch.simd.single-library-dispatch]` **Single-Library Per-Architecture Runtime SIMD Dispatch & `0.000000 ULP` Parity ([`ADR-0019`](../../adr/0019-simd-kernel-architecture-and-realtime-execution-optimizations.md)):**
+   - Each target architecture compiles all of its ISA tiers into a single binary (`math/aarch64/{neon,sve2,sme}` on `aarch64`, `math/x86/{sse2,sse42,avx2}` on `x86_64`, `math/wasm.rs` on `wasm32`, plus `math/scalar.rs` fallback) using function-level `#[target_feature]` attributes and `AtomicU8`-cached runtime capability detection (`0 = Unchecked`, `1 = Unavailable`, `2 = Available`), dispatched once at engine construction via `DynamicDnamEngine`.
+   - Where hardware fused multiply-add (`FMA`) vs. separate multiply-then-add would alter bit-exact rounding in non-FMA scalar reference formulas (such as the 2-step Newton-Raphson `rsqrt_nr2_pair_f32` step $\rho(1.5 - (0.5 r^2 \rho)\rho)$ in `Op-M` `T1`), all SIMD backends execute unfused IEEE-754 multiply and subtract instructions (`vmulq_f32`/`vsubq_f32`, `_mm_mul_ps`/`_mm_sub_ps`, `f32x4_mul`/`f32x4_sub`) to guarantee `0.000000 ULP` bit parity across `ScalarBackend`, `NeonBackend`, `ArmSve2Backend`, `ArmSmeBackend`, `X86Sse2Backend`, `X86Sse42Backend`, `X86Avx2FmaBackend`, and `WasmSimd128Backend`.
+3. `r[arch.simd.zero-stall-lowering]` **Division-Free & `libm`-Free LLVM Lowering Rules (`REQ-6.2`, `REQ-6.3`, [`ADR-0019`](../../adr/0019-simd-kernel-architecture-and-realtime-execution-optimizations.md)):**
+   - **Range Reduction Without `fmodf` or `while` Loops:** Never call `f32::rem_euclid` or `%` on floating-point values (which LLVM lowers to an external `bl _fmodf` `libm` call) or use data-dependent `while` loops for angle wrapping; always reduce angles via `k = floor_f32((theta + PI) * INV_TAU)` followed by `theta - k * TAU` (`INV_TAU = 1 / (2π)`).
+   - **Ring & Block Indexing Without `IDIV`/`UDIV`:** Never use integer `/` or `%` (including `.is_multiple_of(runtime_len)`) on runtime struct fields in `48 kHz` or `3 kHz` paths; use power-of-two bitmasks (`idx & (N - 1)`), branchless single-step wrap `i + (L & -[i < 0])`, or incremental `(block_idx, in_block_offset)` counters.
+   - **Division-Free Reciprocals & Square Roots:** Precompute reciprocals (`inv_xfade_denom`, `inv_sigma_knee`, `alpha_ramp`) on the cold or `3 kHz` setup path, and evaluate any dynamic reciprocals or square roots via exponent-seeded 6-step `f64` Newton-Raphson (`newton6_reciprocal_f64`) and Newton-Goldschmidt (`sqrt_f64`) with zero `FDIV` or `FSQRT` instructions.
+
 #### 2.4.2 Differentiability and Gradient Dynamics
 
 `r[arch.operators.differentiability]`
@@ -294,11 +306,11 @@ Reference embedded instance budgets on `1×` ARM Cortex-A76 core (`2.4 GHz`, `20
 | **`Lite` instances per embedded core** | `≥ 10×` at `48 kHz` (`≤ 2,083 ns/sample`) |
 | **`Full` instances per embedded core** | `≥ 6×` at `48 kHz` (`≤ 3,472 ns/sample`) |
 | **`Pro` instances per embedded core** | `≥ 2×` at `48 kHz` (`≤ 10,416 ns/sample`) |
-| **Real-time loop instruction invariant** | Zero hardware `FDIV`, `FSQRT`, or `libm` transcendental calls (`REQ-6.2`) |
+| **Real-time loop instruction invariant** | Zero pipeline-stalling `FDIV`, `FSQRT`, `IDIV`/`UDIV`/`SDIV`, `libm`/`fmodf`, unbounded loops, or nondeterministic calls (`REQ-6.2`, `REQ-6.3`) |
 
 **Rockchip RK3582 (`Cortex-A76 @ 2.4 GHz`) & LV2 Plugin Overhead Estimation Model:**
 
-To translate standalone desktop `ARM64 NEON` microbenchmark frame times $t_{\text{bench}}(t)$ (`143.23 ns` `Lite`, `160.45 ns` `Full`, `172.21 ns` `Pro`, `179.34 ns` `Ultra` at $f_s = 48\text{ kHz}$, $T_{\text{sample}} = 1 / f_s \approx 20,833.33\text{ ns}$) to practical embedded multi-plugin chains on the **Rockchip RK3582** (`2× Cortex-A76 @ 2.4 GHz` with `64 KB` L1D / `512 KB` L2 per core + `4× Cortex-A55 @ 2.0 GHz`, `3 MB` shared L3), the per-instance frame latency $t_{\text{A76+LV2}}(t, B)$, single-core utilization $u_{\text{core}}(t, B)$, and safe simultaneous instance count $N_{\text{safe}}(t, B)$ for block size $B \in [64, 128]$ are modeled as:
+To translate standalone desktop `ARM64 NEON` microbenchmark frame times $t_{\text{bench}}(t)$ (`161.59 ns` `Lite`, `189.30 ns` `Full`, `215.07 ns` `Pro`, `257.41 ns` `Ultra` at $f_s = 48\text{ kHz}$, $T_{\text{sample}} = 1 / f_s \approx 20,833.33\text{ ns}$ in `benches/pipeline.rs`; `178.53 ns`, `214.80 ns`, `236.38 ns`, `283.26 ns` in `benches/realtime_wcet.rs`) to practical embedded multi-plugin chains on the **Rockchip RK3582** (`2× Cortex-A76 @ 2.4 GHz` with `64 KB` L1D / `512 KB` L2 per core + `4× Cortex-A55 @ 2.0 GHz`, `3 MB` shared L3), the per-instance frame latency $t_{\text{A76+LV2}}(t, B)$, single-core utilization $u_{\text{core}}(t, B)$, and safe simultaneous instance count $N_{\text{safe}}(t, B)$ for block size $B \in [64, 128]$ are modeled as:
 
 $$t_{\text{A76+LV2}}(t, B) = \kappa_{\text{cache}} \left(\alpha_{\text{uarch}}(t) \cdot t_{\text{bench}}(t) + \frac{T_{\text{LV2-block}}}{B}\right), \qquad u_{\text{core}}(t, B) = \frac{t_{\text{A76+LV2}}(t, B)}{T_{\text{sample}}}, \qquad N_{\text{safe}}(t, B) = \left\lfloor \frac{\eta_{\text{RT}}}{u_{\text{core}}(t, B)} \right\rfloor$$
 
@@ -309,10 +321,10 @@ $$t_{\text{A76+LV2}}(t, B) = \kappa_{\text{cache}} \left(\alpha_{\text{uarch}}(t
 
 | Tier Profile | Desktop NEON (`t_bench`) | Est. RK3582 `1× A76` + LV2 (`t_A76+LV2`) | Est. `1× Cortex-A76` CPU / Instance | Est. Safe Instances (`1× A76` @ 80% RT Cap) | Est. Safe Instances (`2× A76` Audio Cores) | Normative Floor (`REQ-6.1` on `1× A76`) |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: |
-| **`Lite` (`64-D, C=4, K=4, M=4`)** | `143.23 ns` (`0.69%`) | `~520–730 ns` | **`2.5% – 3.5%`** | **`22 – 30×`** | `44 – 60×` | **`≥ 10×`** (`≤ 2,083 ns`) |
-| **`Full` (`128-D, C=8, K=8, M=8`)** | `160.45 ns` (`0.77%`) | `~830–1,150 ns` | **`4.0% – 5.5%`** | **`14 – 20×`** | `28 – 40×` | **`≥ 6×`** (`≤ 3,472 ns`) |
-| **`Pro` (`192-D, C=12, K=16, M=8`)** | `172.21 ns` (`0.83%`) | `~1,350–1,875 ns` | **`6.5% – 9.0%`** | **`8 – 12×`** | `16 – 24×` | **`≥ 2×`** (`≤ 10,416 ns`) |
-| **`Ultra` (`256-D, C=16, K=32, M=16`)** | `179.34 ns` (`0.86%`) | `~2,080–2,900 ns` | **`10.0% – 14.0%`** | **`5 – 8×`** | `10 – 16×` | Workstation / `4×` Bounce |
+| **`Lite` (`64-D, C=4, K=4, M=4`)** | `161.59 ns` (`0.78%`) | `~550–780 ns` | **`2.6% – 3.7%`** | **`21 – 30×`** | `42 – 60×` | **`≥ 10×`** (`≤ 2,083 ns`) |
+| **`Full` (`128-D, C=8, K=8, M=8`)** | `189.30 ns` (`0.91%`) | `~880–1,220 ns` | **`4.2% – 5.9%`** | **`13 – 19×`** | `26 – 38×` | **`≥ 6×`** (`≤ 3,472 ns`) |
+| **`Pro` (`192-D, C=12, K=16, M=8`)** | `215.07 ns` (`1.03%`) | `~1,420–1,980 ns` | **`6.8% – 9.5%`** | **`8 – 11×`** | `16 – 22×` | **`≥ 2×`** (`≤ 10,416 ns`) |
+| **`Ultra` (`256-D, C=16, K=32, M=16`)** | `257.41 ns` (`1.24%`) | `~2,180–3,050 ns` | **`10.5% – 14.6%`** | **`5 – 7×`** | `10 – 14×` | Workstation / `4×` Bounce |
 
 **Prior-Art Equivalent-Quality LV2 Instance Comparison on `1× RK3582 Cortex-A76` (`2.4 GHz`, `48 kHz` + LV2 @ `80%` RT Cap):**
 
@@ -329,8 +341,8 @@ When comparing plugin instance budgets on an embedded Linux LV2 host (such as Da
 | **`NAM A2 Lite / Feather` (Live Grade)** | Mono LV2 (`2×` LV2s for stereo) | `~1,871` MACs at `75%` NEON utilization (`C = 3` unaligned loops) + `76.2 KB` state (`> 64 KB` L1D) + LV2 port/trim wrapper overhead | `6.5% – 9.0%` (mono)<br/>`13.0% – 18.0%` (stereo pair) | `8 – 12×` mono LV2s | `4 – 6×` stereo pairs (`8–12` LV2s) | `3 – 4×` full rigs (`4–6` chained LV2s each) |
 | **`GuitarML Proteus` (`LSTM-40`, 1–2 Knobs)** | Mono LV2 (`2×` LV2s for stereo) | `~6,560–7,040` serial recurrent MACs + `160×` `sigmoid`/`tanh` `libm` calls/sample + `48 kHz` LV2 knob port smoothing (`+40·P` MACs static) + LV2 dispatch | `12.0% – 17.0%` (mono)<br/>`24.0% – 34.0%` (stereo pair) | `4 – 6×` mono LV2s | `2 – 3×` stereo pairs (`4–6` LV2s) | `2 – 3×` full rigs (`4–6` chained LV2s each) |
 | **`NAM ParametricOD` (3-Knob WaveNet/LSTM)** | Mono LV2 (`2×` LV2s for stereo) | Dilated conv / LSTM stack + `48 kHz` per-sample `FiLM` knob projections (`+2·C·P` MACs/layer when static) + `tanh` + LV2 control port smoothing | `18.0% – 25.0%` (mono)<br/>`36.0% – 50.0%` (stereo pair) | `3 – 4×` mono LV2s | `1 – 2×` stereo pairs (`2–4` LV2s) | `1 – 2×` full rigs (`4–6` chained LV2s each) |
-| **`DNAM Full` (True Studio Quality)** | **True Stereo LV2 (`1×` unified LV2)** | **Commuted 4-lane SIMD (`100%` NEON), L1D-resident core state, `0` static control MACs (`3 kHz` bus), `0` `FDIV`/`FSQRT`/`libm`, `1×` LV2 dispatch for full rig** | **`4.0% – 5.5%` (true stereo)** | **`14 – 20×` LV2s** | **`14 – 20×` true-stereo LV2s** | **`14 – 20×` complete stereo rigs (`1` LV2 each)** |
-| **`DNAM Lite` (Live / Pedalboard Grade)** | **True Stereo LV2 (`1×` unified LV2)** | **`64-D` commuted 4-lane SIMD (`100%` NEON), `192 B` Stage III state, `0` static control MACs, `0` `FDIV`/`FSQRT`/`libm`, `1×` LV2 dispatch for full rig** | **`2.5% – 3.5%` (true stereo)** | **`22 – 30×` LV2s** | **`22 – 30×` true-stereo LV2s** | **`22 – 30×` complete stereo rigs (`1` LV2 each)** |
+| **`DNAM Full` (True Studio Quality)** | **True Stereo LV2 (`1×` unified LV2)** | **Commuted 4-lane SIMD (`100%` NEON), L1D-resident core state, `0` static control MACs (`3 kHz` bus), `0` `FDIV`/`FSQRT`/`libm`, `1×` LV2 dispatch for full rig** | **`4.2% – 5.9%` (true stereo)** | **`13 – 19×` LV2s** | **`13 – 19×` true-stereo LV2s** | **`13 – 19×` complete stereo rigs (`1` LV2 each)** |
+| **`DNAM Lite` (Live / Pedalboard Grade)** | **True Stereo LV2 (`1×` unified LV2)** | **`64-D` commuted 4-lane SIMD (`100%` NEON), `192 B` Stage III state, `0` static control MACs, `0` `FDIV`/`FSQRT`/`libm`, `1×` LV2 dispatch for full rig** | **`2.6% – 3.7%` (true stereo)** | **`21 – 30×` LV2s** | **`21 – 30×` true-stereo LV2s** | **`21 – 30×` complete stereo rigs (`1` LV2 each)** |
 
 ### 2.3 State RAM Audit: Lite Budget
 
@@ -659,7 +671,7 @@ TORA builds a nested 4-tier physical hierarchy matching `REQ-5`: `Lite` ($64\tex
 | **`REQ-3`** | **Continuous Checkpointing & Stem Resume** | Tier-bundled `.dnam-ckpt` (`DCA1`), `uplo='U'` `Arena 4` slices, SHA-256 Gram-input fingerprint, and windowed `< 32 MiB` refresh. | [`iterative_resume_and_caching.md`](../training/iterative_resume_and_caching.md), [`checkpoint_and_cache_format.md`](../containers/checkpoint_and_cache_format.md) |
 | **`REQ-4`** | **Accelerator-First, Accurate & Memory-Scaled Training** | 32-bit device streaming, weighted Gram contraction bound (`∣ĝ - g∣ ≤ γ_N S`), batched host `float64` solver, and `< 8 GiB` host budget. | [`four_stage_pipeline.md` §3](../training/four_stage_pipeline.md#3-accelerator-first-32-bit-execution-gram-accuracy--streaming) |
 | **`REQ-5`** | **Multi-Tier Slimmable Scaling** | Four nested tiers (`Lite ⊂ Full ⊂ Pro ⊂ Ultra`), single-run joint training, on-demand bounded tier crossfade, and keyless prefix stripping. | [`tora_architecture.md` §2–§3](#2-4-tier-slimmable-simd-hierarchy-lite--full--pro--ultra), [`dnam_binary_format.md`](../containers/dnam_binary_format.md) |
-| **`REQ-6`** | **Embedded Real-Time Execution** | `≥ 10× Lite`, `≥ 6× Full`, `≥ 2× Pro` @ `48 kHz` on `1×` Cortex-A76, zero real-time `FDIV`/`FSQRT`/`libm`, and zero callback allocations. | [`tora_architecture.md` §1–§2](#1-executive-summary--core-architectural-pillars) |
+| **`REQ-6`** | **Embedded Real-Time Execution** | `≥ 10× Lite`, `≥ 6× Full`, `≥ 2× Pro` @ `48 kHz` on `1×` Cortex-A76, zero real-time `FDIV`/`FSQRT`/`IDIV`/`UDIV`/`SDIV`/`libm`/`fmodf`, zero unbounded loops, and zero callback allocations or nondeterministic syscalls. | [`tora_architecture.md` §1–§2](#1-executive-summary--core-architectural-pillars) |
 | **`REQ-7`** | **Unclipped `f32` Signal Chain, Topologies & Stability** | `±100.0` (`+40 dBFS`) certified unclipped envelope, `±1e9` all-finite safety guards, `1→1`/`2→1`/`1→2`/`2→2` topologies, and 3-phase control-space clamping (`ref[train.audit.phase1.clamp-stability]`). | [`router_and_stages_topology.md`](../dsp/router_and_stages_topology.md), [`control_space_audit.md`](../training/control_space_audit.md) |
 | **`REQ-8.1`–`REQ-8.8`** | **Provenance, Enclave DRM, Watermarking & Declarative Containers** | RFC 8785 JCS header digest, `DAU1`/`DAI1`/`DSA1` `Ed25519` prefix signatures, RFC 9180 HPKE `EnclaveSealed`, dual-mechanism Tardos/gauge watermark, `.dnam-prev` containment, and 64B-aligned code-execution-free containers. | [`provenance_and_enclave_drm.md`](../security/provenance_and_enclave_drm.md), [`watermarking_and_marketplace.md`](../security/watermarking_and_marketplace.md), [`dnam_binary_format.md`](../containers/dnam_binary_format.md) |
 
@@ -690,4 +702,4 @@ TORA builds a nested 4-tier physical hierarchy matching `REQ-5`: `Lite` ($64\tex
   - [`provenance_and_enclave_drm.md`](../security/provenance_and_enclave_drm.md): Ed25519 Signatures, Enclave DRM & Protection Profiles.
   - [`watermarking_and_marketplace.md`](../security/watermarking_and_marketplace.md): Buyer Watermarking, Structural Fingerprint & Storefront Previews.
 - **Architectural Decision Records (`docs/adr/`)**
-  - [`0002-tri-operator-recurrent-architecture.md`](../../adr/0002-tri-operator-recurrent-architecture.md) through [`0018-signal-chain-fixtures-crate-and-whitebox-distillation.md`](../../adr/0018-signal-chain-fixtures-crate-and-whitebox-distillation.md).
+  - [`0002-tri-operator-recurrent-architecture.md`](../../adr/0002-tri-operator-recurrent-architecture.md) through [`0019-simd-kernel-architecture-and-realtime-execution-optimizations.md`](../../adr/0019-simd-kernel-architecture-and-realtime-execution-optimizations.md).

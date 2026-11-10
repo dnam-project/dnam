@@ -14,3 +14,5 @@ Top-level guardrail suite (`moon check tests`) enforcing [`project_and_documenta
 | `test_spec_rule_identifiers_adr_structure_and_no_spec_text_parsing` | `ref[repo.docs.spec-rules-and-adrs]` | Unique `r[...]` rules, resolved `ref[...]`/`verify[...]`, MADR `docs/adr/NNNN-*.md`, `docs/templates/`, no `mod.rs`, and no spec-text parsing in tests. |
 | `test_engine_spec_scope_manifest` | `ref[repo.docs.spec-rules-and-adrs]` | Validates [`packages/engine/spec_scope.toml`](../packages/engine/spec_scope.toml) and 100% `verify[...]` coverage of all engine-scoped rules in `packages/engine/`. |
 | `test_spec_rules_verified_in_tests` | `ref[repo.docs.spec-rules-and-adrs]` | Reports all `r[...]` rules in `docs/specs/` not yet cited via `verify[...]` in test files. |
+| `test_engine_realtime_no_libm_or_float_rem_euclid` | `ref[repo.code.realtime-disassembly-audit]` | Zero `rem_euclid` (`bl _fmodf`) or float transcendental `libm` calls in `packages/engine/src/`. |
+| `test_engine_no_coverage_off_or_simd_macros` | `ref[repo.code.explicit-simd-and-coverage]` | Zero `coverage(off)` in `packages/engine/src/` and zero `macro_rules!` in `src/math/`. |

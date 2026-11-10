@@ -11,6 +11,7 @@ requirements:
   - REQ-6.2
 adrs:
   - ADR-0006
+  - ADR-0019
 ---
 
 # Op-T: Universal Transport, Granular Windowing & All-Pass Diffusion Operator
@@ -66,6 +67,8 @@ $$c_1' = -0.5 s[-1] + 0.5 s[1], \qquad c_0' = s[0]$$
 | **3. Stationary Energy Passivity** | For fixed `μ`, `1 - |H_μ(e^{iω})|² = μ²(1-μ)²(1 - cos ω)²(3 + 2μ(1-μ)(1 - cos ω)) ≥ 0` (`‖H_μ‖_∞ ≤ 1`). |
 | **4. Peak Gain & Bounded-History Guard** | Instantaneous `L₁` kernel norm is `1 + μ(1 - μ) ≤ 1.25` (attained at `μ = 0.5` with `[-1, 9, 9, -1]/16`); time-varying feedback loops enforce BIBO decay via the grouped bounded-history feedback guard below. |
 
+`r[dsp.op-t.reader.contiguous-fp16x4]` **Contiguous 4-Lane `fp16x4_to_f32x4` Stereo Delay Read Fast Path ([`ADR-0019`](../../adr/0019-simd-kernel-architecture-and-realtime-execution-optimizations.md)):** Because the 4 Catmull-Rom tap indices `[p_2, p_1, p_0, p_m1]` occupy 4 consecutive ring slots `[p_0 - 2 .. p_0 + 2]` whenever the window does not straddle index `0` (`p_0 >= 2 && p_0 + 1 < Self::HALF_CAPACITY`), `read_delay_stereo` loads the 4 contiguous `u16` (`fp16`) samples per channel (`[l_2, l_1, l_0, l_m1]` and `[r_2, r_1, r_0, r_m1]`) and converts them in a single 4-lane hardware instruction via `MathBackend::fp16x4_to_f32x4` (`vcvt_f32_f16` on NEON, `_mm_cvtph_ps` on `F16C`), falling back to wrapped per-tap reads only during the `3 / L` wrap-straddling frames.
+
 #### Bounded-History Feedback Guard
 
 `r[dsp.op-t.guard.bounded-history]`
@@ -74,6 +77,7 @@ Because time-varying Catmull-Rom reads can reach `1.25×` instantaneous peak gai
 $$w_i[n] = x_i[n] + g_i[n] \cdot \mathrm{clamp}\big(v_i[n], -M_n, M_n\big), \qquad 0 \le g_i[n] \le g_{\max} < 1$$
 
 - `r[dsp.op-t.guard.max-tree]` **Grouped Max-Tree Tracking:** Partition each ring into blocks of at most $H$ samples (`H = 64`), maintaining block maxima in a binary max-tree plus an active-block running maximum.
+- `r[dsp.op-t.guard.incremental-counters]` **Division-Free Incremental `(block_idx, in_block_offset)` Counters (`0 UDIV`, [`ADR-0019`](../../adr/0019-simd-kernel-architecture-and-realtime-execution-optimizations.md)):** To prevent integer division (`pos / block_size` or `.is_multiple_of(block_size)`, which lowers to hardware `UDIV`/`IDIV`) on arbitrary model-declared ring lengths, `OpTBlockMaxTreeGuard` maintains pre-allocated `block_indices: Vec<usize>` and `in_block_offsets: Vec<usize>` counters per delay line, advancing via branchless comparison (`offset + 1 == block_size` or `pos == 0`) with zero integer division instructions.
 - `r[dsp.op-t.guard.bibo-decay]` **Driven BIBO & Unforced Geometric Decay:** For $|x_i[n]| \le B$, every history sample remains bounded by $C = \max(M_0, B / (1 - g_{\max}))$; under zero input ($x_i[n] = 0$), $M_n$ decays by at least $g_{\max}$ every $L_{\max} + H$ frames regardless of read-pointer motion.
 - `r[dsp.op-t.guard.fp16-decay]` **Directed `fp16` Decay Rule:** Forming the guard ceiling with `0x3F7FBE76` (`0.999f32`) and rounding finite `fp16` writes toward zero guarantees strict subnormal decay to zero without nonzero `fp16` fixed points.
 
@@ -185,4 +189,5 @@ $$g_{\text{duck}}[n] = \mathrm{clamp}\Big(1.0 - \kappa_{\text{duck}}\big(e_{\tex
 | **Granular windowing (`M=2, 3`)** | Real-time `cos(π φ)` (`libm`) | Cubic Hermite `u²(3 - 2u)` (`M=2`) and quadratic B-spline `B₂` (`M=3`) (§2) |
 | **Schroeder all-pass** | Direct-form rational division | Coupled state recurrence `v = x - a u`, `y = a v + u` (§3.2) |
 | **Base-delay slew** | Per-sample rate division | Precomputed 1-pole slew with `∣Δτ_base∣ ≤ 0.25` (§1.3) |
-| **Switch crossfade** | Real-time `cos(π k / L)` | Cold-path precomputed crossfade weights `α_xf[k]` (§1.3) |
+| **Switch crossfade** | Real-time `cos(π k / L)` (`FDIV` + `libm`) | Cached `inv_xfade_denom = newton6_reciprocal_f64(L_xfade - 1)` + `floor_f32` minimax polynomial (§1.3) |
+| **Max-tree block boundary** | `pos / block_size`, `pos % block_size` (`UDIV`) | Incremental `(block_idx, in_block_offset)` counters (§1.2) |

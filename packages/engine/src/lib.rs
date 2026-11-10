@@ -23,6 +23,7 @@
 //!   callers hold a guard once per batch.
 
 #![no_std]
+#![deny(unsafe_code)]
 #![allow(clippy::needless_range_loop)]
 
 extern crate alloc;
@@ -37,6 +38,7 @@ pub mod control;
 pub mod dynamic;
 #[forbid(unsafe_code)]
 pub mod engine;
+#[allow(unsafe_code)]
 pub mod ffi;
 #[forbid(unsafe_code)]
 pub mod host;
@@ -54,6 +56,7 @@ pub mod stages;
 #[cfg(test)]
 #[forbid(unsafe_code)]
 pub(crate) mod test_support;
+#[allow(unsafe_code)]
 pub mod types;
 
 pub use container::strip_container_to_tier;

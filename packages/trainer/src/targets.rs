@@ -4,7 +4,7 @@
 
 use std::collections::BTreeMap;
 
-use dnam_engine::math::MathBackend;
+use dnam_engine::engine::EngineBackend;
 use dnam_engine::schema::DnamError;
 use dnam_engine::{DnamAudioIo, DnamEngine, DynamicDnamEngine};
 
@@ -110,7 +110,7 @@ pub trait DistillationTarget {
     }
 }
 
-impl<'a, B: MathBackend> DistillationTarget for DnamEngine<'a, B> {
+impl<'a, B: EngineBackend> DistillationTarget for DnamEngine<'a, B> {
     fn reset_state(&mut self) {
         self.reset_to_dc_equilibrium();
     }
@@ -220,7 +220,15 @@ impl<'a> DistillationTarget for DynamicDnamEngine<'a> {
             #[cfg(target_arch = "aarch64")]
             Self::Neon(e) => e.render_stem(stimulus),
             #[cfg(target_arch = "aarch64")]
+            Self::ArmSve2(e) => e.render_stem(stimulus),
+            #[cfg(target_arch = "aarch64")]
             Self::ArmSme(e) => e.render_stem(stimulus),
+            #[cfg(target_arch = "x86_64")]
+            Self::X86Sse2(e) => e.render_stem(stimulus),
+            #[cfg(target_arch = "x86_64")]
+            Self::X86Sse42(e) => e.render_stem(stimulus),
+            #[cfg(target_arch = "x86_64")]
+            Self::X86Avx2Fma(e) => e.render_stem(stimulus),
             #[cfg(target_arch = "x86_64")]
             Self::X86Simd(e) => e.render_stem(stimulus),
             #[cfg(target_arch = "wasm32")]
@@ -234,7 +242,15 @@ impl<'a> DistillationTarget for DynamicDnamEngine<'a> {
             #[cfg(target_arch = "aarch64")]
             Self::Neon(e) => e.render_frame(frame),
             #[cfg(target_arch = "aarch64")]
+            Self::ArmSve2(e) => e.render_frame(frame),
+            #[cfg(target_arch = "aarch64")]
             Self::ArmSme(e) => e.render_frame(frame),
+            #[cfg(target_arch = "x86_64")]
+            Self::X86Sse2(e) => e.render_frame(frame),
+            #[cfg(target_arch = "x86_64")]
+            Self::X86Sse42(e) => e.render_frame(frame),
+            #[cfg(target_arch = "x86_64")]
+            Self::X86Avx2Fma(e) => e.render_frame(frame),
             #[cfg(target_arch = "x86_64")]
             Self::X86Simd(e) => e.render_frame(frame),
             #[cfg(target_arch = "wasm32")]

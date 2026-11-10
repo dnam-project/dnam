@@ -22,8 +22,8 @@ pub struct ControlSpaceCore {
 
 impl ControlSpaceCore {
     pub fn new(header_json: &str) -> Result<Self, String> {
-        let header: DnamJsonHeader =
-            serde_json::from_str(header_json).map_err(|e| validation_err(e.to_string()))?;
+        let header: DnamJsonHeader = DnamJsonHeader::from_json_str(header_json)
+            .map_err(|e| validation_err(e.to_string()))?;
         let descriptors = header
             .compile_clamp_descriptors()
             .map_err(|e| format_tagged_dnam_error(&e))?;

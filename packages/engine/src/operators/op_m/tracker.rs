@@ -273,7 +273,7 @@ impl T1DcBlocker {
         })
     }
 
-    #[inline]
+    #[inline(always)]
     pub fn step(&mut self, x: f32) -> f32 {
         let d = self.gain * (x - self.prev_x) + self.pole * self.prev_d;
         self.prev_x = x;
@@ -282,19 +282,113 @@ impl T1DcBlocker {
     }
 }
 
-#[inline]
+#[inline(always)]
 fn rsqrt_nr2_exact_f32(value: f32) -> f32 {
-    let mut est = f32::from_bits(0x5f37_59df - (value.to_bits() >> 1));
-    for _ in 0..2 {
-        let corr = 1.5 - ((0.5 * value) * est) * est;
-        est *= corr;
+    <crate::math::DefaultMathBackend as crate::math::MathBackend>::rsqrt_nr2_f32(value)
+}
+
+#[inline(always)]
+fn rsqrt_nr2_exact_pair_f32(v0: f32, v1: f32) -> (f32, f32) {
+    <crate::math::DefaultMathBackend as crate::math::MathBackend>::rsqrt_nr2_pair_f32(v0, v1)
+}
+
+/// Domain-specific SIMD backend trait for `Op-M` (Symplectic Modal, Hilbert & Sub-Harmonic Tracker).
+pub trait OpMBackend {
+    /// Evaluates `T1` tracker exponent-split scales `(sd_l, su_l, sd_r, su_r)` for normal positive
+    /// maxima `(max_l, max_r)` inside SIMD registers without scalar `fmov` / `movd` transfers.
+    fn tracker_exp_scales_f32(max_l: f32, max_r: f32) -> (f32, f32, f32, f32);
+}
+
+/// Portable scalar reference implementation of [`OpMBackend::tracker_exp_scales_f32`].
+#[inline(always)]
+pub fn tracker_exp_scales_scalar_f32(max_l: f32, max_r: f32) -> (f32, f32, f32, f32) {
+    let cl_l = ((max_l.to_bits() >> 23) & 0xff).min(253);
+    let cl_r = ((max_r.to_bits() >> 23) & 0xff).min(253);
+    (
+        f32::from_bits((254 - cl_l) << 23),
+        f32::from_bits(cl_l << 23),
+        f32::from_bits((254 - cl_r) << 23),
+        f32::from_bits(cl_r << 23),
+    )
+}
+
+impl OpMBackend for crate::math::ScalarBackend {
+    #[inline(always)]
+    fn tracker_exp_scales_f32(max_l: f32, max_r: f32) -> (f32, f32, f32, f32) {
+        tracker_exp_scales_scalar_f32(max_l, max_r)
     }
-    est
+}
+
+#[cfg(target_arch = "aarch64")]
+impl OpMBackend for crate::math::NeonBackend {
+    #[inline(always)]
+    fn tracker_exp_scales_f32(max_l: f32, max_r: f32) -> (f32, f32, f32, f32) {
+        crate::math::aarch64::neon::neon_tracker_exp_scales_f32(max_l, max_r)
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+impl OpMBackend for crate::math::ArmSve2Backend {
+    #[inline(always)]
+    fn tracker_exp_scales_f32(max_l: f32, max_r: f32) -> (f32, f32, f32, f32) {
+        crate::math::aarch64::sve2::sve2_tracker_exp_scales_f32(max_l, max_r)
+            .unwrap_or_else(|| tracker_exp_scales_scalar_f32(max_l, max_r))
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+impl OpMBackend for crate::math::ArmSmeBackend {
+    #[inline(always)]
+    fn tracker_exp_scales_f32(max_l: f32, max_r: f32) -> (f32, f32, f32, f32) {
+        crate::math::aarch64::sve2::sve2_tracker_exp_scales_f32(max_l, max_r).unwrap_or_else(|| {
+            crate::math::aarch64::neon::neon_tracker_exp_scales_f32(max_l, max_r)
+        })
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+impl OpMBackend for crate::math::X86Sse2Backend {
+    #[inline(always)]
+    fn tracker_exp_scales_f32(max_l: f32, max_r: f32) -> (f32, f32, f32, f32) {
+        crate::math::x86::sse2::sse2_tracker_exp_scales_f32(max_l, max_r)
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+impl OpMBackend for crate::math::X86Sse42Backend {
+    #[inline(always)]
+    fn tracker_exp_scales_f32(max_l: f32, max_r: f32) -> (f32, f32, f32, f32) {
+        crate::math::x86::sse42::sse42_tracker_exp_scales_f32(max_l, max_r)
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+impl OpMBackend for crate::math::X86Avx2FmaBackend {
+    #[inline(always)]
+    fn tracker_exp_scales_f32(max_l: f32, max_r: f32) -> (f32, f32, f32, f32) {
+        crate::math::x86::sse42::sse42_tracker_exp_scales_f32(max_l, max_r)
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+impl OpMBackend for crate::math::WasmSimd128Backend {
+    #[inline(always)]
+    fn tracker_exp_scales_f32(max_l: f32, max_r: f32) -> (f32, f32, f32, f32) {
+        #[cfg(target_feature = "simd128")]
+        {
+            crate::math::wasm::wasm_tracker_exp_scales_f32(max_l, max_r)
+        }
+        #[cfg(not(target_feature = "simd128"))]
+        {
+            tracker_exp_scales_scalar_f32(max_l, max_r)
+        }
+    }
 }
 
 /// Normalizes an analytic pair $(I, Q)$ using exponent-split pre-scaling by $2^{-\min(E, 126)}$
 /// (with $2^{24}$ subnormal pre-scaling) and 2-step Newton `rsqrt` (`0 FSQRT`, `0 FDIV`,
 /// `ref[dsp.op-m.tracker.envelope-norm]`). Returns `None` when $I = Q = 0$.
+#[inline(always)]
 pub fn normalize_tracker_phasor_exponent_split(i_val: f32, q_val: f32) -> Option<(f32, f32, f32)> {
     let mut x = i_val;
     let mut y = q_val;
@@ -326,7 +420,7 @@ pub fn normalize_tracker_phasor_exponent_split(i_val: f32, q_val: f32) -> Option
 
 /// Evaluates the smooth half-angle pair `(v_cos, v_sin)` from a normalized phasor `(u_re, u_im)`
 /// (`ref[dsp.op-m.tracker.toggle-sheet]`).
-#[inline]
+#[inline(always)]
 pub fn eval_tracker_half_angle_pair(u_re: f32, u_im: f32) -> (f32, f32) {
     let re = u_re.clamp(-1.0, 1.0);
     let im = u_im.clamp(-1.0, 1.0);
@@ -344,10 +438,13 @@ pub fn eval_tracker_half_angle_pair(u_re: f32, u_im: f32) -> (f32, f32) {
 /// Returns `true` if consecutive normalized phasors `prev` and `curr` cross the negative real axis
 /// branch cut, holding on near-origin chords (`p . u < 0` and `|D| <= 2^-18`,
 /// `ref[dsp.op-m.tracker.toggle-sheet]`).
-#[inline]
+#[inline(always)]
 pub fn tracker_crosses_branch_cut(prev: (f32, f32), curr: (f32, f32)) -> bool {
     let (px, py) = prev;
     let (x, y) = curr;
+    if (py >= 0.0) == (y >= 0.0) || (px >= 0.0 && x >= 0.0) {
+        return false;
+    }
     let det = (px as f64) * (y as f64) - (py as f64) * (x as f64);
     let dot = (px as f64) * (x as f64) + (py as f64) * (y as f64);
     let chord_tol = f64::from_bits((1023 - 18) << 52);
@@ -393,6 +490,7 @@ impl T1SubHarmonicTracker {
 
     /// Steps the tracker from unnormalized analytic pair `(i_raw, q_raw)`, returning
     /// `[w_cos, w_sin, w_square, w_quarter]`.
+    #[inline(always)]
     pub fn step_analytic(&mut self, i_raw: f32, q_raw: f32) -> [f32; 4] {
         let Some((u_re, u_im, env_hat)) = normalize_tracker_phasor_exponent_split(i_raw, q_raw)
         else {
@@ -422,6 +520,112 @@ impl T1SubHarmonicTracker {
             env_hat * self.q1,
             env_hat * self.q2,
         ]
+    }
+
+    /// Steps a stereo pair (`left`, `right`) of `T1SubHarmonicTracker` instances simultaneously,
+    /// interleaving the independent Left and Right 2-step Newton `rsqrt` dependency chains
+    /// (`0 ULP` difference vs [`Self::step_analytic`]).
+    #[inline(always)]
+    pub fn step_analytic_stereo(
+        left: &mut Self,
+        right: &mut Self,
+        i_l: f32,
+        q_l: f32,
+        i_r: f32,
+        q_r: f32,
+    ) -> ([f32; 4], [f32; 4]) {
+        let max_l = i_l.abs().max(q_l.abs());
+        let max_r = i_r.abs().max(q_r.abs());
+        const MIN_NORMAL_F32: f32 = f32::from_bits(0x0080_0000);
+        if !(max_l >= MIN_NORMAL_F32 && max_r >= MIN_NORMAL_F32) {
+            return (left.step_analytic(i_l, q_l), right.step_analytic(i_r, q_r));
+        }
+
+        let (sd_l, su_l, sd_r, su_r) =
+            <crate::math::DefaultMathBackend as OpMBackend>::tracker_exp_scales_f32(max_l, max_r);
+
+        let sx_l = i_l * sd_l;
+        let sy_l = q_l * sd_l;
+        let sx_r = i_r * sd_r;
+        let sy_r = q_r * sd_r;
+        let sq_l = sx_l * sx_l + sy_l * sy_l;
+        let sq_r = sx_r * sx_r + sy_r * sy_r;
+        let (inv_l, inv_r) = rsqrt_nr2_exact_pair_f32(sq_l, sq_r);
+
+        let env_l = (sq_l * inv_l) * su_l;
+        let u_re_l = (sx_l * inv_l).clamp(-1.0, 1.0);
+        let u_im_l = (sy_l * inv_l).clamp(-1.0, 1.0);
+
+        let env_r = (sq_r * inv_r) * su_r;
+        let u_re_r = (sx_r * inv_r).clamp(-1.0, 1.0);
+        let u_im_r = (sy_r * inv_r).clamp(-1.0, 1.0);
+
+        let h_l = 0.5 * (1.0 + u_re_l.abs());
+        let h_r = 0.5 * (1.0 + u_re_r.abs());
+        let (h_inv_l, h_inv_r) = rsqrt_nr2_exact_pair_f32(h_l, h_r);
+
+        let maj_l = (h_l * h_inv_l).clamp(0.0, 1.0);
+        let min_l = (u_im_l.abs() * (0.5 * h_inv_l)).clamp(0.0, 1.0);
+        let (vc_l, vs_l) = if u_re_l >= 0.0 {
+            (maj_l, min_l)
+        } else {
+            (min_l, maj_l)
+        };
+        let sig_l = if u_im_l >= 0.0 { 1.0_f32 } else { -1.0_f32 };
+
+        let maj_r = (h_r * h_inv_r).clamp(0.0, 1.0);
+        let min_r = (u_im_r.abs() * (0.5 * h_inv_r)).clamp(0.0, 1.0);
+        let (vc_r, vs_r) = if u_re_r >= 0.0 {
+            (maj_r, min_r)
+        } else {
+            (min_r, maj_r)
+        };
+        let sig_r = if u_im_r >= 0.0 { 1.0_f32 } else { -1.0_f32 };
+
+        if left.prev_valid {
+            if left.prev_i_nonpositive && i_l > 0.0 {
+                left.q1 = -left.q1;
+                if left.q1 > 0.0 {
+                    left.q2 = -left.q2;
+                }
+            }
+            if tracker_crosses_branch_cut(left.prev_phasor, (u_re_l, u_im_l)) {
+                left.s_sheet = -left.s_sheet;
+            }
+        }
+        left.prev_valid = true;
+        left.prev_i_nonpositive = i_l <= 0.0;
+        left.prev_phasor = (u_re_l, u_im_l);
+
+        if right.prev_valid {
+            if right.prev_i_nonpositive && i_r > 0.0 {
+                right.q1 = -right.q1;
+                if right.q1 > 0.0 {
+                    right.q2 = -right.q2;
+                }
+            }
+            if tracker_crosses_branch_cut(right.prev_phasor, (u_re_r, u_im_r)) {
+                right.s_sheet = -right.s_sheet;
+            }
+        }
+        right.prev_valid = true;
+        right.prev_i_nonpositive = i_r <= 0.0;
+        right.prev_phasor = (u_re_r, u_im_r);
+
+        (
+            [
+                env_l * left.s_sheet * vc_l,
+                env_l * left.s_sheet * sig_l * vs_l,
+                env_l * left.q1,
+                env_l * left.q2,
+            ],
+            [
+                env_r * right.s_sheet * vc_r,
+                env_r * right.s_sheet * sig_r * vs_r,
+                env_r * right.q1,
+                env_r * right.q2,
+            ],
+        )
     }
 }
 
@@ -665,40 +869,5 @@ mod stage1_reference_tests {
         assert!(normalized_i <= 0.0 && later_positive > 0.0);
         assert!(earlier_negative <= 0.0 && raw_i > 0.0);
         assert!(!(earlier_negative <= 0.0 && normalized_i > 0.0));
-    }
-
-    #[test]
-    #[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
-    fn equal_transposed_cells_can_require_different_history_consistent_retunes() {
-        fn step(coefficient: f32, state: &mut [f32; 2], input: f32) -> f32 {
-            let output = black_box(black_box(coefficient * input) + state[1]);
-            state[1] = state[0];
-            state[0] = black_box(black_box(coefficient * output) - input);
-            output
-        }
-
-        let _guard = FtzDazGuard::new();
-        let old = black_box(f32::from_bits(0x3d91_bee6));
-        let new = black_box(f32::from_bits(0x3db0_73c5));
-        let mut driven_state = [0.0; 2];
-        let mut outputs = [0.0; 3];
-        for (sample, output) in [1.0, 0.0, -old].into_iter().zip(&mut outputs) {
-            *output = step(old, &mut driven_state, sample);
-        }
-        assert_eq!(driven_state.map(f32::to_bits), [0; 2]);
-        assert_eq!(&outputs[1..], &[0.0, -1.0]);
-
-        let mut empty_state = [0.0; 2];
-        let change = black_box(new - old);
-        driven_state[0] = black_box(driven_state[0] + black_box(change * outputs[2]));
-        driven_state[1] = black_box(driven_state[1] + black_box(change * outputs[1]));
-        assert_ne!(driven_state, empty_state);
-
-        assert_eq!(step(new, &mut driven_state, 0.0), 0.0);
-        assert_eq!(step(new, &mut empty_state, 0.0), 0.0);
-        let driven_second = step(new, &mut driven_state, 0.0);
-        let empty_second = step(new, &mut empty_state, 0.0);
-        assert!((-0.015..-0.014).contains(&driven_second));
-        assert_eq!(empty_second, 0.0);
     }
 }

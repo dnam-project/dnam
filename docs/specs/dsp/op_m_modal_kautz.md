@@ -13,6 +13,7 @@ requirements:
   - REQ-6.2
 adrs:
   - ADR-0005
+  - ADR-0019
 ---
 
 # Op-M: Universal Symplectic Modal, Hilbert, Sub-Harmonic & Kautz Operator
@@ -33,6 +34,8 @@ $$z_c[n] = a_c[n] z_c[n-1] + \tilde{b}_c[n] x_c[n], \qquad a_c[n] = r_c[n] \cdot
 In Cartesian components, with $u_{\mathrm{rot}, c} = c_{\mathrm{rot}, c} + i s_{\mathrm{rot}, c}$, $\alpha_{\mathrm{re}, c}[n] = r_c[n] c_{\mathrm{rot}, c}$, and $\alpha_{\mathrm{im}, c}[n] = r_c[n] s_{\mathrm{rot}, c}$ (matching $O(\log_2 L)$ associative parallel scan evaluation in `f64` within $< 10^{-13}$):
 $$z_{\mathrm{re}, c}[n] = \alpha_{\mathrm{re}, c}[n] z_{\mathrm{re}, c}[n-1] - \alpha_{\mathrm{im}, c}[n] z_{\mathrm{im}, c}[n-1] + b_{\mathrm{re}, c} x_c[n]$$
 $$z_{\mathrm{im}, c}[n] = \alpha_{\mathrm{im}, c}[n] z_{\mathrm{re}, c}[n-1] + \alpha_{\mathrm{re}, c}[n] z_{\mathrm{im}, c}[n-1] + b_{\mathrm{im}, c} x_c[n]$$
+
+`r[dsp.op-m.recurrence.stereo-simd]` **4-Lane Stereo Symplectic & Kautz SIMD Recurrence ([`ADR-0019`](../../adr/0019-simd-kernel-architecture-and-realtime-execution-optimizations.md)):** In both Stage I (`SymplecticModal4Lane::step_4lane_stereo_simd` / `step_4lane_stereo_simd_with_readout`) and Stage III (`KautzModalBank<4>::step_4lane_stereo_simd_splatted` / `step_4lane_stereo_simd_unscaled`), Left and Right channel states `(z_re_l, z_im_l, z_re_r, z_im_r)` are stepped together in 4-pole `B::Vec4` SIMD blocks sharing the same loaded pole radii and rotor vectors `(r_c, cos_c, sin_c)`, halving parameter-load bandwidth and loop overhead relative to separate per-channel calls.
 
 ### 1.2 Contractive Finite-Precision Rotor
 
@@ -58,6 +61,7 @@ To guarantee $|u_{\mathrm{rot}, c}| \le 1.0$ in IEEE-754 `f32` without `libm` ca
 4. `r[dsp.op-m.rotor.q0-192-lfo]` **`Q0.192` Fixed-Point LFO Phase Accumulator:** To prevent slow LFO increments (such as $\Delta\theta = 2^{-30}\text{ rad/tick}$) from stalling at a rounded `f32` complex-state fixed point, represent LFO phase modulo $2^{192}$ and advance by the ties-to-even integer increment:
    $$K = \left\lfloor \frac{2^{256}}{2\pi} \right\rfloor = \text{0x28be60db9391054a7f09d5f47d4d377036d8a5664f10e4107f9458eaf7aef158}, \qquad \Delta P = \mathrm{round}_{\text{even}}\big(m K / 2^{64 - e}\big)$$
    for $|\Delta\theta| = m 2^e$, converting the top 32 phase bits directly into a unit phasor via the quadrant-reduced rotor.
+5. `r[dsp.op-m.rotor.angle-wrap-and-retune]` **Division-Free `floor_f32` Angle Wrapping & Incremental `3 kHz` 4-Lane Pole Rotation ([`ADR-0019`](../../adr/0019-simd-kernel-architecture-and-realtime-execution-optimizations.md)):** Arbitrary `f32` angles wrap into $[-\pi, \pi)$ via `k = floor_f32((theta_rad + PI) * INV_TAU)` followed by `theta_rad - k * TAU` (`0 _fmodf`, `0 FDIV`, `0 while` loops). During `3 kHz` Stage I (`Stage1PreDynamics::retune_op_m_pre_3khz`) and Stage III (`StagePipeline::retune_kautz_formant_3khz`) formant/radial-gate modulation, each 4-pole block caches its host-rate `(host_op_m_cos, host_op_m_sin)` and `(kautz_host_cos, kautz_host_sin)` vectors, skips retuning when `|delta_theta - last_delta_theta| <= 1e-9 && |gate - last_gate| <= 1e-9`, and otherwise evaluates `algebraic_unit_rotor_op_m(delta_theta)` once per tick to rotate all 4 poles in `B::Vec4` via `cos_rot = host_cos * d_cos - host_sin * d_sin` and `sin_rot = host_sin * d_cos + host_cos * d_sin` with 1st-order Taylor renormalization `scale = min(1.0, 1.5 - 0.5 * (cos_rot^2 + sin_rot^2))`.
 
 ### 1.3 Log-Octave Initialization & $\mathcal{H}_2$-Norm Input Scaling
 
@@ -153,6 +157,7 @@ Effective rate (Hz) | First midpoint m | Last midpoint m | Maximum comparisons
 1. **Exponent-Split Pre-Scaling:** For $m = \max(|I|, |Q|) > 0$, scale $(I, Q)$ by $2^{-\min(E, 126)}$ (where $E$ is the unbiased exponent of $m$, pre-multiplying subnormals by $2^{24}$ under gradual underflow) so the scaled squared norm $r^2$ lies in $[1, 32)$.
 2. **Two-Step Newton `rsqrt` (`0 FSQRT`, `0 FDIV`):** Seed $\rho_0$ from `0x5F3759DF` and iterate $\rho_{j+1} = \rho_j(1.5 - (0.5 r^2 \rho_j)\rho_j)$ twice. Form $u_{\mathrm{re}} = \mathrm{clamp}(I_{\mathrm{sc}}\rho_2, -1, 1)$, $u_{\mathrm{im}} = \mathrm{clamp}(Q_{\mathrm{sc}}\rho_2, -1, 1)$, and envelope $\hat{A} = r^2 \rho_2 \cdot 2^{\min(E, 126)}$.
 3. **Exact Zero Handling:** When $I = Q = 0$, emit zero sub-octave features, invalidate the previous phasor, and hold the toggle/sheet signs without inventing a crossing on resumption.
+4. `r[dsp.op-m.tracker.stereo-batching]` **Interleaved Stereo `H1` Lattice & Batched `T1` `rsqrt_nr2_pair_f32` Execution ([`ADR-0019`](../../adr/0019-simd-kernel-architecture-and-realtime-execution-optimizations.md)):** `HilbertH1Lattice6Sec::step_stereo` packs the 4 real all-pass branches `[I_L, Q_L, I_R, Q_R]` into a single 4-lane `B::Vec4` register across all 6 cascaded sections (`1×` SIMD FMA chain per stereo frame instead of `4×` scalar loops), and `T1SubHarmonicTracker::step_analytic_stereo` batches Left and Right channel `rsqrt` evaluations into paired 2-lane SIMD calls `B::rsqrt_nr2_pair_f32([r2_l, r2_r])` and `B::rsqrt_nr2_pair_f32([h_l, h_r])`.
 
 ### 3.2 Discrete Toggle & Half-Angle Sheet
 

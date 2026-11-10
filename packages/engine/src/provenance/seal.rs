@@ -277,7 +277,7 @@ pub fn seal_dnam_container(
             actual: inner_dnam_bytes.len(),
         });
     }
-    let inner_header: DnamJsonHeader = serde_json::from_slice(&inner_dnam_bytes[64..64 + json_len])
+    let inner_header = DnamJsonHeader::from_json_slice(&inner_dnam_bytes[64..64 + json_len])
         .map_err(|e| DnamError::InvalidJsonHeader(e.to_string()))?;
     inner_header.validate()?;
 

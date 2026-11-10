@@ -9,8 +9,6 @@ pub mod backend;
 #[forbid(unsafe_code)]
 pub mod crc32c;
 #[forbid(unsafe_code)]
-pub mod default_ops;
-#[forbid(unsafe_code)]
 pub mod fp16;
 #[forbid(unsafe_code)]
 pub mod init_math;
@@ -22,21 +20,20 @@ pub mod scalar;
 pub mod spec_math;
 
 #[cfg(target_arch = "aarch64")]
-pub mod neon;
-
-#[cfg(target_arch = "aarch64")]
-pub mod arm_sme;
+#[allow(unsafe_code)]
+pub mod aarch64;
 
 #[cfg(target_arch = "x86_64")]
-pub mod x86_simd;
+#[allow(unsafe_code)]
+pub mod x86;
 
 #[cfg(target_arch = "wasm32")]
 #[forbid(unsafe_code)]
-pub mod wasm_simd128;
+pub mod wasm;
 
 pub use backend::{MathBackend, SimdVec4, flush_subnormal_f32_bits};
 pub(crate) use backend::{flush_recursive_state_f32, flush_recursive_state_vec4};
-pub use crc32c::{crc32c, crc32c_slice};
+pub use crc32c::{Crc32cBackend, crc32c, crc32c_slice, crc32c_software_slice};
 pub use fp16::{
     f32_to_fp16, f32_to_fp16 as f32_to_fp16_bits, fp16_to_f32, fp16_to_f32 as fp16_bits_to_f32,
 };
@@ -68,16 +65,16 @@ pub use spec_math::{
 };
 
 #[cfg(target_arch = "aarch64")]
-pub use neon::{NeonBackend, NeonVec4};
-
-#[cfg(target_arch = "aarch64")]
-pub use arm_sme::ArmSmeBackend;
+pub use aarch64::{ArmSmeBackend, ArmSve2Backend, NeonBackend, NeonVec4, Sve2Vec4};
 
 #[cfg(target_arch = "x86_64")]
-pub use x86_simd::{X86SimdBackend, X86Vec4};
+pub use x86::{
+    Avx2FmaVec4, Sse2Vec4, Sse42Vec4, X86Avx2FmaBackend, X86SimdBackend, X86Sse2Backend,
+    X86Sse42Backend, X86Vec4,
+};
 
 #[cfg(target_arch = "wasm32")]
-pub use wasm_simd128::{WasmSimd128Backend, WasmVec4};
+pub use wasm::{WasmSimd128Backend, WasmVec4};
 
 /// Compile-time default `MathBackend` for `aarch64` (`NeonBackend`, while runtime dispatch via
 /// [`detect_best_backend`] / [`crate::DynamicDnamEngine`] automatically upgrades to [`ArmSmeBackend`]
@@ -110,11 +107,15 @@ pub enum BackendKind {
     ArmNeon,
     /// Alias for [`Self::ArmNeon`].
     Neon,
+    /// ARMv9-A Scalable Vector Extension 2 (`ARM SVE2` / `FEAT_SVE2`, e.g., Cortex-X925/X4, Neoverse-V2).
+    ArmSve2,
     /// ARMv9.2-A Scalable Matrix Extension (`ARM SME` / `SME2`, e.g., Apple Silicon M4+, Cortex-X925+).
     ArmSme,
-    /// x86-64 SSE4.2 (`__m128` + hardware `_mm_crc32_u64`).
+    /// x86-64 SSE2 architectural baseline (`x86-64-v1`: 128-bit `__m128`).
+    X86Sse2,
+    /// x86-64 SSE4.2 (`x86-64-v2`: `SSE3` + `SSSE3` + `SSE4.1` + hardware `_mm_crc32_u64`).
     X86Sse42,
-    /// x86-64 AVX2 + FMA + F16C (`__m128` / `__m256` + `_mm_fmadd_ps`).
+    /// x86-64 AVX2 + FMA + F16C (`x86-64-v3`: `__m128` / `__m256` + `_mm_fmadd_ps` + `_mm_cvtps_ph`).
     X86Avx2Fma,
     /// Alias for [`Self::X86Avx2Fma`].
     X86Simd,
@@ -129,7 +130,9 @@ impl BackendKind {
         match self {
             Self::Scalar => "Scalar",
             Self::ArmNeon | Self::Neon => "ARM64 NEON",
+            Self::ArmSve2 => "ARMv9 SVE2",
             Self::ArmSme => "ARM SME",
+            Self::X86Sse2 => "x86 SSE2",
             Self::X86Sse42 => "x86 SSE4.2",
             Self::X86Avx2Fma | Self::X86Simd => "x86 AVX2",
             Self::WasmSimd128 => "WASM SIMD",
@@ -142,27 +145,15 @@ impl BackendKind {
 pub fn detect_best_backend() -> BackendKind {
     #[cfg(target_arch = "aarch64")]
     {
-        if ArmSmeBackend::is_supported() {
-            BackendKind::ArmSme
-        } else {
-            BackendKind::Neon
-        }
+        aarch64::detect_aarch64_backend()
     }
     #[cfg(target_arch = "x86_64")]
     {
-        if cfg!(all(target_feature = "avx2", target_feature = "fma")) {
-            BackendKind::X86Avx2Fma
-        } else {
-            BackendKind::X86Sse42
-        }
+        x86::detect_x86_backend()
     }
     #[cfg(target_arch = "wasm32")]
     {
-        if cfg!(target_feature = "simd128") {
-            BackendKind::WasmSimd128
-        } else {
-            BackendKind::Scalar
-        }
+        wasm::detect_wasm_backend()
     }
     #[cfg(not(any(
         target_arch = "aarch64",

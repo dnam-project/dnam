@@ -1,16 +1,16 @@
 //! 4-port (`4CM`, `WDW`, `Sidechain`) and 256-D Feature Bus processing loops for [`DnamEngine`].
 
 use super::{DnamAudioIo, feature_bus};
-use crate::engine::DnamEngine;
-use crate::math::{MathBackend, SimdVec4, flush_recursive_state_f32};
+use crate::engine::{DnamEngine, EngineBackend};
+use crate::math::{SimdVec4, flush_recursive_state_f32};
 use crate::provenance::watermark::max_tiers_for_arena_len;
 use crate::types::FtzDazGuard;
 
-impl<'a, B: MathBackend> DnamEngine<'a, B> {
+impl<'a, B: EngineBackend> DnamEngine<'a, B> {
     /// Low-level 4-port (`[inst_l, inst_r, ret_l, ret_r] -> [main_l, main_r, send_or_wdw_3, send_4]`)
     /// TORA stepping with optional 256-D feature bus capture (`ref[dsp.router.ports]`).
     #[allow(clippy::too_many_arguments)]
-    #[inline]
+    #[inline(never)]
     pub(crate) fn step_frame_4port_tora(
         &mut self,
         in_l: f32,
@@ -87,32 +87,23 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
         if self.ctrl_sub_counter >= k_ctrl {
             self.step_control_tick_3khz(loop_tiers);
         }
-        crate::control::ControlBus::<B>::step_micro_ramp(
+        crate::control::ControlBus::<B>::step_micro_ramp_12(
             &mut self.current_stage_params,
             &self.stage_ramp_deltas,
         );
 
-        let laws = crate::stages::eval_stage_modulation_laws(
-            &self.current_stage_params,
-            [
-                self.stage_pipeline.stage0.s_matrix[0][0],
-                self.stage_pipeline.stage0.s_matrix[1][1],
-            ],
-            self.zoh.tau_ref_samples_host,
-            256.0,
-            self.stage_pipeline.stage4.delay_lengths[0] as f32,
-            1004.0,
-            self.stage_pipeline.stage4.g_loop,
-            0.5,
-            self.stereo_width,
-        );
-        self.stage_pipeline.stage1.boost_gain = laws[4];
-        self.stage_pipeline.stage1.pitch_blend = self.current_stage_params[3].clamp(-1.0, 1.0);
-        let drive_gain = (laws[5] + 0.25 * self.control_bus.ctrl_basis_4[0]).clamp(0.25, 4.0);
-        let beta_tone = laws[6];
-        let pwr_drive = laws[7];
-        let sag_depth = (laws[8] + 0.1 * self.control_bus.ctrl_basis_4[1]).clamp(0.0, 0.8);
-        let g_fir = laws[11];
+        let theta = &self.current_stage_params;
+        self.stage_pipeline.stage1.boost_gain = (1.0 + theta[4]).clamp(0.0, 16.0);
+        self.stage_pipeline.stage1.pitch_blend = theta[3].clamp(-1.0, 1.0);
+        let drive_gain = ((1.0 + 0.25 * theta[5]).clamp(0.25, 4.0)
+            + 0.25 * self.control_bus.ctrl_basis_4[0])
+            .clamp(0.25, 4.0);
+        let beta_tone = (0.5 + theta[6]).clamp(0.0, 1.0);
+        let pwr_drive = (1.0 + 0.25 * theta[7]).clamp(0.25, 4.0);
+        let sag_depth = ((0.2 + 0.1 * theta[8]).clamp(0.0, 0.8)
+            + 0.1 * self.control_bus.ctrl_basis_4[1])
+            .clamp(0.0, 0.8);
+        let g_fir = (1.0 + theta[11]).clamp(0.0, 2.0);
 
         let (down_l, down_r, clean_sub_l, clean_sub_r) = self
             .stage_pipeline
@@ -143,11 +134,16 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
             (s1_l, s1_r)
         };
 
-        let s2_out = self.stage_pipeline.stage2.step_frame_with_branches(
-            s2_in_l, s2_in_r, drive_gain, sag_depth, beta_tone, pwr_drive, loop_tiers,
+        let (s2_l, s2_r) = self.stage_pipeline.stage2.step_frame_into_feature_bus(
+            s2_in_l,
+            s2_in_r,
+            drive_gain,
+            sag_depth,
+            beta_tone,
+            pwr_drive,
+            loop_tiers,
+            &mut self.feature_bus_scratch,
         );
-        let s2_l = s2_out.s2_l;
-        let s2_r = s2_out.s2_r;
 
         let (s3_fir_raw_l, s3_fir_raw_r, s2_delayed_16_l, s2_delayed_16_r) = self
             .stage_pipeline
@@ -185,8 +181,8 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
             self.refresh_collapsed_head_weights(active_tiers);
         }
 
+        const KAUTZ_FB_OFFSETS: [usize; 8] = [0, 64, 128, 132, 192, 196, 200, 204];
         const TIER_BLK_BASE: [usize; 4] = [0, 1, 2, 4];
-        let mut kautz_modal_feats = [[0.0_f32; 4]; 8];
         let mut kautz_acc_l = B::Vec4::zero();
         let mut kautz_acc_r = B::Vec4::zero();
         let xl_vec = B::Vec4::splat(s2_delayed_16_l);
@@ -197,41 +193,43 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
             let n_blocks = crate::provenance::STAGE3_KAUTZ_BLOCKS_PER_TIER[t];
             let blk_base = TIER_BLK_BASE[t];
             for blk in 0..n_blocks {
-                let (vl, vr) = tiers_l[blk].step_4lane_stereo_simd_splatted::<B>(
+                let (vl, vr) = tiers_l[blk].step_4lane_stereo_simd_unscaled::<B>(
                     &mut tiers_r[blk],
                     xl_vec,
                     xr_vec,
                 );
-                kautz_modal_feats[blk_base + blk] =
-                    crate::stages::pack_stage3_modal_block_features(&vl.to_array(), &vr.to_array());
+                let fb_off = KAUTZ_FB_OFFSETS[blk_base + blk];
+                vl.add(vr).store(
+                    (&mut self.feature_bus_scratch[fb_off..fb_off + 4])
+                        .try_into()
+                        .unwrap(),
+                );
                 if t < active_tiers {
                     kautz_acc_l = kautz_acc_l.add(vl);
                     kautz_acc_r = kautz_acc_r.add(vr);
                 }
             }
         }
-        let s3_l = s3_fir_l + 0.125 * kautz_acc_l.horizontal_sum();
-        let s3_r = s3_fir_r + 0.125 * kautz_acc_r.horizontal_sum();
+        let s3_l = s3_fir_l + 0.25 * kautz_acc_l.horizontal_sum();
+        let s3_r = s3_fir_r + 0.25 * kautz_acc_r.horizontal_sum();
 
         let (tank_l, tank_r, tank_readouts, tank_loops) = self
             .stage_pipeline
             .stage4
             .step_stereo_with_readouts(s3_l, s3_r);
-        let (s4_full_taps, s4_pro_taps, s4_ultra_taps) = self
-            .stage_pipeline
-            .stage4
-            .read_multi_tier_taps(loop_tiers, tank_readouts, tank_loops);
+        self.stage_pipeline.stage4.read_multi_tier_taps_into(
+            loop_tiers,
+            tank_readouts,
+            tank_loops,
+            &mut self.feature_bus_scratch,
+        );
 
-        let fb_local = feature_bus::pack_tier_feature_bus(
+        feature_bus::pack_tier_feature_bus_into(
+            &mut self.feature_bus_scratch,
             &self.stage_pipeline.stage1,
-            &s2_out,
-            &kautz_modal_feats,
             &fir_seg_l,
             &fir_seg_r,
             &tank_readouts,
-            &s4_full_taps,
-            &s4_pro_taps,
-            &s4_ultra_taps,
             down_l,
             down_r,
             clean_sub_l,
@@ -240,6 +238,8 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
             s1_r,
             s2_in_l,
             s2_in_r,
+            s2_l,
+            s2_r,
             send_l,
             send_r,
             tank_l,
@@ -247,11 +247,11 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
             loop_tiers,
         );
         if let Some(fb) = feature_bus_out.as_mut() {
-            **fb = fb_local;
+            **fb = *self.feature_bus_scratch;
         }
 
         let (head_sum_l, head_sum_r) = feature_bus::eval_tier_feature_bus_head_dot::<B>(
-            &fb_local,
+            &self.feature_bus_scratch,
             &self.collapsed_head_wl,
             &self.collapsed_head_wr,
             active_tiers,
@@ -283,7 +283,7 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
 
         if self.stage_pipeline.stage0.wdw_mode {
             let (tank_head_l, tank_head_r) = feature_bus::eval_tier_tank_head_contribution::<B>(
-                &fb_local,
+                &self.feature_bus_scratch,
                 &self.collapsed_head_wl,
                 &self.collapsed_head_wr,
                 active_tiers,
@@ -339,7 +339,7 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
     }
 
     /// Internal 4x oversampled 4-port stepping using `self.oversampler` and `self.oversampler_aux`.
-    #[inline]
+    #[inline(never)]
     pub(crate) fn step_frame_4x_4port_tora(
         &mut self,
         in_l: f32,

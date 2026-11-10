@@ -195,7 +195,8 @@ pub fn testing_benchmark_native_stereo_ns(
 pub fn testing_reference_header_json(kind: Option<String>) -> Result<String> {
     let kind_str = kind.as_deref().unwrap_or("default");
     match kind_str {
-        "default" => serde_json::to_string(&DnamJsonHeader::default_reference())
+        "default" => DnamJsonHeader::default_reference()
+            .to_json_string()
             .map_err(|e| napi_err(validation_err(e.to_string()))),
         "full" => {
             let ckpt_header = DnamCkptHeader {
@@ -514,7 +515,9 @@ pub fn testing_reference_header_json(kind: Option<String>) -> Result<String> {
                     prescriptions: vec!["Add stem at delay_time=1000 ms".to_string()],
                 }),
             };
-            serde_json::to_string(&ckpt_header).map_err(|e| napi_err(validation_err(e.to_string())))
+            ckpt_header
+                .to_json_string()
+                .map_err(|e| napi_err(validation_err(e.to_string())))
         }
         other => Err(napi_err(validation_err(format!(
             "Unknown header kind '{other}'"

@@ -121,12 +121,37 @@ impl DnamCkptHeader {
         self.base.validate()
     }
 
+    /// Deserializes a [`DnamCkptHeader`] from UTF-8 JSON bytes in a single non-generic compilation unit.
+    #[inline(never)]
+    pub fn from_json_slice(bytes: &[u8]) -> Result<Self, serde_json::Error> {
+        serde_json::from_slice(bytes)
+    }
+
+    /// Deserializes a [`DnamCkptHeader`] from a UTF-8 JSON string (delegating to [`Self::from_json_slice`]).
+    #[inline]
+    pub fn from_json_str(s: &str) -> Result<Self, serde_json::Error> {
+        Self::from_json_slice(s.as_bytes())
+    }
+
+    /// Serializes this [`DnamCkptHeader`] to a UTF-8 JSON byte vector in a single non-generic compilation unit.
+    #[inline(never)]
+    pub fn to_json_vec(&self) -> Result<Vec<u8>, serde_json::Error> {
+        serde_json::to_vec(self)
+    }
+
+    /// Serializes this [`DnamCkptHeader`] to a UTF-8 JSON string (delegating to [`Self::to_json_vec`]).
+    #[inline]
+    pub fn to_json_string(&self) -> Result<String, serde_json::Error> {
+        let bytes = self.to_json_vec()?;
+        Ok(String::from_utf8(bytes).expect("serde_json::to_vec must emit valid UTF-8"))
+    }
+
     /// Parses, normalizes numeric range defaults/presets/stems, validates structural invariants,
     /// rejects unknown schema fields, and serializes a [`DnamCkptHeader`] to canonical wire JSON.
     pub fn validate_and_normalize_json_str(header_json: &str) -> Result<String, DnamError> {
-        let input_val: serde_json::Value = serde_json::from_str(header_json)
+        let input_val: serde_json::Value = serde_json::from_slice(header_json.as_bytes())
             .map_err(|e| DnamError::InvalidJsonHeader(format!("{e}")))?;
-        let mut header: Self = serde_json::from_value(input_val.clone())
+        let mut header: Self = Self::from_json_slice(header_json.as_bytes())
             .map_err(|e| DnamError::SchemaValidationError(format!("{e}")))?;
         for ctrl in &mut header.base.controls_schema {
             if ctrl.kind == ControlKind::Range
@@ -163,10 +188,13 @@ impl DnamCkptHeader {
             }
         }
         header.validate()?;
-        let norm_val = serde_json::to_value(&header)
+        let out_bytes = header
+            .to_json_vec()
+            .map_err(|e| DnamError::InvalidJsonHeader(format!("{e}")))?;
+        let norm_val: serde_json::Value = serde_json::from_slice(&out_bytes)
             .map_err(|e| DnamError::InvalidJsonHeader(format!("{e}")))?;
         check_no_unknown_header_keys(&input_val, &norm_val, None)?;
-        serde_json::to_string(&header).map_err(|e| DnamError::InvalidJsonHeader(format!("{e}")))
+        String::from_utf8(out_bytes).map_err(|e| DnamError::InvalidJsonHeader(format!("{e}")))
     }
 }
 

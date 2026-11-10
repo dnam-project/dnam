@@ -106,15 +106,17 @@ impl ControlCalibration {
             if c1.abs() <= 1e-12 {
                 return (0.0, false);
             }
-            let u = ((t - v_mid) / c1).clamp(-1.0, 1.0) as f32;
+            let inv_c1 = crate::math::newton6_reciprocal_f64(c1.abs()).copysign(c1);
+            let u = ((t - v_mid) * inv_c1).clamp(-1.0, 1.0) as f32;
             return (u, false);
         }
 
         // Solve c2 * u^2 + c1 * u + (v_mid - t) = 0; select the root with same sign as c1
         let disc = (c1 * c1 - 4.0 * c2 * (v_mid - t)).max(0.0);
         let root_disc = cold_sqrt_f64(disc);
-        let r1 = (-c1 + root_disc) / (2.0 * c2);
-        let r2 = (-c1 - root_disc) / (2.0 * c2);
+        let inv_2c2 = crate::math::newton6_reciprocal_f64((2.0 * c2).abs()).copysign(c2);
+        let r1 = (-c1 + root_disc) * inv_2c2;
+        let r2 = (-c1 - root_disc) * inv_2c2;
         let u = if (-1.0 - 1e-4..=1.0 + 1e-4).contains(&r1)
             && !(-1.0 - 1e-4..=1.0 + 1e-4).contains(&r2)
         {

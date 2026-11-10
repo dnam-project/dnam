@@ -16,7 +16,7 @@ use core::marker::PhantomData;
 use crate::math::{MathBackend, flush_recursive_state_f32};
 
 use super::descriptor::ControlClampDescriptor;
-use super::plane::{MAX_EXACT_CONTRIBUTORS, eval_tier_stage_dispatch};
+use super::plane::MAX_EXACT_CONTRIBUTORS;
 use super::record::{
     ControlChannelRecord, ControlLatentProjection, Cp1ContributorSlot, LatentAccumulator64B,
 };
@@ -86,6 +86,10 @@ pub struct ControlBus<B: MathBackend> {
     pub lfo_phases_q192: [crate::math::Q0_192Phase; 2],
     /// LFO 0 and LFO 1 per-tick angle bit patterns for `Q0.192` phase accumulation (`ref[dsp.op-m.rotor.q0-192-lfo]`).
     pub lfo_angle_bits: [u32; 2],
+    /// Cached `lfo_angle_bits` for precomputed `Q0.192` phase increments.
+    pub(crate) lfo_cached_angle_bits: [u32; 2],
+    /// Cached signed `Q0.192` phase increments `(negative, [u64; 3])` for LFO 0 and LFO 1.
+    pub(crate) lfo_cached_q192_inc: [Option<(bool, [u64; 3])>; 2],
     /// Exact-integer (`9-word S` + `18-word D`) FM interaction accumulators for all 8 factors (`0..4` base + `4..8` Ultra, `ref[dsp.ctrl.accum.exact-int]`).
     pub exact_fm_acc: [super::plane::ExactIntFactorAccumulator; 8],
     /// Current 4-harmonic Chebyshev LFO waves $\mathbf{l}[k] \in [-1, +1]^8$ ($T_1..T_4$ for LFO 0 and LFO 1).
@@ -136,18 +140,18 @@ impl<B: MathBackend> ControlBus<B> {
             latent_acc: LatentAccumulator64B::new(),
             s_vx_ultra: [0.0; 4],
             s_v2x2_ultra: [0.0; 4],
-            descriptors: alloc::vec![ControlClampDescriptor::empty(); TELEMETRY_CONTROL_SLOTS],
-            projections: alloc::vec![ControlLatentProjection::new(); TELEMETRY_CONTROL_SLOTS],
+            descriptors: alloc::vec![ControlClampDescriptor::empty(); MAX_EXACT_CONTRIBUTORS],
+            projections: alloc::vec![ControlLatentProjection::new(); MAX_EXACT_CONTRIBUTORS],
             contributors: alloc::vec![Cp1ContributorSlot::zero(); MAX_EXACT_CONTRIBUTORS],
             num_contributors: 0,
             num_controls: 0,
-            raw_values: alloc::vec![0.0; TELEMETRY_CONTROL_SLOTS],
-            clamped_values: alloc::vec![0.0; TELEMETRY_CONTROL_SLOTS],
-            target_u_norm: alloc::vec![0.0; TELEMETRY_CONTROL_SLOTS],
-            current_u_norm: alloc::vec![0.0; TELEMETRY_CONTROL_SLOTS],
-            prev_eval_u_norm: alloc::vec![0.0; TELEMETRY_CONTROL_SLOTS],
-            prev_eval_psi: alloc::vec![0.0; TELEMETRY_CONTROL_SLOTS],
-            active_switch_options: alloc::vec![0; TELEMETRY_CONTROL_SLOTS],
+            raw_values: alloc::vec![0.0; MAX_EXACT_CONTRIBUTORS],
+            clamped_values: alloc::vec![0.0; MAX_EXACT_CONTRIBUTORS],
+            target_u_norm: alloc::vec![0.0; MAX_EXACT_CONTRIBUTORS],
+            current_u_norm: alloc::vec![0.0; MAX_EXACT_CONTRIBUTORS],
+            prev_eval_u_norm: alloc::vec![0.0; MAX_EXACT_CONTRIBUTORS],
+            prev_eval_psi: alloc::vec![0.0; MAX_EXACT_CONTRIBUTORS],
+            active_switch_options: alloc::vec![0; MAX_EXACT_CONTRIBUTORS],
             active_clamp_mask: 0,
             anti_zipper_pole: DEFAULT_ANTI_ZIPPER_POLE,
             is_dirty: false,
@@ -161,6 +165,8 @@ impl<B: MathBackend> ControlBus<B> {
             lfo_rotors: [[1.0, 0.0], [1.0, 0.0]],
             lfo_phases_q192: [crate::math::Q0_192Phase::ZERO; 2],
             lfo_angle_bits: [0; 2],
+            lfo_cached_angle_bits: [u32::MAX; 2],
+            lfo_cached_q192_inc: [None; 2],
             exact_fm_acc: core::array::from_fn(|_| {
                 super::plane::ExactIntFactorAccumulator::new(MAX_EXACT_CONTRIBUTORS)
             }),
@@ -339,7 +345,11 @@ impl<B: MathBackend> ControlBus<B> {
                     as f32;
                 let (c_inc, s_inc) = B::fast_unit_phasor(dphi_host);
                 self.lfo_rotors[j] = [c_inc, s_inc];
-                self.lfo_angle_bits[j] = dphi_host.to_bits();
+                let angle_bits = dphi_host.to_bits();
+                self.lfo_angle_bits[j] = angle_bits;
+                self.lfo_cached_angle_bits[j] = angle_bits;
+                self.lfo_cached_q192_inc[j] =
+                    crate::math::q0_192_phase_increment_from_f32_bits(angle_bits);
             }
             let sigma_raw = f32::from_le_bytes([
                 arena0_bytes[global_base + 8],
@@ -412,7 +422,8 @@ impl<B: MathBackend> ControlBus<B> {
             };
             if (0.5..=10.0).contains(&mh_val) {
                 self.trust_radius_mh = mh_val;
-                self.inv_trust_radius_mh2 = 1.0 / (mh_val * mh_val);
+                self.inv_trust_radius_mh2 =
+                    crate::math::newton6_reciprocal_f64((mh_val as f64) * (mh_val as f64)) as f32;
             }
         }
     }
@@ -431,14 +442,14 @@ impl<B: MathBackend> ControlBus<B> {
 
     /// Snaps all controls immediately to their default values (`z_head = 0`, `is_dirty = false`).
     pub fn reset_to_defaults(&mut self) {
-        self.ensure_control_capacity(self.num_controls);
         self.latent_acc.reset();
         self.s_vx_ultra = [0.0; 4];
         self.s_v2x2_ultra = [0.0; 4];
         for acc in &mut self.exact_fm_acc {
             acc.reset();
         }
-        for p in 0..self.num_controls {
+        let n = self.num_controls.min(self.raw_values.len());
+        for p in 0..n {
             let def_val = self.descriptors[p].default_val;
             self.raw_values[p] = def_val;
             if self.descriptors[p].ctrl_kind == 1 {
@@ -446,7 +457,7 @@ impl<B: MathBackend> ControlBus<B> {
             }
         }
         self.recompute_targets(true);
-        for p in 0..self.num_controls {
+        for p in 0..n {
             self.prev_eval_u_norm[p] = self.current_u_norm[p];
             let lob = self.descriptors[p].eval_lobatto_basis(self.current_u_norm[p]);
             self.prev_eval_psi[p] = lob[0] + lob[1] + lob[2];
@@ -473,10 +484,9 @@ impl<B: MathBackend> ControlBus<B> {
     /// `range` controls.
     #[inline]
     pub fn set_control_value(&mut self, ctrl_idx: usize, physical_value: f32) {
-        if ctrl_idx >= self.num_controls {
+        if ctrl_idx >= self.num_controls || ctrl_idx >= self.raw_values.len() {
             return;
         }
-        self.ensure_control_capacity(self.num_controls);
         self.raw_values[ctrl_idx] = physical_value;
         self.recompute_targets(false);
     }
@@ -484,17 +494,17 @@ impl<B: MathBackend> ControlBus<B> {
     /// Sets a user control value and snaps `current_u_norm` immediately without anti-zipper lag.
     #[inline]
     pub fn set_control_immediate(&mut self, ctrl_idx: usize, physical_value: f32) {
-        if ctrl_idx >= self.num_controls {
+        if ctrl_idx >= self.num_controls || ctrl_idx >= self.raw_values.len() {
             return;
         }
-        self.ensure_control_capacity(self.num_controls);
         self.raw_values[ctrl_idx] = physical_value;
         self.recompute_targets(true);
     }
 
     pub(super) fn recompute_targets(&mut self, snap_immediately: bool) {
         let mut clamp_mask: u16 = 0;
-        for p in 0..self.num_controls {
+        let n = self.num_controls.min(self.raw_values.len());
+        for p in 0..n {
             if self.descriptors[p].ctrl_kind == 1 {
                 let (clamped, u_norm, was_clamped) = self.descriptors[p]
                     .clamp_and_normalize(self.raw_values[p], &self.active_switch_options);
@@ -511,7 +521,7 @@ impl<B: MathBackend> ControlBus<B> {
             }
         }
 
-        for p in 0..self.num_controls {
+        for p in 0..n {
             if self.descriptors[p].ctrl_kind == 0 {
                 let (clamped, u_norm, was_clamped) = self.descriptors[p]
                     .clamp_and_normalize(self.raw_values[p], &self.active_switch_options);

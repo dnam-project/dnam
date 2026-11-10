@@ -66,8 +66,11 @@ pub struct ContainerInspectionReport {
 pub fn detect_native_backend_str() -> &'static str {
     match detect_best_backend() {
         BackendKind::ArmSme => "arm-sme",
+        BackendKind::ArmSve2 => "arm-sve2",
         BackendKind::Neon | BackendKind::ArmNeon => "arm64-neon",
-        BackendKind::X86Simd | BackendKind::X86Avx2Fma | BackendKind::X86Sse42 => "x86-avx2-fma",
+        BackendKind::X86Simd | BackendKind::X86Avx2Fma => "x86-avx2-fma",
+        BackendKind::X86Sse42 => "x86-sse4.2",
+        BackendKind::X86Sse2 => "x86-sse2",
         BackendKind::WasmSimd128 => "wasm-simd128",
         BackendKind::Scalar => "scalar-reference",
     }

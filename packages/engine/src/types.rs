@@ -721,7 +721,7 @@ mod tests {
         assert!(unwound.is_err());
         assert_eq!(restored, host);
 
-        fn check_callbacks<B: crate::math::MathBackend>(safe: u64) {
+        fn check_callbacks<B: crate::engine::EngineBackend>(safe: u64) {
             use crate::engine::DnamEngine;
 
             let mut engine = DnamEngine::<B>::new_empty(Tier::Lite);
@@ -790,10 +790,10 @@ mod tests {
     #[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
     #[test]
     fn test_active_block_entry_points_select_rne_and_denormal_mode() {
-        use crate::engine::DnamEngine;
-        use crate::math::{DefaultMathBackend, MathBackend, ScalarBackend};
+        use crate::engine::{DnamEngine, EngineBackend};
+        use crate::math::{DefaultMathBackend, ScalarBackend};
 
-        fn check_backend<B: MathBackend>(requested: u64) {
+        fn check_backend<B: EngineBackend>(requested: u64) {
             let mut engine = DnamEngine::<B>::new_empty(Tier::Lite);
             for entry in 0..4 {
                 for (sample, initial, expected_bits) in [

@@ -10,7 +10,7 @@ It is engineered for embedded ARMv8.2-A/ARMv9.2-A pedalboards (**Rockchip RK3582
 
 - **`#![no_std]` + `alloc` & Zero Real-Time Allocations:**
   - Compiles without `std` across all targets using `serde` and `serde_json` (`default-features = false, features = ["alloc"]`) and `zerocopy` (`0.8`).
-  - Verified by the custom `#[global_allocator]` integration test ([`tests/realtime_safety.rs`](tests/realtime_safety.rs)) and [`spec_scope.toml`](spec_scope.toml) (`207` engine-scoped `r[...]` rules verified via `verify[...]`).
+  - Verified by the custom `#[global_allocator]` integration test ([`tests/realtime_safety.rs`](tests/realtime_safety.rs)), the release-binary disassembly audit ([`tests/realtime_disassembly_audit.rs`](tests/realtime_disassembly_audit.rs)), and [`spec_scope.toml`](spec_scope.toml) (`212` engine-scoped `r[...]` rules verified via `verify[...]`).
 - **Zero `FSQRT`, `FDIV`, and `libm` Calls at $48\text{ kHz}$ & $3\text{ kHz}$:**
   - **Operators (`src/operators/`):**
     - **`Op-T` (Transport & Elastic Buffer):** Catmull-Rom cubic fractional delay with ZOH-rescaled dual-mode slew/crossfade ($L_{\text{xfade}} = \max(16, \mathrm{round}(128/\rho_{\text{sr}}))$), branchless wrap, partitioned Schroeder diffusers, and dual-tap complementary Hermite-Hann grain reader ($H(\phi_A) + H(\phi_B) \equiv 1$).
@@ -27,10 +27,9 @@ It is engineered for embedded ARMv8.2-A/ARMv9.2-A pedalboards (**Rockchip RK3582
     - $3\text{ kHz}$ node-anchored Lobatto basis, `CP1` tier-local projections (`8-D` Rank-4 in `Lite..Pro`, `16-D` Rank-8 in `Ultra`), 9-word/18-word `ExactIntFactorAccumulator`, outward-checked trust-region clipping, and `Q64`/`Q32` `20–400 BPM` tempo synchronization with 32-step binary-search physical calibration inversion ([`parametric_control_bus.md`](../../docs/specs/dsp/parametric_control_bus.md)).
     - Atomic preset batch evaluation with two-path output crossfading on disjoint conditional switch transitions (`apply_preset`), `SpilloverTrails` vs. `HardBypass` ramping (`set_bypass`), `supports_freeze` hardware freeze gating, out-of-range tempo-sync rank clamping (`active_clamp_mask`), and `OUTSIDE_CERTIFIED_INPUT` (`bit 4`) telemetry reporting above $\pm 100.0$ (`+40 dBFS`) without unmodeled soft-limiting.
 - **Multi-Platform Hardware SIMD (`SimdVec4` & `MathBackend`):**
-  - [`ArmSmeBackend`](src/math/arm_sme.rs): ARMv9.2-A Scalable Matrix Extension (`FEAT_SME`) with runtime `sysctlbyname` detection.
-  - [`NeonBackend`](src/math/neon.rs): ARM64 128-bit NEON (`vfmaq_laneq_f32` 4-accumulator outer-product tiles, hardware `FCVTL`/`FCVTN` `fp16`, hardware `__crc32cd`).
-  - [`X86SimdBackend`](src/math/x86_simd.rs): x86_64 AVX2 + FMA + F16C + SSE4.2 hardware `CRC32C`.
-  - [`WasmSimd128Backend`](src/math/wasm_simd128.rs): WebAssembly 128-bit SIMD (`v128`).
+  - [`aarch64.rs`](src/math/aarch64.rs): Unified `aarch64` hardware library with runtime CPU feature detection (`ArmSmeBackend` with `FEAT_SME` $\to$ `ArmSve2Backend` with `FEAT_SVE2` $\to$ `NeonBackend` 128-bit NEON baseline).
+  - [`x86.rs`](src/math/x86.rs): Unified `x86_64` hardware library with runtime `is_x86_feature_detected!` dispatch (`X86Avx2FmaBackend` `x86-64-v3` $\to$ `X86Sse42Backend` `x86-64-v2` $\to$ `X86Sse2Backend` `x86-64-v1`).
+  - [`wasm.rs`](src/math/wasm.rs): Unified WebAssembly (`wasm32`) 128-bit SIMD (`v128`) backend (`WasmSimd128Backend`).
   - [`ScalarBackend`](src/math/scalar.rs): Portable 100% safe `#![no_std]` IEEE-754 reference backend.
 - **Sample-Rate Conversion & Offline Bounce:**
   - [`src/container/zoh.rs`](src/container/zoh.rs): Continuous-Time ZOH parameter rescaling (`44.1–192 kHz`), Stage III first-tap/6-point Lagrange FIR resampling, and `4×` polyphase offline bounce ([`router_and_stages_topology.md` §9](../../docs/specs/dsp/router_and_stages_topology.md#9-continuous-time-zero-order-hold-zoh-sample-rate-adaptability-44196-khz--4-bounce)).
@@ -47,17 +46,17 @@ Block-processing APIs establish and restore the audio floating-point environment
 
 ## Measured Real-Time & WCET Benchmark Summary ($48\text{ kHz}$ Stereo, `128`-Sample Blocks)
 
-Measured via `cargo bench -p dnam-engine --bench realtime_wcet` (`2,666.67 µs` per `128`-sample block budget at $48\text{ kHz}$, `33.83 µs` `#![no_std]` container load + `CRC32C` verification; see the [hardware budget requirements](../../docs/specs/architecture/tora_architecture.md#22-hardware--dsp-benchmark-summary)):
+Measured via `cargo bench -p dnam-engine --bench realtime_wcet` (`2,666.67 µs` per `128`-sample block budget at $48\text{ kHz}$, `32.63 µs` `#![no_std]` container load + `CRC32C` verification; `161.59 ns` `Lite` to `257.41 ns` `Ultra` steady-state in `benches/pipeline.rs`; see the [hardware budget requirements](../../docs/specs/architecture/tora_architecture.md#22-hardware--dsp-benchmark-summary)):
 
 | Tier & Subsystem Profile | Backend | Latency / Frame | `×` Real-Time | Single-Core CPU | Modulated `P50` Block | Modulated `P99.9` Block | `Max` / `2,666.67 µs` Budget |
 | :--- | :--- | ---: | ---: | ---: | ---: | ---: | ---: |
-| **`Lite` (`C = 4`, `64-D` Bus)** | `ARM64 NEON` | **`143.23 ns`** | **`145.5x`** | **`0.69%`** | `20.75 µs` | `58.29 µs` | **`2.25%`** |
-| **`Full` (`C = 8`, `128-D` Bus)** | `ARM64 NEON` | **`160.45 ns`** | **`129.8x`** | **`0.77%`** | `23.50 µs` | `52.21 µs` | **`2.06%`** |
-| **`Pro` (`C = 12`, `192-D` Bus)** | `ARM64 NEON` | **`172.21 ns`** | **`121.0x`** | **`0.83%`** | `25.12 µs` | `54.62 µs` | **`2.10%`** |
-| **`Ultra` (`C = 16`, `256-D` Bus)** | `ARM64 NEON` | **`179.34 ns`** | **`116.2x`** | **`0.86%`** | `27.62 µs` | `65.75 µs` | **`2.77%`** |
-| **`Ultra` (`C = 16`, `4×` Offline Bounce)** | `ARM64 NEON` | **`734.27 ns`** | **`28.4x`** | **`3.52%`** | — | — | — |
-| **`Full` (`C = 8`, ARM SME)** | `ARM SME` | **`161.98 ns`** | **`128.6x`** | **`0.78%`** | — | — | — |
-| **`Full` (`C = 8`, Scalar Baseline)** | `Scalar` | **`189.23 ns`** | **`110.1x`** | **`0.91%`** | — | — | — |
+| **`Lite` (`C = 4`, `64-D` Bus)** | `ARM64 NEON` | **`178.53 ns`** | **`116.7x`** | **`0.86%`** | `21.42 µs` | `62.88 µs` | **`2.73%`** |
+| **`Full` (`C = 8`, `128-D` Bus)** | `ARM64 NEON` | **`214.80 ns`** | **`97.0x`** | **`1.03%`** | `25.67 µs` | `53.33 µs` | **`4.77%`** |
+| **`Pro` (`C = 12`, `192-D` Bus)** | `ARM64 NEON` | **`236.38 ns`** | **`88.1x`** | **`1.13%`** | `29.08 µs` | `74.88 µs` | **`2.86%`** |
+| **`Ultra` (`C = 16`, `256-D` Bus)** | `ARM64 NEON` | **`283.26 ns`** | **`73.5x`** | **`1.36%`** | `34.67 µs` | `216.25 µs` | **`10.60%`** |
+| **`Ultra` (`C = 16`, `4×` Offline Bounce)** | `ARM64 NEON` | **`1,130.75 ns`** | **`18.4x`** | **`5.43%`** | — | — | — |
+| **`Full` (`C = 8`, ARM SME)** | `ARM SME` | **`219.77 ns`** | **`94.8x`** | **`1.05%`** | — | — | — |
+| **`Full` (`C = 8`, Scalar Baseline)** | `Scalar` | **`250.56 ns`** | **`83.1x`** | **`1.20%`** | — | — | — |
 
 ---
 
@@ -65,7 +64,7 @@ Measured via `cargo bench -p dnam-engine --bench realtime_wcet` (`2,666.67 µs` 
 
 ```text
 packages/engine/
-├── spec_scope.toml         # Manifest mapping all 289 r[...] spec rules (207 engine-scoped)
+├── spec_scope.toml         # Manifest mapping all 329 r[...] spec rules (212 engine-scoped)
 ├── src/
 │   ├── lib.rs              # Crate root (#![no_std] + alloc) & public API re-exports
 │   ├── types.rs            # Tier (Lite/Full/Pro/Ultra), FtzDazGuard, DnamTelemetrySnapshot

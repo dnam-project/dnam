@@ -43,9 +43,13 @@ pub struct Stage1PreDynamics {
     pub host_op_m_r_low: [f32; 4],
     pub host_op_m_dr: [f32; 4],
     pub host_op_m_theta: [f32; 4],
+    pub host_op_m_cos: [f32; 4],
+    pub host_op_m_sin: [f32; 4],
     pub host_delta_r_low: [f32; 4],
     pub host_delta_dr: [f32; 4],
     pub host_delta_theta: [f32; 4],
+    pub host_delta_cos: [f32; 4],
+    pub host_delta_sin: [f32; 4],
     pub last_dtheta_pre: f32,
     pub last_g_rad_pre: f32,
     /// Tracker-only passband-normalized 5 Hz DC blockers (`T1`, `ref[dsp.op-m.tracker.t1-dc-blocker]`).
@@ -94,8 +98,14 @@ impl Stage1PreDynamics {
     pub const fn new() -> Self {
         Self {
             op_t_pre: OpTDelayLine::new(),
-            op_m_pre: SymplecticModal4Lane::new(),
-            op_m_pre_r: SymplecticModal4Lane::new(),
+            op_m_pre: SymplecticModal4Lane {
+                b_re: [1.0, 0.0, 0.0, 0.0],
+                ..SymplecticModal4Lane::new()
+            },
+            op_m_pre_r: SymplecticModal4Lane {
+                b_re: [1.0, 0.0, 0.0, 0.0],
+                ..SymplecticModal4Lane::new()
+            },
             op_m_pre_delta_l: SymplecticModal4Lane::new(),
             op_m_pre_delta_r: SymplecticModal4Lane::new(),
             base_op_m_r_low: [0.0; 4],
@@ -113,9 +123,13 @@ impl Stage1PreDynamics {
             host_op_m_r_low: [0.0; 4],
             host_op_m_dr: [0.0; 4],
             host_op_m_theta: [0.0; 4],
+            host_op_m_cos: [1.0; 4],
+            host_op_m_sin: [0.0; 4],
             host_delta_r_low: Self::DEFAULT_DELTA_R_LOW,
             host_delta_dr: [0.0; 4],
             host_delta_theta: Self::DEFAULT_DELTA_THETA,
+            host_delta_cos: [0.983_843_7, 0.928_664_6, 0.751_805_7, 0.408_487_4],
+            host_delta_sin: [0.179_029_6, 0.370_920_5, 0.659_384_7, 0.912_763_9],
             last_dtheta_pre: 0.0,
             last_g_rad_pre: 0.5,
             dc_blocker_l: T1DcBlocker::new_48khz(),
@@ -202,6 +216,13 @@ impl Stage1PreDynamics {
         self.host_op_m_r_low = self.base_op_m_r_low;
         self.host_op_m_dr = self.base_op_m_dr;
         self.host_op_m_theta = self.base_op_m_theta;
+        for lane in 0..4 {
+            let (ch, sh) = crate::operators::op_m::algebraic_unit_rotor_op_m(
+                self.host_op_m_theta[lane].clamp(0.0, core::f32::consts::PI - 1e-4),
+            );
+            self.host_op_m_cos[lane] = ch;
+            self.host_op_m_sin[lane] = sh;
+        }
 
         let pg = read_f32_le(arena, 352);
         if pg.is_finite() && pg > 1e-6 {
@@ -240,13 +261,21 @@ impl Stage1PreDynamics {
         self.host_delta_r_low = self.base_delta_r_low;
         self.host_delta_dr = self.base_delta_dr;
         self.host_delta_theta = self.base_delta_theta;
+        for lane in 0..4 {
+            let (dch, dsh) = crate::operators::op_m::algebraic_unit_rotor_op_m(
+                self.host_delta_theta[lane].clamp(0.0, core::f32::consts::PI - 1e-4),
+            );
+            self.host_delta_cos[lane] = dch;
+            self.host_delta_sin[lane] = dsh;
+        }
         self.last_dtheta_pre = 0.0;
         self.last_g_rad_pre = 0.5;
     }
 
     /// Reconfigures Stage I Op-T delay, Op-M poles, T1 DC blockers, and H1 Hilbert lattices for `zoh`.
     pub fn reconfigure_sample_rate(&mut self, zoh: &crate::container::ZohRescaledParams) {
-        self.op_t_pre.xfade_len = zoh.switch_xfade_samples_host as usize;
+        self.op_t_pre
+            .set_xfade_len(zoh.switch_xfade_samples_host as usize);
         self.op_t_pre
             .set_target_delay(zoh.tau_ref_samples_host, true);
         self.op_t_pre.current_delay = self.op_t_pre.target_delay;
@@ -264,22 +293,45 @@ impl Stage1PreDynamics {
 
         self.last_dtheta_pre = 0.0;
         self.last_g_rad_pre = 0.5;
+        self.op_m_c_re = self.base_op_m_c_re;
+        self.op_m_c_im = self.base_op_m_c_im;
         for lane in 0..4 {
             let r_low = self.base_op_m_r_low[lane];
             let dr = self.base_op_m_dr[lane];
             let theta = self.base_op_m_theta[lane];
-            if r_low.abs() > 1e-12 || dr.abs() > 1e-12 || theta.abs() > 1e-12 {
+            let active_lane = lane == 0
+                || self.op_m_c_re[lane].abs() > 1e-12
+                || self.op_m_c_im[lane].abs() > 1e-12;
+            if active_lane && (r_low.abs() > 1e-12 || dr.abs() > 1e-12 || theta.abs() > 1e-12) {
                 let (rl_h, dr_h, th_h, _) = zoh.rescale_op_m_channel(r_low, dr, theta, 1.0);
                 self.host_op_m_r_low[lane] = rl_h;
                 self.host_op_m_dr[lane] = dr_h;
                 self.host_op_m_theta[lane] = th_h;
+                let (ch, sh) = crate::operators::op_m::algebraic_unit_rotor_op_m(
+                    th_h.clamp(0.0, core::f32::consts::PI - 1e-4),
+                );
+                self.host_op_m_cos[lane] = ch;
+                self.host_op_m_sin[lane] = sh;
                 let r_eff = (rl_h + 0.5 * dr_h).clamp(0.0, 0.9995);
                 self.op_m_pre.set_pole(lane, r_eff, th_h);
-                self.op_m_pre_r.set_pole(lane, r_eff, th_h);
+                self.op_m_pre_r.alpha_re[lane] = self.op_m_pre.alpha_re[lane];
+                self.op_m_pre_r.alpha_im[lane] = self.op_m_pre.alpha_im[lane];
+                self.op_m_pre_r.b_re[lane] = self.op_m_pre.b_re[lane];
+                self.op_m_pre_r.b_im[lane] = 0.0;
             } else {
                 self.host_op_m_r_low[lane] = 0.0;
                 self.host_op_m_dr[lane] = 0.0;
                 self.host_op_m_theta[lane] = 0.0;
+                self.host_op_m_cos[lane] = 1.0;
+                self.host_op_m_sin[lane] = 0.0;
+                self.op_m_pre.alpha_re[lane] = 0.0;
+                self.op_m_pre.alpha_im[lane] = 0.0;
+                self.op_m_pre.b_re[lane] = if lane == 0 { 1.0 } else { 0.0 };
+                self.op_m_pre.b_im[lane] = 0.0;
+                self.op_m_pre_r.alpha_re[lane] = 0.0;
+                self.op_m_pre_r.alpha_im[lane] = 0.0;
+                self.op_m_pre_r.b_re[lane] = if lane == 0 { 1.0 } else { 0.0 };
+                self.op_m_pre_r.b_im[lane] = 0.0;
             }
 
             let d_rl = self.base_delta_r_low[lane];
@@ -289,45 +341,157 @@ impl Stage1PreDynamics {
             self.host_delta_r_low[lane] = d_rl_h;
             self.host_delta_dr[lane] = d_dr_h;
             self.host_delta_theta[lane] = d_th_h;
+            let (dch, dsh) = crate::operators::op_m::algebraic_unit_rotor_op_m(
+                d_th_h.clamp(0.0, core::f32::consts::PI - 1e-4),
+            );
+            self.host_delta_cos[lane] = dch;
+            self.host_delta_sin[lane] = dsh;
             let d_r_eff = (d_rl_h + 0.5 * d_dr_h).clamp(0.0, 0.9995);
             self.op_m_pre_delta_l.set_pole(lane, d_r_eff, d_th_h);
-            self.op_m_pre_delta_r.set_pole(lane, d_r_eff, d_th_h);
+            self.op_m_pre_delta_r.alpha_re[lane] = self.op_m_pre_delta_l.alpha_re[lane];
+            self.op_m_pre_delta_r.alpha_im[lane] = self.op_m_pre_delta_l.alpha_im[lane];
+            self.op_m_pre_delta_r.b_re[lane] = self.op_m_pre_delta_l.b_re[lane];
+            self.op_m_pre_delta_r.b_im[lane] = 0.0;
         }
-        self.op_m_c_re = self.base_op_m_c_re;
-        self.op_m_c_im = self.base_op_m_c_im;
     }
 
     /// Retunes Stage I Op-M[Pre] (and Full+ delta Op-M when `retune_delta` is true) at the 3 kHz control rate (`0 FSQRT/FDIV/libm`).
     #[inline]
     pub fn retune_op_m_pre_3khz(&mut self, dtheta_pre: f32, g_rad_pre: f32, retune_delta: bool) {
+        use crate::math::{DefaultMathBackend, MathBackend, SimdVec4};
+        type V = <DefaultMathBackend as MathBackend>::Vec4;
+
         let g_clamped = g_rad_pre.clamp(0.0, 1.0);
-        if (dtheta_pre - self.last_dtheta_pre).abs() <= 1e-9
-            && (g_clamped - self.last_g_rad_pre).abs() <= 1e-9
-        {
+        let dtheta_changed = (dtheta_pre - self.last_dtheta_pre).abs() > 1e-9;
+        let g_changed = (g_clamped - self.last_g_rad_pre).abs() > 1e-9;
+        if !dtheta_changed && !g_changed {
             return;
         }
         self.last_dtheta_pre = dtheta_pre;
         self.last_g_rad_pre = g_clamped;
 
-        for lane in 0..4 {
-            let rl_h = self.host_op_m_r_low[lane];
-            let dr_h = self.host_op_m_dr[lane];
-            let th_h = self.host_op_m_theta[lane];
-            if rl_h.abs() > 1e-12 || dr_h.abs() > 1e-12 || th_h.abs() > 1e-12 {
-                let r_eff = (rl_h + g_clamped * dr_h).clamp(0.0, 0.9995);
-                let theta_eff = (th_h + dtheta_pre).clamp(0.0, core::f32::consts::PI - 1e-4);
-                self.op_m_pre.set_pole(lane, r_eff, theta_eff);
-                self.op_m_pre_r.set_pole(lane, r_eff, theta_eff);
+        const MAX_THETA: f32 = core::f32::consts::PI - 1e-4;
+        let has_dtheta = dtheta_pre.abs() > 1e-9;
+        let (cos_d, sin_d) = if has_dtheta {
+            crate::operators::op_m::algebraic_unit_rotor_op_m(dtheta_pre)
+        } else {
+            (1.0, 0.0)
+        };
+
+        let g_v = V::splat(g_clamped);
+        let zero_v = V::zero();
+        let max_r_v = V::splat(0.9995);
+        let cos_d_v = V::splat(cos_d);
+        let sin_d_v = V::splat(sin_d);
+        let one_v = V::splat(1.0);
+        let one_pt_five_v = V::splat(1.5);
+        let half_v = V::splat(0.5);
+        let dth_v = V::splat(dtheta_pre);
+        let max_th_v = V::splat(MAX_THETA);
+
+        let rl_v = V::load(&self.host_op_m_r_low);
+        let dr_v = V::load(&self.host_op_m_dr);
+        let r_eff_v = rl_v.fma(g_v, dr_v).max(zero_v).min(max_r_v);
+        let ch_v = V::load(&self.host_op_m_cos);
+        let sh_v = V::load(&self.host_op_m_sin);
+        let (cos_v, sin_v) = if !has_dtheta {
+            (ch_v, sh_v)
+        } else {
+            let th_u_v = V::load(&self.host_op_m_theta).add(dth_v);
+            let clamped_v = th_u_v.max(zero_v).min(max_th_v);
+            if th_u_v.sub(clamped_v).abs().horizontal_sum() == 0.0 {
+                let c_raw = ch_v.mul(cos_d_v).fms(sh_v, sin_d_v);
+                let s_raw = sh_v.mul(cos_d_v).fma(ch_v, sin_d_v);
+                let norm_sq = c_raw.mul(c_raw).fma(s_raw, s_raw);
+                let scale = one_pt_five_v.fms(half_v, norm_sq.max(one_v));
+                (c_raw.mul(scale), s_raw.mul(scale))
+            } else {
+                let mut c_arr = [0.0f32; 4];
+                let mut s_arr = [0.0f32; 4];
+                for lane in 0..4 {
+                    let th_u = self.host_op_m_theta[lane] + dtheta_pre;
+                    let (c_t, s_t) = crate::operators::op_m::algebraic_unit_rotor_op_m(
+                        th_u.clamp(0.0, MAX_THETA),
+                    );
+                    c_arr[lane] = c_t;
+                    s_arr[lane] = s_t;
+                }
+                (V::load(&c_arr), V::load(&s_arr))
             }
-            if retune_delta {
-                let d_rl_h = self.host_delta_r_low[lane];
-                let d_dr_h = self.host_delta_dr[lane];
-                let d_th_h = self.host_delta_theta[lane];
-                if d_rl_h.abs() > 1e-12 || d_dr_h.abs() > 1e-12 || d_th_h.abs() > 1e-12 {
-                    let r_d = (d_rl_h + g_clamped * d_dr_h).clamp(0.0, 0.9995);
-                    let th_d = (d_th_h + dtheta_pre).clamp(0.0, core::f32::consts::PI - 1e-4);
-                    self.op_m_pre_delta_l.set_pole(lane, r_d, th_d);
-                    self.op_m_pre_delta_r.set_pole(lane, r_d, th_d);
+        };
+        let a_re_v = r_eff_v.mul(cos_v);
+        let a_im_v = r_eff_v.mul(sin_v);
+        a_re_v.store(&mut self.op_m_pre.alpha_re);
+        a_im_v.store(&mut self.op_m_pre.alpha_im);
+        a_re_v.store(&mut self.op_m_pre_r.alpha_re);
+        a_im_v.store(&mut self.op_m_pre_r.alpha_im);
+        if g_changed && dr_v.abs().horizontal_sum() > 1e-12 {
+            let mut r_arr = [0.0f32; 4];
+            r_eff_v.store(&mut r_arr);
+            for lane in 0..4 {
+                if self.host_op_m_dr[lane].abs() > 1e-12 {
+                    let r_eff = r_arr[lane];
+                    let omr2 = (1.0 - r_eff * r_eff).max(0.0);
+                    let gamma = crate::operators::op_m::fast_rsqrt_nr2(omr2);
+                    let b_re = if gamma > 0.0 { omr2 * gamma } else { 1.0 };
+                    self.op_m_pre.b_re[lane] = b_re;
+                    self.op_m_pre_r.b_re[lane] = b_re;
+                }
+            }
+        }
+
+        if retune_delta {
+            let d_rl_v = V::load(&self.host_delta_r_low);
+            let d_dr_v = V::load(&self.host_delta_dr);
+            let d_dr_sum = d_dr_v.abs().horizontal_sum();
+            if dtheta_changed || (g_changed && d_dr_sum > 1e-12) {
+                let d_r_v = d_rl_v.fma(g_v, d_dr_v).max(zero_v).min(max_r_v);
+                let d_ch_v = V::load(&self.host_delta_cos);
+                let d_sh_v = V::load(&self.host_delta_sin);
+                let (d_cos_v, d_sin_v) = if !has_dtheta {
+                    (d_ch_v, d_sh_v)
+                } else {
+                    let th_u_v = V::load(&self.host_delta_theta).add(dth_v);
+                    let clamped_v = th_u_v.max(zero_v).min(max_th_v);
+                    if th_u_v.sub(clamped_v).abs().horizontal_sum() == 0.0 {
+                        let c_raw = d_ch_v.mul(cos_d_v).fms(d_sh_v, sin_d_v);
+                        let s_raw = d_sh_v.mul(cos_d_v).fma(d_ch_v, sin_d_v);
+                        let norm_sq = c_raw.mul(c_raw).fma(s_raw, s_raw);
+                        let scale = one_pt_five_v.fms(half_v, norm_sq.max(one_v));
+                        (c_raw.mul(scale), s_raw.mul(scale))
+                    } else {
+                        let mut c_arr = [0.0f32; 4];
+                        let mut s_arr = [0.0f32; 4];
+                        for lane in 0..4 {
+                            let th_u = self.host_delta_theta[lane] + dtheta_pre;
+                            let (c_t, s_t) = crate::operators::op_m::algebraic_unit_rotor_op_m(
+                                th_u.clamp(0.0, MAX_THETA),
+                            );
+                            c_arr[lane] = c_t;
+                            s_arr[lane] = s_t;
+                        }
+                        (V::load(&c_arr), V::load(&s_arr))
+                    }
+                };
+                let da_re_v = d_r_v.mul(d_cos_v);
+                let da_im_v = d_r_v.mul(d_sin_v);
+                da_re_v.store(&mut self.op_m_pre_delta_l.alpha_re);
+                da_im_v.store(&mut self.op_m_pre_delta_l.alpha_im);
+                da_re_v.store(&mut self.op_m_pre_delta_r.alpha_re);
+                da_im_v.store(&mut self.op_m_pre_delta_r.alpha_im);
+                if g_changed && d_dr_sum > 1e-12 {
+                    let mut r_arr = [0.0f32; 4];
+                    d_r_v.store(&mut r_arr);
+                    for lane in 0..4 {
+                        if self.host_delta_dr[lane].abs() > 1e-12 {
+                            let r_d = r_arr[lane];
+                            let omr2 = (1.0 - r_d * r_d).max(0.0);
+                            let gamma = crate::operators::op_m::fast_rsqrt_nr2(omr2);
+                            let b_re = if gamma > 0.0 { omr2 * gamma } else { 1.0 };
+                            self.op_m_pre_delta_l.b_re[lane] = b_re;
+                            self.op_m_pre_delta_r.b_re[lane] = b_re;
+                        }
+                    }
                 }
             }
         }
@@ -336,10 +500,12 @@ impl Stage1PreDynamics {
     /// Steps the Full+ parallel 4-pole Stage I modal delta bank (`REQ-5.6`: zero mutation of `Lite` state).
     #[inline(always)]
     pub fn step_delta_branch(&mut self, in_l: f32, in_r: f32) {
-        for lane in 0..4 {
-            let _ = self.op_m_pre_delta_l.step_lane(lane, in_l);
-            let _ = self.op_m_pre_delta_r.step_lane(lane, in_r);
-        }
+        self.op_m_pre_delta_l
+            .step_4lane_stereo_simd::<crate::math::DefaultMathBackend>(
+                &mut self.op_m_pre_delta_r,
+                in_l,
+                in_r,
+            );
     }
 
     #[inline(always)]
@@ -376,34 +542,29 @@ impl Stage1PreDynamics {
 
     #[inline(always)]
     fn step_op_m_stereo(&mut self, in_l: f32, in_r: f32) -> (f32, f32) {
-        if self.op_m_pre_r.alpha_re != self.op_m_pre.alpha_re
-            || self.op_m_pre_r.alpha_im != self.op_m_pre.alpha_im
-        {
-            self.op_m_pre_r.alpha_re = self.op_m_pre.alpha_re;
-            self.op_m_pre_r.alpha_im = self.op_m_pre.alpha_im;
-            self.op_m_pre_r.b_re = self.op_m_pre.b_re;
-            self.op_m_pre_r.b_im = self.op_m_pre.b_im;
-        }
         let d_l = self.dc_blocker_l.step(in_l);
-        let (i_l, q_l) = self.hilbert_l.step(d_l);
-        self.last_tracker_l = self.tracker_l.step_analytic(i_l, q_l);
-
         let d_r = self.dc_blocker_r.step(in_r);
-        let (i_r, q_r) = self.hilbert_r.step(d_r);
-        self.last_tracker_r = self.tracker_r.step_analytic(i_r, q_r);
+        let (i_l, q_l, i_r, q_r) = self.hilbert_l.step_stereo(&mut self.hilbert_r, d_l, d_r);
+        let (tl, tr) = T1SubHarmonicTracker::step_analytic_stereo(
+            &mut self.tracker_l,
+            &mut self.tracker_r,
+            i_l,
+            q_l,
+            i_r,
+            q_r,
+        );
+        self.last_tracker_l = tl;
+        self.last_tracker_r = tr;
 
-        let mut acc_l = 0.0_f32;
-        let mut acc_r = 0.0_f32;
-        for lane in 0..4 {
-            let c_re = self.op_m_c_re[lane];
-            let c_im = self.op_m_c_im[lane];
-            if lane == 0 || c_re.abs() > 1e-12 || c_im.abs() > 1e-12 {
-                let (re_l, im_l) = self.op_m_pre.step_lane(lane, in_l);
-                let (re_r, im_r) = self.op_m_pre_r.step_lane(lane, in_r);
-                acc_l += c_re * re_l - c_im * im_l;
-                acc_r += c_re * re_r - c_im * im_r;
-            }
-        }
+        let (acc_l, acc_r) = self
+            .op_m_pre
+            .step_4lane_stereo_simd_with_readout::<crate::math::DefaultMathBackend>(
+                &mut self.op_m_pre_r,
+                in_l,
+                in_r,
+                &self.op_m_c_re,
+                &self.op_m_c_im,
+            );
         (
             acc_l + self.pitch_blend * self.last_tracker_l[0],
             acc_r + self.pitch_blend * self.last_tracker_r[0],

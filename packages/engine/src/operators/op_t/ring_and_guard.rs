@@ -181,6 +181,8 @@ pub struct OpTBlockMaxTreeGuard {
     pub block_size: usize,
     pub histories: Vec<Vec<f64>>,
     pub positions: Vec<usize>,
+    pub block_indices: Vec<usize>,
+    pub in_block_offsets: Vec<usize>,
     pub fresh_max: Vec<f64>,
     pub block_maxima: Vec<Vec<f64>>,
 }
@@ -203,6 +205,8 @@ impl OpTBlockMaxTreeGuard {
             block_size,
             histories: initial_histories,
             positions: vec![0; n_lines],
+            block_indices: vec![0; n_lines],
+            in_block_offsets: vec![0; n_lines],
             fresh_max: vec![0.0; n_lines],
             block_maxima,
         }
@@ -222,16 +226,22 @@ impl OpTBlockMaxTreeGuard {
         m
     }
 
-    /// Writes `value` to `line` at its current write position and updates its block maximum.
+    /// Writes `value` to `line` at its current write position and updates its block maximum (`0 UDIV`, `0 FDIV`).
     pub fn write(&mut self, line: usize, value: f64) {
         let pos = self.positions[line];
         let len = self.histories[line].len();
         self.histories[line][pos] = value;
         self.fresh_max[line] = self.fresh_max[line].max(value.abs());
-        let end_of_block = (pos + 1).is_multiple_of(self.block_size) || (pos + 1) == len;
-        if end_of_block {
-            self.block_maxima[line][pos / self.block_size] = self.fresh_max[line];
+        let next_in_block = self.in_block_offsets[line] + 1;
+        let next_pos = pos + 1;
+        if next_in_block == self.block_size || next_pos == len {
+            let b_idx = self.block_indices[line];
+            self.block_maxima[line][b_idx] = self.fresh_max[line];
             self.fresh_max[line] = 0.0;
+            self.in_block_offsets[line] = 0;
+            self.block_indices[line] = if next_pos == len { 0 } else { b_idx + 1 };
+        } else {
+            self.in_block_offsets[line] = next_in_block;
         }
         self.positions[line] = op_t_branchless_next_write(pos, len).unwrap();
     }
@@ -259,15 +269,13 @@ pub fn bspline_barberpole_3phase(phi: f32) -> [f32; 3] {
 
 #[inline]
 fn libm_free_floor_01(x: f32) -> f32 {
-    let i = x as i32;
-    let f = i as f32;
-    if f > x { f - 1.0 } else { f }
+    crate::math::floor_f32(x)
 }
 
 /// Evaluates the two grain phases $(\phi_A, \phi_B)$, Hermite-Hann weights $(H_A, H_B)$, and read
 /// delays $(\tau_A, \tau_B)$ for Mode $M = 2$ granular pitch shifting at sample `frame` with even
 /// integer grain duration `grain_duration`, center delay `center_delay`, and time-warp `warp`
-/// (`ref[dsp.op-t.window.m2-pitch]`).
+/// (`ref[dsp.op-t.window.m2-pitch]`, `0 UDIV`, `0 FDIV`).
 pub fn eval_m2_pitch_grain_delays(
     frame: u64,
     grain_duration: u64,
@@ -278,7 +286,19 @@ pub fn eval_m2_pitch_grain_delays(
         return None;
     }
     let g_f64 = grain_duration as f64;
-    let phi_a = ((frame % grain_duration) as f64) / g_f64;
+    let inv_g = crate::math::newton6_reciprocal_f64(g_f64);
+    let rem = if frame < grain_duration {
+        frame
+    } else {
+        let q = ((frame as f64) * inv_g) as u64;
+        let r = frame.saturating_sub(q.saturating_mul(grain_duration));
+        if r >= grain_duration {
+            r - grain_duration
+        } else {
+            r
+        }
+    };
+    let phi_a = ((rem as f64) * inv_g).clamp(0.0, 1.0 - f64::EPSILON);
     let phi_b = if phi_a + 0.5 >= 1.0 {
         phi_a - 0.5
     } else {

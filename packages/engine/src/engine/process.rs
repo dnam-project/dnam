@@ -6,7 +6,11 @@
 pub mod feature_bus;
 pub mod multiport;
 
-use super::DnamEngine;
+pub use feature_bus::{
+    FeatureBusBackend, tile_collapse_svd_slice_vec4, tile_dot64_stereo_vec4, tile_dot64_vec4,
+};
+
+use super::{DnamEngine, EngineBackend};
 use crate::math::{MathBackend, SimdVec4, flush_recursive_state_f32};
 use crate::provenance::watermark::{max_tiers_for_arena_len, read_f32_le};
 use crate::types::FtzDazGuard;
@@ -42,35 +46,14 @@ fn read_vec4_le<B: MathBackend>(bytes: &[u8], off: usize) -> B::Vec4 {
     B::Vec4::from_array([f0, f1, f2, f3])
 }
 
-impl<'a, B: MathBackend> DnamEngine<'a, B> {
-    /// Collapses the `3 kHz` SVD Kronecker Output Head weights (`ref[dsp.head.mid-side-factorization]`)
-    /// across all `16` `Vec4` feature groups (`g = 0..16`) per tier and folds Role B (`b = 1..K_t-1`)
-    /// of `CASCADE_W_BASES[t]` surjectively onto the `32` `Vec4` slices $(c \in \{0,1\}, g \in 0..16)$.
-    #[cfg_attr(feature = "hotpath", hotpath::measure)]
-    #[inline]
-    pub(crate) fn refresh_collapsed_head_weights(&mut self, active_tiers: usize) {
+impl<'a, B: EngineBackend> DnamEngine<'a, B> {
+    /// Precomputes and caches the static Role B (`b = 1..K_t-1`) `CASCADE_W_BASES[t]` slices
+    /// (`32` `Vec4` vectors per tier) when a container arena is loaded or reconfigured.
+    pub(crate) fn refresh_cached_role_b_slices(&mut self) {
         const CASCADE_W_BASES: [usize; 4] = [1_024, 11_264, 22_336, 36_224];
-        const HEAD_BASES: [usize; 4] = [4_928, 18_048, 31_936, 57_600];
-
         let arena = self.arena_storage.as_bytes();
-        let z_h = self.control_bus.z_head;
-        let z_u = self.control_bus.z_head_ultra;
-        let z_vecs = [
-            B::Vec4::splat(z_h[0]),
-            B::Vec4::splat(z_h[1]),
-            B::Vec4::splat(z_h[2]),
-            B::Vec4::splat(z_h[3]),
-        ];
-        let zu_vecs = [
-            B::Vec4::splat(z_u[0]),
-            B::Vec4::splat(z_u[1]),
-            B::Vec4::splat(z_u[2]),
-            B::Vec4::splat(z_u[3]),
-        ];
         let one_vec = B::Vec4::splat(1.0);
-
-        for t in 0..active_tiers {
-            let cw_base = CASCADE_W_BASES[t];
+        for (t, &cw_base) in CASCADE_W_BASES.iter().enumerate() {
             let k_t = 48 * (t + 1);
             let mut m_slices = [one_vec; 32];
             if arena.len() >= cw_base + k_t * 64 {
@@ -82,25 +65,52 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
                     }
                 }
             }
+            self.cached_role_b_slices[t] = m_slices;
+        }
+    }
 
+    /// Collapses the `3 kHz` SVD Kronecker Output Head weights (`ref[dsp.head.mid-side-factorization]`)
+    /// across all `16` `Vec4` feature groups (`g = 0..16`) per tier and folds Role B (`b = 1..K_t-1`)
+    /// of `CASCADE_W_BASES[t]` surjectively onto the `32` `Vec4` slices $(c \in \{0,1\}, g \in 0..16)$.
+    #[cfg_attr(feature = "hotpath", hotpath::measure)]
+    #[inline(never)]
+    pub(crate) fn refresh_collapsed_head_weights(&mut self, active_tiers: usize) {
+        const HEAD_BASES: [usize; 4] = [4_928, 18_048, 31_936, 57_600];
+
+        let arena = self.arena_storage.as_bytes();
+        let z_h = self.control_bus.z_head;
+        let z_u = self.control_bus.z_head_ultra;
+        let z_vec = B::Vec4::load(&z_h);
+        let zu_vec = B::Vec4::load(&z_u);
+
+        for t in 0..active_tiers {
+            let m_slices = &self.cached_role_b_slices[t];
             let h_base = HEAD_BASES[t];
             let u_base = 49_408 + t * 2048;
             for g in 0..16 {
                 let g_off_l = g * 16;
                 let g_off_r = 256 + g * 16;
-                let mut wl = read_vec4_le::<B>(arena, h_base + g_off_l);
-                let mut wr = read_vec4_le::<B>(arena, h_base + g_off_r);
-                for k in 0..4 {
-                    let mode_off = h_base + (k + 1) * 512;
-                    wl = wl.fma(z_vecs[k], read_vec4_le::<B>(arena, mode_off + g_off_l));
-                    wr = wr.fma(z_vecs[k], read_vec4_le::<B>(arena, mode_off + g_off_r));
-                }
+                let mut wl = read_vec4_le::<B>(arena, h_base + g_off_l)
+                    .fma_lane::<0>(read_vec4_le::<B>(arena, h_base + 512 + g_off_l), z_vec)
+                    .fma_lane::<1>(read_vec4_le::<B>(arena, h_base + 1024 + g_off_l), z_vec)
+                    .fma_lane::<2>(read_vec4_le::<B>(arena, h_base + 1536 + g_off_l), z_vec)
+                    .fma_lane::<3>(read_vec4_le::<B>(arena, h_base + 2048 + g_off_l), z_vec);
+                let mut wr = read_vec4_le::<B>(arena, h_base + g_off_r)
+                    .fma_lane::<0>(read_vec4_le::<B>(arena, h_base + 512 + g_off_r), z_vec)
+                    .fma_lane::<1>(read_vec4_le::<B>(arena, h_base + 1024 + g_off_r), z_vec)
+                    .fma_lane::<2>(read_vec4_le::<B>(arena, h_base + 1536 + g_off_r), z_vec)
+                    .fma_lane::<3>(read_vec4_le::<B>(arena, h_base + 2048 + g_off_r), z_vec);
                 if active_tiers >= 4 {
-                    for k in 0..4 {
-                        let u_mode_off = u_base + k * 512;
-                        wl = wl.fma(zu_vecs[k], read_vec4_le::<B>(arena, u_mode_off + g_off_l));
-                        wr = wr.fma(zu_vecs[k], read_vec4_le::<B>(arena, u_mode_off + g_off_r));
-                    }
+                    wl = wl
+                        .fma_lane::<0>(read_vec4_le::<B>(arena, u_base + g_off_l), zu_vec)
+                        .fma_lane::<1>(read_vec4_le::<B>(arena, u_base + 512 + g_off_l), zu_vec)
+                        .fma_lane::<2>(read_vec4_le::<B>(arena, u_base + 1024 + g_off_l), zu_vec)
+                        .fma_lane::<3>(read_vec4_le::<B>(arena, u_base + 1536 + g_off_l), zu_vec);
+                    wr = wr
+                        .fma_lane::<0>(read_vec4_le::<B>(arena, u_base + g_off_r), zu_vec)
+                        .fma_lane::<1>(read_vec4_le::<B>(arena, u_base + 512 + g_off_r), zu_vec)
+                        .fma_lane::<2>(read_vec4_le::<B>(arena, u_base + 1024 + g_off_r), zu_vec)
+                        .fma_lane::<3>(read_vec4_le::<B>(arena, u_base + 1536 + g_off_r), zu_vec);
                 }
                 self.collapsed_head_wl[t][g] = wl.mul(m_slices[g]);
                 self.collapsed_head_wr[t][g] = wr.mul(m_slices[16 + g]);
@@ -130,7 +140,7 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
     }
 
     /// Executes the decimated `3 kHz` Control Bus tick and modal formant retuning.
-    #[inline]
+    #[inline(never)]
     pub(crate) fn step_control_tick_3khz(&mut self, loop_tiers: usize) {
         let avg_energy = self.ctrl_energy_accum * self.zoh.alpha_ramp_host; // Division-free
         self.ctrl_sub_counter = 0;
@@ -140,7 +150,7 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
         let _changed = self
             .control_bus
             .tick_3khz_with_detectors(avg_energy, Some(det_env), arena);
-        self.stage_ramp_deltas = crate::control::ControlBus::<B>::compute_micro_ramp_deltas(
+        self.stage_ramp_deltas = crate::control::ControlBus::<B>::compute_micro_ramp_deltas_12(
             &self.current_stage_params,
             &self.control_bus.stage_targets,
             self.zoh.alpha_ramp_host,
@@ -159,6 +169,12 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
             .retune_op_m_pre_3khz(dtheta_tick, g_rad_pre_tick, true);
         self.stage_pipeline
             .retune_kautz_formant_3khz(loop_tiers, dtheta_tick, g_kautz_tick);
+        if self.cached_head_tiers > 0
+            && (self.cached_z_head != self.control_bus.z_head
+                || self.cached_z_head_ultra != self.control_bus.z_head_ultra)
+        {
+            self.refresh_collapsed_head_weights(self.cached_head_tiers);
+        }
     }
 
     /// Applies $3\text{ kHz}$ `ControlBus` state-space modulations (`W_ctrl`) to Stage I and Stage IV.
@@ -182,13 +198,23 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
             .set_target_delay(self.zoh.tau_ref_samples_host + d_mod0, false);
     }
 
+    #[inline(always)]
+    fn ensure_collapsed_head_weights(&mut self, active_tiers: usize) {
+        if self.cached_head_tiers != active_tiers
+            || self.cached_z_head != self.control_bus.z_head
+            || self.cached_z_head_ultra != self.control_bus.z_head_ultra
+        {
+            self.refresh_collapsed_head_weights(active_tiers);
+        }
+    }
+
     /// Low-level single-frame TORA stepping (`0 FDIV`, `0 FSQRT`).
     ///
     /// Direct callers must hold a [`FtzDazGuard`] for the enclosing batch. This
     /// method does not perform block-level preview accounting, tempo advancement,
     /// or offline oversampling; use the block APIs when those behaviors are needed.
     #[cfg_attr(feature = "hotpath", hotpath::measure)]
-    #[inline(always)]
+    #[inline(never)]
     pub fn step_frame_tora(&mut self, in_l: f32, in_r: f32, mono_only: bool) -> [f32; 2] {
         let in_l = crate::math::sanitize_input_sample(
             in_l,
@@ -209,17 +235,13 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
         }
 
         let is_frozen = self.stage_pipeline.stage4.freeze;
-        let live_scale = if !self.bypassed && self.freeze_mutes_dry && is_frozen {
+        let live_scale = if self.bypassed || (self.freeze_mutes_dry && is_frozen) {
             0.0
         } else {
             1.0
         };
-
-        let (eff_in_l, eff_in_r) = if self.bypassed {
-            (0.0, 0.0)
-        } else {
-            (in_l * live_scale, in_r * live_scale)
-        };
+        let eff_in_l = in_l * live_scale;
+        let eff_in_r = in_r * live_scale;
 
         let arena_len = self.arena_storage.as_bytes().len();
         let active_tiers =
@@ -234,32 +256,13 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
         if self.ctrl_sub_counter >= k_ctrl {
             self.step_control_tick_3khz(active_tiers);
         }
-        crate::control::ControlBus::<B>::step_micro_ramp(
+        if self.cached_head_tiers != active_tiers {
+            self.refresh_collapsed_head_weights(active_tiers);
+        }
+        crate::control::ControlBus::<B>::step_micro_ramp_12(
             &mut self.current_stage_params,
             &self.stage_ramp_deltas,
         );
-
-        let laws = crate::stages::eval_stage_modulation_laws(
-            &self.current_stage_params,
-            [
-                self.stage_pipeline.stage0.s_matrix[0][0],
-                self.stage_pipeline.stage0.s_matrix[1][1],
-            ],
-            self.zoh.tau_ref_samples_host,
-            256.0,
-            self.stage_pipeline.stage4.delay_lengths[0] as f32,
-            1004.0,
-            self.stage_pipeline.stage4.g_loop,
-            0.5,
-            self.stereo_width,
-        );
-        self.stage_pipeline.stage1.boost_gain = laws[4];
-        self.stage_pipeline.stage1.pitch_blend = self.current_stage_params[3].clamp(-1.0, 1.0);
-        let drive_gain = (laws[5] + 0.25 * self.control_bus.ctrl_basis_4[0]).clamp(0.25, 4.0);
-        let beta_tone = laws[6];
-        let pwr_drive = laws[7];
-        let sag_depth = (laws[8] + 0.1 * self.control_bus.ctrl_basis_4[1]).clamp(0.0, 0.8);
-        let g_fir = laws[11];
 
         // Stage 0: 8-Port Matrix Router
         let (down_l, down_r, clean_sub_l, clean_sub_r) = self
@@ -268,6 +271,9 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
             .route_frame_no_return(eff_in_l, eff_in_r);
 
         // Stage I: Pre-Dynamics (+ Full+ parallel modal delta bank)
+        self.stage_pipeline.stage1.boost_gain =
+            (1.0 + self.current_stage_params[4]).clamp(0.0, 16.0);
+        self.stage_pipeline.stage1.pitch_blend = self.current_stage_params[3].clamp(-1.0, 1.0);
         let (s1_l, s1_r) = self.stage_pipeline.stage1.step_stereo(down_l, down_r);
         if active_tiers >= 2 {
             self.stage_pipeline.stage1.step_delta_branch(down_l, down_r);
@@ -278,7 +284,15 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
             + self.stage_pipeline.stage0.s_matrix[1][1] * s1_r;
 
         // Stage II: Commuted Cascade (L-N-L-N + feedforward tier branches)
-        let s2_out = self.stage_pipeline.stage2.step_frame_with_branches(
+        let drive_gain = ((1.0 + 0.25 * self.current_stage_params[5]).clamp(0.25, 4.0)
+            + 0.25 * self.control_bus.ctrl_basis_4[0])
+            .clamp(0.25, 4.0);
+        let beta_tone = (0.5 + self.current_stage_params[6]).clamp(0.0, 1.0);
+        let pwr_drive = (1.0 + 0.25 * self.current_stage_params[7]).clamp(0.25, 4.0);
+        let sag_depth = ((0.2 + 0.1 * self.current_stage_params[8]).clamp(0.0, 0.8)
+            + 0.1 * self.control_bus.ctrl_basis_4[1])
+            .clamp(0.0, 0.8);
+        let (s2_l, s2_r) = self.stage_pipeline.stage2.step_frame_into_feature_bus(
             s1_l,
             s1_r,
             drive_gain,
@@ -286,9 +300,8 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
             beta_tone,
             pwr_drive,
             active_tiers,
+            &mut self.feature_bus_scratch,
         );
-        let s2_l = s2_out.s2_l;
-        let s2_r = s2_out.s2_r;
 
         // Stage III: Cabinet Modals (64-tap contiguous Early FIR + Stereo Kautz Modal Bank)
         let (s3_fir_raw_l, s3_fir_raw_r, s2_delayed_16_l, s2_delayed_16_r) = self
@@ -303,6 +316,7 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
                 &self.stage_pipeline.fir_taps_l[0],
                 &self.stage_pipeline.fir_taps_r[0],
             );
+        let g_fir = (1.0 + self.current_stage_params[11]).clamp(0.0, 2.0);
         let (fir_seg_l, fir_seg_r) = self
             .stage_pipeline
             .stage3
@@ -320,15 +334,8 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
         let s3_fir_l = fir_seg_l[0];
         let s3_fir_r = fir_seg_r[0];
 
-        if self.cached_head_tiers != active_tiers
-            || self.cached_z_head != self.control_bus.z_head
-            || self.cached_z_head_ultra != self.control_bus.z_head_ultra
-        {
-            self.refresh_collapsed_head_weights(active_tiers);
-        }
-
+        const KAUTZ_FB_OFFSETS: [usize; 8] = [0, 64, 128, 132, 192, 196, 200, 204];
         const TIER_BLK_BASE: [usize; 4] = [0, 1, 2, 4];
-        let mut kautz_modal_feats = [[0.0_f32; 4]; 8];
         let mut kautz_acc_l = B::Vec4::zero();
         let mut kautz_acc_r = B::Vec4::zero();
         let xl_vec = B::Vec4::splat(s2_delayed_16_l);
@@ -339,40 +346,42 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
             let n_blocks = crate::provenance::STAGE3_KAUTZ_BLOCKS_PER_TIER[t];
             let blk_base = TIER_BLK_BASE[t];
             for blk in 0..n_blocks {
-                let (vl, vr) = tiers_l[blk].step_4lane_stereo_simd_splatted::<B>(
+                let (vl, vr) = tiers_l[blk].step_4lane_stereo_simd_unscaled::<B>(
                     &mut tiers_r[blk],
                     xl_vec,
                     xr_vec,
                 );
-                kautz_modal_feats[blk_base + blk] =
-                    crate::stages::pack_stage3_modal_block_features(&vl.to_array(), &vr.to_array());
+                let fb_off = KAUTZ_FB_OFFSETS[blk_base + blk];
+                vl.add(vr).store(
+                    (&mut self.feature_bus_scratch[fb_off..fb_off + 4])
+                        .try_into()
+                        .unwrap(),
+                );
                 kautz_acc_l = kautz_acc_l.add(vl);
                 kautz_acc_r = kautz_acc_r.add(vr);
             }
         }
-        let s3_l = s3_fir_l + 0.125 * kautz_acc_l.horizontal_sum();
-        let s3_r = s3_fir_r + 0.125 * kautz_acc_r.horizontal_sum();
+        let s3_l = s3_fir_l + 0.25 * kautz_acc_l.horizontal_sum();
+        let s3_r = s3_fir_r + 0.25 * kautz_acc_r.horizontal_sum();
 
         // Stage IV: Unitary Spatial Tank + Multi-Tier Delay Taps
         let (tank_l, tank_r, tank_readouts, tank_loops) = self
             .stage_pipeline
             .stage4
             .step_stereo_with_readouts(s3_l, s3_r);
-        let (s4_full_taps, s4_pro_taps, s4_ultra_taps) = self
-            .stage_pipeline
-            .stage4
-            .read_multi_tier_taps(active_tiers, tank_readouts, tank_loops);
+        self.stage_pipeline.stage4.read_multi_tier_taps_into(
+            active_tiers,
+            tank_readouts,
+            tank_loops,
+            &mut self.feature_bus_scratch,
+        );
 
-        let fb_local = feature_bus::pack_tier_feature_bus(
+        feature_bus::pack_tier_feature_bus_into(
+            &mut self.feature_bus_scratch,
             &self.stage_pipeline.stage1,
-            &s2_out,
-            &kautz_modal_feats,
             &fir_seg_l,
             &fir_seg_r,
             &tank_readouts,
-            &s4_full_taps,
-            &s4_pro_taps,
-            &s4_ultra_taps,
             down_l,
             down_r,
             clean_sub_l,
@@ -381,6 +390,8 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
             s1_r,
             s1_l,
             s1_r,
+            s2_l,
+            s2_r,
             send_l,
             send_r,
             tank_l,
@@ -389,7 +400,7 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
         );
 
         let (head_sum_l, head_sum_r) = feature_bus::eval_tier_feature_bus_head_dot::<B>(
-            &fb_local,
+            &self.feature_bus_scratch,
             &self.collapsed_head_wl,
             &self.collapsed_head_wr,
             active_tiers,
@@ -420,18 +431,15 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
             self.mix_wet_gain
         };
 
-        let dry_l = in_l;
-        let dry_r = in_r;
-
         let out_l = crate::math::sanitize_output_sample(
-            eff_dry_g * dry_l + eff_wet_g * wet_l,
+            eff_dry_g * in_l + eff_wet_g * wet_l,
             &mut self.saturation_flags,
         );
         let out_r = if mono_only {
             out_l
         } else {
             crate::math::sanitize_output_sample(
-                eff_dry_g * dry_r + eff_wet_g * wet_r,
+                eff_dry_g * in_r + eff_wet_g * wet_r,
                 &mut self.saturation_flags,
             )
         };
@@ -440,7 +448,7 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
     }
 
     /// Internal 4x oversampled stepping.
-    #[inline(always)]
+    #[inline(never)]
     pub(crate) fn step_frame_4x_tora(&mut self, in_l: f32, in_r: f32, mono_only: bool) -> [f32; 2] {
         let in_l = crate::math::sanitize_input_sample(
             in_l,
@@ -484,6 +492,10 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
                 right_out[i] = r;
             }
         } else {
+            let arena_len = self.arena_storage.as_bytes().len();
+            let active_tiers =
+                (self.effective_tier() as usize + 1).min(max_tiers_for_arena_len(arena_len));
+            self.ensure_collapsed_head_weights(active_tiers);
             for i in 0..num_frames {
                 let [l, r] = self.step_frame_tora(left_in[i], right_in[i], false);
                 left_out[i] = l;
@@ -511,6 +523,10 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
                 right_out[i] = r;
             }
         } else {
+            let arena_len = self.arena_storage.as_bytes().len();
+            let active_tiers =
+                (self.effective_tier() as usize + 1).min(max_tiers_for_arena_len(arena_len));
+            self.ensure_collapsed_head_weights(active_tiers);
             for i in 0..num_frames {
                 let s = mono_in[i];
                 let [l, r] = self.step_frame_tora(s, s, false);
@@ -533,6 +549,10 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
                 mono_out[i] = l;
             }
         } else {
+            let arena_len = self.arena_storage.as_bytes().len();
+            let active_tiers =
+                (self.effective_tier() as usize + 1).min(max_tiers_for_arena_len(arena_len));
+            self.ensure_collapsed_head_weights(active_tiers);
             for i in 0..num_frames {
                 let s = mono_in[i];
                 let [l, _] = self.step_frame_tora(s, s, true);
@@ -554,6 +574,10 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
                 right_io[i] = r;
             }
         } else {
+            let arena_len = self.arena_storage.as_bytes().len();
+            let active_tiers =
+                (self.effective_tier() as usize + 1).min(max_tiers_for_arena_len(arena_len));
+            self.ensure_collapsed_head_weights(active_tiers);
             for i in 0..num_frames {
                 let [l, r] = self.step_frame_tora(left_io[i], right_io[i], false);
                 left_io[i] = l;

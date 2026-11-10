@@ -109,17 +109,10 @@ pub const FLAG_ENCRYPTED_ARENA: u16 = 1 << 11;
 /// Bit 12 (`4096`): `.dnam-ckpt` calibration statistics (`DNCA`) are present.
 pub const FLAG_HAS_CALIB_STATS: u16 = 1 << 12;
 
-/// Updates an incremental Castagnoli `CRC32C` state with `data` using hardware `CRC32C` on `aarch64`.
+/// Updates an incremental Castagnoli `CRC32C` state with `data` using hardware `CRC32C` when available.
 #[inline]
 pub fn crc32c_update(crc: u32, data: &[u8]) -> u32 {
-    #[cfg(target_arch = "aarch64")]
-    {
-        crate::math::neon::crc32c_arm64_update(crc, data)
-    }
-    #[cfg(not(target_arch = "aarch64"))]
-    {
-        crate::math::crc32c_slice(crc, data)
-    }
+    crate::math::crc32c_slice(crc, data)
 }
 
 /// Computes the Castagnoli `CRC32C` (`0x1EDC6F41`) checksum of `data`.

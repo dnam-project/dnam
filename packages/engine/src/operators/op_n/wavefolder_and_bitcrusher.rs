@@ -175,14 +175,9 @@ pub fn eval_adaa_cubic_c2_wavefolder_odd_f32(u_prev: f32, u_curr: f32) -> f32 {
     let d = 0.5 * (u1 - u0);
     let m2 = m * m;
     let d2 = d * d;
-    let m4 = m2 * m2;
-    let d4 = d2 * d2;
-    let m6 = m4 * m2;
-    let d6 = d4 * d2;
-    m * (1.0 - 3.0 * (m2 + d2) + 3.0 * m4 + 10.0 * m2 * d2 + 3.0 * d4
-        - m6
-        - 7.0 * (m4 * d2 + m2 * d4)
-        - d6)
+    let s = m2 + d2;
+    let oms = 1.0 - s;
+    m * oms * (oms * oms + 4.0 * m2 * d2)
 }
 
 /// Evaluates the division-free degree-7/8 interval-average `PolyADAA` basis polynomials

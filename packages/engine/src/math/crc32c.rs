@@ -1,4 +1,21 @@
-//! Castagnoli `CRC32C` (`0x1EDC6F41` / reflected `0x82F63B78`) lookup table and software fallback.
+//! Castagnoli `CRC32C` (`0x1EDC6F41` / reflected `0x82F63B78`) domain trait (`Crc32cBackend`)
+//! and portable Slicing-by-8 software fallback (`#[forbid(unsafe_code)]`).
+
+/// Hardware-accelerated Castagnoli `CRC32C` (`0x1EDC6F41` / reflected `0x82F63B78`) domain trait.
+///
+/// Required as a supertrait of [`super::MathBackend`] so every architecture backend (`ScalarBackend`,
+/// `NeonBackend`, `ArmSve2Backend`, `ArmSmeBackend`, `X86Sse2Backend`, `X86Sse42Backend`,
+/// `X86Avx2FmaBackend`, `WasmSimd128Backend`) is enforced at compile time to implement it.
+pub trait Crc32cBackend {
+    /// Updates a running Castagnoli `CRC32C` checksum over `data`.
+    fn crc32c_update(crc_init: u32, data: &[u8]) -> u32;
+
+    /// Computes Castagnoli `CRC32C` over `data` starting from `0`.
+    #[inline]
+    fn crc32c(data: &[u8]) -> u32 {
+        Self::crc32c_update(0, data)
+    }
+}
 
 /// Slicing-by-8 lookup tables (`8 × 256 × u32 = 8 KB`) for Castagnoli `CRC32C`
 /// (reflected polynomial `0x82F63B78`).
@@ -32,9 +49,9 @@ const CRC32C_TABLES: [[u32; 256]; 8] = {
     tables
 };
 
-/// Updates a running Castagnoli `CRC32C` checksum over `data` using Slicing-by-8.
+/// Updates a running Castagnoli `CRC32C` checksum over `data` using portable Slicing-by-8 software tables.
 #[inline]
-pub fn crc32c_slice(crc_init: u32, data: &[u8]) -> u32 {
+pub fn crc32c_software_slice(crc_init: u32, data: &[u8]) -> u32 {
     let mut crc = !crc_init;
     let (chunks, remainder) = data.as_chunks::<8>();
     for chunk in chunks {
@@ -56,6 +73,12 @@ pub fn crc32c_slice(crc_init: u32, data: &[u8]) -> u32 {
     !crc
 }
 
+/// Updates a running Castagnoli `CRC32C` checksum over `data` via [`super::DefaultMathBackend`].
+#[inline]
+pub fn crc32c_slice(crc_init: u32, data: &[u8]) -> u32 {
+    <super::DefaultMathBackend as Crc32cBackend>::crc32c_update(crc_init, data)
+}
+
 /// Computes Castagnoli `CRC32C` over `data` starting from `0`.
 #[inline]
 pub fn crc32c(data: &[u8]) -> u32 {
@@ -65,13 +88,13 @@ pub fn crc32c(data: &[u8]) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::math::{DefaultMathBackend, MathBackend};
     use proptest::prelude::*;
 
     #[test]
     fn test_crc32c_known_vector() {
         // Standard RFC 3720 / iSCSI CRC32C check value for "123456789" is 0xE3069283
         assert_eq!(crc32c(b"123456789"), 0xE306_9283);
+        assert_eq!(crc32c_software_slice(0, b"123456789"), 0xE306_9283);
     }
 
     proptest! {
@@ -82,8 +105,8 @@ mod tests {
             payload in proptest::collection::vec(any::<u8>(), 0..512),
             split_ratio in 0.0_f64..1.0_f64,
         ) {
-            let sw = crc32c(&payload);
-            let hw = DefaultMathBackend::crc32c(&payload);
+            let sw = crc32c_software_slice(0, &payload);
+            let hw = crc32c(&payload);
             prop_assert_eq!(hw, sw);
 
             let split_idx = ((payload.len() as f64) * split_ratio) as usize;

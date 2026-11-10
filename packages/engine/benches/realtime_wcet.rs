@@ -12,7 +12,8 @@ use dnam_engine::container::{
     ARENA_OFFSET_FULL_END, ARENA_OFFSET_LITE_END, ARENA_OFFSET_PRO_END, ARENA_OFFSET_ULTRA_END,
     DnamContainerView, build_dnam_container,
 };
-use dnam_engine::math::{DefaultMathBackend, MathBackend, ScalarBackend};
+use dnam_engine::engine::EngineBackend;
+use dnam_engine::math::{DefaultMathBackend, ScalarBackend};
 use dnam_engine::memory::{AlignedBuffer, CacheLine64};
 use dnam_engine::provenance::DefaultCryptoProvider;
 use dnam_engine::schema::{
@@ -189,7 +190,7 @@ fn make_bench_container() -> AlignedBuffer<CacheLine64> {
     aligned
 }
 
-fn bench_tier<B: MathBackend>(container: &[u8], tier: Tier, label: &str) {
+fn bench_tier<B: EngineBackend>(container: &[u8], tier: Tier, label: &str) {
     let mut engine = DnamEngine::<B>::from_bytes(container, tier, 48_000).unwrap();
     let block_size = 128_usize;
     let num_blocks = 375_usize; // 48,000 samples = 1.0 second of 48 kHz stereo audio
@@ -198,7 +199,7 @@ fn bench_tier<B: MathBackend>(container: &[u8], tier: Tier, label: &str) {
     let mut out_l = [0.0_f32; 128];
     let mut out_r = [0.0_f32; 128];
 
-    for _ in 0..32 {
+    for _ in 0..512 {
         engine.process_block(
             black_box(&in_l),
             black_box(&in_r),
@@ -233,7 +234,7 @@ fn bench_tier<B: MathBackend>(container: &[u8], tier: Tier, label: &str) {
     );
 }
 
-fn bench_tier_bounce<B: MathBackend>(container: &[u8], tier: Tier, label: &str) {
+fn bench_tier_bounce<B: EngineBackend>(container: &[u8], tier: Tier, label: &str) {
     let mut engine = DnamEngine::<B>::from_bytes(container, tier, 48_000).unwrap();
     engine.set_offline_bounce(true);
     let block_size = 128_usize;
@@ -243,7 +244,7 @@ fn bench_tier_bounce<B: MathBackend>(container: &[u8], tier: Tier, label: &str) 
     let mut out_l = [0.0_f32; 128];
     let mut out_r = [0.0_f32; 128];
 
-    for _ in 0..16 {
+    for _ in 0..128 {
         engine.process_block(
             black_box(&in_l),
             black_box(&in_r),
@@ -278,7 +279,7 @@ fn bench_tier_bounce<B: MathBackend>(container: &[u8], tier: Tier, label: &str) 
     );
 }
 
-fn bench_wcet_tail_latency<B: MathBackend>(container: &[u8], tier: Tier, label: &str) {
+fn bench_wcet_tail_latency<B: EngineBackend>(container: &[u8], tier: Tier, label: &str) {
     let mut engine = DnamEngine::<B>::from_bytes(container, tier, 48_000).unwrap();
     let in_l = [0.18_f32; 128];
     let in_r = [-0.18_f32; 128];

@@ -11,6 +11,7 @@ requirements:
   - REQ-6.2
 adrs:
   - ADR-0004
+  - ADR-0019
 ---
 
 # Op-N: Universal Nonlinear, Hysteretic & Commuted Cascade Operator
@@ -41,6 +42,10 @@ $$\mathcal{A}_{\text{odd}}[n] = m_n \Big(1.5 - 0.5\big(m_n^2 + d_n^2\big)\Big), 
 When consecutive raw inputs $a = \min(r_{n-1}, r_n) < b = \max(r_{n-1}, r_n)$ strictly cross $\pm 1$, partition the interval length $b - a$ into interior length $\ell_0 = \max(0, \min(b, 1) - \max(a, -1))$ and rail-plateau lengths $\ell_- = \max(0, \min(b, -1) - a)$, $\ell_+ = \max(0, b - \max(a, 1))$:
 $$A_{\text{odd,sat}} = \big(\ell_0 \mathcal{A}_{\text{odd}} + \ell_+ - \ell_-\big) \cdot y, \qquad A_{\text{even,sat}} = \big(\ell_0 \mathcal{A}_{\text{even}}\big) \cdot y$$
 Compute $y \approx (b - a)^{-1}$ without hardware division (`0 FDIV`) by widening $a, b$ bit-preservingly to `f64`, seeding $y_0 = 2^{-E_d - 1}$ from the unbiased exponent $E_d$ of $d = \mathrm{fl}_{64}(b - a)$, and executing 6 Newton reciprocal steps $y_{k+1} = \mathrm{fl}_{64}(y_k \cdot \mathrm{fl}_{64}(2 - \mathrm{fl}_{64}(d \cdot y_k)))$, guaranteeing absolute error $< 2^{-44}$ in `f64` and $< 2^{-24} + 2^{-44}$ after `f32` rounding.
+
+`r[dsp.op-n.polyadaa.stereo-and-rail-guard]` **Highest-Drive Rail-Crossing Fast Path & Packed Stereo `V1A`/`V1B` Execution ([`ADR-0019`](../../adr/0019-simd-kernel-architecture-and-realtime-execution-optimizations.md)):**
+1. **Highest-Drive-Lane Rail Guard:** Because the drive bank $d_{\text{bank}} = [0.25\times, 1.0\times, 4.0\times, 16.0\times]$ is strictly increasing, if the highest active lane (`lane 3 = 16.0x` in `V1A` or `lane 2 = 4.0x` in `V1B`) satisfies $|r_{n-1}| \le 1.0$ and $|r_n| \le 1.0$, all lower-drive lanes are guaranteed interior and skip the `f64` 6-step Newton rail-crossing path with a single scalar comparison.
+2. **Interleaved Stereo `V1A` & Packed 4-Lane `[l_1x, l_4x, r_1x, r_4x]` `V1B`:** Sub-Stage 2.1 (`step_stereo_pair`) interleaves Left and Right 4-drive `B::Vec4` registers to hide FMA latency, whereas Sub-Stage 2.2 (`step_stereo_lanes_1_2_lr`) packs only the two downstream-consumed `1.0x` and `4.0x` drive lanes (`lanes 1..3`) for Left and Right into a single 4-lane `B::Vec4` vector `[l_1x, l_4x, r_1x, r_4x]` and updates `left.{u_prev, a_prev, m_dc, last_a_even}[1..3]` and `right.{u_prev, a_prev, m_dc, last_a_even}[1..3]`, cutting `V1B` SIMD polynomial evaluations in half while preserving both channels' canonical 4-drive lane layout.
 
 ### 1.3 Un-Delayed Linear Separation & $1\times$ Passive B-Spline Blend
 
@@ -169,6 +174,7 @@ $$\mathbf{u}_{\text{drive,stereo}}^{(s)}[n] = \big[\mathbf{u}_{\text{drive},L}^{
 - **Diagonal Blocks ($\mathbf{W}_{L\to L}, \mathbf{W}_{R\to R}$):** Primary Left and Right channel amplification.
 - **Off-Diagonal Blocks ($\mathbf{W}_{L\to R}, \mathbf{W}_{R\to L}$):** Shared power-supply $B^+$ sag coupling and transformer crosstalk ($-55\text{ to }-70\text{ dB}$).
 - **Role A (`b = 0`) vs. Surjective Role B (`b = 1..K_t-1`) Partition:** Within each tier's `stage2_cascade_w` slice (`K_t = 48 / 96 / 144 / 192` blocks of `16 x f32`), Block `b = 0` (**Role A**) parameterizes the `4×4` inter-stage coupling matrix driving Sub-Stages 2.1 $\to$ 2.2 $\to$ 2.3 (held watermark-free so nonlinear trajectories remain invariant), while Blocks `b = 1..K_t-1` (**Role B**) fold surjectively via `slot = (b - 1) & 7` into the 8 Stage II feature-bus readout slots (`40..48` per tier) for linear output-head projection and exact Layer 1 Cascade-Head Gauge compensation.
+- `r[dsp.op-n.stage2.conv6-simd]` **4-Accumulator `conv6_taps` Tiling & Stereo Filter Vectorization ([`ADR-0019`](../../adr/0019-simd-kernel-architecture-and-realtime-execution-optimizations.md)):** Multi-tap commuted projections execute via `Stage2Backend::conv6_taps_{1..4}groups` (`conv6_taps_{1..4}groups_vec4`) using 4 independent vector accumulators (`acc0..acc3`) and broadcast lane FMA (`SimdVec4::fma_lane::<0..3>`), paired with stereo-packed inter-stage biquads (`step_interstage_filter_stereo`) and branch shapers (`step_branch_shaper_stereo`).
 
 ### 4.3 $3\text{ kHz}$ Bilinear Rank-$R$ Stage Latent Folding
 

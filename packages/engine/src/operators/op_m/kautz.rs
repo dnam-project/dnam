@@ -12,27 +12,13 @@ use crate::schema::cold_pow_f64;
 /// with unconditional guarantee `cos^2 + sin^2 <= 1.0` and `<= 2 ULP` error.
 #[inline(always)]
 pub fn algebraic_unit_rotor_op_m(theta: f32) -> (f32, f32) {
-    const PI: f32 = core::f32::consts::PI;
-    const TAU: f32 = core::f32::consts::TAU;
-    let wrapped = if (-3.141_592_5..=3.141_592_5).contains(&theta) {
-        theta
-    } else {
-        ((theta + PI).rem_euclid(TAU) - PI).clamp(-3.141_592_5, 3.141_592_5)
-    };
-    crate::math::contractive_rotor_f32(wrapped).unwrap_or((1.0, 0.0))
+    crate::math::algebraic_unit_rotor(theta)
 }
 
 /// Fast reciprocal square root using magic constant seed + 2 Newton-Raphson iterations (0 FDIV, 0 FSQRT).
 #[inline(always)]
 pub fn fast_rsqrt_nr2(x: f32) -> f32 {
-    let x_safe = x.max(1.0e-14);
-    let i = x_safe.to_bits();
-    let i_seed = 0x5f3759df - (i >> 1);
-    let y0 = f32::from_bits(i_seed);
-    let half_x = 0.5 * x_safe;
-
-    let y1 = y0 * (1.5 - half_x * y0 * y0);
-    y1 * (1.5 - half_x * y1 * y1)
+    <crate::math::DefaultMathBackend as crate::math::MathBackend>::rsqrt_nr2_f32(x.max(1.0e-14))
 }
 
 /// 4-lane SIMD Symplectic Complex Recurrence State (`ref[dsp.op-m.recurrence.symplectic]`).
@@ -108,6 +94,90 @@ impl SymplecticModal4Lane {
         self.z_re[lane] = flush_recursive_state_f32(next_re);
         self.z_im[lane] = flush_recursive_state_f32(next_im);
         (next_re, next_im)
+    }
+
+    /// Steps all 4 lanes of a stereo pair (`self` = Left, `right` = Right) in 4-lane SIMD,
+    /// preserving exact IEEE-754 non-FMA operation order (`0 ULP` difference vs [`Self::step_lane`]).
+    /// Direct callers must hold a [`crate::FtzDazGuard`] for the enclosing batch.
+    #[inline(always)]
+    pub fn step_4lane_stereo_simd<B: crate::math::MathBackend>(
+        &mut self,
+        right: &mut Self,
+        x_l: f32,
+        x_r: f32,
+    ) {
+        use crate::math::SimdVec4;
+        let xl = B::Vec4::splat(x_l);
+        let xr = B::Vec4::splat(x_r);
+        let a_re = B::Vec4::load(&self.alpha_re);
+        let a_im = B::Vec4::load(&self.alpha_im);
+        let b_re = B::Vec4::load(&self.b_re);
+
+        let prev_re_l = B::Vec4::load(&self.z_re);
+        let prev_im_l = B::Vec4::load(&self.z_im);
+        let next_re_l = a_re
+            .mul(prev_re_l)
+            .sub(a_im.mul(prev_im_l))
+            .add(b_re.mul(xl));
+        let next_im_l = a_im.mul(prev_re_l).add(a_re.mul(prev_im_l));
+        flush_recursive_state_vec4(next_re_l).store(&mut self.z_re);
+        flush_recursive_state_vec4(next_im_l).store(&mut self.z_im);
+
+        let prev_re_r = B::Vec4::load(&right.z_re);
+        let prev_im_r = B::Vec4::load(&right.z_im);
+        let next_re_r = a_re
+            .mul(prev_re_r)
+            .sub(a_im.mul(prev_im_r))
+            .add(b_re.mul(xr));
+        let next_im_r = a_im.mul(prev_re_r).add(a_re.mul(prev_im_r));
+        flush_recursive_state_vec4(next_re_r).store(&mut right.z_re);
+        flush_recursive_state_vec4(next_im_r).store(&mut right.z_im);
+    }
+
+    /// Steps all 4 lanes of a stereo pair (`self` = Left, `right` = Right) sharing `self`'s poles
+    /// in 4-lane SIMD and evaluates the complex readout `sum_k (c_re[k] * z_re[k] - c_im[k] * z_im[k])`.
+    /// Direct callers must hold a [`crate::FtzDazGuard`] for the enclosing batch.
+    #[inline(always)]
+    pub fn step_4lane_stereo_simd_with_readout<B: crate::math::MathBackend>(
+        &mut self,
+        right: &mut Self,
+        x_l: f32,
+        x_r: f32,
+        c_re: &[f32; 4],
+        c_im: &[f32; 4],
+    ) -> (f32, f32) {
+        use crate::math::SimdVec4;
+        let xl = B::Vec4::splat(x_l);
+        let xr = B::Vec4::splat(x_r);
+        let a_re = B::Vec4::load(&self.alpha_re);
+        let a_im = B::Vec4::load(&self.alpha_im);
+        let b_re = B::Vec4::load(&self.b_re);
+        let cr = B::Vec4::load(c_re);
+        let ci = B::Vec4::load(c_im);
+
+        let prev_re_l = B::Vec4::load(&self.z_re);
+        let prev_im_l = B::Vec4::load(&self.z_im);
+        let next_re_l = a_re
+            .mul(prev_re_l)
+            .sub(a_im.mul(prev_im_l))
+            .add(b_re.mul(xl));
+        let next_im_l = a_im.mul(prev_re_l).add(a_re.mul(prev_im_l));
+        flush_recursive_state_vec4(next_re_l).store(&mut self.z_re);
+        flush_recursive_state_vec4(next_im_l).store(&mut self.z_im);
+
+        let prev_re_r = B::Vec4::load(&right.z_re);
+        let prev_im_r = B::Vec4::load(&right.z_im);
+        let next_re_r = a_re
+            .mul(prev_re_r)
+            .sub(a_im.mul(prev_im_r))
+            .add(b_re.mul(xr));
+        let next_im_r = a_im.mul(prev_re_r).add(a_re.mul(prev_im_r));
+        flush_recursive_state_vec4(next_re_r).store(&mut right.z_re);
+        flush_recursive_state_vec4(next_im_r).store(&mut right.z_im);
+
+        cr.mul(next_re_l)
+            .sub(ci.mul(next_im_l))
+            .horizontal_sum_pair(cr.mul(next_re_r).sub(ci.mul(next_im_r)))
     }
 }
 
@@ -270,6 +340,52 @@ impl KautzModalBank<4> {
 
         let out_l = c_r_l.mul(next_re_l).sub(c_i_l.mul(next_im_l)).mul(two);
         let out_r = c_r_r.mul(next_re_r).sub(c_i_r.mul(next_im_r)).mul(two);
+        (out_l, out_r)
+    }
+
+    /// Steps a stereo pair (`self` = Left, `right` = Right) of 4-pole Kautz modal banks with
+    /// pre-splatted `x_l_vec` and `x_r_vec`, returning unscaled `Re(c * s)` (half of the 2*Re readout)
+    /// so `(vl + vr)` equals `0.5 * (2*Re_L + 2*Re_R)` without 3 extra vector multiplies per block.
+    #[inline(always)]
+    pub fn step_4lane_stereo_simd_unscaled<B: crate::math::MathBackend>(
+        &mut self,
+        right: &mut Self,
+        x_l_vec: B::Vec4,
+        x_r_vec: B::Vec4,
+    ) -> (B::Vec4, B::Vec4) {
+        use crate::math::SimdVec4;
+        let l_re = B::Vec4::load(&self.lambda_re);
+        let l_im = B::Vec4::load(&self.lambda_im);
+        let b_g = B::Vec4::load(&self.b_gamma);
+        let c_r_l = B::Vec4::load(&self.c_re);
+        let c_i_l = B::Vec4::load(&self.c_im);
+        let c_r_r = B::Vec4::load(&right.c_re);
+        let c_i_r = B::Vec4::load(&right.c_im);
+
+        let prev_re_l = B::Vec4::load(&self.s_re);
+        let prev_im_l = B::Vec4::load(&self.s_im);
+        let prev_re_r = B::Vec4::load(&right.s_re);
+        let prev_im_r = B::Vec4::load(&right.s_im);
+
+        let next_re_l = l_re
+            .mul(prev_re_l)
+            .sub(l_im.mul(prev_im_l))
+            .fma(b_g, x_l_vec);
+        let next_im_l = l_im.mul(prev_re_l).add(l_re.mul(prev_im_l));
+
+        let next_re_r = l_re
+            .mul(prev_re_r)
+            .sub(l_im.mul(prev_im_r))
+            .fma(b_g, x_r_vec);
+        let next_im_r = l_im.mul(prev_re_r).add(l_re.mul(prev_im_r));
+
+        flush_recursive_state_vec4(next_re_l).store(&mut self.s_re);
+        flush_recursive_state_vec4(next_im_l).store(&mut self.s_im);
+        flush_recursive_state_vec4(next_re_r).store(&mut right.s_re);
+        flush_recursive_state_vec4(next_im_r).store(&mut right.s_im);
+
+        let out_l = c_r_l.mul(next_re_l).sub(c_i_l.mul(next_im_l));
+        let out_r = c_r_r.mul(next_re_r).sub(c_i_r.mul(next_im_r));
         (out_l, out_r)
     }
 

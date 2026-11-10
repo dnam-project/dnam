@@ -257,34 +257,65 @@ impl ExactIntFactorAccumulator {
     }
 
     /// Updates contributor `index` from its stored `f32` bit pattern to `new_bits` in $O(1)$
+    /// without wide squaring or heap error allocation (`R = S - b_o`,
+    /// `D_new = D - 2 b_o R + 2 b_n R`, `S_new = R + b_n`, `ref[dsp.ctrl.accum.exact-int]`).
+    #[inline]
+    pub fn update_contributor_rt(&mut self, index: usize, new_bits: u32) -> bool {
+        if index >= self.count {
+            return false;
+        }
+        let Some((new_neg, new_sig, new_shift)) = decode_f32_significand_shift(new_bits) else {
+            return false;
+        };
+        let old_bits = self.previous_bits[index];
+        if old_bits == new_bits || ((old_bits & 0x7fff_ffff) == 0 && new_sig == 0) {
+            self.previous_bits[index] = new_bits;
+            return true;
+        }
+        let Some((old_neg, old_sig, old_shift)) = decode_f32_significand_shift(old_bits) else {
+            return false;
+        };
+        if old_sig != 0
+            && let Some((_, old_mag)) = decode_f32_to_9word(old_bits)
+        {
+            // R = S - b_old
+            self.sum.add_signed(!old_neg, old_mag);
+            if self.sum.magnitude.words != [0; 9] {
+                let rest_neg = self.sum.negative;
+                // D_new = D - 2 * b_old * R
+                self.twice_pairs.add_signed(
+                    !(old_neg ^ rest_neg),
+                    sparse_product_18word(&self.sum.magnitude, old_sig, old_shift + 1),
+                );
+            }
+        }
+        if new_sig != 0
+            && let Some((_, new_mag)) = decode_f32_to_9word(new_bits)
+        {
+            if self.sum.magnitude.words != [0; 9] {
+                let rest_neg = self.sum.negative;
+                // D_new += 2 * b_new * R
+                self.twice_pairs.add_signed(
+                    new_neg ^ rest_neg,
+                    sparse_product_18word(&self.sum.magnitude, new_sig, new_shift + 1),
+                );
+            }
+            // S_new = R + b_new
+            self.sum.add_signed(new_neg, new_mag);
+        }
+        self.previous_bits[index] = new_bits;
+        true
+    }
+
+    /// Updates contributor `index` from its stored `f32` bit pattern to `new_bits` in $O(1)$
     /// without wide squaring (`R = S - b_o`, `D_new = D - 2 b_o R + 2 b_n R`, `S_new = R + b_n`,
     /// `ref[dsp.ctrl.accum.exact-int]`).
     pub fn update_contributor(&mut self, index: usize, new_bits: u32) -> Result<(), DnamError> {
         if index >= self.count {
             return Err(DnamError::InvalidControlIndex(index));
         }
-        let (new_neg, new_sig, new_shift) =
-            decode_f32_significand_shift(new_bits).or_schema_err("nonfinite factor")?;
-        let old_bits = self.previous_bits[index];
-        let (old_neg, old_sig, old_shift) = decode_f32_significand_shift(old_bits).unwrap();
-        let (_, old_mag) = decode_f32_to_9word(old_bits).unwrap();
-        let (_, new_mag) = decode_f32_to_9word(new_bits).unwrap();
-
-        // R = S - b_old
-        self.sum.add_signed(!old_neg, old_mag);
-        let rest_neg = self.sum.negative;
-        // D_new = D - 2 * b_old * R + 2 * b_new * R
-        self.twice_pairs.add_signed(
-            !(old_neg ^ rest_neg),
-            sparse_product_18word(&self.sum.magnitude, old_sig, old_shift + 1),
-        );
-        self.twice_pairs.add_signed(
-            new_neg ^ rest_neg,
-            sparse_product_18word(&self.sum.magnitude, new_sig, new_shift + 1),
-        );
-        // S_new = R + b_new
-        self.sum.add_signed(new_neg, new_mag);
-        self.previous_bits[index] = new_bits;
+        let _ = decode_f32_significand_shift(new_bits).or_schema_err("nonfinite factor")?;
+        let _ = self.update_contributor_rt(index, new_bits);
         Ok(())
     }
 

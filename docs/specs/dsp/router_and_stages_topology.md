@@ -19,6 +19,7 @@ adrs:
   - ADR-0002
   - ADR-0006
   - ADR-0011
+  - ADR-0019
 ---
 
 # Stage 0 Router, Canonical Stages Topology & 256-D Mid/Side Head
@@ -240,6 +241,8 @@ Stage II models the 3-stage amplifier cascade (`V1A Preamp + Tone Stack` $\to$ `
 
 Stage III executes between Stage II and Stage IV, combining independent L/R early FIR segments (`16 / 32 / 48 / 64` taps/ch) with shared-pole Kautz modal pairs (`4 / 8 / 16 / 32` pairs, driven at $x_a[n-16]$ at `48 kHz`) and independent L/R complex readouts ([`op_m_modal_kautz.md` §4](op_m_modal_kautz.md#4-stage-iii--family-6-shared-kautz-modal-bank)).
 
+`r[dsp.stage3.mirrored-fir-simd]` **Double-Mirrored Reverse-Order FIR History & Contiguous `dot16_stereo` Evaluation ([`ADR-0019`](../../adr/0019-simd-kernel-architecture-and-realtime-execution-optimizations.md)):** To eliminate per-tap modulo index wrapping (`(pos - k) & 63`) and scalar gather loads across the 64-tap early FIR filter, each channel's `Stage3CabinetModals` instance (`stage3` and `stage3_r`) maintains a double-mirrored reverse-order circular buffer `fir_rev_history: [f32; 128]` where each incoming sample is written to both `rev` and `rev + 64` for `rev = (64 - (self.fir_write_ptr & 63)) & 63`. Because `[rev + tap_offset .. rev + tap_offset + 16]` is always contiguous in memory for every 16-tap tier slice (`tap_offset ∈ {0, 16, 32, 48}`), `Stage3Backend::dot16_stereo` loads four contiguous `B::Vec4` vectors per channel (or two 256-bit `__m256` vectors in `avx2_dot16_stereo`) and reduces Left and Right dot products simultaneously via `SimdVec4::horizontal_sum_pair`.
+
 ---
 
 ## 6. Stage IV: Unitary Spatial / Barberpole Tank (`Op-T[Tank]`)
@@ -283,6 +286,11 @@ The explicit outer clamp to $\pm V_{\text{ceil}}$ prevents `f32` intermediate ro
 Each tank line applies the blended pre-saturator feedback knee with quiet slope $0 \le g_{\text{lin}} \le 0.9990$ (`≤ 0x3F7FBE76` in `f32`, since `0x3F7FBE77` exceeds `0.9990`), blend factor $\alpha \in [0, 1]$, and knee width $\sigma > 0$:
 $$K(u) = g_{\text{lin}} u \left((1 - \alpha) + \frac{\alpha}{1 + (u/\sigma)^2}\right), \qquad K'(0) = g_{\text{lin}}, \qquad |K(u)| \le g_{\text{lin}}|u|$$
 At $\alpha = 0$, $K(u) = g_{\text{lin}} u$ is purely linear; at $\alpha = 1$, $K(u)$ is the rational knee. Evaluate $(1 + (u/\sigma)^2)^{-1}$ without audio-loop division via cold-path prepared $1/\sigma$ and 6 exponent-seeded `f64` Newton reciprocal steps (`pre-rounding relative error < 2^-40`).
+
+`r[dsp.stage4.simd-tank-loop]` **4-Lane SIMD Tank Conditioning, Saturation & Orthogonal Mixing ([`ADR-0019`](../../adr/0019-simd-kernel-architecture-and-realtime-execution-optimizations.md)):** `Stage4SpatialTank::step_stereo_with_readouts` (`lines: [[u16; TANK_LINE_CAPACITY]; TANK_LITE_LINES]`, `dc_blockers: [TankDcBlocker; TANK_LITE_LINES]`, `dc_x_prev: [f32; TANK_LITE_LINES]`, `dc_y_prev: [f32; TANK_LITE_LINES]`, `ducking_vca: BallisticDuckingVca`, with multi-tier feature-bus taps extracted via `read_multi_tier_taps_into`) vectorizes the 4-line feedback loop in `B::Vec4` SIMD registers:
+1. **4-Lane Passband-Normalized DC Blocker:** Updates the 4-line `dc_x_prev` and `dc_y_prev` states in `B::Vec4` via `y = alpha_dc * (x - x_prev) + r_dc * y_prev` + `flush_recursive_state_vec4`.
+2. **4-Lane Blended Knee & Cubic Loop Saturator (`coercive_saturate_4ch`):** Evaluates $(1 + (u \cdot \sigma^{-1})^2)^{-1}$ across all 4 lines in `B::Vec4` using cached `inv_sigma_knee` and 3-step `f32` Newton reciprocal refinement (with 6-step `f64` `coercive_saturate` on the single-line path), followed by 4-lane cubic saturation clamped to $\pm V_{\text{ceil}}$.
+3. **4-Lane Givens Rotation & Householder Reflection:** Caches `(cos_psi, sin_psi)` whenever the slewed Givens angle is stationary (`|target_psi - current_psi| <= 1e-7`), applies the $2\times 2$ block-diagonal Givens rotation in a single 4-lane FMA via `SimdVec4::pair_swap_neg([x0, x1, x2, x3]) -> [-x1, x0, -x3, x2]`, and evaluates the 4-channel Householder reflection $y - 2(v^\top y)v$ using `SimdVec4::horizontal_sum` and `SimdVec4::fma`.
 
 ---
 
@@ -357,6 +365,11 @@ W_head = [ W_lite           0             0             0           ]
          [ W_pro,lite      W_pro,full    W_pro,delta   0           ]
          [ W_ultra,lite    W_ultra,full  W_ultra,pro   W_ultra,delta ]
 ```
+
+`r[dsp.head.precollapse-and-zerocopy]` **Zero-Copy Feature Bus Packing & Two-Stage Kronecker Output Head Pre-Collapse ([`ADR-0019`](../../adr/0019-simd-kernel-architecture-and-realtime-execution-optimizations.md)):**
+1. **In-Place `feature_bus_scratch` Assembly (`0` Intermediate Copies):** Each stage writes its per-tier features directly into pre-allocated `feature_bus_scratch: [f32; 256]` slots (`Stage2CommutedCascade::step_frame_into_feature_bus` for Stage II slots `20..51`, `84..115`, `152..183`, `224..245`; `KautzModalBank<4>::step_4lane_stereo_simd_unscaled` for Stage III Kautz slots `0..3`, `64..67`, `128..135`, `192..207`; and `Stage4SpatialTank::read_multi_tier_taps_into` for Stage IV slots), avoiding temporary `256 × f32` stack array copies per sample.
+2. **Load-Time Surjective Role B Folding (`cached_role_b_slices`):** At model load / hot-reload (`DnamEngine::refresh_cached_role_b_slices`), each tier's `stage2_cascade_w` Role B blocks (`b = 1..K_t-1`, up to `191` blocks of `16 × f32` in `Ultra`) are pre-folded via `slot = (b - 1) & 7` into `cached_role_b_slices: [[B::Vec4; 32]; 4]` (`[mid_0..15, side_0..15]`), eliminating `191` block loops per audio sample.
+3. **`3 kHz` Dirty-Checked SVD Head Collapse (`collapsed_head_wl` / `collapsed_head_wr`):** At each `3 kHz` control boundary where `z_head != cached_z_head` (or `z_head_ultra != cached_z_head_ultra` / `active_tiers != cached_head_tiers`), `DnamEngine::refresh_collapsed_head_weights` folds `cached_role_b_slices` and the active SVD head modes (`4` modes in `Lite..Pro`, `8` modes in `Ultra`) into `collapsed_head_wl: [[B::Vec4; 16]; 4]`, `collapsed_head_wr: [[B::Vec4; 16]; 4]`, and `collapsed_b_head: [f32; 2]` using `SimdVec4::fma_lane::<0..3>`. At `48 kHz`, `eval_tier_feature_bus_head_dot` reduces to a single 4-way unrolled `B::Vec4` FMA loop + `SimdVec4::horizontal_sum_pair` directly over `collapsed_head_wl/wr` (while `FeatureBusBackend::tile_dot64_stereo` and 256-bit `avx2_tile_dot64_stereo` on `X86Avx2FmaBackend` provide the corresponding `64-D` stereo `[f32; 64]` slice dot primitive), cutting per-sample Output Head work by `4×`–`8×`.
 
 ---
 

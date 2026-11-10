@@ -66,8 +66,16 @@ export default defineConfig(({ mode }) => {
           test: {
             name: "node",
             environment: "node",
-            include: ["src/**/*.test.ts", "tests/integration/**/*.test.ts"],
+            include: [
+              "src/**/*.test.ts",
+              "tests/integration/**/*.test.ts",
+              "tests/profile/**/*.test.ts",
+            ],
             exclude: ["src/**/*.browser.test.ts", "tests/**/*.browser.test.ts"],
+            benchmark: {
+              include: ["src/**/*.bench.ts", "tests/integration/**/*.bench.ts"],
+              exclude: ["src/**/*.browser.bench.ts", "tests/**/*.browser.bench.ts"],
+            },
           },
         },
         {
@@ -75,6 +83,9 @@ export default defineConfig(({ mode }) => {
           test: {
             name: "chromium",
             include: ["src/**/*.browser.test.ts", "tests/**/*.browser.test.ts"],
+            benchmark: {
+              include: ["src/**/*.browser.bench.ts", "tests/**/*.browser.bench.ts"],
+            },
             browser: {
               enabled: true,
               headless: true,
@@ -84,9 +95,6 @@ export default defineConfig(({ mode }) => {
           },
         },
       ],
-      benchmark: {
-        include: ["src/**/*.bench.ts", "tests/integration/**/*.bench.ts"],
-      },
       coverage: {
         provider: "v8",
         include: ["src/**/*.ts"],

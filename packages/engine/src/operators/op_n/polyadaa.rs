@@ -10,6 +10,122 @@ use crate::math::{
 /// Drive scales for the 4-lane Multi-Drive PolyADAA Bank.
 pub const MULTI_DRIVE_SCALES: [f32; 4] = [0.25, 1.0, 4.0, 16.0];
 
+/// Domain-specific SIMD backend trait for `Op-N` (Multi-Drive PolyADAA Commuted Cascade).
+pub trait OpNBackend<V: SimdVec4> {
+    /// Evaluates the 4-channel division-free algebraic `PolyADAA` midpoint polynomial
+    /// across 4 parallel SIMD lanes (`ref[dsp.op-n.polyadaa.midpoint]`).
+    fn poly_adaa_algebraic_4ch(u_prev: V, u_curr: V, beta: V, delta: V) -> V;
+}
+
+/// Safe `SimdVec4` implementation of [`OpNBackend::poly_adaa_algebraic_4ch`].
+#[inline(always)]
+pub fn poly_adaa_algebraic_4ch_vec4<V: SimdVec4>(u_prev: V, u_curr: V, beta: V, delta: V) -> V {
+    poly_adaa_eval_vec4_pair(u_prev, u_curr, beta, delta).0
+}
+
+impl OpNBackend<crate::math::ScalarVec4> for crate::math::ScalarBackend {
+    #[inline(always)]
+    fn poly_adaa_algebraic_4ch(
+        u_prev: crate::math::ScalarVec4,
+        u_curr: crate::math::ScalarVec4,
+        beta: crate::math::ScalarVec4,
+        delta: crate::math::ScalarVec4,
+    ) -> crate::math::ScalarVec4 {
+        poly_adaa_algebraic_4ch_vec4(u_prev, u_curr, beta, delta)
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+impl OpNBackend<crate::math::NeonVec4> for crate::math::NeonBackend {
+    #[inline(always)]
+    fn poly_adaa_algebraic_4ch(
+        u_prev: crate::math::NeonVec4,
+        u_curr: crate::math::NeonVec4,
+        beta: crate::math::NeonVec4,
+        delta: crate::math::NeonVec4,
+    ) -> crate::math::NeonVec4 {
+        poly_adaa_algebraic_4ch_vec4(u_prev, u_curr, beta, delta)
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+impl OpNBackend<crate::math::Sve2Vec4> for crate::math::ArmSve2Backend {
+    #[inline(always)]
+    fn poly_adaa_algebraic_4ch(
+        u_prev: crate::math::Sve2Vec4,
+        u_curr: crate::math::Sve2Vec4,
+        beta: crate::math::Sve2Vec4,
+        delta: crate::math::Sve2Vec4,
+    ) -> crate::math::Sve2Vec4 {
+        poly_adaa_algebraic_4ch_vec4(u_prev, u_curr, beta, delta)
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+impl OpNBackend<crate::math::NeonVec4> for crate::math::ArmSmeBackend {
+    #[inline(always)]
+    fn poly_adaa_algebraic_4ch(
+        u_prev: crate::math::NeonVec4,
+        u_curr: crate::math::NeonVec4,
+        beta: crate::math::NeonVec4,
+        delta: crate::math::NeonVec4,
+    ) -> crate::math::NeonVec4 {
+        poly_adaa_algebraic_4ch_vec4(u_prev, u_curr, beta, delta)
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+impl OpNBackend<crate::math::Sse2Vec4> for crate::math::X86Sse2Backend {
+    #[inline(always)]
+    fn poly_adaa_algebraic_4ch(
+        u_prev: crate::math::Sse2Vec4,
+        u_curr: crate::math::Sse2Vec4,
+        beta: crate::math::Sse2Vec4,
+        delta: crate::math::Sse2Vec4,
+    ) -> crate::math::Sse2Vec4 {
+        poly_adaa_algebraic_4ch_vec4(u_prev, u_curr, beta, delta)
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+impl OpNBackend<crate::math::Sse42Vec4> for crate::math::X86Sse42Backend {
+    #[inline(always)]
+    fn poly_adaa_algebraic_4ch(
+        u_prev: crate::math::Sse42Vec4,
+        u_curr: crate::math::Sse42Vec4,
+        beta: crate::math::Sse42Vec4,
+        delta: crate::math::Sse42Vec4,
+    ) -> crate::math::Sse42Vec4 {
+        poly_adaa_algebraic_4ch_vec4(u_prev, u_curr, beta, delta)
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+impl OpNBackend<crate::math::Avx2FmaVec4> for crate::math::X86Avx2FmaBackend {
+    #[inline(always)]
+    fn poly_adaa_algebraic_4ch(
+        u_prev: crate::math::Avx2FmaVec4,
+        u_curr: crate::math::Avx2FmaVec4,
+        beta: crate::math::Avx2FmaVec4,
+        delta: crate::math::Avx2FmaVec4,
+    ) -> crate::math::Avx2FmaVec4 {
+        poly_adaa_algebraic_4ch_vec4(u_prev, u_curr, beta, delta)
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+impl OpNBackend<crate::math::WasmVec4> for crate::math::WasmSimd128Backend {
+    #[inline(always)]
+    fn poly_adaa_algebraic_4ch(
+        u_prev: crate::math::WasmVec4,
+        u_curr: crate::math::WasmVec4,
+        beta: crate::math::WasmVec4,
+        delta: crate::math::WasmVec4,
+    ) -> crate::math::WasmVec4 {
+        poly_adaa_algebraic_4ch_vec4(u_prev, u_curr, beta, delta)
+    }
+}
+
 /// Exact division-free algebraic PolyADAA segment evaluation (`ref[dsp.op-n.polyadaa.midpoint]`).
 ///
 /// Evaluates:
@@ -31,19 +147,20 @@ pub fn poly_adaa_algebraic_eval_pair(
     delta: f32,
 ) -> (f32, f32) {
     const ONE_THIRD: f32 = 1.0 / 3.0;
-    const ONE_FIFTH: f32 = 0.2;
 
     let m = 0.5 * (u_curr + u_prev);
     let d = 0.5 * (u_curr - u_prev);
 
     let m2 = m * m;
     let d2 = d * d;
+    let s = m2 + d2;
 
-    let odd_factor = 1.5 - 0.5 * (m2 + d2);
+    let odd_factor = 1.5 - 0.5 * s;
     let a_odd = m * odd_factor;
 
     let quad = m2 + ONE_THIRD * d2;
-    let quart = m2 * m2 + 2.0 * m2 * d2 + ONE_FIFTH * d2 * d2;
+    let d4 = d2 * d2;
+    let quart = s * s - 0.8 * d4;
     let a_even = quad - quart;
 
     (beta * a_odd + delta * a_even, a_even)
@@ -54,26 +171,23 @@ fn poly_adaa_eval_vec4_pair<V: SimdVec4>(u_prev: V, u_curr: V, beta: V, delta: V
     let half = V::splat(0.5);
     let one_pt_five = V::splat(1.5);
     let one_third = V::splat(1.0 / 3.0);
-    let one_fifth = V::splat(0.2);
-    let two = V::splat(2.0);
 
     let m = half.mul(u_curr.add(u_prev));
     let d = half.mul(u_curr.sub(u_prev));
 
     let m2 = m.mul(m);
     let d2 = d.mul(d);
+    let s = m2.add(d2);
 
-    let odd_factor = one_pt_five.sub(half.mul(m2.add(d2)));
+    let odd_factor = one_pt_five.fms(half, s);
     let a_odd = m.mul(odd_factor);
 
-    let quad = m2.add(one_third.mul(d2));
-    let quart = m2
-        .mul(m2)
-        .add(two.mul(m2).mul(d2))
-        .add(one_fifth.mul(d2).mul(d2));
+    let quad = m2.fma(one_third, d2);
+    let d4 = d2.mul(d2);
+    let quart = (s.mul(s)).fms(V::splat(0.8), d4);
     let a_even = quad.sub(quart);
 
-    (beta.mul(a_odd).add(delta.mul(a_even)), a_even)
+    ((beta.mul(a_odd)).fma(delta, a_even), a_even)
 }
 
 /// Multi-Drive 1x B-Spline PolyADAA Bank Channel State (`ref[dsp.op-n.polyadaa.midpoint]`, `ref[dsp.op-n.polyadaa.rail-crossing]`, `ref[dsp.op-n.polyadaa.bspline-ac]`).
@@ -127,9 +241,7 @@ impl MultiDrivePolyAdaaChannel {
     /// Direct callers must hold a [`crate::FtzDazGuard`] for the enclosing batch.
     #[inline(always)]
     fn crosses_rail(u_prev: f32, u_curr: f32) -> bool {
-        let lo = u_prev.min(u_curr);
-        let hi = u_prev.max(u_curr);
-        (lo < -1.0 && hi > -1.0) || (lo < 1.0 && hi > 1.0)
+        ((u_prev - 1.0) * (u_curr - 1.0) < 0.0) || ((u_prev + 1.0) * (u_curr + 1.0) < 0.0)
     }
 
     #[inline(always)]
@@ -147,37 +259,40 @@ impl MultiDrivePolyAdaaChannel {
 
         let (mut a_v, mut a_even_v) =
             poly_adaa_eval_vec4_pair(u_p_v, u_c_v, V::splat(beta), V::splat(delta));
-        let mut u_raw_arr = [0.0f32; 4];
-        u_raw_v.store(&mut u_raw_arr);
 
-        if Self::crosses_rail(self.u_prev[3], u_raw_arr[3])
-            || u_raw_arr[2].abs() > 1.0
-            || self.u_prev[2].abs() > 1.0
-        {
-            let mut a_arr = [0.0f32; 4];
-            let mut a_even_arr = [0.0f32; 4];
-            a_v.store(&mut a_arr);
-            a_even_v.store(&mut a_even_arr);
-            for i in 0..4 {
-                if Self::crosses_rail(self.u_prev[i], u_raw_arr[i]) {
-                    let (odd, even, _) = eval_saturated_polyadaa_rail_crossing_f64(
-                        self.u_prev[i] as f64,
-                        u_raw_arr[i] as f64,
-                    );
-                    a_arr[i] = ((beta as f64) * odd + (delta as f64) * even) as f32;
-                    a_even_arr[i] = even as f32;
+        let u3_raw = 16.0 * x_scaled;
+        let u3_prev = self.u_prev[3];
+        if (u3_prev != u3_raw) && (u3_prev.abs() > 1.0 || u3_raw.abs() > 1.0) {
+            let crossing_v = (u_p_v.sub(u_c_v))
+                .abs()
+                .mul((u_p_v.sub(u_prev_v)).abs().add((u_c_v.sub(u_raw_v)).abs()));
+            if crossing_v.horizontal_sum() > 0.0 {
+                let mut c_arr = [0.0f32; 4];
+                crossing_v.store(&mut c_arr);
+                let u_raw_arr = [0.25 * x_scaled, x_scaled, 4.0 * x_scaled, u3_raw];
+                let mut a_arr = [0.0f32; 4];
+                let mut a_even_arr = [0.0f32; 4];
+                a_v.store(&mut a_arr);
+                a_even_v.store(&mut a_even_arr);
+                for i in 0..4 {
+                    if c_arr[i] > 0.0 {
+                        let (odd, even, _) = eval_saturated_polyadaa_rail_crossing_f64(
+                            self.u_prev[i] as f64,
+                            u_raw_arr[i] as f64,
+                        );
+                        a_arr[i] = ((beta as f64) * odd + (delta as f64) * even) as f32;
+                        a_even_arr[i] = even as f32;
+                    }
                 }
+                a_v = V::load(&a_arr);
+                a_even_v = V::load(&a_even_arr);
             }
-            a_v = V::load(&a_arr);
-            a_even_v = V::load(&a_even_arr);
         }
 
         let a_prev_v = V::load(&self.a_prev);
         let m_prev_v = V::load(&self.m_dc);
-        let y_nl_v = V::splat(0.875).mul(a_v).add(V::splat(0.125).mul(a_prev_v));
-        let next_m_dc_v = V::splat(r_ac)
-            .mul(m_prev_v)
-            .add(V::splat(one_minus_rac).mul(y_nl_v));
+        let y_nl_v = (V::splat(0.125).mul(a_prev_v)).fma(V::splat(0.875), a_v);
+        let next_m_dc_v = (V::splat(r_ac).mul(m_prev_v)).fma(V::splat(one_minus_rac), y_nl_v);
         let out_v = V::splat(alpha * x).add(y_nl_v.sub(next_m_dc_v));
 
         flush_recursive_state_vec4(u_raw_v).store(&mut self.u_prev);
@@ -185,9 +300,155 @@ impl MultiDrivePolyAdaaChannel {
         flush_recursive_state_vec4(next_m_dc_v).store(&mut self.m_dc);
         flush_recursive_state_vec4(a_even_v).store(&mut self.last_a_even);
 
-        let mut out = [0.0; 4];
-        out_v.store(&mut out);
-        out
+        out_v.to_array()
+    }
+
+    /// Steps all 4 drive lanes (`0.25x, 1.0x, 4.0x, 16.0x`) for a stereo `(left, right)` pair simultaneously,
+    /// interleaving independent Left and Right SIMD operations and sharing constant registers.
+    #[allow(clippy::too_many_arguments)]
+    #[inline(always)]
+    pub fn step_stereo_pair(
+        left: &mut Self,
+        right: &mut Self,
+        x_l: f32,
+        x_r: f32,
+        beta_l: f32,
+        delta_l: f32,
+        alpha_l: f32,
+        beta_r: f32,
+        delta_r: f32,
+        alpha_r: f32,
+        r_ac: f32,
+    ) -> ([f32; 4], [f32; 4]) {
+        type V = <DefaultMathBackend as MathBackend>::Vec4;
+        let one_minus_rac = 1.0 - r_ac;
+        let xl_s = (2.0 / 3.0) * x_l;
+        let xr_s = (2.0 / 3.0) * x_r;
+
+        let scales = V::load(&MULTI_DRIVE_SCALES);
+        let neg_one = V::splat(-1.0);
+        let pos_one = V::splat(1.0);
+        let half = V::splat(0.5);
+        let one_pt_five = V::splat(1.5);
+        let one_third = V::splat(1.0 / 3.0);
+        let pt_eight = V::splat(0.8);
+
+        let u_raw_l = scales.mul(V::splat(xl_s));
+        let u_raw_r = scales.mul(V::splat(xr_s));
+        let u_prev_l = V::load(&left.u_prev);
+        let u_prev_r = V::load(&right.u_prev);
+        let u_p_l = u_prev_l.max(neg_one).min(pos_one);
+        let u_p_r = u_prev_r.max(neg_one).min(pos_one);
+        let u_c_l = u_raw_l.max(neg_one).min(pos_one);
+        let u_c_r = u_raw_r.max(neg_one).min(pos_one);
+
+        let m_l = half.mul(u_c_l.add(u_p_l));
+        let m_r = half.mul(u_c_r.add(u_p_r));
+        let d_l = half.mul(u_c_l.sub(u_p_l));
+        let d_r = half.mul(u_c_r.sub(u_p_r));
+
+        let m2_l = m_l.mul(m_l);
+        let m2_r = m_r.mul(m_r);
+        let d2_l = d_l.mul(d_l);
+        let d2_r = d_r.mul(d_r);
+        let s_l = m2_l.add(d2_l);
+        let s_r = m2_r.add(d2_r);
+
+        let a_odd_l = m_l.mul(one_pt_five.fms(half, s_l));
+        let a_odd_r = m_r.mul(one_pt_five.fms(half, s_r));
+        let mut a_even_l = m2_l
+            .fma(one_third, d2_l)
+            .sub((s_l.mul(s_l)).fms(pt_eight, d2_l.mul(d2_l)));
+        let mut a_even_r = m2_r
+            .fma(one_third, d2_r)
+            .sub((s_r.mul(s_r)).fms(pt_eight, d2_r.mul(d2_r)));
+
+        let mut a_l = (V::splat(beta_l).mul(a_odd_l)).fma(V::splat(delta_l), a_even_l);
+        let mut a_r = (V::splat(beta_r).mul(a_odd_r)).fma(V::splat(delta_r), a_even_r);
+
+        let u3_raw_l = 16.0 * xl_s;
+        if (left.u_prev[3] != u3_raw_l) && (left.u_prev[3].abs() > 1.0 || u3_raw_l.abs() > 1.0) {
+            let crossing_l = (u_p_l.sub(u_c_l))
+                .abs()
+                .mul((u_p_l.sub(u_prev_l)).abs().add((u_c_l.sub(u_raw_l)).abs()));
+            if crossing_l.horizontal_sum() > 0.0 {
+                let mut c_arr = [0.0f32; 4];
+                crossing_l.store(&mut c_arr);
+                let u_raw_arr = [0.25 * xl_s, xl_s, 4.0 * xl_s, u3_raw_l];
+                let mut a_arr = [0.0f32; 4];
+                let mut ae_arr = [0.0f32; 4];
+                a_l.store(&mut a_arr);
+                a_even_l.store(&mut ae_arr);
+                for i in 0..4 {
+                    if c_arr[i] > 0.0 {
+                        let (odd, even, _) = eval_saturated_polyadaa_rail_crossing_f64(
+                            left.u_prev[i] as f64,
+                            u_raw_arr[i] as f64,
+                        );
+                        a_arr[i] = ((beta_l as f64) * odd + (delta_l as f64) * even) as f32;
+                        ae_arr[i] = even as f32;
+                    }
+                }
+                a_l = V::load(&a_arr);
+                a_even_l = V::load(&ae_arr);
+            }
+        }
+
+        let u3_raw_r = 16.0 * xr_s;
+        if (right.u_prev[3] != u3_raw_r) && (right.u_prev[3].abs() > 1.0 || u3_raw_r.abs() > 1.0) {
+            let crossing_r = (u_p_r.sub(u_c_r))
+                .abs()
+                .mul((u_p_r.sub(u_prev_r)).abs().add((u_c_r.sub(u_raw_r)).abs()));
+            if crossing_r.horizontal_sum() > 0.0 {
+                let mut c_arr = [0.0f32; 4];
+                crossing_r.store(&mut c_arr);
+                let u_raw_arr = [0.25 * xr_s, xr_s, 4.0 * xr_s, u3_raw_r];
+                let mut a_arr = [0.0f32; 4];
+                let mut ae_arr = [0.0f32; 4];
+                a_r.store(&mut a_arr);
+                a_even_r.store(&mut ae_arr);
+                for i in 0..4 {
+                    if c_arr[i] > 0.0 {
+                        let (odd, even, _) = eval_saturated_polyadaa_rail_crossing_f64(
+                            right.u_prev[i] as f64,
+                            u_raw_arr[i] as f64,
+                        );
+                        a_arr[i] = ((beta_r as f64) * odd + (delta_r as f64) * even) as f32;
+                        ae_arr[i] = even as f32;
+                    }
+                }
+                a_r = V::load(&a_arr);
+                a_even_r = V::load(&ae_arr);
+            }
+        }
+
+        let w_prev = V::splat(0.125);
+        let w_curr = V::splat(0.875);
+        let r_ac_v = V::splat(r_ac);
+        let omr_v = V::splat(one_minus_rac);
+
+        let y_nl_l = (w_prev.mul(V::load(&left.a_prev))).fma(w_curr, a_l);
+        let y_nl_r = (w_prev.mul(V::load(&right.a_prev))).fma(w_curr, a_r);
+        let next_m_l = (r_ac_v.mul(V::load(&left.m_dc))).fma(omr_v, y_nl_l);
+        let next_m_r = (r_ac_v.mul(V::load(&right.m_dc))).fma(omr_v, y_nl_r);
+        let out_v_l = V::splat(alpha_l * x_l).add(y_nl_l.sub(next_m_l));
+        let out_v_r = V::splat(alpha_r * x_r).add(y_nl_r.sub(next_m_r));
+
+        flush_recursive_state_vec4(u_raw_l).store(&mut left.u_prev);
+        flush_recursive_state_vec4(a_l).store(&mut left.a_prev);
+        flush_recursive_state_vec4(next_m_l).store(&mut left.m_dc);
+        flush_recursive_state_vec4(a_even_l).store(&mut left.last_a_even);
+
+        flush_recursive_state_vec4(u_raw_r).store(&mut right.u_prev);
+        flush_recursive_state_vec4(a_r).store(&mut right.a_prev);
+        flush_recursive_state_vec4(next_m_r).store(&mut right.m_dc);
+        flush_recursive_state_vec4(a_even_r).store(&mut right.last_a_even);
+
+        let mut out_l = [0.0f32; 4];
+        let mut out_r = [0.0f32; 4];
+        out_v_l.store(&mut out_l);
+        out_v_r.store(&mut out_r);
+        (out_l, out_r)
     }
 
     /// Steps only drive lanes `1` (`1.0x`) and `2` (`4.0x`) for Stage II Sub-stage 2.2 (`V1B` Driver),
@@ -216,7 +477,9 @@ impl MultiDrivePolyAdaaChannel {
 
         let (mut a1, mut ae1) = poly_adaa_algebraic_eval_pair(u1_p, u1_c, beta, delta);
         let (mut a2, mut ae2) = poly_adaa_algebraic_eval_pair(u2_p, u2_c, beta, delta);
-        if Self::crosses_rail(p2, u2_raw) || u1_raw.abs() > 1.0 || p1.abs() > 1.0 {
+        if (p2.abs() > 1.0 || u2_raw.abs() > 1.0)
+            && (Self::crosses_rail(p2, u2_raw) || Self::crosses_rail(p1, u1_raw))
+        {
             if Self::crosses_rail(p1, u1_raw) {
                 let (odd, even, _) =
                     eval_saturated_polyadaa_rail_crossing_f64(p1 as f64, u1_raw as f64);
@@ -264,10 +527,34 @@ impl MultiDrivePolyAdaaChannel {
         alpha: f32,
         r_ac: f32,
     ) -> (f32, f32, f32, f32) {
+        Self::step_stereo_lanes_1_2_lr(
+            left, right, x_l, x_r, beta, delta, alpha, beta, delta, alpha, r_ac,
+        )
+    }
+
+    /// Steps drive lanes `1` (`1.0x`) and `2` (`4.0x`) for a stereo `(left, right)` pair simultaneously
+    /// with independent Left/Right `(beta, delta, alpha)` parameters across a single 4-lane SIMD loop.
+    #[allow(clippy::too_many_arguments)]
+    #[inline(always)]
+    pub fn step_stereo_lanes_1_2_lr(
+        left: &mut Self,
+        right: &mut Self,
+        x_l: f32,
+        x_r: f32,
+        beta_l: f32,
+        delta_l: f32,
+        alpha_l: f32,
+        beta_r: f32,
+        delta_r: f32,
+        alpha_r: f32,
+        r_ac: f32,
+    ) -> (f32, f32, f32, f32) {
         type V = <DefaultMathBackend as MathBackend>::Vec4;
         let one_minus_rac = 1.0 - r_ac;
         let xl_s = (2.0 / 3.0) * x_l;
         let xr_s = (2.0 / 3.0) * x_r;
+        let ax_l = alpha_l * x_l;
+        let ax_r = alpha_r * x_r;
 
         let u_prev_4 = [
             left.u_prev[1],
@@ -275,89 +562,100 @@ impl MultiDrivePolyAdaaChannel {
             right.u_prev[1],
             right.u_prev[2],
         ];
-        let u_raw_4 = [xl_s, 4.0 * xl_s, xr_s, 4.0 * xr_s];
         let a_prev_4 = [
             left.a_prev[1],
             left.a_prev[2],
             right.a_prev[1],
             right.a_prev[2],
         ];
-        let m_prev_4 = [left.m_dc[1], left.m_dc[2], right.m_dc[1], right.m_dc[2]];
-        let alpha_x_4 = [alpha * x_l, alpha * x_l, alpha * x_r, alpha * x_r];
+        let m_dc_4 = [left.m_dc[1], left.m_dc[2], right.m_dc[1], right.m_dc[2]];
+        let u_raw_4 = [xl_s, 4.0 * xl_s, xr_s, 4.0 * xr_s];
+        let beta_4 = [beta_l, beta_l, beta_r, beta_r];
+        let delta_4 = [delta_l, delta_l, delta_r, delta_r];
+        let alpha_x_4 = [ax_l, ax_l, ax_r, ax_r];
 
         let neg_one = V::splat(-1.0);
         let pos_one = V::splat(1.0);
-        let u_prev_v = V::load(&u_prev_4);
-        let u_raw_v = V::load(&u_raw_4);
-        let u_p_v = u_prev_v.max(neg_one).min(pos_one);
-        let u_c_v = u_raw_v.max(neg_one).min(pos_one);
-        let (mut a_v, mut a_even_v) =
-            poly_adaa_eval_vec4_pair(u_p_v, u_c_v, V::splat(beta), V::splat(delta));
+        let u_prev_raw = V::load(&u_prev_4);
+        let u_curr_raw = V::load(&u_raw_4);
+        let u_prev = u_prev_raw.clamp(neg_one, pos_one);
+        let u_curr = u_curr_raw.clamp(neg_one, pos_one);
+        let beta_v = V::load(&beta_4);
+        let delta_v = V::load(&delta_4);
 
-        if Self::crosses_rail(u_prev_4[1], u_raw_4[1])
-            || Self::crosses_rail(u_prev_4[3], u_raw_4[3])
-            || u_raw_4[0].abs() > 1.0
-            || u_prev_4[0].abs() > 1.0
-            || u_raw_4[2].abs() > 1.0
-            || u_prev_4[2].abs() > 1.0
+        let (mut a_v, mut a_even_v) = poly_adaa_eval_vec4_pair(u_prev, u_curr, beta_v, delta_v);
+
+        if u_prev_4[1].abs() > 1.0
+            || u_raw_4[1].abs() > 1.0
+            || u_prev_4[3].abs() > 1.0
+            || u_raw_4[3].abs() > 1.0
         {
-            let mut a_4 = [0.0f32; 4];
-            let mut a_even_4 = [0.0f32; 4];
-            a_v.store(&mut a_4);
-            a_even_v.store(&mut a_even_4);
-            for i in 0..4 {
-                if Self::crosses_rail(u_prev_4[i], u_raw_4[i]) {
-                    let (odd, even, _) = eval_saturated_polyadaa_rail_crossing_f64(
-                        u_prev_4[i] as f64,
-                        u_raw_4[i] as f64,
-                    );
-                    a_4[i] = ((beta as f64) * odd + (delta as f64) * even) as f32;
-                    a_even_4[i] = even as f32;
+            let crossing_v = (u_prev.sub(u_curr)).abs().mul(
+                (u_prev.sub(u_prev_raw))
+                    .abs()
+                    .add((u_curr.sub(u_curr_raw)).abs()),
+            );
+            if crossing_v.horizontal_sum() > 0.0 {
+                let mut c_arr = [0.0f32; 4];
+                crossing_v.store(&mut c_arr);
+                let mut a_arr = [0.0f32; 4];
+                let mut a_even_arr = [0.0f32; 4];
+                a_v.store(&mut a_arr);
+                a_even_v.store(&mut a_even_arr);
+                for i in 0..4 {
+                    if c_arr[i] > 0.0 {
+                        let (odd, even, _) = eval_saturated_polyadaa_rail_crossing_f64(
+                            u_prev_4[i] as f64,
+                            u_raw_4[i] as f64,
+                        );
+                        a_arr[i] = ((beta_4[i] as f64) * odd + (delta_4[i] as f64) * even) as f32;
+                        a_even_arr[i] = even as f32;
+                    }
                 }
+                a_v = V::load(&a_arr);
+                a_even_v = V::load(&a_even_arr);
             }
-            a_v = V::load(&a_4);
-            a_even_v = V::load(&a_even_4);
         }
 
         let a_prev_v = V::load(&a_prev_4);
-        let m_prev_v = V::load(&m_prev_4);
-        let y_nl_v = V::splat(0.875).mul(a_v).add(V::splat(0.125).mul(a_prev_v));
-        let next_m_v = V::splat(r_ac)
-            .mul(m_prev_v)
-            .add(V::splat(one_minus_rac).mul(y_nl_v));
-        let out_v = V::load(&alpha_x_4).add(y_nl_v.sub(next_m_v));
+        let m_dc_v = V::load(&m_dc_4);
+        let y_nl = a_v.mul(V::splat(0.875)).fma(a_prev_v, V::splat(0.125));
+        let next_m_dc = m_dc_v
+            .mul(V::splat(r_ac))
+            .fma(y_nl, V::splat(one_minus_rac));
+        let out_v = V::load(&alpha_x_4).add(y_nl.sub(next_m_dc));
 
-        let mut u_flushed = [0.0f32; 4];
-        let mut a_flushed = [0.0f32; 4];
-        let mut m_flushed = [0.0f32; 4];
-        let mut ae_flushed = [0.0f32; 4];
+        let mut u_next = [0.0f32; 4];
+        let mut a_next = [0.0f32; 4];
+        let mut m_next = [0.0f32; 4];
+        let mut ae_next = [0.0f32; 4];
+        flush_recursive_state_vec4(u_curr_raw).store(&mut u_next);
+        flush_recursive_state_vec4(a_v).store(&mut a_next);
+        flush_recursive_state_vec4(next_m_dc).store(&mut m_next);
+        flush_recursive_state_vec4(a_even_v).store(&mut ae_next);
+
+        left.u_prev[1] = u_next[0];
+        left.u_prev[2] = u_next[1];
+        right.u_prev[1] = u_next[2];
+        right.u_prev[2] = u_next[3];
+
+        left.a_prev[1] = a_next[0];
+        left.a_prev[2] = a_next[1];
+        right.a_prev[1] = a_next[2];
+        right.a_prev[2] = a_next[3];
+
+        left.m_dc[1] = m_next[0];
+        left.m_dc[2] = m_next[1];
+        right.m_dc[1] = m_next[2];
+        right.m_dc[2] = m_next[3];
+
+        left.last_a_even[1] = ae_next[0];
+        left.last_a_even[2] = ae_next[1];
+        right.last_a_even[1] = ae_next[2];
+        right.last_a_even[2] = ae_next[3];
+
         let mut out_4 = [0.0f32; 4];
-        flush_recursive_state_vec4(u_raw_v).store(&mut u_flushed);
-        flush_recursive_state_vec4(a_v).store(&mut a_flushed);
-        flush_recursive_state_vec4(next_m_v).store(&mut m_flushed);
-        flush_recursive_state_vec4(a_even_v).store(&mut ae_flushed);
         out_v.store(&mut out_4);
-
-        left.u_prev[1] = u_flushed[0];
-        left.u_prev[2] = u_flushed[1];
-        right.u_prev[1] = u_flushed[2];
-        right.u_prev[2] = u_flushed[3];
-
-        left.a_prev[1] = a_flushed[0];
-        left.a_prev[2] = a_flushed[1];
-        right.a_prev[1] = a_flushed[2];
-        right.a_prev[2] = a_flushed[3];
-
-        left.m_dc[1] = m_flushed[0];
-        left.m_dc[2] = m_flushed[1];
-        right.m_dc[1] = m_flushed[2];
-        right.m_dc[2] = m_flushed[3];
-
-        left.last_a_even[1] = ae_flushed[0];
-        left.last_a_even[2] = ae_flushed[1];
-        right.last_a_even[1] = ae_flushed[2];
-        right.last_a_even[2] = ae_flushed[3];
-
         (out_4[0], out_4[1], out_4[2], out_4[3])
     }
 }

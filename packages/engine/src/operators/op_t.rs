@@ -7,8 +7,9 @@ pub mod ring_and_guard;
 
 pub use delay_and_diffuser::{
     BallisticDuckingVca, OP_T_FULL_RING_CAPACITY, OP_T_LITE_RING_CAPACITY,
-    OP_T_ULTRA_RING_CAPACITY, OpTDelayLine, SCHROEDER_COPRIME_DELAYS, catmull_rom_hermite_cubic,
-    hermite_hann_partition_of_unity, raised_cosine_barberpole_3phase,
+    OP_T_ULTRA_RING_CAPACITY, OpTBackend, OpTDelayLine, SCHROEDER_COPRIME_DELAYS,
+    catmull_rom_hermite_cubic, cubic_lagrange_weights_4ch_vec4, hermite_hann_partition_of_unity,
+    raised_cosine_barberpole_3phase,
 };
 pub use ring_and_guard::{
     FP16_DECAY_GAIN_BITS, OpTBlockMaxTreeGuard, PartitionedSchroederDiffuserBank,

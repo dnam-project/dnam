@@ -7,7 +7,7 @@
  *   moon run js:profile
  */
 
-import { readFileSync, statSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import { fileURLToPath } from "node:url";
@@ -78,7 +78,9 @@ for (let i = 0; i < jcsIters; i++) {
 const jcsMeanUs = ((performance.now() - tJcs0) * 1000) / jcsIters;
 
 // Now switch active driver to WasmDriver via initWasm and measure WASM SIMD128
-const wasmBytes = readFileSync(resolve(pkgRoot, "dist/dnam.wasm"));
+const profilingWasmPath = resolve(pkgRoot, "dist/dnam.profiling.wasm");
+const releaseWasmPath = resolve(pkgRoot, "dist/dnam.wasm");
+const wasmBytes = readFileSync(existsSync(profilingWasmPath) ? profilingWasmPath : releaseWasmPath);
 await nodeSdk.initWasm({ bytes: wasmBytes });
 for (const tier of nodeSdk.tiers) {
   const res = measureBlockLatency(nodeSdk, tier);
@@ -87,7 +89,8 @@ for (const tier of nodeSdk.tiers) {
   );
 }
 
-const wasmSize = statSync(resolve(pkgRoot, "dist/dnam.wasm")).size;
+const wasmSizePath = existsSync(releaseWasmPath) ? releaseWasmPath : profilingWasmPath;
+const wasmSize = statSync(wasmSizePath).size;
 console.log("\n=== Auxiliary Operations & Artifact Sizes ===");
 console.log(`- ControlSpace.clampNumericInto (3-Phase): ${clampMeanUs.toFixed(3)} us/call`);
 console.log(`- decodeHeader + encodeHeader + headerToJcs: ${jcsMeanUs.toFixed(2)} us/roundtrip`);

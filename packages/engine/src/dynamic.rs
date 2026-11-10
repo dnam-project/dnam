@@ -16,16 +16,28 @@ pub enum DynamicDnamEngine<'a> {
     Scalar(DnamEngine<'a, ScalarBackend>),
     /// ARM64 NEON `float32x4_t` backend.
     #[cfg(target_arch = "aarch64")]
-    Neon(DnamEngine<'a, crate::math::neon::NeonBackend>),
-    /// ARMv9.2-A Scalable Matrix Extension (`ARM SME` / `SME2`) + NEON hybrid backend.
+    Neon(DnamEngine<'a, crate::math::NeonBackend>),
+    /// ARMv9-A Scalable Vector Extension 2 (`ARM SVE2` / `FEAT_SVE2`) backend.
     #[cfg(target_arch = "aarch64")]
-    ArmSme(DnamEngine<'a, crate::math::arm_sme::ArmSmeBackend>),
-    /// x86_64 AVX2+FMA / SSE2 backend.
+    ArmSve2(DnamEngine<'a, crate::math::ArmSve2Backend>),
+    /// ARMv9.2-A Scalable Matrix Extension (`ARM SME` / `SME2`) backend.
+    #[cfg(target_arch = "aarch64")]
+    ArmSme(DnamEngine<'a, crate::math::ArmSmeBackend>),
+    /// x86-64 SSE2 (`x86-64-v1`) backend.
     #[cfg(target_arch = "x86_64")]
-    X86Simd(DnamEngine<'a, crate::math::x86_simd::X86SimdBackend>),
+    X86Sse2(DnamEngine<'a, crate::math::X86Sse2Backend>),
+    /// x86-64 SSE4.2 (`x86-64-v2`) backend.
+    #[cfg(target_arch = "x86_64")]
+    X86Sse42(DnamEngine<'a, crate::math::X86Sse42Backend>),
+    /// x86-64 AVX2 + FMA + F16C (`x86-64-v3`) backend.
+    #[cfg(target_arch = "x86_64")]
+    X86Avx2Fma(DnamEngine<'a, crate::math::X86Avx2FmaBackend>),
+    /// Alias variant for x86-64 SIMD ([`crate::math::X86SimdBackend`]).
+    #[cfg(target_arch = "x86_64")]
+    X86Simd(DnamEngine<'a, crate::math::X86SimdBackend>),
     /// WebAssembly SIMD128 `v128` backend.
     #[cfg(target_arch = "wasm32")]
-    WasmSimd128(DnamEngine<'a, crate::math::wasm_simd128::WasmSimd128Backend>),
+    WasmSimd128(DnamEngine<'a, crate::math::WasmSimd128Backend>),
 }
 
 impl<'a> DynamicDnamEngine<'a> {
@@ -34,13 +46,19 @@ impl<'a> DynamicDnamEngine<'a> {
             #[cfg(target_arch = "aarch64")]
             BackendKind::ArmSme => Self::ArmSme(DnamEngine::new_empty(max_supported_tier)),
             #[cfg(target_arch = "aarch64")]
+            BackendKind::ArmSve2 => Self::ArmSve2(DnamEngine::new_empty(max_supported_tier)),
+            #[cfg(target_arch = "aarch64")]
             BackendKind::Neon | BackendKind::ArmNeon => {
                 Self::Neon(DnamEngine::new_empty(max_supported_tier))
             }
             #[cfg(target_arch = "x86_64")]
-            BackendKind::X86Simd | BackendKind::X86Avx2Fma | BackendKind::X86Sse42 => {
-                Self::X86Simd(DnamEngine::new_empty(max_supported_tier))
-            }
+            BackendKind::X86Sse2 => Self::X86Sse2(DnamEngine::new_empty(max_supported_tier)),
+            #[cfg(target_arch = "x86_64")]
+            BackendKind::X86Sse42 => Self::X86Sse42(DnamEngine::new_empty(max_supported_tier)),
+            #[cfg(target_arch = "x86_64")]
+            BackendKind::X86Avx2Fma => Self::X86Avx2Fma(DnamEngine::new_empty(max_supported_tier)),
+            #[cfg(target_arch = "x86_64")]
+            BackendKind::X86Simd => Self::X86Simd(DnamEngine::new_empty(max_supported_tier)),
             #[cfg(target_arch = "wasm32")]
             BackendKind::WasmSimd128 => {
                 Self::WasmSimd128(DnamEngine::new_empty(max_supported_tier))
@@ -61,7 +79,15 @@ impl<'a> DynamicDnamEngine<'a> {
             #[cfg(target_arch = "aarch64")]
             Self::Neon(e) => e.init_from_view(view, tier, max_supported_tier, sample_rate_hz),
             #[cfg(target_arch = "aarch64")]
+            Self::ArmSve2(e) => e.init_from_view(view, tier, max_supported_tier, sample_rate_hz),
+            #[cfg(target_arch = "aarch64")]
             Self::ArmSme(e) => e.init_from_view(view, tier, max_supported_tier, sample_rate_hz),
+            #[cfg(target_arch = "x86_64")]
+            Self::X86Sse2(e) => e.init_from_view(view, tier, max_supported_tier, sample_rate_hz),
+            #[cfg(target_arch = "x86_64")]
+            Self::X86Sse42(e) => e.init_from_view(view, tier, max_supported_tier, sample_rate_hz),
+            #[cfg(target_arch = "x86_64")]
+            Self::X86Avx2Fma(e) => e.init_from_view(view, tier, max_supported_tier, sample_rate_hz),
             #[cfg(target_arch = "x86_64")]
             Self::X86Simd(e) => e.init_from_view(view, tier, max_supported_tier, sample_rate_hz),
             #[cfg(target_arch = "wasm32")]
@@ -234,7 +260,15 @@ impl<'a> DynamicDnamEngine<'a> {
             #[cfg(target_arch = "aarch64")]
             Self::Neon(_) => BackendKind::Neon,
             #[cfg(target_arch = "aarch64")]
+            Self::ArmSve2(_) => BackendKind::ArmSve2,
+            #[cfg(target_arch = "aarch64")]
             Self::ArmSme(_) => BackendKind::ArmSme,
+            #[cfg(target_arch = "x86_64")]
+            Self::X86Sse2(_) => BackendKind::X86Sse2,
+            #[cfg(target_arch = "x86_64")]
+            Self::X86Sse42(_) => BackendKind::X86Sse42,
+            #[cfg(target_arch = "x86_64")]
+            Self::X86Avx2Fma(_) => BackendKind::X86Avx2Fma,
             #[cfg(target_arch = "x86_64")]
             Self::X86Simd(_) => BackendKind::X86Simd,
             #[cfg(target_arch = "wasm32")]
@@ -260,7 +294,6 @@ mod tests {
         let e1 = DynamicDnamEngine::from_bytes(&container, Tier::Lite, 48000).unwrap();
         let expected_backend = match crate::math::detect_best_backend() {
             BackendKind::ArmNeon => BackendKind::Neon,
-            BackendKind::X86Sse42 | BackendKind::X86Avx2Fma => BackendKind::X86Simd,
             backend => backend,
         };
         assert_eq!(e1.backend_kind(), expected_backend);

@@ -275,13 +275,14 @@ pub fn eval_chebyshev_lfo_4harm_f64(cos_phi: f64) -> [f64; 4] {
     [t1, t2, t3, t4]
 }
 
-/// Evaluates the Ellipsoidal Trust-Region Norm Soft-Clipping (`ref[dsp.ctrl.op-n.trust-clip]`).
+/// Evaluates the Ellipsoidal Trust-Region Norm Soft-Clipping (`ref[dsp.ctrl.op-n.trust-clip]`, `0 FDIV`, `0 FSQRT`).
 #[inline]
 pub fn eval_trust_region_softclip_f64(z: &mut [f64; 4], trust_radius_mh: f64) {
     let norm_sq = z[0] * z[0] + z[1] * z[1] + z[2] * z[2] + z[3] * z[3];
     let mh_sq = trust_radius_mh * trust_radius_mh;
     if norm_sq > mh_sq && norm_sq > 0.0 {
-        let scale = trust_radius_mh / norm_sq.sqrt();
+        let inv_norm = crate::math::newton6_reciprocal_f64(crate::math::sqrt_f64(norm_sq));
+        let scale = trust_radius_mh * inv_norm;
         z[0] *= scale;
         z[1] *= scale;
         z[2] *= scale;

@@ -1,11 +1,12 @@
 //! Hardware abstraction traits (`SimdVec4` and `MathBackend`) for 4-lane SIMD registers
-//! and domain-specific DSP and matrix kernels.
+//! and core division-free math primitives.
 //!
-//! Canonical Reference: `docs/dsp/op_n_commuted_cascade.md` and `docs/overview/tora_architecture.md`.
+//! Higher-level domain modules define their own `<Domain>Backend` traits in their respective
+//! modules (`OpMBackend`, `OpNBackend`, `OpTBackend`, `Stage2Backend`, `Stage3Backend`,
+//! `FeatureBusBackend`), keeping the dependency DAG strictly one-way (`engine -> stages -> operators -> math`).
 
-use super::{
-    BackendKind, algebraic_unit_rotor, crc32c_slice, default_ops, f32_to_fp16, fp16_to_f32,
-};
+use super::{BackendKind, algebraic_unit_rotor, f32_to_fp16, fp16_to_f32};
+use crate::math::crc32c::Crc32cBackend;
 
 /// Flushes `f32` subnormals to signed zero without changing any other bit pattern.
 #[inline(always)]
@@ -44,10 +45,43 @@ pub(crate) fn flush_recursive_state_vec4<V: SimdVec4>(value: V) -> V {
     }
 }
 
+/// Portable scalar 2-step Newton `rsqrt` (`0x5f37_59df - (v >> 1)`) for a single positive `f32`.
+#[inline(always)]
+pub fn rsqrt_nr2_scalar_f32(value: f32) -> f32 {
+    let mut est = f32::from_bits(0x5f37_59df - (value.to_bits() >> 1));
+    let half_v = 0.5 * value;
+    for _ in 0..2 {
+        let corr = 1.5 - (half_v * est) * est;
+        est *= corr;
+    }
+    est
+}
+
+/// Portable scalar 2-step Newton `rsqrt` (`0x5f37_59df - (v >> 1)`) for a stereo pair `(v0, v1)`.
+#[inline(always)]
+pub fn rsqrt_nr2_scalar_pair_f32(v0: f32, v1: f32) -> (f32, f32) {
+    let mut e0 = f32::from_bits(0x5f37_59df - (v0.to_bits() >> 1));
+    let mut e1 = f32::from_bits(0x5f37_59df - (v1.to_bits() >> 1));
+    let hv0 = 0.5 * v0;
+    let hv1 = 0.5 * v1;
+    for _ in 0..2 {
+        let c0 = 1.5 - (hv0 * e0) * e0;
+        let c1 = 1.5 - (hv1 * e1) * e1;
+        e0 *= c0;
+        e1 *= c1;
+    }
+    (e0, e1)
+}
+
 /// Level 1 Hardware Abstraction: 128-bit 4-lane `f32` SIMD register (`float32x4_t` / `__m128` / `v128`).
 pub trait SimdVec4: Copy + Clone + Send + Sync + 'static {
     /// Broadcasts `val` across all 4 lanes.
     fn splat(val: f32) -> Self;
+    /// Broadcasts the stereo pair `(a, b)` into `[a, b, a, b]`.
+    #[inline(always)]
+    fn splat_pair(a: f32, b: f32) -> Self {
+        Self::from_array([a, b, a, b])
+    }
     /// Loads 4 `f32` lanes from a slice.
     fn load(src: &[f32; 4]) -> Self;
     /// Stores 4 `f32` lanes into a slice.
@@ -60,6 +94,12 @@ pub trait SimdVec4: Copy + Clone + Send + Sync + 'static {
     fn mul(self, rhs: Self) -> Self;
     /// Fused multiply-add (`self + a * b`).
     fn fma(self, a: Self, b: Self) -> Self;
+    /// Fused multiply-add with indexed scalar lane broadcast (`self + a * v[LANE]`, `LANE < 4`).
+    #[inline(always)]
+    fn fma_lane<const LANE: usize>(self, a: Self, v: Self) -> Self {
+        const { assert!(LANE < 4) };
+        self.fma(a, Self::splat(v.to_array()[LANE]))
+    }
     /// Fused multiply-subtract (`self - a * b`).
     fn fms(self, a: Self, b: Self) -> Self;
     /// Lane-wise maximum (`max(self, rhs)`).
@@ -73,6 +113,12 @@ pub trait SimdVec4: Copy + Clone + Send + Sync + 'static {
     }
     /// Lane-wise absolute value (`|self|`).
     fn abs(self) -> Self;
+    /// Swaps adjacent stereo pairs and negates the even lanes (`[-v1, v0, -v3, v2]`).
+    #[inline(always)]
+    fn pair_swap_neg(self) -> Self {
+        let a = self.to_array();
+        Self::from_array([-a[1], a[0], -a[3], a[2]])
+    }
     /// Flushes subnormal lanes to signed zero without altering other bit patterns.
     #[inline(always)]
     fn flush_subnormal(self) -> Self {
@@ -80,6 +126,11 @@ pub trait SimdVec4: Copy + Clone + Send + Sync + 'static {
     }
     /// Horizontal sum across all 4 lanes (`lane0 + lane1 + lane2 + lane3`).
     fn horizontal_sum(self) -> f32;
+    /// Simultaneously reduces two 4-lane vectors into `(self.horizontal_sum(), rhs.horizontal_sum())`.
+    #[inline(always)]
+    fn horizontal_sum_pair(self, rhs: Self) -> (f32, f32) {
+        (self.horizontal_sum(), rhs.horizontal_sum())
+    }
     /// 4-lane dot product (`sum(self * rhs)`).
     #[inline(always)]
     fn dot(self, rhs: Self) -> f32 {
@@ -104,8 +155,9 @@ pub trait SimdVec4: Copy + Clone + Send + Sync + 'static {
     }
 }
 
-/// Level 2 Hardware Abstraction: Domain-specific DSP, tile-matrix, and container kernels.
-pub trait MathBackend: Copy + Clone + Send + Sync + 'static {
+/// Level 2 Hardware Abstraction: Core SIMD math primitives across every architecture
+/// (`aarch64`, `x86_64`, `wasm32`, `scalar`).
+pub trait MathBackend: Copy + Clone + Send + Sync + 'static + Crc32cBackend {
     /// Underlying 128-bit 4-lane vector register type.
     type Vec4: SimdVec4;
     /// Human-readable backend name for telemetry and benchmarks.
@@ -113,69 +165,14 @@ pub trait MathBackend: Copy + Clone + Send + Sync + 'static {
     /// Enum identifier for this backend.
     const KIND: BackendKind;
 
-    /// Evaluates the exact division-free algebraic `PolyADAA` kernel across 4 channels (`ref[dsp.op-n.polyadaa.midpoint]`).
-    #[inline(always)]
-    fn poly_adaa_algebraic_4ch(
-        u_prev: Self::Vec4,
-        u_curr: Self::Vec4,
-        beta: Self::Vec4,
-        delta: Self::Vec4,
-    ) -> Self::Vec4 {
-        default_ops::poly_adaa_algebraic_4ch::<Self>(u_prev, u_curr, beta, delta)
-    }
-
     /// 4x4 matrix-vector FMA tile `acc + sum_{c=0..3} x[c] * mat[c]`.
     #[inline(always)]
     fn fma_mat4x4_vec4(acc: Self::Vec4, mat: &[[f32; 4]; 4], x: &[f32; 4]) -> Self::Vec4 {
-        default_ops::fma_mat4x4_vec4::<Self>(acc, mat, x)
-    }
-
-    /// 6-tap dilated convolution over 1 input group (`6 × 4×4` tiles).
-    #[inline(always)]
-    fn conv6_taps_1group(
-        bias: Self::Vec4,
-        w_tiles: &[[[f32; 4]; 4]; 6],
-        h_taps: &[&[[f32; 4]; 4]; 6],
-    ) -> Self::Vec4 {
-        default_ops::conv6_taps_1group::<Self>(bias, w_tiles, h_taps)
-    }
-
-    /// 6-tap dilated convolution over 2 input groups (`12 × 4×4` tiles).
-    #[inline(always)]
-    fn conv6_taps_2groups(
-        bias: Self::Vec4,
-        w_tiles: &[[[f32; 4]; 4]; 12],
-        h_taps: &[&[[f32; 4]; 4]; 6],
-    ) -> Self::Vec4 {
-        default_ops::conv6_taps_2groups::<Self>(bias, w_tiles, h_taps)
-    }
-
-    /// 6-tap dilated convolution over 3 input groups (`18 × 4×4` tiles).
-    #[inline(always)]
-    fn conv6_taps_3groups(
-        bias: Self::Vec4,
-        w_tiles: &[[[f32; 4]; 4]; 18],
-        h_taps: &[&[[f32; 4]; 4]; 6],
-    ) -> Self::Vec4 {
-        default_ops::conv6_taps_3groups::<Self>(bias, w_tiles, h_taps)
-    }
-
-    /// 6-tap dilated convolution over 4 input groups (`24 × 4×4` tiles).
-    #[inline(always)]
-    fn conv6_taps_4groups(
-        bias: Self::Vec4,
-        w_tiles: &[[[f32; 4]; 4]; 24],
-        h_taps: &[&[[f32; 4]; 4]; 6],
-    ) -> Self::Vec4 {
-        default_ops::conv6_taps_4groups::<Self>(bias, w_tiles, h_taps)
-    }
-
-    /// Evaluates the 4-tap Cubic Lagrange basis weights across 4 lanes (`ref[dsp.op-t.reader.catmull-rom]`).
-    #[inline(always)]
-    fn cubic_lagrange_weights_4ch(
-        vmu: Self::Vec4,
-    ) -> (Self::Vec4, Self::Vec4, Self::Vec4, Self::Vec4) {
-        default_ops::cubic_lagrange_weights_4ch::<Self>(vmu)
+        let xv = Self::Vec4::load(x);
+        acc.fma_lane::<0>(Self::Vec4::load(&mat[0]), xv)
+            .fma_lane::<1>(Self::Vec4::load(&mat[1]), xv)
+            .fma_lane::<2>(Self::Vec4::load(&mat[2]), xv)
+            .fma_lane::<3>(Self::Vec4::load(&mat[3]), xv)
     }
 
     /// Converts 4 IEEE-754 single-precision `f32` samples to `fp16` (`u16`).
@@ -200,13 +197,19 @@ pub trait MathBackend: Copy + Clone + Send + Sync + 'static {
         ]
     }
 
-    /// Computes Castagnoli CRC32C over `data`.
-    #[inline]
-    fn crc32c(data: &[u8]) -> u32 {
-        crc32c_slice(0, data)
+    /// Evaluates 2-step Newton `rsqrt` (`0x5f37_59df - (v >> 1)`) for a single positive `f32` (`0 FSQRT`, `0 FDIV`).
+    #[inline(always)]
+    fn rsqrt_nr2_f32(v: f32) -> f32 {
+        rsqrt_nr2_scalar_f32(v)
     }
 
-    /// Evaluates the division-free algebraic unit-circle phasor (cos(theta), sin(theta)) (`ref[dsp.op-m.rotor.contractive]`).
+    /// Evaluates 2-step Newton `rsqrt` (`0x5f37_59df - (v >> 1)`) for a stereo pair `(v0, v1)` (`0 FSQRT`, `0 FDIV`).
+    #[inline(always)]
+    fn rsqrt_nr2_pair_f32(v0: f32, v1: f32) -> (f32, f32) {
+        rsqrt_nr2_scalar_pair_f32(v0, v1)
+    }
+
+    /// Evaluates the division-free algebraic unit-circle phasor `(cos(theta), sin(theta))` (`ref[dsp.op-m.rotor.contractive]`).
     #[inline(always)]
     fn fast_unit_phasor(theta_rad: f32) -> (f32, f32) {
         algebraic_unit_rotor(theta_rad)
@@ -307,24 +310,7 @@ mod tests {
         assert!((back[0] - 1.0).abs() < 1e-3);
 
         let v = ScalarVec4::splat(0.5);
-        let _ = ScalarBackend::poly_adaa_algebraic_4ch(v, v, v, v);
         let mat = [[0.1f32; 4]; 4];
         let _ = ScalarBackend::fma_mat4x4_vec4(v, &mat, &[0.5; 4]);
-
-        let h_tap = [[0.2f32; 4]; 4];
-        let w1 = [mat; 6];
-        let h1 = [&h_tap; 6];
-        let _ = ScalarBackend::conv6_taps_1group(v, &w1, &h1);
-
-        let w2 = [mat; 12];
-        let _ = ScalarBackend::conv6_taps_2groups(v, &w2, &h1);
-
-        let w3 = [mat; 18];
-        let _ = ScalarBackend::conv6_taps_3groups(v, &w3, &h1);
-
-        let w4 = [mat; 24];
-        let _ = ScalarBackend::conv6_taps_4groups(v, &w4, &h1);
-
-        let _ = ScalarBackend::cubic_lagrange_weights_4ch(v);
     }
 }

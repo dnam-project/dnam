@@ -37,6 +37,8 @@ const fn backend_to_u8(kind: BackendKind) -> u8 {
         BackendKind::X86Avx2Fma => 5,
         BackendKind::X86Simd => 6,
         BackendKind::WasmSimd128 => 7,
+        BackendKind::ArmSve2 => 8,
+        BackendKind::X86Sse2 => 9,
     }
 }
 
@@ -50,6 +52,8 @@ const fn backend_from_u8(val: u8) -> BackendKind {
         5 => BackendKind::X86Avx2Fma,
         6 => BackendKind::X86Simd,
         7 => BackendKind::WasmSimd128,
+        8 => BackendKind::ArmSve2,
+        9 => BackendKind::X86Sse2,
         _ => BackendKind::Scalar,
     }
 }
@@ -489,7 +493,9 @@ mod tests {
             BackendKind::Scalar,
             BackendKind::ArmNeon,
             BackendKind::Neon,
+            BackendKind::ArmSve2,
             BackendKind::ArmSme,
+            BackendKind::X86Sse2,
             BackendKind::X86Sse42,
             BackendKind::X86Avx2Fma,
             BackendKind::X86Simd,

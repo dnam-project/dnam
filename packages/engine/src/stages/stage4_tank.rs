@@ -84,8 +84,13 @@ pub struct Stage4SpatialTank {
     /// Coercive loop saturation gain and threshold (`ref[dsp.stage4.loop-saturator]`, `ref[dsp.stage4.quiet-feedback-knee]`).
     pub g_loop: f32,
     pub sigma_knee: f32,
+    pub cached_sigma_knee: f32,
+    pub inv_sigma_knee: f64,
     /// 5 Hz DC blockers per line (`ref[dsp.stage4.dc-blocker]`).
     pub dc_blockers: [TankDcBlocker; TANK_LITE_LINES],
+    /// Contiguous 4-lane SIMD DC blocker states (`x_prev`, `y_prev`).
+    pub dc_x_prev: [f32; TANK_LITE_LINES],
+    pub dc_y_prev: [f32; TANK_LITE_LINES],
     /// 1-pole ballistic ducking VCA.
     pub ducking_vca: BallisticDuckingVca,
     /// Cached Givens rotation cosine and sine at `current_psi`.
@@ -124,7 +129,11 @@ impl Stage4SpatialTank {
             target_psi: core::f32::consts::FRAC_PI_4,
             g_loop: 0.85,
             sigma_knee: 1.0,
+            cached_sigma_knee: 1.0,
+            inv_sigma_knee: 1.0,
             dc_blockers: [TankDcBlocker::new(); TANK_LITE_LINES],
+            dc_x_prev: [0.0; TANK_LITE_LINES],
+            dc_y_prev: [0.0; TANK_LITE_LINES],
             ducking_vca: BallisticDuckingVca::new(),
             cos_psi: core::f32::consts::FRAC_1_SQRT_2,
             sin_psi: core::f32::consts::FRAC_1_SQRT_2,
@@ -138,6 +147,8 @@ impl Stage4SpatialTank {
             self.lines[l].fill(0);
             self.dc_blockers[l].reset();
         }
+        self.dc_x_prev = [0.0; TANK_LITE_LINES];
+        self.dc_y_prev = [0.0; TANK_LITE_LINES];
         self.write_ptr = 0;
         self.current_psi = self.target_psi;
         let (c, s) = algebraic_unit_rotor_op_m(self.current_psi);
@@ -173,6 +184,12 @@ impl Stage4SpatialTank {
         if sigma.is_finite() && (0.05..=10.0).contains(&sigma) {
             self.sigma_knee = sigma;
         }
+        self.cached_sigma_knee = self.sigma_knee;
+        self.inv_sigma_knee = if (self.sigma_knee - 1.0).abs() <= 1e-6 {
+            1.0_f64
+        } else {
+            crate::math::newton6_reciprocal_f64(self.sigma_knee.max(1e-3) as f64)
+        };
         let psi = crate::provenance::watermark::read_f32_le(arena, 4_696);
         if psi.is_finite()
             && psi.abs() > 1e-6
@@ -266,7 +283,9 @@ impl Stage4SpatialTank {
     /// with `v_ceil = 0.985` and outer bit-level ceiling `0x3F7C28F5` so $S'(0) \equiv 1.000000$ and $|S(u)| \le 0.985$ unconditionally.
     #[inline(always)]
     pub fn coercive_saturate(&self, x: f32) -> f32 {
-        let inv_sigma = if (self.sigma_knee - 1.0).abs() <= 1e-6 {
+        let inv_sigma = if (self.sigma_knee - self.cached_sigma_knee).abs() <= 1e-7 {
+            self.inv_sigma_knee
+        } else if (self.sigma_knee - 1.0).abs() <= 1e-6 {
             1.0_f64
         } else {
             crate::math::newton6_reciprocal_f64(self.sigma_knee.max(1e-3) as f64)
@@ -282,8 +301,6 @@ impl Stage4SpatialTank {
     }
 
     /// Evaluates `coercive_saturate` across all 4 tank delay lines in parallel (`0 FDIV`, `0 FSQRT`).
-    /// Uses a 4-lane vectorizable `f32` minimax seed `24/17 - (8/17)*d` + 3 Newton steps when
-    /// `d = 1 + (u/sigma)^2 <= 2.0` (`< 1 ULP` of `f32`), falling back to 6-step `f64` when `d > 2.0`.
     #[inline(always)]
     fn coercive_saturate_4ch(&self, x: [f32; TANK_LITE_LINES]) -> [f32; TANK_LITE_LINES] {
         const V_CEIL: f32 = f32::from_bits(super::topology::STAGE4_MAX_V_CEIL_BITS);
@@ -294,34 +311,27 @@ impl Stage4SpatialTank {
         let g = self
             .g_loop
             .min(f32::from_bits(super::topology::STAGE4_MAX_G_LIN_BITS));
-        let inv_sigma = if (self.sigma_knee - 1.0).abs() <= 1e-6 {
+        let inv_sigma = if (self.sigma_knee - self.cached_sigma_knee).abs() <= 1e-7 {
+            self.inv_sigma_knee as f32
+        } else if (self.sigma_knee - 1.0).abs() <= 1e-6 {
             1.0_f32
         } else {
             crate::math::newton6_reciprocal_f64(self.sigma_knee.max(1e-3) as f64) as f32
         };
 
-        let r0 = x[0] * inv_sigma;
-        let r1 = x[1] * inv_sigma;
-        let r2 = x[2] * inv_sigma;
-        let r3 = x[3] * inv_sigma;
-
-        let d0 = 1.0 + r0 * r0;
-        let d1 = 1.0 + r1 * r1;
-        let d2 = 1.0 + r2 * r2;
-        let d3 = 1.0 + r3 * r3;
-
-        if d0 <= 2.0 && d1 <= 2.0 && d2 <= 2.0 && d3 <= 2.0 {
-            type V = <DefaultMathBackend as MathBackend>::Vec4;
-            let dv = V::from_array([d0, d1, d2, d3]);
-            let xv = V::load(&x);
-            let two = V::splat(2.0);
-            let mut inv = V::splat(SEED_A).sub(V::splat(SEED_B).mul(dv));
-            inv = inv.mul(two.sub(dv.mul(inv)));
-            inv = inv.mul(two.sub(dv.mul(inv)));
-            inv = inv.mul(two.sub(dv.mul(inv)));
+        type V = <DefaultMathBackend as MathBackend>::Vec4;
+        let xv = V::load(&x);
+        let rv = xv.mul(V::splat(inv_sigma));
+        let dv = V::splat(1.0).fma(rv, rv);
+        let two = V::splat(2.0);
+        if dv.max(two).sub(two).horizontal_sum() == 0.0 {
+            let mut inv = V::splat(SEED_A).fms(V::splat(SEED_B), dv);
+            inv = inv.mul(two.fms(dv, inv));
+            inv = inv.mul(two.fms(dv, inv));
+            inv = inv.mul(two.fms(dv, inv));
             let knee_u = V::splat(g)
                 .mul(xv)
-                .mul(V::splat(0.85).add(V::splat(0.15).mul(inv)));
+                .mul(V::splat(0.85).fma(V::splat(0.15), inv));
             let v = knee_u
                 .mul(V::splat(TWO_OVER_3V))
                 .max(V::splat(-1.0))
@@ -333,7 +343,7 @@ impl Stage4SpatialTank {
                 .mul(V::splat(1.5).sub(half_sq))
                 .max(V::splat(-V_CEIL))
                 .min(v_ceil_v);
-            let mut out = [0.0f32; 4];
+            let mut out = [0.0f32; TANK_LITE_LINES];
             res.store(&mut out);
             return out;
         }
@@ -365,47 +375,26 @@ impl Stage4SpatialTank {
     #[inline(always)]
     fn step_reads_and_saturate(&mut self) -> ([f32; TANK_LITE_LINES], [f32; TANK_LITE_LINES]) {
         type V = <DefaultMathBackend as MathBackend>::Vec4;
-        let mut raw_fp16 = [0u16; TANK_LITE_LINES];
-        for l in 0..TANK_LITE_LINES {
-            let d_len = self.delay_lengths[l].clamp(1, TANK_LINE_CAPACITY - 1);
-            let r_ptr = (self.write_ptr + TANK_LINE_CAPACITY - d_len) & TANK_LINE_MASK;
-            raw_fp16[l] = self.lines[l][r_ptr];
-        }
+        let w_ptr = self.write_ptr;
+        let raw_fp16 = [
+            self.lines[0][(w_ptr + TANK_LINE_CAPACITY - self.delay_lengths[0]) & TANK_LINE_MASK],
+            self.lines[1][(w_ptr + TANK_LINE_CAPACITY - self.delay_lengths[1]) & TANK_LINE_MASK],
+            self.lines[2][(w_ptr + TANK_LINE_CAPACITY - self.delay_lengths[2]) & TANK_LINE_MASK],
+            self.lines[3][(w_ptr + TANK_LINE_CAPACITY - self.delay_lengths[3]) & TANK_LINE_MASK],
+        ];
         let reads = DefaultMathBackend::fp16x4_to_f32x4(&raw_fp16);
 
         let x_vec = V::load(&reads);
-        let x_prev_vec = V::from_array([
-            self.dc_blockers[0].x_prev,
-            self.dc_blockers[1].x_prev,
-            self.dc_blockers[2].x_prev,
-            self.dc_blockers[3].x_prev,
-        ]);
-        let y_prev_vec = V::from_array([
-            self.dc_blockers[0].y_prev,
-            self.dc_blockers[1].y_prev,
-            self.dc_blockers[2].y_prev,
-            self.dc_blockers[3].y_prev,
-        ]);
-        let r_dc_vec = V::from_array([
-            self.dc_blockers[0].r_dc,
-            self.dc_blockers[1].r_dc,
-            self.dc_blockers[2].r_dc,
-            self.dc_blockers[3].r_dc,
-        ]);
-        let alpha_vec = V::splat(0.5).mul(V::splat(1.0).add(r_dc_vec));
-        let y_vec = alpha_vec
-            .mul(x_vec.sub(x_prev_vec))
-            .add(r_dc_vec.mul(y_prev_vec));
-        let mut x_flushed = [0.0f32; TANK_LITE_LINES];
-        let mut y_flushed = [0.0f32; TANK_LITE_LINES];
+        let x_prev_vec = V::load(&self.dc_x_prev);
+        let y_prev_vec = V::load(&self.dc_y_prev);
+        let r_dc = self.dc_blockers[0].r_dc;
+        let alpha_vec = V::splat(0.5 * (1.0 + r_dc));
+        let r_dc_vec = V::splat(r_dc);
+        let y_vec = (r_dc_vec.mul(y_prev_vec)).fma(alpha_vec, x_vec.sub(x_prev_vec));
+        flush_recursive_state_vec4(x_vec).store(&mut self.dc_x_prev);
         let mut readout_sig = [0.0f32; TANK_LITE_LINES];
-        flush_recursive_state_vec4(x_vec).store(&mut x_flushed);
-        flush_recursive_state_vec4(y_vec).store(&mut y_flushed);
-        y_vec.store(&mut readout_sig);
-        for l in 0..TANK_LITE_LINES {
-            self.dc_blockers[l].x_prev = x_flushed[l];
-            self.dc_blockers[l].y_prev = y_flushed[l];
-        }
+        flush_recursive_state_vec4(y_vec).store(&mut readout_sig);
+        self.dc_y_prev = readout_sig;
 
         let loop_sig = if self.freeze {
             reads
@@ -425,34 +414,29 @@ impl Stage4SpatialTank {
         in_l: f32,
         in_r: f32,
     ) -> (f32, f32) {
-        let mut mixed = [0.0f32; TANK_LITE_LINES];
-        mixed[0] = cos_psi * loop_sig[0] - sin_psi * loop_sig[1];
-        mixed[1] = sin_psi * loop_sig[0] + cos_psi * loop_sig[1];
-        mixed[2] = cos_psi * loop_sig[2] - sin_psi * loop_sig[3];
-        mixed[3] = sin_psi * loop_sig[2] + cos_psi * loop_sig[3];
-
-        let sum = mixed[0] + mixed[1] + mixed[2] + mixed[3];
-        let sub = 0.5 * sum;
-        for l in 0..TANK_LITE_LINES {
-            mixed[l] -= sub;
-        }
+        type V = <DefaultMathBackend as MathBackend>::Vec4;
+        let loop_v = V::load(&loop_sig);
+        let mixed_v = loop_v
+            .mul(V::splat(cos_psi))
+            .fma(loop_v.pair_swap_neg(), V::splat(sin_psi));
+        let sub = 0.5 * mixed_v.horizontal_sum();
 
         let inj_l = if self.freeze { 0.0 } else { in_l };
         let inj_r = if self.freeze { 0.0 } else { in_r };
-
-        let write_vals = [
-            mixed[0] + inj_l,
-            mixed[1] + inj_r,
-            mixed[2] + inj_l,
-            mixed[3] + inj_r,
-        ];
+        let off_l = inj_l - sub;
+        let off_r = inj_r - sub;
+        let mut write_vals = [0.0f32; TANK_LITE_LINES];
+        mixed_v
+            .add(V::splat_pair(off_l, off_r))
+            .store(&mut write_vals);
         let packed_fp16 = DefaultMathBackend::f32x4_to_fp16x4(&write_vals);
-        self.lines[0][self.write_ptr] = packed_fp16[0];
-        self.lines[1][self.write_ptr] = packed_fp16[1];
-        self.lines[2][self.write_ptr] = packed_fp16[2];
-        self.lines[3][self.write_ptr] = packed_fp16[3];
+        let w_ptr = self.write_ptr & TANK_LINE_MASK;
+        self.lines[0][w_ptr] = packed_fp16[0];
+        self.lines[1][w_ptr] = packed_fp16[1];
+        self.lines[2][w_ptr] = packed_fp16[2];
+        self.lines[3][w_ptr] = packed_fp16[3];
 
-        self.write_ptr = (self.write_ptr + 1) & TANK_LINE_MASK;
+        self.write_ptr = (w_ptr + 1) & TANK_LINE_MASK;
 
         let wet_l = 0.5 * (readout_sig[0] + readout_sig[2]);
         let wet_r = 0.5 * (readout_sig[1] + readout_sig[3]);
@@ -460,6 +444,7 @@ impl Stage4SpatialTank {
     }
 
     /// Evaluates Stage IV for stereo input `(in_l, in_r)`, returning `(wet_l, wet_r, readout_sig, loop_sig)`.
+    #[cfg_attr(feature = "hotpath", hotpath::measure)]
     #[inline(always)]
     pub fn step_stereo_with_readouts(
         &mut self,
@@ -473,69 +458,86 @@ impl Stage4SpatialTank {
         (wet_l, wet_r, readout_sig, loop_sig)
     }
 
-    /// Reads higher-tier (`Full`: 10 floats, `Pro`: 6 floats, `Ultra`: 8 floats) Stage IV spatial tank
-    /// taps from the existing `lines[0..4]` circular buffer (`REQ-5.6`: zero mutation of `Lite` state).
+    /// Reads higher-tier (`Full`: `116..126`, `Pro`: `184..190`, `Ultra`: `246..254`) Stage IV spatial
+    /// tank taps directly into `fb` (`REQ-5.6`: zero mutation of `Lite` state).
+    #[cfg_attr(feature = "hotpath", hotpath::measure)]
     #[inline(always)]
-    pub fn read_multi_tier_taps(
+    pub fn read_multi_tier_taps_into(
         &self,
         max_tier: usize,
         s4_read: [f32; 4],
         s4_loop: [f32; 4],
-    ) -> ([f32; 10], [f32; 6], [f32; 8]) {
-        let mut full_out = [0.0f32; 10];
-        let mut pro_out = [0.0f32; 6];
-        let mut ultra_out = [0.0f32; 8];
+        fb: &mut [f32; 256],
+    ) {
         if max_tier <= 1 {
-            return (full_out, pro_out, ultra_out);
+            return;
         }
         let base_ptr = (self.write_ptr + TANK_LINE_CAPACITY - 1) & TANK_LINE_MASK;
 
-        let mut full_fp16 = [0u16; 4];
-        for l in 0..4 {
-            let d = self.full_delay_lengths[l].clamp(1, TANK_LINE_CAPACITY - 1);
-            full_fp16[l] = self.lines[l][(base_ptr + TANK_LINE_CAPACITY - d) & TANK_LINE_MASK];
-        }
+        let full_fp16 = [
+            self.lines[0]
+                [(base_ptr + TANK_LINE_CAPACITY - self.full_delay_lengths[0]) & TANK_LINE_MASK],
+            self.lines[1]
+                [(base_ptr + TANK_LINE_CAPACITY - self.full_delay_lengths[1]) & TANK_LINE_MASK],
+            self.lines[2]
+                [(base_ptr + TANK_LINE_CAPACITY - self.full_delay_lengths[2]) & TANK_LINE_MASK],
+            self.lines[3]
+                [(base_ptr + TANK_LINE_CAPACITY - self.full_delay_lengths[3]) & TANK_LINE_MASK],
+        ];
         let full_reads = DefaultMathBackend::fp16x4_to_f32x4(&full_fp16);
         let full_loops = if self.freeze {
             full_reads
         } else {
             self.coercive_saturate_4ch(full_reads)
         };
-        full_out[0..4].copy_from_slice(&full_reads);
-        full_out[4..8].copy_from_slice(&full_loops);
-        full_out[8] = 0.5 * (full_reads[0] + full_reads[2]);
-        full_out[9] = 0.5 * (full_reads[1] + full_reads[3]);
+        fb[116..120].copy_from_slice(&full_reads);
+        fb[120..124].copy_from_slice(&full_loops);
+        fb[124] = 0.5 * (full_reads[0] + full_reads[2]);
+        fb[125] = 0.5 * (full_reads[1] + full_reads[3]);
 
         if max_tier >= 3 {
-            let mut pro_fp16 = [0u16; 4];
-            for l in 0..4 {
-                let d = self.pro_delay_lengths[l].clamp(1, TANK_LINE_CAPACITY - 1);
-                pro_fp16[l] = self.lines[l][(base_ptr + TANK_LINE_CAPACITY - d) & TANK_LINE_MASK];
-            }
+            let pro_fp16 = [
+                self.lines[0]
+                    [(base_ptr + TANK_LINE_CAPACITY - self.pro_delay_lengths[0]) & TANK_LINE_MASK],
+                self.lines[1]
+                    [(base_ptr + TANK_LINE_CAPACITY - self.pro_delay_lengths[1]) & TANK_LINE_MASK],
+                self.lines[2]
+                    [(base_ptr + TANK_LINE_CAPACITY - self.pro_delay_lengths[2]) & TANK_LINE_MASK],
+                self.lines[3]
+                    [(base_ptr + TANK_LINE_CAPACITY - self.pro_delay_lengths[3]) & TANK_LINE_MASK],
+            ];
             let pro_reads = DefaultMathBackend::fp16x4_to_f32x4(&pro_fp16);
-            pro_out[0..4].copy_from_slice(&pro_reads);
-            pro_out[4] = 0.5 * (pro_reads[0] - pro_reads[2]) + 0.25 * (s4_read[0] - s4_loop[0]);
-            pro_out[5] = 0.5 * (pro_reads[1] - pro_reads[3]) + 0.25 * (s4_read[1] - s4_loop[1]);
+            fb[184..188].copy_from_slice(&pro_reads);
+            fb[188] = 0.5 * (pro_reads[0] - pro_reads[2]) + 0.25 * (s4_read[0] - s4_loop[0]);
+            fb[189] = 0.5 * (pro_reads[1] - pro_reads[3]) + 0.25 * (s4_read[1] - s4_loop[1]);
         }
 
         if max_tier >= 4 {
-            let mut ultra_fp16_a = [0u16; 4];
-            let mut ultra_fp16_b = [0u16; 4];
-            for k in 0..4 {
-                let d_a = self.ultra_delay_lengths[k].clamp(1, TANK_LINE_CAPACITY - 1);
-                let d_b = self.ultra_delay_lengths[k + 4].clamp(1, TANK_LINE_CAPACITY - 1);
-                ultra_fp16_a[k] =
-                    self.lines[k][(base_ptr + TANK_LINE_CAPACITY - d_a) & TANK_LINE_MASK];
-                ultra_fp16_b[k] =
-                    self.lines[k][(base_ptr + TANK_LINE_CAPACITY - d_b) & TANK_LINE_MASK];
-            }
+            let ultra_fp16_a = [
+                self.lines[0][(base_ptr + TANK_LINE_CAPACITY - self.ultra_delay_lengths[0])
+                    & TANK_LINE_MASK],
+                self.lines[1][(base_ptr + TANK_LINE_CAPACITY - self.ultra_delay_lengths[1])
+                    & TANK_LINE_MASK],
+                self.lines[2][(base_ptr + TANK_LINE_CAPACITY - self.ultra_delay_lengths[2])
+                    & TANK_LINE_MASK],
+                self.lines[3][(base_ptr + TANK_LINE_CAPACITY - self.ultra_delay_lengths[3])
+                    & TANK_LINE_MASK],
+            ];
+            let ultra_fp16_b = [
+                self.lines[0][(base_ptr + TANK_LINE_CAPACITY - self.ultra_delay_lengths[4])
+                    & TANK_LINE_MASK],
+                self.lines[1][(base_ptr + TANK_LINE_CAPACITY - self.ultra_delay_lengths[5])
+                    & TANK_LINE_MASK],
+                self.lines[2][(base_ptr + TANK_LINE_CAPACITY - self.ultra_delay_lengths[6])
+                    & TANK_LINE_MASK],
+                self.lines[3][(base_ptr + TANK_LINE_CAPACITY - self.ultra_delay_lengths[7])
+                    & TANK_LINE_MASK],
+            ];
             let ua = DefaultMathBackend::fp16x4_to_f32x4(&ultra_fp16_a);
             let ub = DefaultMathBackend::fp16x4_to_f32x4(&ultra_fp16_b);
-            ultra_out[0..4].copy_from_slice(&ua);
-            ultra_out[4..8].copy_from_slice(&ub);
+            fb[246..250].copy_from_slice(&ua);
+            fb[250..254].copy_from_slice(&ub);
         }
-
-        (full_out, pro_out, ultra_out)
     }
 
     /// Evaluates Stage IV for stereo input (in_l, in_r).

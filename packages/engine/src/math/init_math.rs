@@ -9,6 +9,9 @@ use super::kernels::algebraic_unit_rotor_f64;
 /// Pure `#![no_std]` floor for `f32`.
 #[inline(always)]
 pub fn floor_f32(x: f32) -> f32 {
+    if x.is_nan() || x.abs() >= 8_388_608.0 {
+        return x;
+    }
     let i = x as i32;
     let f = i as f32;
     if x < f { f - 1.0 } else { f }
@@ -17,6 +20,9 @@ pub fn floor_f32(x: f32) -> f32 {
 /// Pure `#![no_std]` floor for `f64`.
 #[inline(always)]
 pub fn floor_f64(x: f64) -> f64 {
+    if x.is_nan() || x.abs() >= 4_503_599_627_370_496.0 {
+        return x;
+    }
     let i = x as i64;
     let f = i as f64;
     if x < f { f - 1.0 } else { f }
@@ -42,23 +48,39 @@ pub fn round_f64(x: f64) -> f64 {
     }
 }
 
-/// Pure `#![no_std]` IEEE-754 + 6-step Newton-Raphson square root in `f64` (used only at cold init / ZOH).
+/// Pure `#![no_std]` IEEE-754 + division-free Newton-Goldschmidt square root in `f64` (`0 FDIV`, `0 FSQRT`).
 #[inline]
 pub fn sqrt_f64(x: f64) -> f64 {
+    if x.is_nan() {
+        return f64::NAN;
+    }
     if x <= 0.0 {
         return 0.0;
     }
-    let bits = x.to_bits();
-    let approx_bits = (bits >> 1) + (0x3FFu64 << 51);
-    let mut y = f64::from_bits(approx_bits);
-    for _ in 0..6 {
-        y = 0.5 * (y + x / y);
+    if x == f64::INFINITY {
+        return f64::INFINITY;
     }
-    y
+    let (scaled_x, scale_out) = if x < f64::MIN_POSITIVE {
+        (
+            x * 18_014_398_509_481_984.0,
+            f64::from_bits(0x3E40_0000_0000_0000),
+        )
+    } else {
+        (x, 1.0)
+    };
+    let bits = scaled_x.to_bits();
+    let rsqrt_bits = 0x5FE6_EB50_C7B5_37A9_u64.wrapping_sub(bits >> 1);
+    let mut z = f64::from_bits(rsqrt_bits);
+    let half_x = 0.5 * scaled_x;
+    for _ in 0..6 {
+        z *= 1.5 - half_x * z * z;
+    }
+    let y = scaled_x * z;
+    (y + 0.5 * (scaled_x - y * y) * z) * scale_out
 }
 
 /// Pure `#![no_std]` natural logarithm $\ln(x)$ in `f64` via IEEE-754 exponent extraction +
-/// Padé/atanh series (accurate to $< 10^{-15}$ across all positive normals; cold init only).
+/// Padé/atanh series (accurate to $< 10^{-15}$ across all positive normals; `0 FDIV`).
 #[inline]
 pub fn ln_f64(x: f64) -> f64 {
     if x <= 0.0 {
@@ -72,21 +94,31 @@ pub fn ln_f64(x: f64) -> f64 {
         mant *= 0.5;
         k += 1;
     }
-    let u = (mant - 1.0) / (mant + 1.0);
+    let u = (mant - 1.0) * super::newton6_reciprocal_f64(mant + 1.0);
     let u2 = u * u;
+    const INV_ODD: [f64; 10] = [
+        1.0 / 3.0,
+        1.0 / 5.0,
+        1.0 / 7.0,
+        1.0 / 9.0,
+        1.0 / 11.0,
+        1.0 / 13.0,
+        1.0 / 15.0,
+        1.0 / 17.0,
+        1.0 / 19.0,
+        1.0 / 21.0,
+    ];
     let mut term = u;
     let mut sum = u;
-    let mut n = 3;
-    while n <= 21 {
+    for &inv_n in &INV_ODD {
         term *= u2;
-        sum += term / (n as f64);
-        n += 2;
+        sum += term * inv_n;
     }
     2.0 * sum + (k as f64) * core::f64::consts::LN_2
 }
 
 /// Pure `#![no_std]` exponential $\exp(x)$ in `f64` via range reduction $x = k \ln 2 + r$
-/// ($|r| \le \frac{\ln 2}{2}$) and 14-term Taylor polynomial (accurate to $< 10^{-15}$; cold init only).
+/// ($|r| \le \frac{\ln 2}{2}$) and 14-term Taylor polynomial (accurate to $< 10^{-15}$; `0 FDIV`).
 #[inline]
 pub fn exp_f64(x: f64) -> f64 {
     if x < -708.0 {
@@ -95,12 +127,28 @@ pub fn exp_f64(x: f64) -> f64 {
     if x > 709.0 {
         return f64::INFINITY;
     }
-    let k = round_f64(x / core::f64::consts::LN_2) as i64;
+    let k = round_f64(x * core::f64::consts::LOG2_E) as i64;
     let r = x - (k as f64) * core::f64::consts::LN_2;
+    const INV_STEP: [f64; 14] = [
+        1.0,
+        1.0 / 2.0,
+        1.0 / 3.0,
+        1.0 / 4.0,
+        1.0 / 5.0,
+        1.0 / 6.0,
+        1.0 / 7.0,
+        1.0 / 8.0,
+        1.0 / 9.0,
+        1.0 / 10.0,
+        1.0 / 11.0,
+        1.0 / 12.0,
+        1.0 / 13.0,
+        1.0 / 14.0,
+    ];
     let mut term = 1.0;
     let mut sum = 1.0;
-    for i in 1..=14 {
-        term *= r / (i as f64);
+    for &inv_i in &INV_STEP {
+        term *= r * inv_i;
         sum += term;
     }
     let scale_bits = ((k + 1023) as u64) << 52;
@@ -143,14 +191,22 @@ mod tests {
 
         assert_eq!(floor_f32(2.7), 2.0);
         assert_eq!(floor_f32(-2.7), -3.0);
+        assert!(floor_f32(f32::NAN).is_nan());
+        assert_eq!(floor_f32(10_000_000.0), 10_000_000.0);
         assert_eq!(floor_f64(2.7), 2.0);
         assert_eq!(floor_f64(-2.7), -3.0);
+        assert!(floor_f64(f64::NAN).is_nan());
+        assert_eq!(floor_f64(1.0e16), 1.0e16);
         assert_eq!(round_f32(2.6), 3.0);
         assert_eq!(round_f32(-2.6), -3.0);
         assert_eq!(round_f64(2.6), 3.0);
         assert_eq!(round_f64(-2.6), -3.0);
         assert_eq!(sqrt_f64(0.0), 0.0);
         assert_eq!(sqrt_f64(-5.0), 0.0);
+        assert!(sqrt_f64(f64::NAN).is_nan());
+        assert_eq!(sqrt_f64(f64::INFINITY), f64::INFINITY);
+        let sub = 1.0e-312_f64;
+        assert!((sqrt_f64(sub) - 1.0e-156).abs() < 1.0e-168);
         assert_eq!(ln_f64(0.0), f64::NEG_INFINITY);
         assert_eq!(exp_f64(-800.0), 0.0);
         assert_eq!(exp_f64(800.0), f64::INFINITY);

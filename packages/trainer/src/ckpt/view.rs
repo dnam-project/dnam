@@ -110,7 +110,7 @@ impl<'a> DnamCkptView<'a> {
             let header_offset = u64::from_le_bytes(bytes[64..72].try_into().unwrap()) as usize;
             let header_length = u64::from_le_bytes(bytes[72..80].try_into().unwrap()) as usize;
             let json_slice = &bytes[header_offset..header_offset + header_length];
-            let header: DnamCkptHeader = serde_json::from_slice(json_slice)
+            let header: DnamCkptHeader = DnamCkptHeader::from_json_slice(json_slice)
                 .map_err(|e| DnamError::InvalidJsonHeader(e.to_string()))?;
             let exported = export_runtime_dnam_from_ckpt(bytes)?;
             let runtime_view = DnamContainerView::from_bytes(&exported, crypto)?;
@@ -158,7 +158,7 @@ impl<'a> DnamCkptView<'a> {
         }
 
         let json_slice = &bytes[64..64 + json_len];
-        let header: DnamCkptHeader = serde_json::from_slice(json_slice)
+        let header: DnamCkptHeader = DnamCkptHeader::from_json_slice(json_slice)
             .map_err(|e| DnamError::InvalidJsonHeader(e.to_string()))?;
         header.validate()?;
         let schema_ver = header.base.schema_version()?;
@@ -311,8 +311,9 @@ pub fn build_dnam_ckpt_container(
         header.base.version = SchemaVersion::V2_0_0.as_semver_string();
     }
 
-    let json_bytes =
-        serde_json::to_vec(header).map_err(|e| DnamError::InvalidJsonHeader(e.to_string()))?;
+    let json_bytes = header
+        .to_json_vec()
+        .map_err(|e| DnamError::InvalidJsonHeader(e.to_string()))?;
     let p_ctrls = header.base.controls_schema.len();
     let min_header_region = 64 + json_bytes.len() + 128 * p_ctrls;
     let tensor_arena_offset = min_header_region.div_ceil(4096).max(1) * 4096;

@@ -94,14 +94,14 @@ dnamNode.tempo.set({ bpm: 128, subdivision: "1/8" });
 
 | Target | Tier | Backend | Mean (`us`) | P50 (`us`) | P99 (`us`) | Real-Time Speedup |
 | :--- | :--- | :--- | ---: | ---: | ---: | ---: |
-| Node.js 26 N-API v10 | `lite` (64-D) | `neon` | 19.20 | 18.80 | 32.20 | 138.9× |
-| Node.js 26 N-API v10 | `full` (128-D) | `neon` | 21.30 | 20.70 | 35.60 | 125.2× |
-| Node.js 26 N-API v10 | `pro` (192-D) | `neon` | 22.50 | 22.00 | 36.40 | 118.5× |
-| Node.js 26 N-API v10 | `ultra` (256-D) | `neon` | 23.40 | 23.00 | 29.90 | 114.0× |
-| WASM SIMD128 | `lite` (64-D) | `wasm-simd128` | 25.80 | 25.50 | 34.20 | 103.4× |
-| WASM SIMD128 | `full` (128-D) | `wasm-simd128` | 28.40 | 27.90 | 40.80 | 93.9× |
-| WASM SIMD128 | `pro` (192-D) | `wasm-simd128` | 30.60 | 30.10 | 42.40 | 87.1× |
-| WASM SIMD128 | `ultra` (256-D) | `wasm-simd128` | 34.20 | 33.00 | 55.50 | 78.0× |
+| Node.js 26 N-API v10 | `lite` (64-D) | `neon` | 21.73 | 21.33 | 30.04 | 122.7× |
+| Node.js 26 N-API v10 | `full` (128-D) | `neon` | 25.40 | 24.92 | 35.67 | 105.0× |
+| Node.js 26 N-API v10 | `pro` (192-D) | `neon` | 28.03 | 27.71 | 35.46 | 95.1× |
+| Node.js 26 N-API v10 | `ultra` (256-D) | `neon` | 34.32 | 33.37 | 54.04 | 77.7× |
+| WASM SIMD128 | `lite` (64-D) | `wasm-simd128` | 31.55 | 30.50 | 56.79 | 84.5× |
+| WASM SIMD128 | `full` (128-D) | `wasm-simd128` | 37.66 | 36.42 | 62.17 | 70.8× |
+| WASM SIMD128 | `pro` (192-D) | `wasm-simd128` | 42.87 | 41.46 | 68.04 | 62.2× |
+| WASM SIMD128 | `ultra` (256-D) | `wasm-simd128` | 49.05 | 48.00 | 68.92 | 54.4× |
 
 ---
 

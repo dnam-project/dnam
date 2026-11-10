@@ -11,7 +11,8 @@ pub use commuted_and_ctrl::{
     eval_stage2_stereo_coupling_16d, fold_stage2_latent_weights, trust_region_softclip_4d,
 };
 pub use polyadaa::{
-    MULTI_DRIVE_SCALES, MultiDrivePolyAdaaChannel, eval_saturated_polyadaa_rail_crossing_f64,
+    MULTI_DRIVE_SCALES, MultiDrivePolyAdaaChannel, OpNBackend,
+    eval_saturated_polyadaa_rail_crossing_f64, poly_adaa_algebraic_4ch_vec4,
     poly_adaa_algebraic_eval,
 };
 pub use wavefolder_and_bitcrusher::{

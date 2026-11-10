@@ -1055,12 +1055,15 @@ pub fn f32_nearest_admissible_bits(
 // 6-Step Newton Reciprocal for Saturated PolyADAA (`ref[dsp.op-n.polyadaa.rail-crossing]`)
 // ============================================================================
 
-/// Evaluates the 6-step division-free Newton reciprocal $1 / \Delta$ for $\Delta > 0$ in `f64`
+/// Evaluates the 6-step division-free Newton reciprocal $1 / \Delta$ for nonzero $\Delta$ in `f64`
 /// (`< 2^-44` relative error, `ref[dsp.op-n.polyadaa.rail-crossing]`).
 #[inline]
 pub fn newton6_reciprocal_f64(distance: f64) -> f64 {
-    let exponent = (((distance.to_bits() >> 52) & 0x7ff) as i32) - 1023;
-    let mut inverse = f64::from_bits(((1023 - exponent - 1) as u64) << 52);
+    let bits = distance.to_bits();
+    let sign_bit = bits & (1_u64 << 63);
+    let exponent = (((bits >> 52) & 0x7ff) as i32) - 1023;
+    let inv_exp = (1023 - exponent - 1).clamp(1, 2046) as u64;
+    let mut inverse = f64::from_bits(sign_bit | (inv_exp << 52));
     for _ in 0..6 {
         inverse *= 2.0 - distance * inverse;
     }
@@ -1114,6 +1117,7 @@ mod spec_tests {
         trust_clip_fast_candidate, trust_clip_outward_4d, trust_clip_outward_8d,
         trust_clip_outward_checked_bits, trust_clip_reference_bisection_bits, widen_f32_bits,
     };
+    use crate::operators::OpNBackend;
     use crate::provenance::sha256_digest;
     use crate::{FtzDazGuard, Tier};
     use support::{Rat, SplitMix64};

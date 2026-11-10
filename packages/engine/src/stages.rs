@@ -30,13 +30,38 @@ pub use head::{HEAD_RAM_BYTES, MidSideKroneckerHead};
 pub use router::{BezoutCleanCrossover, ROUTER_STATE_RAM_BYTES, ReturnAligner, Stage0Router};
 pub use stage1_pre::{STAGE1_PRE_RAM_BYTES, Stage1PreDynamics};
 pub use stage2_cascade::{
-    STAGE2_CASCADE_RAM_BYTES, Stage2CascadeFrameOut, Stage2CommutedCascade, ToneBasisFilters,
+    STAGE2_CASCADE_RAM_BYTES, Stage2Backend, Stage2CascadeFrameOut, Stage2CommutedCascade,
+    ToneBasisFilters, conv6_taps_1group_vec4, conv6_taps_2groups_vec4, conv6_taps_3groups_vec4,
+    conv6_taps_4groups_vec4,
 };
-pub use stage3_cabinet::{STAGE3_CABINET_RAM_BYTES, Stage3CabinetModals};
+pub use stage3_cabinet::{
+    STAGE3_CABINET_RAM_BYTES, Stage3Backend, Stage3CabinetModals, dot16_stereo_vec4,
+};
 pub use stage4_tank::{STAGE4_TANK_RAM_BYTES, Stage4SpatialTank, TankDcBlocker};
 pub use weights::{
     ARENA_FULL_BYTES, ARENA_LITE_BYTES, ARENA_PRO_BYTES, ARENA_ULTRA_BYTES, ArenaDirectoryView,
 };
+
+/// Composite SIMD backend trait for the TORA Stages 0–IV pipeline.
+pub trait StageBackend:
+    crate::math::MathBackend
+    + crate::operators::op_m::OpMBackend
+    + crate::operators::op_n::OpNBackend<Self::Vec4>
+    + crate::operators::op_t::OpTBackend<Self::Vec4>
+    + Stage2Backend<Self::Vec4>
+    + Stage3Backend
+{
+}
+
+impl<B> StageBackend for B where
+    B: crate::math::MathBackend
+        + crate::operators::op_m::OpMBackend
+        + crate::operators::op_n::OpNBackend<B::Vec4>
+        + crate::operators::op_t::OpTBackend<B::Vec4>
+        + Stage2Backend<B::Vec4>
+        + Stage3Backend
+{
+}
 
 /// 3 kHz Control Plane state RAM footprint.
 pub const CONTROL_PLANE_RAM_BYTES: usize = 256;
@@ -69,6 +94,8 @@ pub struct StagePipeline {
     pub kautz_host_r_low: [[[f32; 4]; 4]; 4],
     pub kautz_host_dr: [[[f32; 4]; 4]; 4],
     pub kautz_host_theta: [[[f32; 4]; 4]; 4],
+    pub kautz_host_cos: [[[f32; 4]; 4]; 4],
+    pub kautz_host_sin: [[[f32; 4]; 4]; 4],
     pub last_dtheta_kautz: f32,
     pub last_g_kautz: f32,
     pub base_fir_taps: [f32; 16],
@@ -107,6 +134,8 @@ impl StagePipeline {
             kautz_host_r_low: [[[0.0; 4]; 4]; 4],
             kautz_host_dr: [[[0.0; 4]; 4]; 4],
             kautz_host_theta: [[[0.0; 4]; 4]; 4],
+            kautz_host_cos: [[[1.0; 4]; 4]; 4],
+            kautz_host_sin: [[[0.0; 4]; 4]; 4],
             last_dtheta_kautz: 0.0,
             last_g_kautz: 0.5,
             base_fir_taps: [0.0625; 16],
@@ -226,6 +255,11 @@ impl StagePipeline {
                         self.kautz_host_theta[tier][blk][lane] = theta;
                         ((r_low + 0.5 * dr).clamp(0.0, 0.9995), theta, b_gamma)
                     };
+                    let (ch, sh) = crate::operators::op_m::algebraic_unit_rotor_op_m(
+                        theta_eff.clamp(0.0, core::f32::consts::PI - 1e-4),
+                    );
+                    self.kautz_host_cos[tier][blk][lane] = ch;
+                    self.kautz_host_sin[tier][blk][lane] = sh;
                     self.kautz_tiers_l[tier][blk].set_pole_with_b_gamma(
                         lane,
                         r,
@@ -254,6 +288,8 @@ impl StagePipeline {
                 self.kautz_host_r_low[tier][blk] = [0.0; 4];
                 self.kautz_host_dr[tier][blk] = [0.0; 4];
                 self.kautz_host_theta[tier][blk] = [0.0; 4];
+                self.kautz_host_cos[tier][blk] = [1.0; 4];
+                self.kautz_host_sin[tier][blk] = [0.0; 4];
                 for lane in 0..4 {
                     self.kautz_tiers_l[tier][blk]
                         .set_pole_with_b_gamma(lane, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
@@ -335,6 +371,11 @@ impl StagePipeline {
                         self.kautz_host_r_low[tier][blk][lane] = rl_h;
                         self.kautz_host_dr[tier][blk][lane] = dr_h;
                         self.kautz_host_theta[tier][blk][lane] = th_h;
+                        let (ch, sh) = crate::operators::op_m::algebraic_unit_rotor_op_m(
+                            th_h.clamp(0.0, core::f32::consts::PI - 1e-4),
+                        );
+                        self.kautz_host_cos[tier][blk][lane] = ch;
+                        self.kautz_host_sin[tier][blk][lane] = sh;
                         let r = (rl_h + 0.5 * dr_h).clamp(0.0, 0.99995);
                         let c_re_l = self.kautz_tiers_l[tier][blk].c_re[lane];
                         let c_im_l = self.kautz_tiers_l[tier][blk].c_im[lane];
@@ -365,6 +406,9 @@ impl StagePipeline {
         dtheta_kautz: f32,
         g_kautz: f32,
     ) {
+        use crate::math::{DefaultMathBackend, MathBackend, SimdVec4};
+        type V = <DefaultMathBackend as MathBackend>::Vec4;
+
         let g_clamped = g_kautz.clamp(0.0, 1.0);
         if (dtheta_kautz - self.last_dtheta_kautz).abs() <= 1e-9
             && (g_clamped - self.last_g_kautz).abs() <= 1e-9
@@ -374,37 +418,73 @@ impl StagePipeline {
         self.last_dtheta_kautz = dtheta_kautz;
         self.last_g_kautz = g_clamped;
 
+        const MAX_THETA: f32 = core::f32::consts::PI - 1e-4;
+        let has_dtheta = dtheta_kautz.abs() > 1e-9;
+        let (cos_d, sin_d) = if has_dtheta {
+            crate::operators::op_m::algebraic_unit_rotor_op_m(dtheta_kautz)
+        } else {
+            (1.0, 0.0)
+        };
+        let r_sweep_cap = (0.9950 - 0.15 * dtheta_kautz.abs()).clamp(0.0, 0.9950);
+
+        let g_v = V::splat(g_clamped);
+        let zero_v = V::zero();
+        let max_r_v = V::splat(0.99995);
+        let r_sweep_v = V::splat(r_sweep_cap);
+        let cos_d_v = V::splat(cos_d);
+        let sin_d_v = V::splat(sin_d);
+        let one_v = V::splat(1.0);
+        let one_pt_five_v = V::splat(1.5);
+        let half_v = V::splat(0.5);
+        let dth_v = V::splat(dtheta_kautz);
+        let max_th_v = V::splat(MAX_THETA);
+
         let max_t = active_tiers.min(4);
         for tier in 0..max_t {
             let n_blocks = crate::provenance::STAGE3_KAUTZ_BLOCKS_PER_TIER[tier];
             for blk in 0..n_blocks {
-                for lane in 0..4 {
-                    let rl_h = self.kautz_host_r_low[tier][blk][lane];
-                    let dr_h = self.kautz_host_dr[tier][blk][lane];
-                    let th_h = self.kautz_host_theta[tier][blk][lane];
-                    let bg_h = self.kautz_tiers_l[tier][blk].b_gamma[lane];
-                    if rl_h.abs() > 1e-12 || dr_h.abs() > 1e-12 || th_h.abs() > 1e-12 {
-                        let r_base = (rl_h + g_clamped * dr_h).clamp(0.0, 0.99995);
-                        let r_eff = if dtheta_kautz.abs() > 1e-9 {
-                            r_base
-                                .min(0.9950 - 0.15 * dtheta_kautz.abs())
-                                .clamp(0.0, 0.9950)
-                        } else {
-                            r_base
-                        };
-                        let theta_eff =
-                            (th_h + dtheta_kautz).clamp(0.0, core::f32::consts::PI - 1e-4);
-                        let (cos_t, sin_t) =
-                            crate::operators::op_m::algebraic_unit_rotor_op_m(theta_eff);
-                        let l_re = r_eff * cos_t;
-                        let l_im = r_eff * sin_t;
-                        self.kautz_tiers_l[tier][blk].lambda_re[lane] = l_re;
-                        self.kautz_tiers_l[tier][blk].lambda_im[lane] = l_im;
-                        self.kautz_tiers_r[tier][blk].lambda_re[lane] = l_re;
-                        self.kautz_tiers_r[tier][blk].lambda_im[lane] = l_im;
-                        let _ = bg_h;
+                let rl_v = V::load(&self.kautz_host_r_low[tier][blk]);
+                let dr_v = V::load(&self.kautz_host_dr[tier][blk]);
+                let r_base_v = rl_v.fma(g_v, dr_v).max(zero_v).min(max_r_v);
+                let r_eff_v = if has_dtheta {
+                    r_base_v.min(r_sweep_v)
+                } else {
+                    r_base_v
+                };
+                let ch_v = V::load(&self.kautz_host_cos[tier][blk]);
+                let sh_v = V::load(&self.kautz_host_sin[tier][blk]);
+                let (cos_v, sin_v) = if !has_dtheta {
+                    (ch_v, sh_v)
+                } else {
+                    let th_v = V::load(&self.kautz_host_theta[tier][blk]);
+                    let th_u_v = th_v.add(dth_v);
+                    let clamped_v = th_u_v.max(zero_v).min(max_th_v);
+                    if th_u_v.sub(clamped_v).abs().horizontal_sum() == 0.0 {
+                        let c_raw = ch_v.mul(cos_d_v).fms(sh_v, sin_d_v);
+                        let s_raw = sh_v.mul(cos_d_v).fma(ch_v, sin_d_v);
+                        let norm_sq = c_raw.mul(c_raw).fma(s_raw, s_raw);
+                        let scale = one_pt_five_v.fms(half_v, norm_sq.max(one_v));
+                        (c_raw.mul(scale), s_raw.mul(scale))
+                    } else {
+                        let mut c_arr = [0.0f32; 4];
+                        let mut s_arr = [0.0f32; 4];
+                        for lane in 0..4 {
+                            let th_u = self.kautz_host_theta[tier][blk][lane] + dtheta_kautz;
+                            let (c_t, s_t) = crate::operators::op_m::algebraic_unit_rotor_op_m(
+                                th_u.clamp(0.0, MAX_THETA),
+                            );
+                            c_arr[lane] = c_t;
+                            s_arr[lane] = s_t;
+                        }
+                        (V::load(&c_arr), V::load(&s_arr))
                     }
-                }
+                };
+                let l_re_v = r_eff_v.mul(cos_v);
+                let l_im_v = r_eff_v.mul(sin_v);
+                l_re_v.store(&mut self.kautz_tiers_l[tier][blk].lambda_re);
+                l_im_v.store(&mut self.kautz_tiers_l[tier][blk].lambda_im);
+                l_re_v.store(&mut self.kautz_tiers_r[tier][blk].lambda_re);
+                l_im_v.store(&mut self.kautz_tiers_r[tier][blk].lambda_im);
             }
         }
     }

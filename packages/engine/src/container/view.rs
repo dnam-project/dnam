@@ -155,7 +155,7 @@ impl<'a> DnamContainerView<'a> {
             {
                 return Err(DnamError::PreviewContainerRejected);
             }
-            let mut header: DnamJsonHeader = serde_json::from_slice(json_slice)
+            let mut header: DnamJsonHeader = DnamJsonHeader::from_json_slice(json_slice)
                 .map_err(|e| DnamError::InvalidJsonHeader(e.to_string()))?;
             header.validate()?;
             let mutable_slice =
@@ -393,7 +393,7 @@ impl<'a> DnamContainerView<'a> {
         {
             return Err(DnamError::PreviewContainerRejected);
         }
-        let header: DnamJsonHeader = serde_json::from_slice(json_slice)
+        let header: DnamJsonHeader = DnamJsonHeader::from_json_slice(json_slice)
             .map_err(|e| DnamError::InvalidJsonHeader(e.to_string()))?;
         header.validate()?;
         let schema_ver = header.schema_version()?;

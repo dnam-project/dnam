@@ -80,8 +80,8 @@ impl TempoSyncState {
                     }
                 }
                 if count > 0 {
-                    let avg_interval = (sum as f32) / (count as f32);
-                    let bpm = (60.0 * (self.sample_rate_hz as f32)) / avg_interval;
+                    let inv_sum = crate::math::newton6_reciprocal_f64(sum as f64) as f32;
+                    let bpm = 60.0 * (self.sample_rate_hz as f32) * (count as f32) * inv_sum;
                     self.current_bpm = bpm.clamp(20.0, 400.0);
                 }
             }

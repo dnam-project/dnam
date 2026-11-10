@@ -194,7 +194,7 @@ impl OrderedClockPulseTracker {
 }
 
 /// Evaluates the event-rate-aware exponential period and phase tracker over a sequence of event
-/// arrival times (in seconds) with time constant `tau_sec > 0` (`ref[dsp.tempo.event-tracker]`).
+/// arrival times (in seconds) with time constant `tau_sec > 0` (`ref[dsp.tempo.event-tracker]`, `0 FDIV`).
 pub fn eval_event_rate_aware_tracker(
     event_times_sec: &[f64],
     initial_period_sec: f64,
@@ -203,6 +203,7 @@ pub fn eval_event_rate_aware_tracker(
     if event_times_sec.is_empty() {
         return (Vec::new(), Vec::new());
     }
+    let inv_tau = crate::math::newton6_reciprocal_f64(tau_sec.max(1e-12));
     let mut period = initial_period_sec;
     let mut phase_time = event_times_sec[0];
     let mut periods = Vec::with_capacity(event_times_sec.len());
@@ -213,7 +214,7 @@ pub fn eval_event_rate_aware_tracker(
     for pair in event_times_sec.windows(2) {
         let prev_t = pair[0];
         let cur_t = pair[1];
-        let gain = 1.0 - cold_exp_f64(-period / tau_sec);
+        let gain = 1.0 - cold_exp_f64(-period * inv_tau);
         let predicted = phase_time + period;
         phase_time = predicted + gain * (cur_t - predicted);
         period += gain * ((cur_t - prev_t) - period);
@@ -305,12 +306,13 @@ pub fn invert_tempo_physical_calibration(
         let high = widen_f32_bits(declared.1.to_bits())?;
         let val = widen_f32_bits(p_bits)?;
         let span = high - low;
+        let inv_span = crate::math::newton6_reciprocal_f64(span);
         let num = if (low < 0.0) != (high < 0.0) {
             2.0 * val - (low + high)
         } else {
             (val - low) + (val - high)
         };
-        let coord = (num / span).clamp(-1.0, 1.0);
+        let coord = (num * inv_span).clamp(-1.0, 1.0);
         let mut u = f32::from_bits(crate::math::round_f64_to_f32_bits(coord)?);
         if flush_subnormals && (u.to_bits() & 0x7fff_ffff) < 0x0080_0000 {
             u = 0.0;

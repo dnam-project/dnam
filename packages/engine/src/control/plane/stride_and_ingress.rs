@@ -25,16 +25,16 @@ pub const fn control_stride_for_rate(sample_rate_hz: u32) -> u32 {
 }
 
 /// Computes the effective control-tick ratio $\rho_{\text{ctrl}} = \frac{48000 \cdot K_{\text{ctrl}}(f_s)}{16 \cdot f_s}$
-/// (`ref[dsp.zoh.ctrl-stride]`, `ref[dsp.ctrl.op-m.ballistic-lfo]`).
+/// (`ref[dsp.zoh.ctrl-stride]`, `ref[dsp.ctrl.op-m.ballistic-lfo]`, `0 FDIV`).
 #[inline]
 pub fn control_tick_ratio(sample_rate_hz: u32) -> f64 {
     let k = control_stride_for_rate(sample_rate_hz) as f64;
-    (3_000.0 * k) / (sample_rate_hz as f64)
+    (3_000.0 * k) * crate::math::newton6_reciprocal_f64(sample_rate_hz.max(1) as f64)
 }
 
 /// Retimes an in-progress control window on an admitted rate transition from `old_rate_hz` to
 /// `new_rate_hz` after `consumed_old_frames` (`0 <= consumed < K_old`), returning
-/// `(remaining_new_frames, elapsed_seconds)` (`ref[dsp.ctrl.op-m.rate-retime]`).
+/// `(remaining_new_frames, elapsed_seconds)` (`ref[dsp.ctrl.op-m.rate-retime]`, `0 FDIV`).
 pub fn retime_control_window(
     old_rate_hz: u32,
     new_rate_hz: u32,
@@ -46,20 +46,23 @@ pub fn retime_control_window(
         return None;
     }
     let remaining_num = (old_stride - consumed_old_frames) as u64 * (new_stride as u64);
-    let new_frames = ((2 * remaining_num + (old_stride as u64)) / (2 * (old_stride as u64))) as u32;
-    let elapsed_sec = (consumed_old_frames as f64) / (old_rate_hz as f64)
-        + (new_frames as f64) / (new_rate_hz as f64);
+    let inv_two_old_stride = crate::math::newton6_reciprocal_f64((2 * (old_stride as u64)) as f64);
+    let new_frames =
+        (((2 * remaining_num + (old_stride as u64)) as f64) * inv_two_old_stride) as u32;
+    let elapsed_sec = (consumed_old_frames as f64)
+        * crate::math::newton6_reciprocal_f64(old_rate_hz as f64)
+        + (new_frames as f64) * crate::math::newton6_reciprocal_f64(new_rate_hz as f64);
     Some((new_frames, elapsed_sec))
 }
 
 /// Evaluates division-free linear micro-ramping across a block of `stride` samples, clamping every
 /// intermediate sample within `[min(start, target), max(start, target)]` and snapping the final
-/// sample `stride - 1` to `target` (`ref[dsp.ctrl.dispatch.micro-ramp]`).
+/// sample `stride - 1` to `target` (`ref[dsp.ctrl.dispatch.micro-ramp]`, `0 FDIV`).
 pub fn eval_clamped_micro_ramp_block(start: f32, target: f32, stride: usize) -> Vec<f32> {
     if stride == 0 {
         return Vec::new();
     }
-    let alpha = 1.0_f32 / (stride as f32);
+    let alpha = crate::math::newton6_reciprocal_f64(stride as f64) as f32;
     let delta = (target - start) * alpha;
     let lo = start.min(target);
     let hi = start.max(target);
@@ -333,7 +336,8 @@ pub fn reconstruct_vst3_normalized_curve(
             let (right_offset, right_value) = points[point_idx];
             let num = (frame as isize - left_offset) as f64;
             let den = (right_offset as isize - left_offset) as f64;
-            left_value + (right_value - left_value) * (num / den)
+            let inv_den = crate::math::newton6_reciprocal_f64(den);
+            left_value + (right_value - left_value) * (num * inv_den)
         } else {
             left_value
         };

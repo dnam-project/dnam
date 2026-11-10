@@ -1299,4 +1299,59 @@ describe("DNAM Monorepo Architectural & Documentation Guardrails", () => {
       expect(pkgText).toContain('"license": "LicenseRef-DNAM-1.0.0"');
     }
   });
+
+  // verify[repo.code.realtime-disassembly-audit]
+  // verify[arch.simd.zero-stall-lowering]
+  it("test_engine_realtime_no_libm_or_float_rem_euclid", () => {
+    const engineSrcDir = path.join(PACKAGES_DIR, "engine", "src");
+    const forbiddenCallRe =
+      /\.(?:rem_euclid|sin|cos|tan|asin|acos|atan|atan2|sinh|cosh|tanh|exp|exp2|ln|log2|log10|powf|powi|sqrt|cbrt|hypot)\s*\(/;
+    const violations: string[] = [];
+
+    for (const rsPath of walkFilesByExtensions(engineSrcDir, new Set([".rs"]))) {
+      const base = path.basename(rsPath);
+      if (base === "test_support.rs" || base === "exact_int_verify.rs") {
+        continue;
+      }
+      const lines = fs.readFileSync(rsPath, "utf8").split("\n");
+      for (let idx = 0; idx < lines.length; idx++) {
+        const line = lines[idx] ?? "";
+        const trimmed = line.trim();
+        if (trimmed.startsWith("#[cfg(test)]")) {
+          const nextTrimmed = (lines[idx + 1] ?? "").trim();
+          if (nextTrimmed.startsWith("mod ") || nextTrimmed.startsWith("pub mod ")) {
+            break;
+          }
+        }
+        if (trimmed.startsWith("//") || trimmed.startsWith("*")) {
+          continue;
+        }
+        if (forbiddenCallRe.test(line)) {
+          violations.push(`${relPath(rsPath)}:${idx + 1}: ${trimmed}`);
+        }
+      }
+    }
+    expect(violations).toEqual([]);
+  });
+
+  // verify[repo.code.explicit-simd-and-coverage]
+  it("test_engine_no_coverage_off_or_simd_macros", () => {
+    const engineSrcDir = path.join(PACKAGES_DIR, "engine", "src");
+    const mathSrcDir = path.join(engineSrcDir, "math");
+    const violations: string[] = [];
+
+    for (const rsPath of walkFilesByExtensions(engineSrcDir, new Set([".rs"]))) {
+      const content = fs.readFileSync(rsPath, "utf8");
+      if (content.includes("coverage(off)")) {
+        violations.push(`${relPath(rsPath)}: contains forbidden coverage(off)`);
+      }
+    }
+    for (const rsPath of walkFilesByExtensions(mathSrcDir, new Set([".rs"]))) {
+      const content = fs.readFileSync(rsPath, "utf8");
+      if (content.includes("macro_rules!")) {
+        violations.push(`${relPath(rsPath)}: contains forbidden macro_rules! in math/`);
+      }
+    }
+    expect(violations).toEqual([]);
+  });
 });

@@ -116,7 +116,10 @@ pub fn compute_immutable_header_sha256_for_version(
     header: &DnamJsonHeader,
     schema_version: SchemaVersion,
 ) -> Result<[u8; 32], DnamError> {
-    let mut val = serde_json::to_value(header)
+    let hdr_bytes = header
+        .to_json_vec()
+        .map_err(|e| DnamError::InvalidJsonHeader(alloc::format!("{e}")))?;
+    let mut val: serde_json::Value = serde_json::from_slice(&hdr_bytes)
         .map_err(|e| DnamError::InvalidJsonHeader(alloc::format!("{e}")))?;
     project_immutable_header_for_schema_version(&mut val, schema_version)?;
 
@@ -420,7 +423,7 @@ pub fn sign_creator_header_json(
     use crate::provenance::RustCryptoProvider;
     use crate::schema::{CreatorSignature, ModelSignatures};
 
-    let mut header: DnamJsonHeader = serde_json::from_str(header_json)
+    let mut header: DnamJsonHeader = DnamJsonHeader::from_json_str(header_json)
         .map_err(|e| DnamError::InvalidJsonHeader(alloc::format!("{e}")))?;
     let hdr_sha_bytes = compute_immutable_header_sha256(&header)?;
     let arena_sha_bytes = sha256_digest(master_arena);
@@ -459,7 +462,9 @@ pub fn sign_creator_header_json(
         },
         marketplace_receipt: None,
     });
-    serde_json::to_string(&header).map_err(|e| DnamError::InvalidJsonHeader(alloc::format!("{e}")))
+    header
+        .to_json_string()
+        .map_err(|e| DnamError::InvalidJsonHeader(alloc::format!("{e}")))
 }
 
 /// Signs a [`MarketplaceReceipt`] and attaches it to a creator-signed [`DnamJsonHeader`] JSON
@@ -476,7 +481,7 @@ pub fn sign_marketplace_receipt_json(
     };
     use crate::provenance::RustCryptoProvider;
 
-    let mut header: DnamJsonHeader = serde_json::from_str(header_json)
+    let mut header: DnamJsonHeader = DnamJsonHeader::from_json_str(header_json)
         .map_err(|e| DnamError::InvalidJsonHeader(alloc::format!("{e}")))?;
     let sigs = header.metadata.signatures.as_mut().ok_or_else(|| {
         DnamError::SchemaValidationError(String::from(
@@ -532,7 +537,9 @@ pub fn sign_marketplace_receipt_json(
     receipt.receipt_sig_ed25519 = encode_hex(&sig);
     sigs.marketplace_receipt = Some(receipt);
 
-    serde_json::to_string(&header).map_err(|e| DnamError::InvalidJsonHeader(alloc::format!("{e}")))
+    header
+        .to_json_string()
+        .map_err(|e| DnamError::InvalidJsonHeader(alloc::format!("{e}")))
 }
 
 #[cfg(test)]

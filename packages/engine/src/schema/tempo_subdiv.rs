@@ -121,18 +121,20 @@ impl TempoSubdivision {
         }
     }
 
-    /// Target delay time in milliseconds at `bpm` ($\tau_{\text{ms}} = \frac{60\,000}{\text{BPM}} \cdot \beta_{\text{sub}}$).
+    /// Target delay time in milliseconds at `bpm` ($\tau_{\text{ms}} = \frac{60\,000}{\text{BPM}} \cdot \beta_{\text{sub}}$, `0 FDIV`).
     #[inline]
     pub fn delay_ms_at_bpm(self, bpm: f32) -> f32 {
         let safe_bpm = bpm.clamp(20.0, 400.0);
-        (60_000.0 / safe_bpm) * self.beat_multiplier()
+        let inv_bpm = crate::math::newton6_reciprocal_f64(safe_bpm as f64);
+        ((60_000.0 * inv_bpm) as f32) * self.beat_multiplier()
     }
 
-    /// Target modulation rate in Hz at `bpm` ($f_{\text{Hz}} = \frac{\text{BPM}}{60 \cdot \beta_{\text{sub}}}$).
+    /// Target modulation rate in Hz at `bpm` ($f_{\text{Hz}} = \frac{\text{BPM}}{60 \cdot \beta_{\text{sub}}}$, `0 FDIV`).
     #[inline]
     pub fn lfo_hz_at_bpm(self, bpm: f32) -> f32 {
         let safe_bpm = bpm.clamp(20.0, 400.0);
-        safe_bpm / (60.0 * self.beat_multiplier())
+        let denom = 60.0 * (self.beat_multiplier() as f64);
+        ((safe_bpm as f64) * crate::math::newton6_reciprocal_f64(denom)) as f32
     }
 }
 

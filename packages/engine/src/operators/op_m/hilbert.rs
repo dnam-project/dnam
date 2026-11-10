@@ -3,7 +3,10 @@
 //! (`ref[dsp.op-m.hilbert.lattice]`, `ref[dsp.op-m.hilbert.h1-anchors]`,
 //! `ref[dsp.op-m.hilbert.ties-to-even]`, `ref[dsp.op-m.hilbert.rate-remap]`).
 
-use crate::math::flush_recursive_state_f32;
+use crate::math::{
+    DefaultMathBackend, MathBackend, SimdVec4, flush_recursive_state_f32,
+    flush_recursive_state_vec4,
+};
 
 /// 12-Allpass (`6` I-branch + `6` Q-branch) `H1` Hilbert Single-Sideband Lattice (`ref[dsp.op-m.hilbert.lattice]`, `ref[dsp.op-m.hilbert.h1-anchors]`).
 ///
@@ -371,6 +374,9 @@ pub struct HilbertH1Lattice6Sec {
     pub i_prev_y: [[f32; 2]; 6],
     pub q_prev_y: [[f32; 2]; 6],
     pub q_z1: f32,
+    pub(crate) stereo_alpha: [[f32; 4]; 6],
+    pub(crate) stereo_state: [[[f32; 4]; 6]; 2],
+    pub(crate) stereo_parity: usize,
 }
 
 impl Default for HilbertH1Lattice6Sec {
@@ -381,14 +387,26 @@ impl Default for HilbertH1Lattice6Sec {
 
 impl HilbertH1Lattice6Sec {
     pub const fn new_48khz() -> Self {
+        const AI: [f32; 6] = HilbertSsbLattice10th::ALPHA_I;
+        const AQ: [f32; 6] = HilbertSsbLattice10th::ALPHA_Q;
         Self {
-            alpha_i: HilbertSsbLattice10th::ALPHA_I,
-            alpha_q: HilbertSsbLattice10th::ALPHA_Q,
+            alpha_i: AI,
+            alpha_q: AQ,
             i_state: [[0.0; 2]; 6],
             q_state: [[0.0; 2]; 6],
             i_prev_y: [[0.0; 2]; 6],
             q_prev_y: [[0.0; 2]; 6],
             q_z1: 0.0,
+            stereo_alpha: [
+                [AI[0], AQ[0], AI[0], AQ[0]],
+                [AI[1], AQ[1], AI[1], AQ[1]],
+                [AI[2], AQ[2], AI[2], AQ[2]],
+                [AI[3], AQ[3], AI[3], AQ[3]],
+                [AI[4], AQ[4], AI[4], AQ[4]],
+                [AI[5], AQ[5], AI[5], AQ[5]],
+            ],
+            stereo_state: [[[0.0; 4]; 6]; 2],
+            stereo_parity: 0,
         }
     }
 
@@ -398,12 +416,16 @@ impl HilbertH1Lattice6Sec {
         self.i_prev_y = [[0.0; 2]; 6];
         self.q_prev_y = [[0.0; 2]; 6];
         self.q_z1 = 0.0;
+        self.stereo_state = [[[0.0; 4]; 6]; 2];
+        self.stereo_parity = 0;
     }
 
     pub fn new_at_rate(rate_hz: f64) -> Option<Self> {
         let bits = interpolate_hilbert_h1_profile_bits(rate_hz)?;
         let alpha_i = core::array::from_fn(|k| f32::from_bits(bits[k]));
         let alpha_q = core::array::from_fn(|k| f32::from_bits(bits[6 + k]));
+        let stereo_alpha =
+            core::array::from_fn(|k| [alpha_i[k], alpha_q[k], alpha_i[k], alpha_q[k]]);
         Some(Self {
             alpha_i,
             alpha_q,
@@ -412,6 +434,9 @@ impl HilbertH1Lattice6Sec {
             i_prev_y: [[0.0; 2]; 6],
             q_prev_y: [[0.0; 2]; 6],
             q_z1: 0.0,
+            stereo_alpha,
+            stereo_state: [[[0.0; 4]; 6]; 2],
+            stereo_parity: 0,
         })
     }
 
@@ -434,6 +459,9 @@ impl HilbertH1Lattice6Sec {
             self.q_state[k] = [sq, sq];
             self.q_prev_y[k] = [yq, yq];
             vq = yq;
+
+            self.stereo_state[0][k] = [si, sq, si, sq];
+            self.stereo_state[1][k] = [si, sq, si, sq];
         }
     }
 
@@ -457,37 +485,67 @@ impl HilbertH1Lattice6Sec {
             self.q_state[k][1] =
                 flush_recursive_state_f32(self.q_state[k][1] + da_q * self.q_prev_y[k][1]);
             self.alpha_q[k] = new_aq;
+            self.stereo_alpha[k] = [new_ai, new_aq, new_ai, new_aq];
         }
         Some(())
     }
 
     /// Steps one sample through the 6-section `H1` analytic pair (`y[n] = alpha * v[n] + s[n-2]`,
     /// `s[n] = alpha * y[n] - v[n]`, `ref[dsp.op-m.hilbert.lattice]`).
-    #[inline]
+    #[inline(always)]
     pub fn step(&mut self, x: f32) -> (f32, f32) {
         let mut vi = x;
-        for k in 0..6 {
-            let a = self.alpha_i[k];
-            let y = a * vi + self.i_state[k][1];
-            self.i_state[k][1] = self.i_state[k][0];
-            self.i_state[k][0] = flush_recursive_state_f32(a * y - vi);
-            self.i_prev_y[k][1] = self.i_prev_y[k][0];
-            self.i_prev_y[k][0] = y;
-            vi = y;
-        }
-
         let mut vq = self.q_z1;
         self.q_z1 = x;
         for k in 0..6 {
-            let a = self.alpha_q[k];
-            let y = a * vq + self.q_state[k][1];
+            let ai = self.alpha_i[k];
+            let aq = self.alpha_q[k];
+            let yi = ai * vi + self.i_state[k][1];
+            let yq = aq * vq + self.q_state[k][1];
+            self.i_state[k][1] = self.i_state[k][0];
             self.q_state[k][1] = self.q_state[k][0];
-            self.q_state[k][0] = flush_recursive_state_f32(a * y - vq);
+            self.i_state[k][0] = flush_recursive_state_f32(ai * yi - vi);
+            self.q_state[k][0] = flush_recursive_state_f32(aq * yq - vq);
+            self.i_prev_y[k][1] = self.i_prev_y[k][0];
             self.q_prev_y[k][1] = self.q_prev_y[k][0];
-            self.q_prev_y[k][0] = y;
-            vq = y;
+            self.i_prev_y[k][0] = yi;
+            self.q_prev_y[k][0] = yq;
+            vi = yi;
+            vq = yq;
         }
         (vi, vq)
+    }
+
+    /// Returns the most recently updated 4-lane stereo section-5 state `[s5_il, s5_ql, s5_ir, s5_qr]`.
+    #[inline(always)]
+    pub fn last_stereo_s5(&self) -> &[f32; 4] {
+        &self.stereo_state[(self.stereo_parity ^ 1) & 1][5]
+    }
+
+    /// Steps a stereo pair (`self` = Left, `right` = Right) of 6-section `H1` analytic pairs
+    /// simultaneously using 4-lane SIMD across `(vi_l, vq_l, vi_r, vq_r)`
+    /// (`ref[dsp.op-m.hilbert.lattice]`).
+    #[inline(always)]
+    pub fn step_stereo(&mut self, right: &mut Self, x_l: f32, x_r: f32) -> (f32, f32, f32, f32) {
+        type V = <DefaultMathBackend as MathBackend>::Vec4;
+        let p = self.stereo_parity & 1;
+        self.stereo_parity = p ^ 1;
+        let v_in = [x_l, self.q_z1, x_r, right.q_z1];
+        self.q_z1 = x_l;
+        right.q_z1 = x_r;
+        let mut v = V::load(&v_in);
+        let state_p = &mut self.stereo_state[p];
+        for k in 0..6 {
+            let a = V::load(&self.stereo_alpha[k]);
+            let s_prev = V::load(&state_p[k]);
+            let y = s_prev.fma(a, v);
+            let s_next = flush_recursive_state_vec4(a.mul(y).sub(v));
+            s_next.store(&mut state_p[k]);
+            v = y;
+        }
+        let mut v_out = [0.0f32; 4];
+        v.store(&mut v_out);
+        (v_out[0], v_out[1], v_out[2], v_out[3])
     }
 }
 
@@ -613,6 +671,43 @@ mod tests {
         h1.retune_sample_rate(96_000.0).unwrap();
         let (i_after, q_after) = h1.step(1.0);
         assert!((i_after - 1.0).abs() < 1e-6 && (q_after - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    #[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
+    fn equal_transposed_cells_can_require_different_history_consistent_retunes() {
+        use crate::FtzDazGuard;
+        use core::hint::black_box;
+        fn step(coefficient: f32, state: &mut [f32; 2], input: f32) -> f32 {
+            let output = black_box(black_box(coefficient * input) + state[1]);
+            state[1] = state[0];
+            state[0] = black_box(black_box(coefficient * output) - input);
+            output
+        }
+
+        let _guard = FtzDazGuard::new();
+        let old = black_box(f32::from_bits(0x3d91_bee6));
+        let new = black_box(f32::from_bits(0x3db0_73c5));
+        let mut driven_state = [0.0; 2];
+        let mut outputs = [0.0; 3];
+        for (sample, output) in [1.0, 0.0, -old].into_iter().zip(&mut outputs) {
+            *output = step(old, &mut driven_state, sample);
+        }
+        assert_eq!(driven_state.map(f32::to_bits), [0; 2]);
+        assert_eq!(&outputs[1..], &[0.0, -1.0]);
+
+        let mut empty_state = [0.0; 2];
+        let change = black_box(new - old);
+        driven_state[0] = black_box(driven_state[0] + black_box(change * outputs[2]));
+        driven_state[1] = black_box(driven_state[1] + black_box(change * outputs[1]));
+        assert_ne!(driven_state, empty_state);
+
+        assert_eq!(step(new, &mut driven_state, 0.0), 0.0);
+        assert_eq!(step(new, &mut empty_state, 0.0), 0.0);
+        let driven_second = step(new, &mut driven_state, 0.0);
+        let empty_second = step(new, &mut empty_state, 0.0);
+        assert!((-0.015..-0.014).contains(&driven_second));
+        assert_eq!(empty_second, 0.0);
     }
 
     proptest! {

@@ -9,9 +9,12 @@ rule_prefixes:
 requirements:
   - REQ-4.1
   - REQ-6.1
+  - REQ-6.2
+  - REQ-6.3
   - REQ-8.8
 adrs:
   - ADR-0010
+  - ADR-0019
 ---
 
 # Repository, Code & Documentation Quality Specification
@@ -31,6 +34,12 @@ All packages across the monorepo must enforce strict static typing and lightweig
 3. **Safe-Rust-First & Strict `#[allow(unsafe_code)]` Discipline:** All Rust crates (`packages/engine/`, `packages/trainer/`, `packages/js/rust/`, `packages/studio/rust/`) must enforce `#![forbid(unsafe_code)]` or `#![deny(unsafe_code)]`. Contributors and AI coding agents must **exhaustively search for safe Rust formulations first** (e.g., `core::sync::atomic::AtomicU64` word arrays for lock-free rings and seqlocks, atomic index ping-pong slots, disjoint struct field borrows, `zerocopy`, and checked `napi` slice borrows) and must never add `#[allow(unsafe_code)]` or `unsafe` blocks out of convenience. `#[allow(unsafe_code)]` is permitted **only** when:
    - **Strictly required by a hardware or C-ABI boundary** that has no safe Rust abstraction (CPU SIMD intrinsics in `packages/engine/src/math/`, hardware `FTZ`/`DAZ` CSR registers in `packages/engine/src/types.rs`, aligned heap allocation in `packages/engine/src/memory.rs`, or raw C-ABI entrypoints in `packages/engine/src/ffi.rs`); or
    - **Proven by benchmark to eliminate a high-impact real-time performance bottleneck** where the safe borrow-/bounds-checked formulation measurably violates real-time throughput/WCET budgets **and** every `unsafe` block is accompanied by a complete `// SAFETY:` proof covering aliasing, alignment, lifetimes, and thread-safety invariants.
+4. `r[repo.code.realtime-disassembly-audit]` **Automated Release-Binary Disassembly Audit & Real-Time Source Guardrails (`REQ-6.2`, `REQ-6.3`, [`ADR-0019`](../../adr/0019-simd-kernel-architecture-and-realtime-execution-optimizations.md)):**
+   - **Release-Binary Disassembly & Call-Graph Gate (`packages/engine/tests/realtime_disassembly_audit.rs`):** Wired into `moon run engine:test`, this integration test compiles `libdnam_engine.rlib` in `--release` mode, disassembles all object code via `objdump -dr` and `objdump -dr --demangle`, computes the transitive call-graph closure from all real-time entrypoints (`DnamEngine<*>::process_*`, `step_frame*`, `step_control_tick_3khz`, `refresh_collapsed_head_weights`, `DynamicDnamEngine::process_*`, `ControlBus<*>::tick_3khz*`, `StagePipeline<*>::retune_kautz_formant_3khz`, `Stage1PreDynamics<*>::retune_op_m_pre_3khz`, `_dnam_engine_process_*`), and fails the build if any reachable real-time symbol contains floating-point division (`fdiv`, `vdiv*`, `divss`, `divps`, `divsd`, `divpd`), floating-point square root (`fsqrt`, `vsqrt*`, `sqrtss`, `sqrtps`, `sqrtsd`, `sqrtpd`), integer division/remainder (`udiv`, `sdiv`, `div`, `divl`, `divq`, `idiv`, `idivl`, `idivq`, `__udivti3`, `__divti3`, `__umodti3`, `__modti3`), heap allocation (`__rust_alloc`, `__rust_dealloc`, `__rust_realloc`, `__rust_alloc_zeroed`, including Rust v0 mangled shims), or uncached OS syscalls (`sysctlbyname`, `getauxval`), or if any symbol in the crate contains an external `libm` relocation (`fmodf`, `fmod`, `sin*`, `cos*`, `tan*`, `exp*`, `log*`, `pow*`, `sqrt*`, `cbrt*`, `hypot*`, `atan*`, `asin*`, `acos*`, `sinh*`, `cosh*`, `tanh*`).
+   - **Static Source Guardrail (`tests/test_guardrails.test.ts`):** Verifies that non-test `packages/engine/src/**/*.rs` files contain zero `rem_euclid` calls (which LLVM lowers to `bl _fmodf`) and zero direct `f32`/`f64` transcendental method calls.
+5. `r[repo.code.explicit-simd-and-coverage]` **Explicit SIMD Trait Implementations, Zero `coverage(off)` & Multi-Target Verification (`REQ-6.1`, [`ADR-0019`](../../adr/0019-simd-kernel-architecture-and-realtime-execution-optimizations.md)):**
+   - **Zero SIMD-Hiding Macros:** All SIMD backend modules (`packages/engine/src/math/aarch64/{neon,sve2,sme}`, `packages/engine/src/math/x86/{sse2,sse42,avx2}`, `packages/engine/src/math/wasm.rs`, `packages/engine/src/math/scalar.rs`) must be written as explicit, directly inspectable Rust trait implementations without `macro_rules!` wrapper generation that obscures instruction lowering or line-coverage attribution.
+   - **Zero `#[cfg_attr(coverage, coverage(off))]`:** Never suppress coverage instrumentation to pass the `>= 95%` coverage gate (`moon run engine:coverage`). Cross-ISA backends must be verified via `moon run engine:test-sve2` (`linux/arm64` QEMU `-cpu max` for `ArmSve2Backend`) and `moon run engine:test-x86` (`x86_64-apple-darwin` under Rosetta 2 with `ROSETTA_ADVERTISE_AVX=1` for `X86Sse2Backend`, `X86Sse42Backend`, and `X86Avx2FmaBackend`).
 
 ---
 

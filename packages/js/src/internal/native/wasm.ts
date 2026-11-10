@@ -1229,6 +1229,21 @@ class WasmEngineHandle implements NativeEngineHandle {
     if (n === 0) {
       return;
     }
+    if (!blockSize || blockSize >= n) {
+      const { ch0InPtr, ch1InPtr } = this.#mem.ensureAudioScratch(n);
+      const f32 = this.#mem.f32();
+      const lIdx = ch0InPtr >>> 2;
+      const rIdx = ch1InPtr >>> 2;
+      f32.set(leftIn, lIdx);
+      f32.set(rightIn, rIdx);
+      this.#mem.checkStatus(
+        this.#mem.exports.dnam_wasm_engine_process_stereo_in_place(ptr, ch0InPtr, ch1InPtr, n),
+      );
+      const f32After = this.#mem.f32();
+      leftOut.set(f32After.subarray(lIdx, lIdx + n));
+      rightOut.set(f32After.subarray(rIdx, rIdx + n));
+      return;
+    }
     const { ch0InPtr, ch1InPtr, ch0OutPtr, ch1OutPtr } = this.#mem.ensureAudioScratch(n);
     const f32 = this.#mem.f32();
     f32.set(leftIn, ch0InPtr >>> 2);
@@ -1241,7 +1256,7 @@ class WasmEngineHandle implements NativeEngineHandle {
         ch0OutPtr,
         ch1OutPtr,
         n,
-        blockSize ?? 0,
+        blockSize,
       ),
     );
     const f32After = this.#mem.f32();
@@ -3133,13 +3148,14 @@ export class WasmDriver implements NativeDriver {
 }
 
 /**
- * Minimum initial 64 KiB WebAssembly linear-memory pages required by `dnam.wasm` (`18` pages = `1.125 MiB`).
+ * Minimum initial 64 KiB WebAssembly linear-memory pages enforced by the SDK (`18` pages = `1.125 MiB`,
+ * safely above the `15`-page module minimum from `-zstack-size=786432` + static data).
  */
 export const WASM_MIN_INITIAL_PAGES = 18;
 
 /**
- * Default initial 64 KiB WebAssembly linear-memory pages (`18` pages = `1.125 MiB`, matching
- * `wasm32` `dlmalloc` `__heap_base` so `memory.grow` commits pages contiguously with zero dead space).
+ * Default initial 64 KiB WebAssembly linear-memory pages (`18` pages = `1.125 MiB`, providing
+ * `15` pages for the `768 KiB` shadow stack + static data and `3` initial heap pages before `memory.grow`).
  */
 export const WASM_DEFAULT_INITIAL_PAGES = 18;
 

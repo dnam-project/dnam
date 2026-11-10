@@ -9,24 +9,32 @@ use crate::container::{
     ARENA_LITE_END_CL, ARENA_OFFSET_LITE_END, DnamContainerView, DnamPreamble, ZohRescaledParams,
 };
 use crate::control::{ControlBus, ControlClampDescriptor};
-use crate::math::{DefaultMathBackend, MathBackend};
+use crate::math::DefaultMathBackend;
 use crate::memory::{AlignedBuffer, AlignedFp16Block, ArenaStorage, CacheLine64};
 use crate::provenance::{CryptoProvider, DefaultCryptoProvider, VerificationStatus};
 use crate::schema::{
     ControlCalibrationRole, DnamError, DnamJsonHeader, DnamProtectionProfile, TempoSubdivision,
     cold_pow_f64,
 };
-use crate::stages::StagePipeline;
+use crate::stages::{StageBackend, StagePipeline};
 use crate::types::{DnamTelemetrySnapshot, Tier};
 
 pub use oversampler::{OFFLINE_BOUNCE_PDC_SAMPLES, Oversampler4xState};
-pub use process::DnamAudioIo;
+pub use process::{
+    DnamAudioIo, FeatureBusBackend, tile_collapse_svd_slice_vec4, tile_dot64_stereo_vec4,
+    tile_dot64_vec4,
+};
 pub use tempo::TempoSyncState;
 
-/// Zero-allocation real-time DNAM inference engine parameterized over a
-/// [`MathBackend`] (`DefaultMathBackend` by default).
+/// Composite SIMD backend trait required by [`DnamEngine`] across all operators, stages, and the 256-D Feature Bus.
+pub trait EngineBackend: StageBackend + FeatureBusBackend {}
+
+impl<B: StageBackend + FeatureBusBackend> EngineBackend for B {}
+
+/// Zero-allocation real-time DNAM inference engine parameterized over an
+/// [`EngineBackend`] (`DefaultMathBackend` by default).
 #[derive(Debug)]
-pub struct DnamEngine<'a, B: MathBackend = DefaultMathBackend> {
+pub struct DnamEngine<'a, B: EngineBackend = DefaultMathBackend> {
     pub(crate) preamble: DnamPreamble,
     pub(crate) header: Option<DnamJsonHeader>,
     pub(crate) verification_status: VerificationStatus,
@@ -51,6 +59,8 @@ pub struct DnamEngine<'a, B: MathBackend = DefaultMathBackend> {
     pub(crate) stage_ramp_deltas: [f32; 16],
     pub(crate) collapsed_head_wl: [[B::Vec4; 16]; 4],
     pub(crate) collapsed_head_wr: [[B::Vec4; 16]; 4],
+    pub(crate) cached_role_b_slices: alloc::boxed::Box<[[B::Vec4; 32]; 4]>,
+    pub(crate) feature_bus_scratch: alloc::boxed::Box<[f32; 256]>,
     pub(crate) collapsed_b_head: [f32; 2],
     pub(crate) cached_z_head: [f32; 4],
     pub(crate) cached_z_head_ultra: [f32; 4],
@@ -62,7 +72,7 @@ pub struct DnamEngine<'a, B: MathBackend = DefaultMathBackend> {
     pub mix_wet_gain: f32,
 }
 
-impl<'a, B: MathBackend> DnamEngine<'a, B> {
+impl<'a, B: EngineBackend> DnamEngine<'a, B> {
     /// Creates an unconfigured zero-allocation [`DnamEngine`] shell.
     pub(crate) fn new_empty(max_supported_tier: Tier) -> Self {
         let zoh = ZohRescaledParams {
@@ -124,6 +134,10 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
             stage_ramp_deltas: [0.0; 16],
             collapsed_head_wl: [[<B::Vec4 as crate::math::SimdVec4>::zero(); 16]; 4],
             collapsed_head_wr: [[<B::Vec4 as crate::math::SimdVec4>::zero(); 16]; 4],
+            cached_role_b_slices: alloc::boxed::Box::new(
+                [[<B::Vec4 as crate::math::SimdVec4>::splat(1.0); 32]; 4],
+            ),
+            feature_bus_scratch: alloc::boxed::Box::new([0.0; 256]),
             collapsed_b_head: [0.0; 2],
             cached_z_head: [f32::NAN; 4],
             cached_z_head_ultra: [f32::NAN; 4],
@@ -527,9 +541,9 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
             (1.0_f32, 0.0_f32)
         };
 
-        let out_scale = cold_pow_f64(10.0, (output_gain_db as f64) / 20.0) as f32;
+        let out_scale = cold_pow_f64(10.0, (output_gain_db as f64) * 0.05) as f32;
         let wet_trim_scale =
-            cold_pow_f64(10.0, ((output_gain_db + cal_trim_db) as f64) / 20.0) as f32;
+            cold_pow_f64(10.0, ((output_gain_db + cal_trim_db) as f64) * 0.05) as f32;
 
         self.mix_dry_gain = (1.0 - b) * out_scale;
         self.mix_wet_gain = pol_sign * b * wet_trim_scale;
@@ -607,6 +621,20 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
         Ok(())
     }
 
+    /// Real-time preset application by index returning `bool` (zero `DnamError` heap allocation or drop glue).
+    #[inline]
+    pub(crate) fn apply_preset_by_index_rt(&mut self, preset_index: usize) -> bool {
+        let Some(batch) = resolve_preset_batch_by_index_opt(
+            self.header.as_ref(),
+            &self.control_bus.descriptors,
+            preset_index,
+        ) else {
+            return false;
+        };
+        self.apply_resolved_preset_batch(&batch);
+        true
+    }
+
     fn apply_resolved_preset_batch(&mut self, batch: &ResolvedPresetBatch) {
         for &(idx, val, is_sw) in &batch.default_restores[..batch.restore_count] {
             if is_sw {
@@ -627,8 +655,7 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
             .map_or(0, |h| h.controls_schema.len().saturating_sub(256));
         if extra_len > 0 {
             let p_idx = batch.preset_index as usize;
-            let total_len = 256 + extra_len;
-            self.control_bus.ensure_control_capacity(total_len);
+            let total_len = (256 + extra_len).min(self.control_bus.raw_values.len());
             if self.control_bus.num_controls < total_len {
                 self.control_bus.num_controls = total_len;
             }
@@ -723,7 +750,8 @@ pub(crate) fn apply_calibrated_control_role(
     };
     let decl = ctrl_def.declared_range.unwrap_or([0.0, 10.0]);
     let span = (decl[1] - decl[0]).max(1e-6);
-    let norm_01 = ((physical_value - decl[0]) / span).clamp(0.0, 1.0);
+    let inv_span = crate::math::newton6_reciprocal_f64(span as f64) as f32;
+    let norm_01 = ((physical_value - decl[0]) * inv_span).clamp(0.0, 1.0);
 
     match cal.role {
         ControlCalibrationRole::StereoMode => {
@@ -793,20 +821,14 @@ pub(crate) fn resolve_preset_batch_by_id(
     resolve_preset_batch_by_index(Some(hdr), descriptors, preset_index)
 }
 
-/// Resolves a preset by `preset_index` into a stack-allocated [`ResolvedPresetBatch`].
-pub(crate) fn resolve_preset_batch_by_index(
+/// Resolves a preset by `preset_index` into a stack-allocated [`ResolvedPresetBatch`] without heap allocation.
+pub(crate) fn resolve_preset_batch_by_index_opt(
     header: Option<&DnamJsonHeader>,
     descriptors: &[ControlClampDescriptor],
     preset_index: usize,
-) -> Result<ResolvedPresetBatch, DnamError> {
-    let Some(hdr) = header else {
-        return Err(DnamError::SchemaValidationError("header not loaded".into()));
-    };
-    let Some(preset) = hdr.presets.get(preset_index) else {
-        return Err(DnamError::SchemaValidationError(
-            "preset index out of range".into(),
-        ));
-    };
+) -> Option<ResolvedPresetBatch> {
+    let hdr = header?;
+    let preset = hdr.presets.get(preset_index)?;
     let mut batch = ResolvedPresetBatch {
         preset_index: preset_index as u16,
         default_restores: [(0usize, 0.0f32, false); 256],
@@ -852,5 +874,18 @@ pub(crate) fn resolve_preset_batch_by_index(
             }
         }
     }
-    Ok(batch)
+    Some(batch)
+}
+
+/// Resolves a preset by `preset_index` into a stack-allocated [`ResolvedPresetBatch`].
+pub(crate) fn resolve_preset_batch_by_index(
+    header: Option<&DnamJsonHeader>,
+    descriptors: &[ControlClampDescriptor],
+    preset_index: usize,
+) -> Result<ResolvedPresetBatch, DnamError> {
+    let Some(hdr) = header else {
+        return Err(DnamError::SchemaValidationError("header not loaded".into()));
+    };
+    resolve_preset_batch_by_index_opt(Some(hdr), descriptors, preset_index)
+        .ok_or_else(|| DnamError::SchemaValidationError("preset index out of range".into()))
 }

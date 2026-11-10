@@ -3,9 +3,155 @@
 //! Canonical Reference: `docs/specs/dsp/op_t_transport.md` (`ref[dsp.op-t.reader.catmull-rom]`, `ref[dsp.op-t.transition.dual-mode]`, `ref[dsp.op-t.diffuser.recurrence]`, `ref[dsp.op-t.ducking.vca]`).
 
 use crate::math::{
-    flush_recursive_state_f32,
+    SimdVec4, flush_recursive_state_f32,
     fp16::{f32_to_fp16, fp16_to_f32},
 };
+
+/// Domain-specific SIMD backend trait for `Op-T` (Transport, Catmull-Rom & Cubic Lagrange Reader).
+pub trait OpTBackend<V: SimdVec4> {
+    /// Evaluates 4-tap Cubic Lagrange interpolation weights for 4 delay channels simultaneously.
+    fn cubic_lagrange_weights_4ch(vmu: V) -> (V, V, V, V);
+}
+
+/// Safe `SimdVec4` implementation of [`OpTBackend::cubic_lagrange_weights_4ch`].
+#[inline(always)]
+pub fn cubic_lagrange_weights_4ch_vec4<V: SimdVec4>(vmu: V) -> (V, V, V, V) {
+    let one = V::splat(1.0);
+    let two = V::splat(2.0);
+    let inv_six = V::splat(1.0 / 6.0);
+    let neg_inv_six = V::splat(-1.0 / 6.0);
+    let half = V::splat(0.5);
+    let neg_half = V::splat(-0.5);
+
+    let mu_p1 = vmu.add(one);
+    let mu_m1 = vmu.sub(one);
+    let mu_m2 = vmu.sub(two);
+
+    let c_m1 = vmu.mul(mu_m1).mul(mu_m2).mul(neg_inv_six);
+    let c_0 = mu_p1.mul(mu_m1).mul(mu_m2).mul(half);
+    let c_1 = mu_p1.mul(vmu).mul(mu_m2).mul(neg_half);
+    let c_2 = mu_p1.mul(vmu).mul(mu_m1).mul(inv_six);
+    (c_m1, c_0, c_1, c_2)
+}
+
+impl OpTBackend<crate::math::ScalarVec4> for crate::math::ScalarBackend {
+    #[inline(always)]
+    fn cubic_lagrange_weights_4ch(
+        vmu: crate::math::ScalarVec4,
+    ) -> (
+        crate::math::ScalarVec4,
+        crate::math::ScalarVec4,
+        crate::math::ScalarVec4,
+        crate::math::ScalarVec4,
+    ) {
+        cubic_lagrange_weights_4ch_vec4(vmu)
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+impl OpTBackend<crate::math::NeonVec4> for crate::math::NeonBackend {
+    #[inline(always)]
+    fn cubic_lagrange_weights_4ch(
+        vmu: crate::math::NeonVec4,
+    ) -> (
+        crate::math::NeonVec4,
+        crate::math::NeonVec4,
+        crate::math::NeonVec4,
+        crate::math::NeonVec4,
+    ) {
+        cubic_lagrange_weights_4ch_vec4(vmu)
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+impl OpTBackend<crate::math::Sve2Vec4> for crate::math::ArmSve2Backend {
+    #[inline(always)]
+    fn cubic_lagrange_weights_4ch(
+        vmu: crate::math::Sve2Vec4,
+    ) -> (
+        crate::math::Sve2Vec4,
+        crate::math::Sve2Vec4,
+        crate::math::Sve2Vec4,
+        crate::math::Sve2Vec4,
+    ) {
+        cubic_lagrange_weights_4ch_vec4(vmu)
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+impl OpTBackend<crate::math::NeonVec4> for crate::math::ArmSmeBackend {
+    #[inline(always)]
+    fn cubic_lagrange_weights_4ch(
+        vmu: crate::math::NeonVec4,
+    ) -> (
+        crate::math::NeonVec4,
+        crate::math::NeonVec4,
+        crate::math::NeonVec4,
+        crate::math::NeonVec4,
+    ) {
+        cubic_lagrange_weights_4ch_vec4(vmu)
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+impl OpTBackend<crate::math::Sse2Vec4> for crate::math::X86Sse2Backend {
+    #[inline(always)]
+    fn cubic_lagrange_weights_4ch(
+        vmu: crate::math::Sse2Vec4,
+    ) -> (
+        crate::math::Sse2Vec4,
+        crate::math::Sse2Vec4,
+        crate::math::Sse2Vec4,
+        crate::math::Sse2Vec4,
+    ) {
+        cubic_lagrange_weights_4ch_vec4(vmu)
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+impl OpTBackend<crate::math::Sse42Vec4> for crate::math::X86Sse42Backend {
+    #[inline(always)]
+    fn cubic_lagrange_weights_4ch(
+        vmu: crate::math::Sse42Vec4,
+    ) -> (
+        crate::math::Sse42Vec4,
+        crate::math::Sse42Vec4,
+        crate::math::Sse42Vec4,
+        crate::math::Sse42Vec4,
+    ) {
+        cubic_lagrange_weights_4ch_vec4(vmu)
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+impl OpTBackend<crate::math::Avx2FmaVec4> for crate::math::X86Avx2FmaBackend {
+    #[inline(always)]
+    fn cubic_lagrange_weights_4ch(
+        vmu: crate::math::Avx2FmaVec4,
+    ) -> (
+        crate::math::Avx2FmaVec4,
+        crate::math::Avx2FmaVec4,
+        crate::math::Avx2FmaVec4,
+        crate::math::Avx2FmaVec4,
+    ) {
+        cubic_lagrange_weights_4ch_vec4(vmu)
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+impl OpTBackend<crate::math::WasmVec4> for crate::math::WasmSimd128Backend {
+    #[inline(always)]
+    fn cubic_lagrange_weights_4ch(
+        vmu: crate::math::WasmVec4,
+    ) -> (
+        crate::math::WasmVec4,
+        crate::math::WasmVec4,
+        crate::math::WasmVec4,
+        crate::math::WasmVec4,
+    ) {
+        cubic_lagrange_weights_4ch_vec4(vmu)
+    }
+}
 
 /// Maximum delay line capacity for Op-T Lite buffer (`2,048` samples = `4,096` bytes fp16).
 pub const OP_T_LITE_RING_CAPACITY: usize = 2048;
@@ -66,17 +212,16 @@ pub fn raised_cosine_barberpole_3phase(phi: f32) -> [f32; 3] {
     [w0, w1, w2]
 }
 
-/// Approximate cosine for phase in `[0, 2*pi]` via minimax polynomial.
+/// Approximate cosine for phase in `[0, 2*pi]` via minimax polynomial (`0 FDIV`, `0 libm`, bounded `O(1)` range reduction).
 #[allow(clippy::excessive_precision)]
 #[inline(always)]
 fn fast_cos_unit(mut x: f32) -> f32 {
     const PI: f32 = core::f32::consts::PI;
     const TWO_PI: f32 = core::f32::consts::TAU;
-    while x < 0.0 {
-        x += TWO_PI;
-    }
-    while x >= TWO_PI {
-        x -= TWO_PI;
+    const INV_TWO_PI: f32 = 1.0 / core::f32::consts::TAU;
+    if !(0.0..TWO_PI).contains(&x) {
+        let q = crate::math::floor_f32(x * INV_TWO_PI);
+        x = (x - q * TWO_PI).clamp(0.0, TWO_PI);
     }
     if x > PI {
         x = TWO_PI - x;
@@ -97,6 +242,8 @@ pub struct OpTDelayLine<const CAPACITY: usize> {
     pub xfade_active: bool,
     pub xfade_idx: usize,
     pub xfade_len: usize,
+    pub cached_xfade_len: usize,
+    pub inv_xfade_denom: f32,
     pub old_delay: f32,
     pub diff_state: [f32; 256],
     pub diff_idx: usize,
@@ -112,6 +259,7 @@ impl<const CAPACITY: usize> OpTDelayLine<CAPACITY> {
     pub const MASK: usize = CAPACITY - 1;
     pub const HALF_CAPACITY: usize = CAPACITY / 2;
     pub const HALF_MASK: usize = (CAPACITY / 2) - 1;
+    pub const DEFAULT_INV_XFADE_DENOM: f32 = (1.0_f64 / 127.0_f64) as f32;
 
     pub const fn new() -> Self {
         Self {
@@ -122,9 +270,32 @@ impl<const CAPACITY: usize> OpTDelayLine<CAPACITY> {
             xfade_active: false,
             xfade_idx: 0,
             xfade_len: 128,
+            cached_xfade_len: 128,
+            inv_xfade_denom: Self::DEFAULT_INV_XFADE_DENOM,
             old_delay: 64.0,
             diff_state: [0.0; 256],
             diff_idx: 0,
+        }
+    }
+
+    /// Updates `xfade_len` (clamped to `>= 16`) and precomputes its reciprocal `1 / (len - 1)` (`0 FDIV`).
+    #[inline]
+    pub fn set_xfade_len(&mut self, len: usize) {
+        let clamped = len.max(16);
+        self.xfade_len = clamped;
+        self.cached_xfade_len = clamped;
+        self.inv_xfade_denom = crate::math::newton6_reciprocal_f64((clamped - 1) as f64) as f32;
+    }
+
+    #[inline(always)]
+    fn xfade_inv_denom(&mut self, len: usize) -> f32 {
+        if len == self.cached_xfade_len {
+            self.inv_xfade_denom
+        } else {
+            let inv = crate::math::newton6_reciprocal_f64((len - 1) as f64) as f32;
+            self.cached_xfade_len = len;
+            self.inv_xfade_denom = inv;
+            inv
         }
     }
 
@@ -193,9 +364,10 @@ impl<const CAPACITY: usize> OpTDelayLine<CAPACITY> {
 
         let out = if self.xfade_active {
             let len = self.xfade_len.max(16);
+            let inv_denom = self.xfade_inv_denom(len);
             let d_old = self.read_delay(self.old_delay);
             let d_new = self.read_delay(self.target_delay);
-            let w = (self.xfade_idx as f32) / ((len - 1) as f32);
+            let w = (self.xfade_idx as f32) * inv_denom;
             let alpha_xf = 0.5 * (1.0 - fast_cos_unit(w * core::f32::consts::PI));
             let mixed = (1.0 - alpha_xf) * d_old + alpha_xf * d_new;
             self.xfade_idx += 1;
@@ -226,30 +398,47 @@ impl<const CAPACITY: usize> OpTDelayLine<CAPACITY> {
 
         let p_0 = (w_ptr + Self::HALF_CAPACITY - d_int) & Self::HALF_MASK;
         let r_off = Self::HALF_CAPACITY;
-        let l_0 = fp16_to_f32(self.ring[p_0]);
-        let r_0 = fp16_to_f32(self.ring[r_off + p_0]);
         if mu == 0.0 {
-            return (l_0, r_0);
+            return (
+                fp16_to_f32(self.ring[p_0]),
+                fp16_to_f32(self.ring[r_off + p_0]),
+            );
         }
 
-        let p_m1 = (p_0 + 1) & Self::HALF_MASK;
-        let p_1 = (p_0 + Self::HALF_CAPACITY - 1) & Self::HALF_MASK;
-        let p_2 = (p_0 + Self::HALF_CAPACITY - 2) & Self::HALF_MASK;
-
-        let [l_m1, l_1, l_2, r_m1] =
-            <crate::math::DefaultMathBackend as crate::math::MathBackend>::fp16x4_to_f32x4(&[
-                self.ring[p_m1],
-                self.ring[p_1],
-                self.ring[p_2],
-                self.ring[r_off + p_m1],
-            ]);
-        let [r_1, r_2, _, _] =
-            <crate::math::DefaultMathBackend as crate::math::MathBackend>::fp16x4_to_f32x4(&[
-                self.ring[r_off + p_1],
-                self.ring[r_off + p_2],
-                0,
-                0,
-            ]);
+        let (l_2, l_1, l_0, l_m1, r_2, r_1, r_0, r_m1) = if p_0 >= 2
+            && p_0 + 1 < Self::HALF_CAPACITY
+        {
+            let base_l = p_0 - 2;
+            let base_r = r_off + base_l;
+            let [l2, l1, l0, lm1] =
+                <crate::math::DefaultMathBackend as crate::math::MathBackend>::fp16x4_to_f32x4(
+                    self.ring[base_l..base_l + 4].try_into().unwrap(),
+                );
+            let [r2, r1, r0, rm1] =
+                <crate::math::DefaultMathBackend as crate::math::MathBackend>::fp16x4_to_f32x4(
+                    self.ring[base_r..base_r + 4].try_into().unwrap(),
+                );
+            (l2, l1, l0, lm1, r2, r1, r0, rm1)
+        } else {
+            let p_m1 = (p_0 + 1) & Self::HALF_MASK;
+            let p_1 = (p_0 + Self::HALF_CAPACITY - 1) & Self::HALF_MASK;
+            let p_2 = (p_0 + Self::HALF_CAPACITY - 2) & Self::HALF_MASK;
+            let [l2, l1, l0, lm1] =
+                <crate::math::DefaultMathBackend as crate::math::MathBackend>::fp16x4_to_f32x4(&[
+                    self.ring[p_2],
+                    self.ring[p_1],
+                    self.ring[p_0],
+                    self.ring[p_m1],
+                ]);
+            let [r2, r1, r0, rm1] =
+                <crate::math::DefaultMathBackend as crate::math::MathBackend>::fp16x4_to_f32x4(&[
+                    self.ring[r_off + p_2],
+                    self.ring[r_off + p_1],
+                    self.ring[r_off + p_0],
+                    self.ring[r_off + p_m1],
+                ]);
+            (l2, l1, l0, lm1, r2, r1, r0, rm1)
+        };
 
         (
             catmull_rom_hermite_cubic(l_m1, l_0, l_1, l_2, mu),
@@ -273,9 +462,10 @@ impl<const CAPACITY: usize> OpTDelayLine<CAPACITY> {
 
         let (out_l, out_r) = if self.xfade_active {
             let len = self.xfade_len.max(16);
+            let inv_denom = self.xfade_inv_denom(len);
             let (l_old, r_old) = self.read_delay_stereo(self.old_delay);
             let (l_new, r_new) = self.read_delay_stereo(self.target_delay);
-            let w = (self.xfade_idx as f32) / ((len - 1) as f32);
+            let w = (self.xfade_idx as f32) * inv_denom;
             let alpha_xf = 0.5 * (1.0 - fast_cos_unit(w * core::f32::consts::PI));
             let one_minus_a = 1.0 - alpha_xf;
             let mix_l = one_minus_a * l_old + alpha_xf * l_new;
@@ -444,13 +634,25 @@ mod tests {
         }
         assert!((dl.current_delay - 80.0).abs() < 0.1);
 
+        dl.set_xfade_len(32);
+        assert_eq!(dl.xfade_len, 32);
         dl.set_target_delay(150.0, true);
         assert!(dl.xfade_active);
-        for _ in 0..150 {
+        for _ in 0..32 {
             let _ = dl.step(0.5);
         }
         assert!(!dl.xfade_active);
         assert_eq!(dl.current_delay, 150.0);
+
+        dl.xfade_len = 24;
+        dl.set_target_delay(64.0, true);
+        assert!(dl.xfade_active);
+        for _ in 0..24 {
+            let (ol, or) = dl.step_stereo(0.5, -0.25);
+            assert!(ol.is_finite() && or.is_finite());
+        }
+        assert!(!dl.xfade_active);
+        assert_eq!(dl.current_delay, 64.0);
 
         let d_out = dl.step_diffuser(0.8, 31, 0.5);
         assert!(d_out.is_finite());

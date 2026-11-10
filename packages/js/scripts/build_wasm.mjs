@@ -12,18 +12,10 @@ const distDir = join(pkgDir, "dist");
 mkdirSync(distDir, { recursive: true });
 
 const isProfiling = process.argv.includes("--profiling") || process.env["DNAM_PROFILE"] === "1";
-const hostCargoProfileArgs = isProfiling ? ["--profile", "profiling"] : ["--release"];
-const hostTargetProfileDir = isProfiling ? "profiling" : "release";
 const wasmCargoProfileArgs = isProfiling
   ? ["--profile", "profiling"]
   : ["--profile", "wasm-release"];
 const wasmTargetProfileDir = isProfiling ? "profiling" : "wasm-release";
-
-// 1. Build host Node-API v10 addon (`dnam-js` cdylib with default `testing` feature)
-execFileSync("cargo", ["build", "--package", "dnam-js", ...hostCargoProfileArgs], {
-  cwd: repoRoot,
-  stdio: "inherit",
-});
 
 const platform = process.platform;
 const arch = process.arch;
@@ -33,27 +25,23 @@ const libFileName =
     : platform === "win32"
       ? "dnam_js.dll"
       : "libdnam_js.so";
-
-const hostLibPath = join(repoRoot, "target", hostTargetProfileDir, libFileName);
 const destNodeAddon = join(distDir, `dnam.${platform}-${arch}.node`);
-if (!existsSync(hostLibPath)) {
-  throw new Error(`Expected host cdylib at ${hostLibPath}`);
+
+// 1. Build host Node-API v10 addon (`dnam-js` cdylib with default `testing` feature)
+// When `--profiling` is requested and the release `.node` addon already exists, preserve the release addon.
+if (!isProfiling || !existsSync(destNodeAddon)) {
+  execFileSync("cargo", ["build", "--package", "dnam-js", "--release"], {
+    cwd: repoRoot,
+    stdio: "inherit",
+  });
+  const hostLibPath = join(repoRoot, "target", "release", libFileName);
+  if (!existsSync(hostLibPath)) {
+    throw new Error(`Expected host cdylib at ${hostLibPath}`);
+  }
+  copyFileSync(hostLibPath, destNodeAddon);
 }
-copyFileSync(hostLibPath, destNodeAddon);
 
-// 2. Build WebAssembly SIMD128 binary (`wasm32-unknown-unknown`, omitting `testing` feature, `opt-level = "s"`, `--import-memory`)
-const existingWasmRustFlags = process.env["CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS"] ?? "";
-const wasmRustFlags = [
-  existingWasmRustFlags,
-  "-C target-feature=+simd128",
-  "-C link-arg=--import-memory",
-  "-C link-arg=--export-memory",
-  "-C link-arg=--max-memory=268435456",
-  isProfiling ? "" : "-C opt-level=s",
-]
-  .filter(Boolean)
-  .join(" ");
-
+// 2. Build WebAssembly SIMD128 binary (`wasm32-unknown-unknown`, omitting `testing` feature, `--import-memory` via `.cargo/config.toml`)
 execFileSync(
   "cargo",
   [
@@ -68,10 +56,6 @@ execFileSync(
   {
     cwd: repoRoot,
     stdio: "inherit",
-    env: {
-      ...process.env,
-      CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS: wasmRustFlags,
-    },
   },
 );
 
@@ -90,8 +74,8 @@ if (!existsSync(wasmSrcPath)) {
 // 3. Optimize WebAssembly binary via Binaryen `wasm-opt` with explicit target feature flags
 const localWasmOptJs = join(pkgDir, "node_modules", "binaryen", "bin", "wasm-opt");
 const wasmOptFlags = [
-  isProfiling ? "-O1" : "-Os",
-  ...(isProfiling ? ["--debuginfo"] : []),
+  "-O1",
+  ...(isProfiling ? ["--debuginfo"] : ["--strip-dwarf", "--strip-producers"]),
   "--enable-simd",
   "--enable-bulk-memory",
   "--enable-nontrapping-float-to-int",
@@ -112,8 +96,4 @@ if (existsSync(localWasmOptJs)) {
     cwd: pkgDir,
     stdio: "inherit",
   });
-}
-
-if (isProfiling) {
-  copyFileSync(destWasmPath, join(distDir, "dnam.wasm"));
 }

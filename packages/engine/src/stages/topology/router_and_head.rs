@@ -6,7 +6,10 @@
 
 use alloc::vec::Vec;
 
-use crate::math::{flush_recursive_state_f32, newton6_reciprocal_f64, sqrt_f64, widen_f32_bits};
+use crate::math::{
+    DefaultMathBackend, MathBackend, SimdVec4, flush_recursive_state_f32,
+    flush_recursive_state_vec4, newton6_reciprocal_f64, sqrt_f64, widen_f32_bits,
+};
 use crate::operators::op_t::catmull_rom_hermite_cubic;
 use crate::schema::cold_exp_f64;
 use crate::types::Tier;
@@ -169,6 +172,8 @@ pub struct TptLr4Crossover {
     pub lp_s2: [f32; 2],
     pub hp_s1: [f32; 2],
     pub hp_s2: [f32; 2],
+    pub sec2_ic1: [f32; 4],
+    pub sec2_ic2: [f32; 4],
 }
 
 impl Default for TptLr4Crossover {
@@ -189,6 +194,8 @@ impl TptLr4Crossover {
             lp_s2: [0.0; 2],
             hp_s1: [0.0; 2],
             hp_s2: [0.0; 2],
+            sec2_ic1: [0.0; 4],
+            sec2_ic2: [0.0; 4],
         }
     }
 
@@ -214,6 +221,8 @@ impl TptLr4Crossover {
             lp_s2: [0.0; 2],
             hp_s1: [0.0; 2],
             hp_s2: [0.0; 2],
+            sec2_ic1: [0.0; 4],
+            sec2_ic2: [0.0; 4],
         }
     }
 
@@ -222,6 +231,8 @@ impl TptLr4Crossover {
         self.lp_s2 = [0.0; 2];
         self.hp_s1 = [0.0; 2];
         self.hp_s2 = [0.0; 2];
+        self.sec2_ic1 = [0.0; 4];
+        self.sec2_ic2 = [0.0; 4];
     }
 
     #[inline(always)]
@@ -246,9 +257,9 @@ impl TptLr4Crossover {
 
     /// Steps the `LR4` crossover by 1 sample without real-time division, returning
     /// `(low_clean_bypass, high_drive_path)` (`ref[dsp.router.lr4-crossover]`).
-    #[inline]
+    #[inline(always)]
     pub fn step(&mut self, x: f32) -> (f32, f32) {
-        let (l2_first, _) = Self::step_svf_section(
+        let (l2_first, h2_first) = Self::step_svf_section(
             self.a1,
             self.a2,
             self.a3,
@@ -257,6 +268,8 @@ impl TptLr4Crossover {
             &mut self.lp_s1[0],
             &mut self.lp_s2[0],
         );
+        self.hp_s1[0] = self.lp_s1[0];
+        self.hp_s2[0] = self.lp_s2[0];
         let (l4, _) = Self::step_svf_section(
             self.a1,
             self.a2,
@@ -265,16 +278,6 @@ impl TptLr4Crossover {
             l2_first,
             &mut self.lp_s1[1],
             &mut self.lp_s2[1],
-        );
-
-        let (_, h2_first) = Self::step_svf_section(
-            self.a1,
-            self.a2,
-            self.a3,
-            self.k_damp,
-            x,
-            &mut self.hp_s1[0],
-            &mut self.hp_s2[0],
         );
         let (_, h4) = Self::step_svf_section(
             self.a1,
@@ -287,11 +290,45 @@ impl TptLr4Crossover {
         );
         (l4, h4)
     }
+
+    /// Steps a stereo pair (`self` = Left, `right` = Right) of `LR4` crossovers simultaneously,
+    /// returning `(low_l, high_l, low_r, high_r)` (`ref[dsp.router.lr4-crossover]`).
+    #[inline(always)]
+    pub fn step_stereo(&mut self, right: &mut Self, x_l: f32, x_r: f32) -> (f32, f32, f32, f32) {
+        type V = <DefaultMathBackend as MathBackend>::Vec4;
+        let (a1, a2, a3, k) = (self.a1, self.a2, self.a3, self.k_damp);
+        let (l2_l, h2_l) =
+            Self::step_svf_section(a1, a2, a3, k, x_l, &mut self.lp_s1[0], &mut self.lp_s2[0]);
+        let (l2_r, h2_r) =
+            Self::step_svf_section(a1, a2, a3, k, x_r, &mut right.lp_s1[0], &mut right.lp_s2[0]);
+
+        let x_arr = [l2_l, h2_l, l2_r, h2_r];
+        let x = V::load(&x_arr);
+        let ic1 = V::load(&self.sec2_ic1);
+        let ic2 = V::load(&self.sec2_ic2);
+        let v3 = x.sub(ic2);
+        let v1 = ic1.mul(V::splat(a1)).fma(v3, V::splat(a2));
+        let v2 = ic2.fma(ic1, V::splat(a2)).fma(v3, V::splat(a3));
+        let two = V::splat(2.0);
+        flush_recursive_state_vec4(v1.mul(two).sub(ic1)).store(&mut self.sec2_ic1);
+        flush_recursive_state_vec4(v2.mul(two).sub(ic2)).store(&mut self.sec2_ic2);
+
+        let mut v1_a = [0.0f32; 4];
+        let mut v2_a = [0.0f32; 4];
+        v1.store(&mut v1_a);
+        v2.store(&mut v2_a);
+        (
+            v2_a[0],
+            h2_l - k * v1_a[1] - v2_a[1],
+            v2_a[2],
+            h2_r - k * v1_a[3] - v2_a[3],
+        )
+    }
 }
 
 /// Evaluates the programmable stereo-linked & aux-key sidechain detector levels `(e_det_l, e_det_r)`
 /// with zero `-6.02 dB` hard-panned peak loss (`ref[dsp.router.stereo-link-detector]`).
-#[inline]
+#[inline(always)]
 pub fn eval_stereo_linked_aux_detector(
     x_l: f32,
     x_r: f32,
@@ -352,7 +389,7 @@ pub fn eval_stage4_loop_saturator(u: f32, v_ceil: f32) -> Option<f32> {
     let two_over_3v = if v_ceil.to_bits() == STAGE4_MAX_V_CEIL_BITS {
         (2.0_f64 / (3.0_f64 * (f32::from_bits(STAGE4_MAX_V_CEIL_BITS) as f64))) as f32
     } else {
-        (2.0_f64 / (3.0_f64 * (v_ceil as f64))) as f32
+        (2.0_f64 * newton6_reciprocal_f64(3.0_f64 * (v_ceil as f64))) as f32
     };
     let v = (u * two_over_3v).clamp(-1.0, 1.0);
     let prod = v_ceil * v;
@@ -415,7 +452,7 @@ pub fn eval_stage4_blended_feedback_knee(
     let s64 = widen_f32_bits(sigma.to_bits())?;
     let a64 = widen_f32_bits(alpha.to_bits())?;
 
-    let inv_sigma = 1.0 / s64;
+    let inv_sigma = newton6_reciprocal_f64(s64);
     let ratio = u64_val.abs() * inv_sigma;
     let denom = 1.0 + ratio * ratio;
     let inv_denom = newton6_reciprocal_f64(denom);

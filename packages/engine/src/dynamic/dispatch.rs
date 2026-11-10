@@ -7,278 +7,132 @@ use crate::provenance::VerificationStatus;
 use crate::schema::{DnamError, DnamJsonHeader, DnamProtectionProfile, TempoSubdivision};
 use crate::types::{DnamTelemetrySnapshot, Tier};
 
+macro_rules! dispatch_engine {
+    ($self:expr, $e:ident => $body:expr) => {
+        match $self {
+            DynamicDnamEngine::Scalar($e) => $body,
+            #[cfg(target_arch = "aarch64")]
+            DynamicDnamEngine::Neon($e) => $body,
+            #[cfg(target_arch = "aarch64")]
+            DynamicDnamEngine::ArmSve2($e) => $body,
+            #[cfg(target_arch = "aarch64")]
+            DynamicDnamEngine::ArmSme($e) => $body,
+            #[cfg(target_arch = "x86_64")]
+            DynamicDnamEngine::X86Sse2($e) => $body,
+            #[cfg(target_arch = "x86_64")]
+            DynamicDnamEngine::X86Sse42($e) => $body,
+            #[cfg(target_arch = "x86_64")]
+            DynamicDnamEngine::X86Avx2Fma($e) => $body,
+            #[cfg(target_arch = "x86_64")]
+            DynamicDnamEngine::X86Simd($e) => $body,
+            #[cfg(target_arch = "wasm32")]
+            DynamicDnamEngine::WasmSimd128($e) => $body,
+        }
+    };
+}
+
 impl<'a> DynamicDnamEngine<'a> {
     /// Returns the container's resolved [`DnamProtectionProfile`].
     #[inline]
     pub const fn protection_profile(&self) -> DnamProtectionProfile {
-        match self {
-            Self::Scalar(e) => e.protection_profile(),
-            #[cfg(target_arch = "aarch64")]
-            Self::Neon(e) => e.protection_profile(),
-            #[cfg(target_arch = "aarch64")]
-            Self::ArmSme(e) => e.protection_profile(),
-            #[cfg(target_arch = "x86_64")]
-            Self::X86Simd(e) => e.protection_profile(),
-            #[cfg(target_arch = "wasm32")]
-            Self::WasmSimd128(e) => e.protection_profile(),
-        }
+        dispatch_engine!(self, e => e.protection_profile())
     }
 
     /// Returns the container's cryptographic [`VerificationStatus`].
     #[inline]
     pub const fn verification_status(&self) -> &VerificationStatus {
-        match self {
-            Self::Scalar(e) => e.verification_status(),
-            #[cfg(target_arch = "aarch64")]
-            Self::Neon(e) => e.verification_status(),
-            #[cfg(target_arch = "aarch64")]
-            Self::ArmSme(e) => e.verification_status(),
-            #[cfg(target_arch = "x86_64")]
-            Self::X86Simd(e) => e.verification_status(),
-            #[cfg(target_arch = "wasm32")]
-            Self::WasmSimd128(e) => e.verification_status(),
-        }
+        dispatch_engine!(self, e => e.verification_status())
     }
 
     /// Returns the loaded container [`DnamPreamble`].
     #[inline]
     pub const fn preamble(&self) -> &DnamPreamble {
-        match self {
-            Self::Scalar(e) => e.preamble(),
-            #[cfg(target_arch = "aarch64")]
-            Self::Neon(e) => e.preamble(),
-            #[cfg(target_arch = "aarch64")]
-            Self::ArmSme(e) => e.preamble(),
-            #[cfg(target_arch = "x86_64")]
-            Self::X86Simd(e) => e.preamble(),
-            #[cfg(target_arch = "wasm32")]
-            Self::WasmSimd128(e) => e.preamble(),
-        }
+        dispatch_engine!(self, e => e.preamble())
     }
 
     /// Returns the parsed [`DnamJsonHeader`] if loaded.
     #[inline]
     pub const fn header(&self) -> Option<&DnamJsonHeader> {
-        match self {
-            Self::Scalar(e) => e.header(),
-            #[cfg(target_arch = "aarch64")]
-            Self::Neon(e) => e.header(),
-            #[cfg(target_arch = "aarch64")]
-            Self::ArmSme(e) => e.header(),
-            #[cfg(target_arch = "x86_64")]
-            Self::X86Simd(e) => e.header(),
-            #[cfg(target_arch = "wasm32")]
-            Self::WasmSimd128(e) => e.header(),
-        }
+        dispatch_engine!(self, e => e.header())
     }
 
     /// Returns the active host sample rate in Hz.
     #[inline]
     pub const fn sample_rate_hz(&self) -> u32 {
-        match self {
-            Self::Scalar(e) => e.sample_rate_hz(),
-            #[cfg(target_arch = "aarch64")]
-            Self::Neon(e) => e.sample_rate_hz(),
-            #[cfg(target_arch = "aarch64")]
-            Self::ArmSme(e) => e.sample_rate_hz(),
-            #[cfg(target_arch = "x86_64")]
-            Self::X86Simd(e) => e.sample_rate_hz(),
-            #[cfg(target_arch = "wasm32")]
-            Self::WasmSimd128(e) => e.sample_rate_hz(),
-        }
+        dispatch_engine!(self, e => e.sample_rate_hz())
     }
 
     /// Returns the current [`ZohRescaledParams`] for the active host sample rate.
     #[inline]
     pub const fn zoh(&self) -> &ZohRescaledParams {
-        match self {
-            Self::Scalar(e) => e.zoh(),
-            #[cfg(target_arch = "aarch64")]
-            Self::Neon(e) => e.zoh(),
-            #[cfg(target_arch = "aarch64")]
-            Self::ArmSme(e) => e.zoh(),
-            #[cfg(target_arch = "x86_64")]
-            Self::X86Simd(e) => e.zoh(),
-            #[cfg(target_arch = "wasm32")]
-            Self::WasmSimd128(e) => e.zoh(),
-        }
+        dispatch_engine!(self, e => e.zoh())
     }
 
     /// Switches the active [`Tier`].
     #[inline]
     pub fn set_tier(&mut self, tier: Tier) {
-        match self {
-            Self::Scalar(e) => e.set_tier(tier),
-            #[cfg(target_arch = "aarch64")]
-            Self::Neon(e) => e.set_tier(tier),
-            #[cfg(target_arch = "aarch64")]
-            Self::ArmSme(e) => e.set_tier(tier),
-            #[cfg(target_arch = "x86_64")]
-            Self::X86Simd(e) => e.set_tier(tier),
-            #[cfg(target_arch = "wasm32")]
-            Self::WasmSimd128(e) => e.set_tier(tier),
-        }
+        dispatch_engine!(self, e => e.set_tier(tier))
     }
 
     /// Returns the requested [`Tier`].
     #[inline]
     pub const fn tier(&self) -> Tier {
-        match self {
-            Self::Scalar(e) => e.tier(),
-            #[cfg(target_arch = "aarch64")]
-            Self::Neon(e) => e.tier(),
-            #[cfg(target_arch = "aarch64")]
-            Self::ArmSme(e) => e.tier(),
-            #[cfg(target_arch = "x86_64")]
-            Self::X86Simd(e) => e.tier(),
-            #[cfg(target_arch = "wasm32")]
-            Self::WasmSimd128(e) => e.tier(),
-        }
+        dispatch_engine!(self, e => e.tier())
     }
 
     /// Returns the highest [`Tier`] present in the loaded `.dnam` container.
     #[inline]
     pub const fn max_available_tier(&self) -> Tier {
-        match self {
-            Self::Scalar(e) => e.max_available_tier(),
-            #[cfg(target_arch = "aarch64")]
-            Self::Neon(e) => e.max_available_tier(),
-            #[cfg(target_arch = "aarch64")]
-            Self::ArmSme(e) => e.max_available_tier(),
-            #[cfg(target_arch = "x86_64")]
-            Self::X86Simd(e) => e.max_available_tier(),
-            #[cfg(target_arch = "wasm32")]
-            Self::WasmSimd128(e) => e.max_available_tier(),
-        }
+        dispatch_engine!(self, e => e.max_available_tier())
     }
 
     /// Returns the plugin/host ceiling [`Tier`] (`max_supported_tier`).
     #[inline]
     pub const fn max_supported_tier(&self) -> Tier {
-        match self {
-            Self::Scalar(e) => e.max_supported_tier(),
-            #[cfg(target_arch = "aarch64")]
-            Self::Neon(e) => e.max_supported_tier(),
-            #[cfg(target_arch = "aarch64")]
-            Self::ArmSme(e) => e.max_supported_tier(),
-            #[cfg(target_arch = "x86_64")]
-            Self::X86Simd(e) => e.max_supported_tier(),
-            #[cfg(target_arch = "wasm32")]
-            Self::WasmSimd128(e) => e.max_supported_tier(),
-        }
+        dispatch_engine!(self, e => e.max_supported_tier())
     }
 
     /// Sets the plugin/host ceiling [`Tier`] (`max_supported_tier`).
     #[inline]
     pub fn set_max_supported_tier(&mut self, max_tier: Tier) {
-        match self {
-            Self::Scalar(e) => e.set_max_supported_tier(max_tier),
-            #[cfg(target_arch = "aarch64")]
-            Self::Neon(e) => e.set_max_supported_tier(max_tier),
-            #[cfg(target_arch = "aarch64")]
-            Self::ArmSme(e) => e.set_max_supported_tier(max_tier),
-            #[cfg(target_arch = "x86_64")]
-            Self::X86Simd(e) => e.set_max_supported_tier(max_tier),
-            #[cfg(target_arch = "wasm32")]
-            Self::WasmSimd128(e) => e.set_max_supported_tier(max_tier),
-        }
+        dispatch_engine!(self, e => e.set_max_supported_tier(max_tier))
     }
 
     /// Returns the effective [`Tier`] (`min(max_available_tier, max_supported_tier)` when
     /// `offline_bounce && maximize_tier_on_bounce`, otherwise `self.tier()`).
     #[inline]
     pub fn effective_tier(&self) -> Tier {
-        match self {
-            Self::Scalar(e) => e.effective_tier(),
-            #[cfg(target_arch = "aarch64")]
-            Self::Neon(e) => e.effective_tier(),
-            #[cfg(target_arch = "aarch64")]
-            Self::ArmSme(e) => e.effective_tier(),
-            #[cfg(target_arch = "x86_64")]
-            Self::X86Simd(e) => e.effective_tier(),
-            #[cfg(target_arch = "wasm32")]
-            Self::WasmSimd128(e) => e.effective_tier(),
-        }
+        dispatch_engine!(self, e => e.effective_tier())
     }
 
     /// Returns `true` if Offline Bounce mode ($4\times$ linear-phase polyphase oversampling) is enabled.
     #[inline]
     pub const fn offline_bounce(&self) -> bool {
-        match self {
-            Self::Scalar(e) => e.offline_bounce(),
-            #[cfg(target_arch = "aarch64")]
-            Self::Neon(e) => e.offline_bounce(),
-            #[cfg(target_arch = "aarch64")]
-            Self::ArmSme(e) => e.offline_bounce(),
-            #[cfg(target_arch = "x86_64")]
-            Self::X86Simd(e) => e.offline_bounce(),
-            #[cfg(target_arch = "wasm32")]
-            Self::WasmSimd128(e) => e.offline_bounce(),
-        }
+        dispatch_engine!(self, e => e.offline_bounce())
     }
 
     /// Enables or disables Offline Bounce mode ($4\times$ linear-phase polyphase oversampling).
     #[inline]
     pub fn set_offline_bounce(&mut self, enabled: bool) {
-        match self {
-            Self::Scalar(e) => e.set_offline_bounce(enabled),
-            #[cfg(target_arch = "aarch64")]
-            Self::Neon(e) => e.set_offline_bounce(enabled),
-            #[cfg(target_arch = "aarch64")]
-            Self::ArmSme(e) => e.set_offline_bounce(enabled),
-            #[cfg(target_arch = "x86_64")]
-            Self::X86Simd(e) => e.set_offline_bounce(enabled),
-            #[cfg(target_arch = "wasm32")]
-            Self::WasmSimd128(e) => e.set_offline_bounce(enabled),
-        }
+        dispatch_engine!(self, e => e.set_offline_bounce(enabled))
     }
 
     /// Returns `true` if `maximize_tier_on_bounce` is enabled.
     #[inline]
     pub const fn maximize_tier_on_bounce(&self) -> bool {
-        match self {
-            Self::Scalar(e) => e.maximize_tier_on_bounce(),
-            #[cfg(target_arch = "aarch64")]
-            Self::Neon(e) => e.maximize_tier_on_bounce(),
-            #[cfg(target_arch = "aarch64")]
-            Self::ArmSme(e) => e.maximize_tier_on_bounce(),
-            #[cfg(target_arch = "x86_64")]
-            Self::X86Simd(e) => e.maximize_tier_on_bounce(),
-            #[cfg(target_arch = "wasm32")]
-            Self::WasmSimd128(e) => e.maximize_tier_on_bounce(),
-        }
+        dispatch_engine!(self, e => e.maximize_tier_on_bounce())
     }
 
     /// Enables or disables automatic tier promotion during Offline Bounce.
     #[inline]
     pub fn set_maximize_tier_on_bounce(&mut self, enabled: bool) {
-        match self {
-            Self::Scalar(e) => e.set_maximize_tier_on_bounce(enabled),
-            #[cfg(target_arch = "aarch64")]
-            Self::Neon(e) => e.set_maximize_tier_on_bounce(enabled),
-            #[cfg(target_arch = "aarch64")]
-            Self::ArmSme(e) => e.set_maximize_tier_on_bounce(enabled),
-            #[cfg(target_arch = "x86_64")]
-            Self::X86Simd(e) => e.set_maximize_tier_on_bounce(enabled),
-            #[cfg(target_arch = "wasm32")]
-            Self::WasmSimd128(e) => e.set_maximize_tier_on_bounce(enabled),
-        }
+        dispatch_engine!(self, e => e.set_maximize_tier_on_bounce(enabled))
     }
 
     /// Returns the current Plugin Delay Compensation (`PDC`) latency in host samples (`0` or `12`).
     #[inline]
     pub const fn latency_samples(&self) -> usize {
-        match self {
-            Self::Scalar(e) => e.latency_samples(),
-            #[cfg(target_arch = "aarch64")]
-            Self::Neon(e) => e.latency_samples(),
-            #[cfg(target_arch = "aarch64")]
-            Self::ArmSme(e) => e.latency_samples(),
-            #[cfg(target_arch = "x86_64")]
-            Self::X86Simd(e) => e.latency_samples(),
-            #[cfg(target_arch = "wasm32")]
-            Self::WasmSimd128(e) => e.latency_samples(),
-        }
+        dispatch_engine!(self, e => e.latency_samples())
     }
 
     /// Renders a complete stereo buffer in Offline Bounce mode, automatically stripping the 12-sample PDC lead-in.
@@ -290,290 +144,110 @@ impl<'a> DynamicDnamEngine<'a> {
         left_out: &mut [f32],
         right_out: &mut [f32],
     ) {
-        match self {
-            Self::Scalar(e) => e.render_offline_bounce(left_in, right_in, left_out, right_out),
-            #[cfg(target_arch = "aarch64")]
-            Self::Neon(e) => e.render_offline_bounce(left_in, right_in, left_out, right_out),
-            #[cfg(target_arch = "aarch64")]
-            Self::ArmSme(e) => e.render_offline_bounce(left_in, right_in, left_out, right_out),
-            #[cfg(target_arch = "x86_64")]
-            Self::X86Simd(e) => e.render_offline_bounce(left_in, right_in, left_out, right_out),
-            #[cfg(target_arch = "wasm32")]
-            Self::WasmSimd128(e) => e.render_offline_bounce(left_in, right_in, left_out, right_out),
-        }
+        dispatch_engine!(self, e => e.render_offline_bounce(left_in, right_in, left_out, right_out))
     }
 
     /// Rescales discrete-time parameters for a new host sample rate.
     #[inline]
     pub fn set_sample_rate(&mut self, sample_rate_hz: u32) -> Result<(), DnamError> {
-        match self {
-            Self::Scalar(e) => e.set_sample_rate(sample_rate_hz),
-            #[cfg(target_arch = "aarch64")]
-            Self::Neon(e) => e.set_sample_rate(sample_rate_hz),
-            #[cfg(target_arch = "aarch64")]
-            Self::ArmSme(e) => e.set_sample_rate(sample_rate_hz),
-            #[cfg(target_arch = "x86_64")]
-            Self::X86Simd(e) => e.set_sample_rate(sample_rate_hz),
-            #[cfg(target_arch = "wasm32")]
-            Self::WasmSimd128(e) => e.set_sample_rate(sample_rate_hz),
-        }
+        dispatch_engine!(self, e => e.set_sample_rate(sample_rate_hz))
     }
 
     /// Sets a user control value with smooth $3\text{ kHz}$ anti-zipper interpolation.
     #[inline]
     pub fn set_control_value(&mut self, ctrl_idx: usize, value: f32) {
-        match self {
-            Self::Scalar(e) => e.set_control_value(ctrl_idx, value),
-            #[cfg(target_arch = "aarch64")]
-            Self::Neon(e) => e.set_control_value(ctrl_idx, value),
-            #[cfg(target_arch = "aarch64")]
-            Self::ArmSme(e) => e.set_control_value(ctrl_idx, value),
-            #[cfg(target_arch = "x86_64")]
-            Self::X86Simd(e) => e.set_control_value(ctrl_idx, value),
-            #[cfg(target_arch = "wasm32")]
-            Self::WasmSimd128(e) => e.set_control_value(ctrl_idx, value),
-        }
+        dispatch_engine!(self, e => e.set_control_value(ctrl_idx, value))
     }
 
     /// Sets a user control value and snaps immediately.
     #[inline]
     pub fn set_control_immediate(&mut self, ctrl_idx: usize, value: f32) {
-        match self {
-            Self::Scalar(e) => e.set_control_immediate(ctrl_idx, value),
-            #[cfg(target_arch = "aarch64")]
-            Self::Neon(e) => e.set_control_immediate(ctrl_idx, value),
-            #[cfg(target_arch = "aarch64")]
-            Self::ArmSme(e) => e.set_control_immediate(ctrl_idx, value),
-            #[cfg(target_arch = "x86_64")]
-            Self::X86Simd(e) => e.set_control_immediate(ctrl_idx, value),
-            #[cfg(target_arch = "wasm32")]
-            Self::WasmSimd128(e) => e.set_control_immediate(ctrl_idx, value),
-        }
+        dispatch_engine!(self, e => e.set_control_immediate(ctrl_idx, value))
     }
 
     /// Returns the number of user controls $P \in [0, 255]$.
     #[inline]
     pub const fn num_controls(&self) -> usize {
-        match self {
-            Self::Scalar(e) => e.num_controls(),
-            #[cfg(target_arch = "aarch64")]
-            Self::Neon(e) => e.num_controls(),
-            #[cfg(target_arch = "aarch64")]
-            Self::ArmSme(e) => e.num_controls(),
-            #[cfg(target_arch = "x86_64")]
-            Self::X86Simd(e) => e.num_controls(),
-            #[cfg(target_arch = "wasm32")]
-            Self::WasmSimd128(e) => e.num_controls(),
-        }
+        dispatch_engine!(self, e => e.num_controls())
     }
 
     /// Returns the slice of raw user-requested physical control values (`len == num_controls`).
     #[inline]
     pub fn raw_control_values(&self) -> &[f32] {
-        match self {
-            Self::Scalar(e) => e.raw_control_values(),
-            #[cfg(target_arch = "aarch64")]
-            Self::Neon(e) => e.raw_control_values(),
-            #[cfg(target_arch = "aarch64")]
-            Self::ArmSme(e) => e.raw_control_values(),
-            #[cfg(target_arch = "x86_64")]
-            Self::X86Simd(e) => e.raw_control_values(),
-            #[cfg(target_arch = "wasm32")]
-            Self::WasmSimd128(e) => e.raw_control_values(),
-        }
+        dispatch_engine!(self, e => e.raw_control_values())
     }
 
     /// Returns the slice of clamped physical control values (`len == num_controls`).
     #[inline]
     pub fn clamped_control_values(&self) -> &[f32] {
-        match self {
-            Self::Scalar(e) => e.clamped_control_values(),
-            #[cfg(target_arch = "aarch64")]
-            Self::Neon(e) => e.clamped_control_values(),
-            #[cfg(target_arch = "aarch64")]
-            Self::ArmSme(e) => e.clamped_control_values(),
-            #[cfg(target_arch = "x86_64")]
-            Self::X86Simd(e) => e.clamped_control_values(),
-            #[cfg(target_arch = "wasm32")]
-            Self::WasmSimd128(e) => e.clamped_control_values(),
-        }
+        dispatch_engine!(self, e => e.clamped_control_values())
     }
 
     /// Returns the compiled 64-byte [`ControlClampDescriptor`] slice (`len == num_controls`).
     #[inline]
     pub fn control_descriptors(&self) -> &[ControlClampDescriptor] {
-        match self {
-            Self::Scalar(e) => e.control_descriptors(),
-            #[cfg(target_arch = "aarch64")]
-            Self::Neon(e) => e.control_descriptors(),
-            #[cfg(target_arch = "aarch64")]
-            Self::ArmSme(e) => e.control_descriptors(),
-            #[cfg(target_arch = "x86_64")]
-            Self::X86Simd(e) => e.control_descriptors(),
-            #[cfg(target_arch = "wasm32")]
-            Self::WasmSimd128(e) => e.control_descriptors(),
-        }
+        dispatch_engine!(self, e => e.control_descriptors())
     }
 
     /// Snaps all controls immediately back to their schema defaults and refreshes static state.
     #[inline]
     pub fn reset_controls_to_defaults(&mut self) {
-        match self {
-            Self::Scalar(e) => e.reset_controls_to_defaults(),
-            #[cfg(target_arch = "aarch64")]
-            Self::Neon(e) => e.reset_controls_to_defaults(),
-            #[cfg(target_arch = "aarch64")]
-            Self::ArmSme(e) => e.reset_controls_to_defaults(),
-            #[cfg(target_arch = "x86_64")]
-            Self::X86Simd(e) => e.reset_controls_to_defaults(),
-            #[cfg(target_arch = "wasm32")]
-            Self::WasmSimd128(e) => e.reset_controls_to_defaults(),
-        }
+        dispatch_engine!(self, e => e.reset_controls_to_defaults())
     }
 
     /// Resets all states to their analytical DC resting equilibrium.
     #[inline]
     pub fn reset_to_dc_equilibrium(&mut self) {
-        match self {
-            Self::Scalar(e) => e.reset_to_dc_equilibrium(),
-            #[cfg(target_arch = "aarch64")]
-            Self::Neon(e) => e.reset_to_dc_equilibrium(),
-            #[cfg(target_arch = "aarch64")]
-            Self::ArmSme(e) => e.reset_to_dc_equilibrium(),
-            #[cfg(target_arch = "x86_64")]
-            Self::X86Simd(e) => e.reset_to_dc_equilibrium(),
-            #[cfg(target_arch = "wasm32")]
-            Self::WasmSimd128(e) => e.reset_to_dc_equilibrium(),
-        }
+        dispatch_engine!(self, e => e.reset_to_dc_equilibrium())
     }
 
     /// Returns whether this model supports captured hardware freeze (`supports_freeze == true` or
     /// a `FreezeLatch`-calibrated control in `controls_schema`, `ref[dsp.stage4.captured-freeze]`).
     #[inline]
     pub fn supports_freeze(&self) -> bool {
-        match self {
-            Self::Scalar(e) => e.supports_freeze(),
-            #[cfg(target_arch = "aarch64")]
-            Self::Neon(e) => e.supports_freeze(),
-            #[cfg(target_arch = "aarch64")]
-            Self::ArmSme(e) => e.supports_freeze(),
-            #[cfg(target_arch = "x86_64")]
-            Self::X86Simd(e) => e.supports_freeze(),
-            #[cfg(target_arch = "wasm32")]
-            Self::WasmSimd128(e) => e.supports_freeze(),
-        }
+        dispatch_engine!(self, e => e.supports_freeze())
     }
 
     /// Engages or disengages Unitary Spectral Freeze (`alpha = 1.0` vs `0.0`).
     #[inline]
     pub fn set_freeze(&mut self, freeze: bool) {
-        match self {
-            Self::Scalar(e) => e.set_freeze(freeze),
-            #[cfg(target_arch = "aarch64")]
-            Self::Neon(e) => e.set_freeze(freeze),
-            #[cfg(target_arch = "aarch64")]
-            Self::ArmSme(e) => e.set_freeze(freeze),
-            #[cfg(target_arch = "x86_64")]
-            Self::X86Simd(e) => e.set_freeze(freeze),
-            #[cfg(target_arch = "wasm32")]
-            Self::WasmSimd128(e) => e.set_freeze(freeze),
-        }
+        dispatch_engine!(self, e => e.set_freeze(freeze))
     }
 
     /// Sets the continuous Unitary Spectral Freeze amount $\alpha_{\text{freeze}} \in [0.0, 1.0]$.
     #[inline]
     pub fn set_freeze_amount(&mut self, alpha: f32) {
-        match self {
-            Self::Scalar(e) => e.set_freeze_amount(alpha),
-            #[cfg(target_arch = "aarch64")]
-            Self::Neon(e) => e.set_freeze_amount(alpha),
-            #[cfg(target_arch = "aarch64")]
-            Self::ArmSme(e) => e.set_freeze_amount(alpha),
-            #[cfg(target_arch = "x86_64")]
-            Self::X86Simd(e) => e.set_freeze_amount(alpha),
-            #[cfg(target_arch = "wasm32")]
-            Self::WasmSimd128(e) => e.set_freeze_amount(alpha),
-        }
+        dispatch_engine!(self, e => e.set_freeze_amount(alpha))
     }
 
     /// Returns `true` if Unitary Spectral Freeze is currently engaged ($\alpha_{\text{freeze}} > 0.5$).
     #[inline]
     pub fn is_frozen(&self) -> bool {
-        match self {
-            Self::Scalar(e) => e.is_frozen(),
-            #[cfg(target_arch = "aarch64")]
-            Self::Neon(e) => e.is_frozen(),
-            #[cfg(target_arch = "aarch64")]
-            Self::ArmSme(e) => e.is_frozen(),
-            #[cfg(target_arch = "x86_64")]
-            Self::X86Simd(e) => e.is_frozen(),
-            #[cfg(target_arch = "wasm32")]
-            Self::WasmSimd128(e) => e.is_frozen(),
-        }
+        dispatch_engine!(self, e => e.is_frozen())
     }
 
     /// Sets the bypass state (`bypassed`) and spillover trails mode (`trails`).
     #[inline]
     pub fn set_bypass(&mut self, bypassed: bool, trails: bool) {
-        match self {
-            Self::Scalar(e) => e.set_bypass(bypassed, trails),
-            #[cfg(target_arch = "aarch64")]
-            Self::Neon(e) => e.set_bypass(bypassed, trails),
-            #[cfg(target_arch = "aarch64")]
-            Self::ArmSme(e) => e.set_bypass(bypassed, trails),
-            #[cfg(target_arch = "x86_64")]
-            Self::X86Simd(e) => e.set_bypass(bypassed, trails),
-            #[cfg(target_arch = "wasm32")]
-            Self::WasmSimd128(e) => e.set_bypass(bypassed, trails),
-        }
+        dispatch_engine!(self, e => e.set_bypass(bypassed, trails))
     }
 
     /// Returns `(bypassed, trails_enabled)`.
     #[inline]
     pub const fn bypass_state(&self) -> (bool, bool) {
-        match self {
-            Self::Scalar(e) => e.bypass_state(),
-            #[cfg(target_arch = "aarch64")]
-            Self::Neon(e) => e.bypass_state(),
-            #[cfg(target_arch = "aarch64")]
-            Self::ArmSme(e) => e.bypass_state(),
-            #[cfg(target_arch = "x86_64")]
-            Self::X86Simd(e) => e.bypass_state(),
-            #[cfg(target_arch = "wasm32")]
-            Self::WasmSimd128(e) => e.bypass_state(),
-        }
+        dispatch_engine!(self, e => e.bypass_state())
     }
 
     /// Sets the output Mid/Side stereo width $\alpha_{\text{width}} \in [0.0, 2.0]$.
     #[inline]
     pub fn set_stereo_width(&mut self, width: f32) {
-        match self {
-            Self::Scalar(e) => e.set_stereo_width(width),
-            #[cfg(target_arch = "aarch64")]
-            Self::Neon(e) => e.set_stereo_width(width),
-            #[cfg(target_arch = "aarch64")]
-            Self::ArmSme(e) => e.set_stereo_width(width),
-            #[cfg(target_arch = "x86_64")]
-            Self::X86Simd(e) => e.set_stereo_width(width),
-            #[cfg(target_arch = "wasm32")]
-            Self::WasmSimd128(e) => e.set_stereo_width(width),
-        }
+        dispatch_engine!(self, e => e.set_stereo_width(width))
     }
 
     /// Returns the output Mid/Side stereo width $\alpha_{\text{width}} \in [0.0, 2.0]$.
     #[inline]
     pub const fn stereo_width(&self) -> f32 {
-        match self {
-            Self::Scalar(e) => e.stereo_width(),
-            #[cfg(target_arch = "aarch64")]
-            Self::Neon(e) => e.stereo_width(),
-            #[cfg(target_arch = "aarch64")]
-            Self::ArmSme(e) => e.stereo_width(),
-            #[cfg(target_arch = "x86_64")]
-            Self::X86Simd(e) => e.stereo_width(),
-            #[cfg(target_arch = "wasm32")]
-            Self::WasmSimd128(e) => e.stereo_width(),
-        }
+        dispatch_engine!(self, e => e.stereo_width())
     }
 
     /// Configures host dry/wet blend, output gain trim (dB), and automatic unity loudness leveling.
@@ -584,107 +258,37 @@ impl<'a> DynamicDnamEngine<'a> {
         output_gain_db: f32,
         apply_unity_leveling: bool,
     ) {
-        match self {
-            Self::Scalar(e) => {
-                e.configure_host_mix_and_leveling(blend_wet, output_gain_db, apply_unity_leveling)
-            }
-            #[cfg(target_arch = "aarch64")]
-            Self::Neon(e) => {
-                e.configure_host_mix_and_leveling(blend_wet, output_gain_db, apply_unity_leveling)
-            }
-            #[cfg(target_arch = "aarch64")]
-            Self::ArmSme(e) => {
-                e.configure_host_mix_and_leveling(blend_wet, output_gain_db, apply_unity_leveling)
-            }
-            #[cfg(target_arch = "x86_64")]
-            Self::X86Simd(e) => {
-                e.configure_host_mix_and_leveling(blend_wet, output_gain_db, apply_unity_leveling)
-            }
-            #[cfg(target_arch = "wasm32")]
-            Self::WasmSimd128(e) => {
-                e.configure_host_mix_and_leveling(blend_wet, output_gain_db, apply_unity_leveling)
-            }
-        }
+        dispatch_engine!(self, e => e.configure_host_mix_and_leveling(blend_wet, output_gain_db, apply_unity_leveling))
     }
 
     /// Returns the active host tempo in BPM.
     #[inline]
     pub const fn current_bpm(&self) -> f32 {
-        match self {
-            Self::Scalar(e) => e.current_bpm(),
-            #[cfg(target_arch = "aarch64")]
-            Self::Neon(e) => e.current_bpm(),
-            #[cfg(target_arch = "aarch64")]
-            Self::ArmSme(e) => e.current_bpm(),
-            #[cfg(target_arch = "x86_64")]
-            Self::X86Simd(e) => e.current_bpm(),
-            #[cfg(target_arch = "wasm32")]
-            Self::WasmSimd128(e) => e.current_bpm(),
-        }
+        dispatch_engine!(self, e => e.current_bpm())
     }
 
     /// Sets the active host tempo in BPM without modifying control values.
     #[inline]
     pub fn set_bpm(&mut self, bpm: f32) {
-        match self {
-            Self::Scalar(e) => e.set_bpm(bpm),
-            #[cfg(target_arch = "aarch64")]
-            Self::Neon(e) => e.set_bpm(bpm),
-            #[cfg(target_arch = "aarch64")]
-            Self::ArmSme(e) => e.set_bpm(bpm),
-            #[cfg(target_arch = "x86_64")]
-            Self::X86Simd(e) => e.set_bpm(bpm),
-            #[cfg(target_arch = "wasm32")]
-            Self::WasmSimd128(e) => e.set_bpm(bpm),
-        }
+        dispatch_engine!(self, e => e.set_bpm(bpm))
     }
 
     /// Accumulates additional clamping bits into `active_clamp_mask`.
     #[inline]
     pub(crate) fn or_active_clamp_mask(&mut self, mask: u16) {
-        match self {
-            Self::Scalar(e) => e.or_active_clamp_mask(mask),
-            #[cfg(target_arch = "aarch64")]
-            Self::Neon(e) => e.or_active_clamp_mask(mask),
-            #[cfg(target_arch = "aarch64")]
-            Self::ArmSme(e) => e.or_active_clamp_mask(mask),
-            #[cfg(target_arch = "x86_64")]
-            Self::X86Simd(e) => e.or_active_clamp_mask(mask),
-            #[cfg(target_arch = "wasm32")]
-            Self::WasmSimd128(e) => e.or_active_clamp_mask(mask),
-        }
+        dispatch_engine!(self, e => e.or_active_clamp_mask(mask))
     }
 
     /// Returns `(r_ac_tr, r_dc_tr, tau_ref_tr, switch_xfade_tr)` for ZOH pole rescaling.
     #[inline]
     pub(crate) fn training_zoh_poles(&self) -> (f32, f32, f32, u32) {
-        match self {
-            Self::Scalar(e) => e.training_zoh_poles(),
-            #[cfg(target_arch = "aarch64")]
-            Self::Neon(e) => e.training_zoh_poles(),
-            #[cfg(target_arch = "aarch64")]
-            Self::ArmSme(e) => e.training_zoh_poles(),
-            #[cfg(target_arch = "x86_64")]
-            Self::X86Simd(e) => e.training_zoh_poles(),
-            #[cfg(target_arch = "wasm32")]
-            Self::WasmSimd128(e) => e.training_zoh_poles(),
-        }
+        dispatch_engine!(self, e => e.training_zoh_poles())
     }
 
     /// Returns the cumulative number of processed audio frames tracked for tap-tempo intervals.
     #[inline]
     pub(crate) const fn tempo_total_frames(&self) -> u64 {
-        match self {
-            Self::Scalar(e) => e.tempo_state.total_frames,
-            #[cfg(target_arch = "aarch64")]
-            Self::Neon(e) => e.tempo_state.total_frames,
-            #[cfg(target_arch = "aarch64")]
-            Self::ArmSme(e) => e.tempo_state.total_frames,
-            #[cfg(target_arch = "x86_64")]
-            Self::X86Simd(e) => e.tempo_state.total_frames,
-            #[cfg(target_arch = "wasm32")]
-            Self::WasmSimd128(e) => e.tempo_state.total_frames,
-        }
+        dispatch_engine!(self, e => e.tempo_state.total_frames)
     }
 
     /// Synchronizes tempo-calibrated controls to `bpm` and optional `subdivision_override`.
@@ -695,17 +299,7 @@ impl<'a> DynamicDnamEngine<'a> {
         subdivision_override: Option<TempoSubdivision>,
         fold_octave: bool,
     ) -> usize {
-        match self {
-            Self::Scalar(e) => e.sync_tempo(bpm, subdivision_override, fold_octave),
-            #[cfg(target_arch = "aarch64")]
-            Self::Neon(e) => e.sync_tempo(bpm, subdivision_override, fold_octave),
-            #[cfg(target_arch = "aarch64")]
-            Self::ArmSme(e) => e.sync_tempo(bpm, subdivision_override, fold_octave),
-            #[cfg(target_arch = "x86_64")]
-            Self::X86Simd(e) => e.sync_tempo(bpm, subdivision_override, fold_octave),
-            #[cfg(target_arch = "wasm32")]
-            Self::WasmSimd128(e) => e.sync_tempo(bpm, subdivision_override, fold_octave),
-        }
+        dispatch_engine!(self, e => e.sync_tempo(bpm, subdivision_override, fold_octave))
     }
 
     /// Registers a tap-tempo event at the current audio frame counter, updates BPM, and syncs controls.
@@ -715,65 +309,31 @@ impl<'a> DynamicDnamEngine<'a> {
         subdivision_override: Option<TempoSubdivision>,
         fold_octave: bool,
     ) -> (f32, usize) {
-        match self {
-            Self::Scalar(e) => e.register_tap_tempo(subdivision_override, fold_octave),
-            #[cfg(target_arch = "aarch64")]
-            Self::Neon(e) => e.register_tap_tempo(subdivision_override, fold_octave),
-            #[cfg(target_arch = "aarch64")]
-            Self::ArmSme(e) => e.register_tap_tempo(subdivision_override, fold_octave),
-            #[cfg(target_arch = "x86_64")]
-            Self::X86Simd(e) => e.register_tap_tempo(subdivision_override, fold_octave),
-            #[cfg(target_arch = "wasm32")]
-            Self::WasmSimd128(e) => e.register_tap_tempo(subdivision_override, fold_octave),
-        }
+        dispatch_engine!(self, e => e.register_tap_tempo(subdivision_override, fold_octave))
     }
 
     /// Applies a named preset atomically (`ref[dsp.ctrl.switch.conditional-batch]`).
     #[inline]
     pub fn apply_preset(&mut self, preset_id: &str) -> Result<(), DnamError> {
-        match self {
-            Self::Scalar(e) => e.apply_preset(preset_id),
-            #[cfg(target_arch = "aarch64")]
-            Self::Neon(e) => e.apply_preset(preset_id),
-            #[cfg(target_arch = "aarch64")]
-            Self::ArmSme(e) => e.apply_preset(preset_id),
-            #[cfg(target_arch = "x86_64")]
-            Self::X86Simd(e) => e.apply_preset(preset_id),
-            #[cfg(target_arch = "wasm32")]
-            Self::WasmSimd128(e) => e.apply_preset(preset_id),
-        }
+        dispatch_engine!(self, e => e.apply_preset(preset_id))
     }
 
     /// Applies a preset by index without any heap allocations (`ref[dsp.ctrl.op-m.spsc-ingress]`).
     #[inline]
     pub fn apply_preset_by_index(&mut self, preset_index: usize) -> Result<(), DnamError> {
-        match self {
-            Self::Scalar(e) => e.apply_preset_by_index(preset_index),
-            #[cfg(target_arch = "aarch64")]
-            Self::Neon(e) => e.apply_preset_by_index(preset_index),
-            #[cfg(target_arch = "aarch64")]
-            Self::ArmSme(e) => e.apply_preset_by_index(preset_index),
-            #[cfg(target_arch = "x86_64")]
-            Self::X86Simd(e) => e.apply_preset_by_index(preset_index),
-            #[cfg(target_arch = "wasm32")]
-            Self::WasmSimd128(e) => e.apply_preset_by_index(preset_index),
-        }
+        dispatch_engine!(self, e => e.apply_preset_by_index(preset_index))
+    }
+
+    /// Real-time preset application by index returning `bool` (zero `DnamError` heap allocation or drop glue).
+    #[inline]
+    pub(crate) fn apply_preset_by_index_rt(&mut self, preset_index: usize) -> bool {
+        dispatch_engine!(self, e => e.apply_preset_by_index_rt(preset_index))
     }
 
     /// Processes a stereo audio block in-place (`left_io`, `right_io`).
     #[inline]
     pub fn process_block_in_place(&mut self, left_io: &mut [f32], right_io: &mut [f32]) {
-        match self {
-            Self::Scalar(e) => e.process_block_in_place(left_io, right_io),
-            #[cfg(target_arch = "aarch64")]
-            Self::Neon(e) => e.process_block_in_place(left_io, right_io),
-            #[cfg(target_arch = "aarch64")]
-            Self::ArmSme(e) => e.process_block_in_place(left_io, right_io),
-            #[cfg(target_arch = "x86_64")]
-            Self::X86Simd(e) => e.process_block_in_place(left_io, right_io),
-            #[cfg(target_arch = "wasm32")]
-            Self::WasmSimd128(e) => e.process_block_in_place(left_io, right_io),
-        }
+        dispatch_engine!(self, e => e.process_block_in_place(left_io, right_io))
     }
 
     /// Processes a stereo audio block (`Stereo -> Stereo`).
@@ -785,17 +345,7 @@ impl<'a> DynamicDnamEngine<'a> {
         left_out: &mut [f32],
         right_out: &mut [f32],
     ) {
-        match self {
-            Self::Scalar(e) => e.process_block(left_in, right_in, left_out, right_out),
-            #[cfg(target_arch = "aarch64")]
-            Self::Neon(e) => e.process_block(left_in, right_in, left_out, right_out),
-            #[cfg(target_arch = "aarch64")]
-            Self::ArmSme(e) => e.process_block(left_in, right_in, left_out, right_out),
-            #[cfg(target_arch = "x86_64")]
-            Self::X86Simd(e) => e.process_block(left_in, right_in, left_out, right_out),
-            #[cfg(target_arch = "wasm32")]
-            Self::WasmSimd128(e) => e.process_block(left_in, right_in, left_out, right_out),
-        }
+        dispatch_engine!(self, e => e.process_block(left_in, right_in, left_out, right_out))
     }
 
     /// Processes a mono audio block into true stereo (`Mono -> Stereo`).
@@ -806,33 +356,13 @@ impl<'a> DynamicDnamEngine<'a> {
         left_out: &mut [f32],
         right_out: &mut [f32],
     ) {
-        match self {
-            Self::Scalar(e) => e.process_mono_to_stereo(mono_in, left_out, right_out),
-            #[cfg(target_arch = "aarch64")]
-            Self::Neon(e) => e.process_mono_to_stereo(mono_in, left_out, right_out),
-            #[cfg(target_arch = "aarch64")]
-            Self::ArmSme(e) => e.process_mono_to_stereo(mono_in, left_out, right_out),
-            #[cfg(target_arch = "x86_64")]
-            Self::X86Simd(e) => e.process_mono_to_stereo(mono_in, left_out, right_out),
-            #[cfg(target_arch = "wasm32")]
-            Self::WasmSimd128(e) => e.process_mono_to_stereo(mono_in, left_out, right_out),
-        }
+        dispatch_engine!(self, e => e.process_mono_to_stereo(mono_in, left_out, right_out))
     }
 
     /// Processes a mono audio block (`Mono -> Mono`).
     #[inline]
     pub fn process_mono(&mut self, mono_in: &[f32], mono_out: &mut [f32]) {
-        match self {
-            Self::Scalar(e) => e.process_mono(mono_in, mono_out),
-            #[cfg(target_arch = "aarch64")]
-            Self::Neon(e) => e.process_mono(mono_in, mono_out),
-            #[cfg(target_arch = "aarch64")]
-            Self::ArmSme(e) => e.process_mono(mono_in, mono_out),
-            #[cfg(target_arch = "x86_64")]
-            Self::X86Simd(e) => e.process_mono(mono_in, mono_out),
-            #[cfg(target_arch = "wasm32")]
-            Self::WasmSimd128(e) => e.process_mono(mono_in, mono_out),
-        }
+        dispatch_engine!(self, e => e.process_mono(mono_in, mono_out))
     }
 
     /// Hot-swaps a new `.dnam` model in-place into an owned engine without requiring `bytes`
@@ -844,33 +374,13 @@ impl<'a> DynamicDnamEngine<'a> {
         tier: Tier,
         sample_rate_hz: u32,
     ) -> Result<(), DnamError> {
-        match self {
-            Self::Scalar(e) => e.reload_model_in_place_owned(bytes, tier, sample_rate_hz),
-            #[cfg(target_arch = "aarch64")]
-            Self::Neon(e) => e.reload_model_in_place_owned(bytes, tier, sample_rate_hz),
-            #[cfg(target_arch = "aarch64")]
-            Self::ArmSme(e) => e.reload_model_in_place_owned(bytes, tier, sample_rate_hz),
-            #[cfg(target_arch = "x86_64")]
-            Self::X86Simd(e) => e.reload_model_in_place_owned(bytes, tier, sample_rate_hz),
-            #[cfg(target_arch = "wasm32")]
-            Self::WasmSimd128(e) => e.reload_model_in_place_owned(bytes, tier, sample_rate_hz),
-        }
+        dispatch_engine!(self, e => e.reload_model_in_place_owned(bytes, tier, sample_rate_hz))
     }
 
     /// Returns a lock-free [`DnamTelemetrySnapshot`].
     #[inline]
     pub fn telemetry_snapshot(&self) -> DnamTelemetrySnapshot {
-        match self {
-            Self::Scalar(e) => e.telemetry_snapshot(),
-            #[cfg(target_arch = "aarch64")]
-            Self::Neon(e) => e.telemetry_snapshot(),
-            #[cfg(target_arch = "aarch64")]
-            Self::ArmSme(e) => e.telemetry_snapshot(),
-            #[cfg(target_arch = "x86_64")]
-            Self::X86Simd(e) => e.telemetry_snapshot(),
-            #[cfg(target_arch = "wasm32")]
-            Self::WasmSimd128(e) => e.telemetry_snapshot(),
-        }
+        dispatch_engine!(self, e => e.telemetry_snapshot())
     }
 }
 
@@ -903,7 +413,11 @@ mod tests {
         let kinds = [
             BackendKind::Scalar,
             BackendKind::Neon,
+            BackendKind::ArmSve2,
             BackendKind::ArmSme,
+            BackendKind::X86Sse2,
+            BackendKind::X86Sse42,
+            BackendKind::X86Avx2Fma,
             BackendKind::X86Simd,
             BackendKind::WasmSimd128,
         ];

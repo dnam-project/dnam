@@ -1,12 +1,11 @@
 //! State lifecycle, model reloading, and offline bounce rendering for [`DnamEngine`].
 
-use super::{DnamEngine, OFFLINE_BOUNCE_PDC_SAMPLES};
+use super::{DnamEngine, EngineBackend, OFFLINE_BOUNCE_PDC_SAMPLES};
 use crate::container::{DnamContainerView, DnamPreamble, ZohRescaledParams};
-use crate::math::MathBackend;
 use crate::schema::DnamError;
 use crate::types::Tier;
 
-impl<'a, B: MathBackend> DnamEngine<'a, B> {
+impl<'a, B: EngineBackend> DnamEngine<'a, B> {
     pub(crate) fn init_from_view(
         &mut self,
         view: DnamContainerView<'a>,
@@ -61,6 +60,10 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
         if !view.cp1_contributors.is_empty() {
             self.control_bus
                 .load_cp1_contributors(&view.cp1_contributors);
+        }
+        if let Some(ref hdr) = self.header {
+            self.control_bus
+                .ensure_control_capacity(hdr.controls_schema.len());
         }
         self.tier = active_tier;
         self.max_available_tier = max_available_tier;
@@ -142,6 +145,7 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
         self.oversampler_aux.reset();
         self.ctrl_sub_counter = 0;
         self.ctrl_energy_accum = 0.0;
+        self.refresh_cached_role_b_slices();
         self.cached_head_tiers = 0;
         Ok(())
     }
@@ -234,7 +238,8 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
                 let mh = hdr.control_bus.head_trust_region_radius;
                 if mh > 1e-3 {
                     self.control_bus.trust_radius_mh = mh;
-                    self.control_bus.inv_trust_radius_mh2 = 1.0 / (mh * mh);
+                    self.control_bus.inv_trust_radius_mh2 =
+                        crate::math::newton6_reciprocal_f64((mh as f64) * (mh as f64)) as f32;
                 }
                 self.stage_pipeline
                     .stage0
@@ -243,7 +248,7 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
                 self.stage_pipeline.stage1.gate_threshold = if hdr.stage1_pre.noise_gate_enabled {
                     crate::schema::cold_pow_f64(
                         10.0,
-                        (hdr.stage1_pre.gate_threshold_db as f64) / 20.0,
+                        (hdr.stage1_pre.gate_threshold_db as f64) * 0.05,
                     ) as f32
                 } else {
                     0.0
@@ -260,7 +265,8 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
                 let mh = hdr.control_bus.head_trust_region_radius;
                 if mh > 1e-3 {
                     self.control_bus.trust_radius_mh = mh;
-                    self.control_bus.inv_trust_radius_mh2 = 1.0 / (mh * mh);
+                    self.control_bus.inv_trust_radius_mh2 =
+                        crate::math::newton6_reciprocal_f64((mh as f64) * (mh as f64)) as f32;
                 }
             }
             self.control_bus.reset_dynamic_state();
@@ -296,6 +302,7 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
         self.stage_pipeline.stage4.sin_psi = s_psi;
         self.ctrl_sub_counter = 0;
         self.ctrl_energy_accum = 0.0;
+        self.refresh_cached_role_b_slices();
         self.cached_head_tiers = 0;
         Ok(())
     }
@@ -440,8 +447,7 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
                     self.control_bus.num_contributors = cnt;
                 }
             }
-            let parsed_header =
-                serde_json::from_slice::<crate::schema::DnamJsonHeader>(json_slice).ok();
+            let parsed_header = crate::schema::DnamJsonHeader::from_json_slice(json_slice).ok();
             if let Some(ref hdr) = parsed_header {
                 self.freeze_mutes_dry = hdr.io_config.capabilities.freeze_mutes_dry;
             }
@@ -491,7 +497,7 @@ impl<'a, B: MathBackend> DnamEngine<'a, B> {
         }
         let json_len = preamble.json_header_byte_len as usize;
         let parsed_header = if json_len > 0 && 64 + json_len <= arena_off {
-            serde_json::from_slice::<crate::schema::DnamJsonHeader>(&bytes[64..64 + json_len]).ok()
+            crate::schema::DnamJsonHeader::from_json_slice(&bytes[64..64 + json_len]).ok()
         } else {
             None
         };

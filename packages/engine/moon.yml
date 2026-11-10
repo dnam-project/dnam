@@ -115,6 +115,8 @@ tasks:
       - "test"
       - "--package"
       - "dnam-engine"
+    deps:
+      - "build"
     inputs:
       - "Cargo.toml"
       - "src/**/*"

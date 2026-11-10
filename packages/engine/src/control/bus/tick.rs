@@ -2,8 +2,8 @@
 
 use crate::math::{MathBackend, SimdVec4, flush_recursive_state_f32};
 
+use super::ControlBus;
 use super::cp1_and_uint::{eval_uint_base_4x8, eval_uint_ultra_delta_3x4x8};
-use super::{ControlBus, eval_tier_stage_dispatch};
 use crate::control::ANTI_ZIPPER_SNAP_EPS;
 use crate::control::record::LatentAccumulator64B;
 
@@ -54,10 +54,13 @@ impl<B: MathBackend> ControlBus<B> {
                 self.lfo_harmonics[base + 3] = t4;
                 continue;
             }
-            let (c_next, s_next) = if self.lfo_phases_q192[j]
-                .step_angle_bits(angle_bits)
-                .is_some()
-            {
+            if self.lfo_cached_angle_bits[j] != angle_bits {
+                self.lfo_cached_angle_bits[j] = angle_bits;
+                self.lfo_cached_q192_inc[j] =
+                    crate::math::q0_192_phase_increment_from_f32_bits(angle_bits);
+            }
+            let (c_next, s_next) = if let Some((neg, mag)) = self.lfo_cached_q192_inc[j] {
+                self.lfo_phases_q192[j].advance_signed(neg, mag);
                 self.lfo_phases_q192[j].to_phasor()
             } else {
                 let c_prev = self.lfo_phasors[j][0];
@@ -126,8 +129,6 @@ impl<B: MathBackend> ControlBus<B> {
     /// **without** advancing LFO phasors or envelope followers, and clears `is_dirty`.
     #[inline]
     pub fn refresh_static_state(&mut self, arena_bytes: &[u8]) {
-        self.ensure_control_capacity(self.num_controls);
-        assert_eq!(self.current_u_norm.len(), self.target_u_norm.len());
         for (current, &target) in self.current_u_norm.iter_mut().zip(&self.target_u_norm) {
             *current = flush_recursive_state_f32(target);
         }
@@ -206,13 +207,13 @@ impl<B: MathBackend> ControlBus<B> {
                 if c < self.exact_fm_acc[0].count {
                     for f in 0..4 {
                         let _ = self.exact_fm_acc[f]
-                            .update_contributor(c, (slot.v_base[f] * z_c).to_bits());
+                            .update_contributor_rt(c, (slot.v_base[f] * z_c).to_bits());
                         let v_u = if slot.has_ultra {
                             slot.v_ultra[f] * z_c
                         } else {
                             0.0
                         };
-                        let _ = self.exact_fm_acc[4 + f].update_contributor(c, v_u.to_bits());
+                        let _ = self.exact_fm_acc[4 + f].update_contributor_rt(c, v_u.to_bits());
                     }
                 }
             }
@@ -304,9 +305,9 @@ impl<B: MathBackend> ControlBus<B> {
                 if p < self.exact_fm_acc[0].count {
                     for f in 0..4 {
                         let _ = self.exact_fm_acc[f]
-                            .update_contributor(p, (proj.v_factors[f] * u_new).to_bits());
+                            .update_contributor_rt(p, (proj.v_factors[f] * u_new).to_bits());
                         let _ = self.exact_fm_acc[4 + f]
-                            .update_contributor(p, (proj.v_factors[4 + f] * u_new).to_bits());
+                            .update_contributor_rt(p, (proj.v_factors[4 + f] * u_new).to_bits());
                     }
                 }
                 self.prev_eval_u_norm[p] = u_new;
@@ -382,73 +383,74 @@ impl<B: MathBackend> ControlBus<B> {
             env_onset,
         ];
 
-        let mut acc = [B::Vec4::zero(); 8];
+        let mut acc0 = B::Vec4::zero();
+        let mut acc2 = B::Vec4::zero();
+        let mut acc7 = B::Vec4::zero();
         for (row, &q_val) in q8.iter().enumerate() {
             if q_val.abs() > 1e-12 {
                 let q_vec = B::Vec4::splat(q_val);
                 let row_off = W_CTRL_TANK_BASE + row * 128;
-                for (c, acc_c) in acc.iter_mut().enumerate() {
-                    let w_vec = read_vec4_le::<B>(arena_bytes, row_off + c * 16);
-                    *acc_c = acc_c.fma(q_vec, w_vec);
-                }
+                acc0 = acc0.fma(q_vec, read_vec4_le::<B>(arena_bytes, row_off));
+                acc2 = acc2.fma(q_vec, read_vec4_le::<B>(arena_bytes, row_off + 32));
+                acc7 = acc7.fma(q_vec, read_vec4_le::<B>(arena_bytes, row_off + 112));
             }
         }
 
-        let d0 = acc[0].to_array();
-        let d1 = acc[1].to_array();
-        self.tank_delay_mod_samples = [d0[0], d0[1], d0[2], d0[3], d1[0], d1[1], d1[2], d1[3]];
+        let mut d0 = [0.0f32; 4];
+        acc0.store(&mut d0);
+        self.tank_delay_mod_samples[0] = d0[0];
+        self.tank_delay_mod_samples[1] = d0[1];
+        self.tank_delay_mod_samples[2] = d0[2];
+        self.tank_delay_mod_samples[3] = d0[3];
 
-        let g0 = acc[2].to_array();
-        let g1 = acc[3].to_array();
-        self.tank_gain_targets = [g0[0], g0[1], g0[2], g0[3], g1[0], g1[1], g1[2], g1[3]];
+        let mut g0 = [0.0f32; 4];
+        acc2.store(&mut g0);
+        self.tank_gain_targets[0] = g0[0];
+        self.tank_gain_targets[1] = g0[1];
+        self.tank_gain_targets[2] = g0[2];
+        self.tank_gain_targets[3] = g0[3];
 
-        let w0 = acc[4].to_array();
-        let w1 = acc[5].to_array();
-        self.tank_warp_mod = [w0[0], w0[1], w0[2], w0[3], w1[0], w1[1], w1[2], w1[3]];
-
-        self.tank_grain_len_scale = acc[6].to_array();
-        self.tank_state_mod = acc[7].to_array();
+        acc7.store(&mut self.tank_state_mod);
 
         // Also evaluate 16x16 + 16x4 stage dispatch into stage_targets (`r[dsp.ctrl.modulators.dynamic]`)
-        let z_ctrl_8 = [
-            self.z_head[0],
-            self.z_head[1],
-            self.z_head[2],
-            self.z_head[3],
-            self.ctrl_basis_4[0],
-            self.ctrl_basis_4[1],
-            self.ctrl_basis_4[2],
-            self.ctrl_basis_4[3],
-        ];
-        let m_dyn_8 = [
+        let has_z_ctrl =
+            self.z_head.iter().any(|&v| v != 0.0) || self.ctrl_basis_4.iter().any(|&v| v != 0.0);
+        let has_ultra_ctrl = arena_bytes.len() >= W_CTRL_ULTRA_BASE + 256
+            && self.z_stage_ultra.iter().any(|&v| v != 0.0);
+        let q0 = B::Vec4::load(&self.z_head);
+        let q1 = B::Vec4::load(&self.ctrl_basis_4);
+        let q2_arr = [
             self.lfo_phasors[0][0],
             self.lfo_phasors[0][1],
             self.lfo_harmonics[1],
             self.lfo_harmonics[5],
-            self.env_states[0],
-            self.env_states[1],
-            self.env_states[2],
-            self.env_states[3],
         ];
-        let q16 = Self::assemble_q16(&z_ctrl_8, &m_dyn_8);
-        let mut w_base = [[0.0f32; 16]; 16];
-        for (r, row_arr) in w_base.iter_mut().enumerate() {
+        let q2 = B::Vec4::load(&q2_arr);
+        let q3 = B::Vec4::load(&self.env_states);
+        let qu = B::Vec4::load(&self.z_stage_ultra);
+        let r_range =
+            if self.live_analog_drift_enabled && !self.offline_bounce && self.sigma_drift > 0.0 {
+                2..13
+            } else {
+                3..12
+            };
+        for r in r_range {
             let row_off = W_CTRL_TANK_BASE + r * 64;
-            for c in 0..4 {
-                let v = read_vec4_le::<B>(arena_bytes, row_off + c * 16).to_array();
-                row_arr[c * 4..c * 4 + 4].copy_from_slice(&v);
+            let mut v_acc = read_vec4_le::<B>(arena_bytes, row_off + 32)
+                .mul(q2)
+                .fma(read_vec4_le::<B>(arena_bytes, row_off + 48), q3);
+            if has_z_ctrl {
+                v_acc = v_acc
+                    .fma(read_vec4_le::<B>(arena_bytes, row_off), q0)
+                    .fma(read_vec4_le::<B>(arena_bytes, row_off + 16), q1);
             }
-        }
-        if arena_bytes.len() >= W_CTRL_ULTRA_BASE + 256 {
-            let mut w_ultra = [[0.0f32; 4]; 16];
-            for (r, row_arr) in w_ultra.iter_mut().enumerate() {
-                *row_arr = read_vec4_le::<B>(arena_bytes, W_CTRL_ULTRA_BASE + r * 16).to_array();
+            if has_ultra_ctrl {
+                v_acc = v_acc.fma(
+                    read_vec4_le::<B>(arena_bytes, W_CTRL_ULTRA_BASE + r * 16),
+                    qu,
+                );
             }
-            self.stage_targets =
-                eval_tier_stage_dispatch(&w_base, Some(&w_ultra), &q16, &q16, &self.z_stage_ultra);
-        } else {
-            self.stage_targets =
-                eval_tier_stage_dispatch(&w_base, None, &q16, &q16, &self.z_stage_ultra);
+            self.stage_targets[r] = v_acc.horizontal_sum();
         }
 
         if self.live_analog_drift_enabled && !self.offline_bounce && self.sigma_drift > 0.0 {
@@ -497,8 +499,15 @@ impl<B: MathBackend> ControlBus<B> {
         alpha_ramp: f32,
     ) -> [f32; 16] {
         let mut deltas = [0.0; 16];
-        for i in 0..16 {
-            deltas[i] = (theta_next[i] - theta_curr[i]) * alpha_ramp;
+        let c_chunks: &[[f32; 4]; 4] = zerocopy::transmute_ref!(theta_curr);
+        let n_chunks: &[[f32; 4]; 4] = zerocopy::transmute_ref!(theta_next);
+        let d_chunks: &mut [[f32; 4]; 4] = zerocopy::transmute_mut!(&mut deltas);
+        let a_vec = B::Vec4::splat(alpha_ramp);
+        for c in 0..4 {
+            B::Vec4::load(&n_chunks[c])
+                .sub(B::Vec4::load(&c_chunks[c]))
+                .mul(a_vec)
+                .store(&mut d_chunks[c]);
         }
         deltas
     }
@@ -524,12 +533,53 @@ impl<B: MathBackend> ControlBus<B> {
                 .store(&mut t_chunks[c]);
         }
     }
+
+    /// Evaluates division-free linear micro-ramping deltas for the 12 active stage parameters (`0..12`).
+    #[inline(always)]
+    pub fn compute_micro_ramp_deltas_12(
+        theta_curr: &[f32; 16],
+        theta_next: &[f32; 16],
+        alpha_ramp: f32,
+    ) -> [f32; 16] {
+        let mut deltas = [0.0; 16];
+        let c_chunks: &[[f32; 4]; 4] = zerocopy::transmute_ref!(theta_curr);
+        let n_chunks: &[[f32; 4]; 4] = zerocopy::transmute_ref!(theta_next);
+        let d_chunks: &mut [[f32; 4]; 4] = zerocopy::transmute_mut!(&mut deltas);
+        let a_vec = B::Vec4::splat(alpha_ramp);
+        for c in 0..3 {
+            B::Vec4::load(&n_chunks[c])
+                .sub(B::Vec4::load(&c_chunks[c]))
+                .mul(a_vec)
+                .store(&mut d_chunks[c]);
+        }
+        deltas
+    }
+
+    /// Audio-rate sample-by-sample parameter update for the 12 active stage parameters (`0..12`).
+    #[inline(always)]
+    pub fn step_micro_ramp_12(theta_audio: &mut [f32; 16], deltas: &[f32; 16]) {
+        let t_chunks: &mut [[f32; 4]; 4] = zerocopy::transmute_mut!(theta_audio);
+        let d_chunks: &[[f32; 4]; 4] = zerocopy::transmute_ref!(deltas);
+        for c in 0..3 {
+            B::Vec4::load(&t_chunks[c])
+                .add(B::Vec4::load(&d_chunks[c]))
+                .store(&mut t_chunks[c]);
+        }
+    }
 }
 
 /// Applies the outward-checked 4-D trust-region clip (`ref[dsp.ctrl.op-n.trust-clip]`) with
 /// fallback to `trust_region_softclip_4d`.
 #[inline]
 pub fn trust_clip_outward_4d(vec: &mut [f32; 4], radius_mh: f32) {
+    let norm_sq = (vec[0] as f64) * (vec[0] as f64)
+        + (vec[1] as f64) * (vec[1] as f64)
+        + (vec[2] as f64) * (vec[2] as f64)
+        + (vec[3] as f64) * (vec[3] as f64);
+    let r = radius_mh as f64;
+    if norm_sq.is_finite() && r > 0.0 && norm_sq + 1.0e-9 < r * r {
+        return;
+    }
     let in_bits = [
         vec[0].to_bits(),
         vec[1].to_bits(),

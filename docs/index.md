@@ -52,7 +52,7 @@ flowchart TD
     end
 
     subgraph ADRs ["Layer 3: Architectural Decision Records — The 'Why' (docs/adr/)"]
-        A1["ADR-0001..ADR-0018: MADR Design Decisions & Counterexamples (adr/0001..0018-*.md)"]
+        A1["ADR-0001..ADR-0019: MADR Design Decisions & Counterexamples (adr/0001..0019-*.md)"]
     end
 
     G1 --> G2
@@ -131,6 +131,7 @@ flowchart TD
 | **[`adr/0016-codesigned-disjoint-comb-stimulus-and-null-homing-capture.md`](adr/0016-codesigned-disjoint-comb-stimulus-and-null-homing-capture.md)** | `Accepted` | Closed-loop feedback-adaptive disjoint-comb excitation (`Laws 0.A–0.F`, `Laws 1–3`), sub-sample null-homing alignment, `Mode A/B` control capture with `< 0.05 dB` null homing, and `1.0s` live null-test auto-patch. |
 | **[`adr/0017-pure-rust-analytical-varpro-solver-and-planar-decoupling.md`](adr/0017-pure-rust-analytical-varpro-solver-and-planar-decoupling.md)** | `Accepted` | 100% pure-Rust 5-Stage analytical `VarPro` & Cholesky solver (`< 25 ms` native + `WASM`), planar Stage I–IV decoupling, and `24 KB` / `48 KB` `fp16` `Arena 5 (DNCA)` coreset storage. |
 | **[`adr/0018-signal-chain-fixtures-crate-and-whitebox-distillation.md`](adr/0018-signal-chain-fixtures-crate-and-whitebox-distillation.md)** | `Accepted` | 6-package pure-Rust + TypeScript workspace, `DistillationTarget` dual-mode white-box/grey-box distillation (`SPICE`/`FAUST`/`DNWB`), 3-Tier validation matrix (`3` Oracles, `12` Archetypes, `26` Adversaries), and retirement of Python. |
+| **[`adr/0019-simd-kernel-architecture-and-realtime-execution-optimizations.md`](adr/0019-simd-kernel-architecture-and-realtime-execution-optimizations.md)** | `Accepted` | Two-level SIMD trait hierarchy (`SimdVec4` / `MathBackend` + domain traits), single-library multi-ISA dispatch (`NEON`/`SVE2`/`SME`, `SSE2`/`SSE4.2`/`AVX2`, `WASM SIMD128`), stereo/pre-collapsed DSP kernels, and release disassembly CI gate. |
 | **[`templates/requirement_template.md`](templates/requirement_template.md)** · **[`spec_template.md`](templates/spec_template.md)** · **[`adr_template.md`](templates/adr_template.md)** | `Templates` | Canonical authoring templates for `REQ-X.Y` requirements, `r[...]` normative specifications, and MADR `NNNN-*.md` records. |
 
 ---

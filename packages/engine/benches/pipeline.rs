@@ -11,7 +11,8 @@ use dnam_engine::container::{
     ARENA_OFFSET_FULL_END, ARENA_OFFSET_LITE_END, ARENA_OFFSET_PRO_END, ARENA_OFFSET_ULTRA_END,
     build_dnam_container,
 };
-use dnam_engine::math::{DefaultMathBackend, MathBackend, ScalarBackend};
+use dnam_engine::engine::EngineBackend;
+use dnam_engine::math::{DefaultMathBackend, ScalarBackend};
 use dnam_engine::memory::{AlignedBuffer, CacheLine64};
 use dnam_engine::schema::{
     ControlBusConfig, ControlKind, ControlSchemaDef, ControlUiHints, DatasetProvenance,
@@ -136,7 +137,7 @@ fn make_bench_container() -> AlignedBuffer<CacheLine64> {
     aligned
 }
 
-fn bench_tier_profile<B: MathBackend>(
+fn bench_tier_profile<B: EngineBackend>(
     group: &mut BenchmarkGroup<'_, WallTime>,
     container: &[u8],
     tier: Tier,

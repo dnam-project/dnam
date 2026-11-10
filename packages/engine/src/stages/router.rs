@@ -2,7 +2,10 @@
 //!
 //! Canonical Reference: `docs/specs/dsp/router_and_stages_topology.md` (`ref[dsp.router.return-to-send-isolation]`, `REQ-7.4`).
 
-use crate::math::flush_recursive_state_f32;
+use crate::math::{
+    DefaultMathBackend, MathBackend, SimdVec4, flush_recursive_state_f32,
+    flush_recursive_state_vec4,
+};
 use crate::operators::op_t::catmull_rom_hermite_cubic;
 
 /// Memory footprint for Stage 0 State: strictly 1,536 B.
@@ -82,6 +85,26 @@ impl BezoutCleanCrossover {
             u = y;
         }
         u
+    }
+
+    /// Advances a stereo pair (`self` = Left, `right` = Right) of crossovers simultaneously.
+    #[inline(always)]
+    pub fn step_stereo(&mut self, right: &mut Self, x_l: f32, x_r: f32) -> (f32, f32) {
+        let g_l = 0.5 * (1.0 - self.pole);
+        let g_r = 0.5 * (1.0 - right.pole);
+        let mut u_l = x_l;
+        let mut u_r = x_r;
+        for i in 0..4 {
+            let y_l = self.pole * self.y_hist[i] + g_l * (u_l + self.x_hist[i]);
+            let y_r = right.pole * right.y_hist[i] + g_r * (u_r + right.x_hist[i]);
+            self.x_hist[i] = flush_recursive_state_f32(u_l);
+            right.x_hist[i] = flush_recursive_state_f32(u_r);
+            self.y_hist[i] = flush_recursive_state_f32(y_l);
+            right.y_hist[i] = flush_recursive_state_f32(y_r);
+            u_l = y_l;
+            u_r = y_r;
+        }
+        (u_l, u_r)
     }
 }
 
@@ -276,21 +299,23 @@ impl Stage0Router {
             self.stereo_link_alpha,
             self.aux_key_beta,
         );
-        let inputs = [
-            0.5 * (tpt_low_l.abs() + tpt_low_r.abs()),
-            0.5 * (tpt_high_l.abs() + tpt_high_r.abs()),
-            0.5 * (det_l + det_r),
-            0.5 * (ret_l.abs() + ret_r.abs()),
-        ];
-        for (b, &u) in inputs.iter().enumerate() {
-            let prev = self.detector_envelopes[b];
-            let alpha = if u > prev {
-                self.detector_att_alphas[b]
-            } else {
-                self.detector_rel_alphas[b]
-            };
-            self.detector_envelopes[b] = flush_recursive_state_f32(prev + alpha * (u - prev));
-        }
+        let u0 = 0.5 * (tpt_low_l.abs() + tpt_low_r.abs());
+        let u1 = 0.5 * (tpt_high_l.abs() + tpt_high_r.abs());
+        let u2 = 0.5 * (det_l + det_r);
+        let u3 = 0.5 * (ret_l.abs() + ret_r.abs());
+
+        type V = <DefaultMathBackend as MathBackend>::Vec4;
+        let inputs = [u0, u1, u2, u3];
+        let u_v = V::load(&inputs);
+        let prev_v = V::load(&self.detector_envelopes);
+        let diff = u_v.sub(prev_v);
+        let zero = V::zero();
+        let att_diff = diff.max(zero);
+        let rel_diff = diff.min(zero);
+        let att_a = V::load(&self.detector_att_alphas);
+        let rel_a = V::load(&self.detector_rel_alphas);
+        let next_env = flush_recursive_state_vec4(prev_v.fma(att_a, att_diff).fma(rel_a, rel_diff));
+        next_env.store(&mut self.detector_envelopes);
     }
 
     /// Sets scattering matrix coefficients with strict enforcement of `ref[dsp.router.return-to-send-isolation]` DAG constraint:
@@ -349,10 +374,12 @@ impl Stage0Router {
             + self.s_matrix[3][3] * ret_r_aligned;
 
         // 3. Parallel clean Bezout sub crossover + TPT LR4 crossover + 4-band ballistic detector
-        let clean_sub_l = self.sub_crossover_l.step(inst_l);
-        let clean_sub_r = self.sub_crossover_r.step(inst_r);
-        let (tpt_low_l, tpt_high_l) = self.tpt_crossover_l.step(inst_l);
-        let (tpt_low_r, tpt_high_r) = self.tpt_crossover_r.step(inst_r);
+        let (clean_sub_l, clean_sub_r) =
+            self.sub_crossover_l
+                .step_stereo(&mut self.sub_crossover_r, inst_l, inst_r);
+        let (tpt_low_l, tpt_high_l, tpt_low_r, tpt_high_r) =
+            self.tpt_crossover_l
+                .step_stereo(&mut self.tpt_crossover_r, inst_l, inst_r);
         self.step_ballistic_detector(
             inst_l,
             inst_r,
@@ -374,10 +401,12 @@ impl Stage0Router {
     pub fn route_frame_no_return(&mut self, inst_l: f32, inst_r: f32) -> (f32, f32, f32, f32) {
         let down_l = self.s_matrix[2][0] * inst_l + self.s_matrix[2][1] * inst_r;
         let down_r = self.s_matrix[3][0] * inst_l + self.s_matrix[3][1] * inst_r;
-        let clean_sub_l = self.sub_crossover_l.step(inst_l);
-        let clean_sub_r = self.sub_crossover_r.step(inst_r);
-        let (tpt_low_l, tpt_high_l) = self.tpt_crossover_l.step(inst_l);
-        let (tpt_low_r, tpt_high_r) = self.tpt_crossover_r.step(inst_r);
+        let (clean_sub_l, clean_sub_r) =
+            self.sub_crossover_l
+                .step_stereo(&mut self.sub_crossover_r, inst_l, inst_r);
+        let (tpt_low_l, tpt_high_l, tpt_low_r, tpt_high_r) =
+            self.tpt_crossover_l
+                .step_stereo(&mut self.tpt_crossover_r, inst_l, inst_r);
         self.step_ballistic_detector(
             inst_l, inst_r, 0.0, 0.0, tpt_low_l, tpt_high_l, tpt_low_r, tpt_high_r,
         );

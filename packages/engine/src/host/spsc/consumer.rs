@@ -350,7 +350,7 @@ impl ControlConsumer {
     fn apply_lane2_command(&self, engine: &mut DynamicDnamEngine<'_>, cmd: ControlCommand) {
         match cmd {
             ControlCommand::ApplyPreset { preset_index } => {
-                let _ = engine.apply_preset_by_index(preset_index as usize);
+                let _ = engine.apply_preset_by_index_rt(preset_index as usize);
             }
             ControlCommand::SyncTempo {
                 bpm,

@@ -64,7 +64,7 @@ pub fn verify_container_provenance_core(
     trusted_marketplace_pubkey_hex: Option<&str>,
 ) -> Result<ProvenanceVerifyInfo, String> {
     let header: DnamJsonHeader =
-        serde_json::from_str(header_json).map_err(|e| validation_err(e.to_string()))?;
+        DnamJsonHeader::from_json_str(header_json).map_err(|e| validation_err(e.to_string()))?;
     let mut crypto = RustCryptoProvider::new();
     if let (Some(id), Some(sec)) = (device_id_hash, device_secret_32)
         && !id.is_empty()
@@ -124,7 +124,7 @@ pub fn enforce_distribution_policy_core(
     active_profile: &str,
 ) -> Result<(), String> {
     let header: DnamJsonHeader =
-        serde_json::from_str(header_json).map_err(|e| validation_err(e.to_string()))?;
+        DnamJsonHeader::from_json_str(header_json).map_err(|e| validation_err(e.to_string()))?;
     let profile = DnamProtectionProfile::from_str_name(active_profile)
         .map_err(|e| format_tagged_dnam_error(&e))?;
     enforce_distribution_policy(&header, profile).map_err(|e| format_tagged_dnam_error(&e))
@@ -150,7 +150,7 @@ pub fn evaluate_anticlone_policy_core(
 
 pub fn immutable_header_sha256_core(header_json: &str) -> Result<String, String> {
     let header: DnamJsonHeader =
-        serde_json::from_str(header_json).map_err(|e| validation_err(e.to_string()))?;
+        DnamJsonHeader::from_json_str(header_json).map_err(|e| validation_err(e.to_string()))?;
     let digest =
         compute_immutable_header_sha256(&header).map_err(|e| format_tagged_dnam_error(&e))?;
     Ok(encode_hex(&digest))

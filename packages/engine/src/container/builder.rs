@@ -83,8 +83,9 @@ pub fn build_dnam_container(
         header.version = crate::schema::SchemaVersion::V2_0_0.as_semver_string();
     }
 
-    let json_bytes =
-        serde_json::to_vec(header).map_err(|e| DnamError::InvalidJsonHeader(e.to_string()))?;
+    let json_bytes = header
+        .to_json_vec()
+        .map_err(|e| DnamError::InvalidJsonHeader(e.to_string()))?;
     let p_ctrls = header.controls_schema.len();
     let min_header_region = 64 + json_bytes.len() + 128 * p_ctrls;
     let tensor_arena_offset = min_header_region.div_ceil(4096).max(1) * 4096;
@@ -209,8 +210,9 @@ pub fn update_header_in_place(
     let control_table_off = arena_off.saturating_sub(128 * p_ctrls);
     let max_header_len = control_table_off.saturating_sub(64);
 
-    let new_json =
-        serde_json::to_vec(new_header).map_err(|e| DnamError::InvalidJsonHeader(e.to_string()))?;
+    let new_json = new_header
+        .to_json_vec()
+        .map_err(|e| DnamError::InvalidJsonHeader(e.to_string()))?;
     if new_json.len() > max_header_len {
         return Err(DnamError::HeaderCapacityExceeded {
             capacity: max_header_len,

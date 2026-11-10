@@ -10,15 +10,19 @@ use dnam_engine::{DynamicDnamEngine, Tier};
 
 use crate::error::{control_err, format_tagged_dnam_error, validation_err};
 
-/// Parses a backend string (`"auto"`, `"scalar"`, `"neon"`, `"arm-sme"`, `"x86-simd"`, `"wasm-simd128"`)
+/// Parses a backend string (`"auto"`, `"scalar"`, `"neon"`, `"arm-sve2"`, `"arm-sme"`, `"x86-simd"`, `"wasm-simd128"`)
 /// into a [`BackendKind`].
 pub fn parse_backend_kind(backend: &str) -> Result<BackendKind, String> {
     match backend.to_ascii_lowercase().as_str() {
         "auto" | "native" => Ok(detect_best_backend()),
         "scalar" => Ok(BackendKind::Scalar),
         "neon" | "arm_neon" | "arm-neon" | "arm64_neon" => Ok(BackendKind::Neon),
+        "arm_sve2" | "arm-sve2" | "armsve2" | "sve2" => Ok(BackendKind::ArmSve2),
         "arm_sme" | "arm-sme" | "armsme" | "sme" => Ok(BackendKind::ArmSme),
-        "x86_simd" | "x86-simd" | "x86_avx2_fma" | "avx2" | "x86_sse42" => Ok(BackendKind::X86Simd),
+        "x86_sse2" | "x86-sse2" | "sse2" => Ok(BackendKind::X86Sse2),
+        "x86_sse42" | "x86-sse42" | "sse42" | "sse4.2" => Ok(BackendKind::X86Sse42),
+        "x86_avx2_fma" | "x86-avx2-fma" | "avx2" => Ok(BackendKind::X86Avx2Fma),
+        "x86_simd" | "x86-simd" => Ok(BackendKind::X86Simd),
         "wasm_simd128" | "wasm-simd128" | "wasm" => Ok(BackendKind::WasmSimd128),
         other => Err(validation_err(format!("Unknown backend kind: '{other}'"))),
     }
@@ -28,9 +32,12 @@ pub fn parse_backend_kind(backend: &str) -> Result<BackendKind, String> {
 pub const fn backend_kind_str(kind: BackendKind) -> &'static str {
     match kind {
         BackendKind::Scalar => "scalar",
-        BackendKind::Neon | BackendKind::ArmNeon => "neon",
+        BackendKind::Neon | BackendKind::ArmNeon | BackendKind::ArmSve2 => "neon",
         BackendKind::ArmSme => "arm-sme",
-        BackendKind::X86Simd | BackendKind::X86Avx2Fma | BackendKind::X86Sse42 => "x86-simd",
+        BackendKind::X86Simd
+        | BackendKind::X86Avx2Fma
+        | BackendKind::X86Sse42
+        | BackendKind::X86Sse2 => "x86-simd",
         BackendKind::WasmSimd128 => "wasm-simd128",
     }
 }
@@ -39,9 +46,12 @@ pub const fn backend_kind_str(kind: BackendKind) -> &'static str {
 pub const fn backend_kind_code(kind: BackendKind) -> u8 {
     match kind {
         BackendKind::Scalar => 0,
-        BackendKind::Neon | BackendKind::ArmNeon => 1,
+        BackendKind::Neon | BackendKind::ArmNeon | BackendKind::ArmSve2 => 1,
         BackendKind::ArmSme => 2,
-        BackendKind::X86Simd | BackendKind::X86Avx2Fma | BackendKind::X86Sse42 => 3,
+        BackendKind::X86Simd
+        | BackendKind::X86Avx2Fma
+        | BackendKind::X86Sse42
+        | BackendKind::X86Sse2 => 3,
         BackendKind::WasmSimd128 => 4,
     }
 }

@@ -69,7 +69,9 @@ pub fn validate_container_with_key_core(
         {
             raw_str.to_string()
         } else {
-            serde_json::to_string(&view.header).map_err(|e| validation_err(e.to_string()))?
+            view.header
+                .to_json_string()
+                .map_err(|e| validation_err(e.to_string()))?
         };
         return Ok(ValidatedContainerInfo {
             preamble: view.preamble,
@@ -89,7 +91,9 @@ pub fn validate_container_with_key_core(
     {
         raw_str.to_string()
     } else {
-        serde_json::to_string(&view.header).map_err(|e| validation_err(e.to_string()))?
+        view.header
+            .to_json_string()
+            .map_err(|e| validation_err(e.to_string()))?
     };
 
     Ok(ValidatedContainerInfo {
@@ -270,7 +274,7 @@ pub fn build_dnam_container_core(
     _has_signatures_flag: bool,
 ) -> Result<Vec<u8>, String> {
     let mut header: DnamJsonHeader =
-        serde_json::from_str(header_json).map_err(|e| validation_err(e.to_string()))?;
+        DnamJsonHeader::from_json_str(header_json).map_err(|e| validation_err(e.to_string()))?;
     header
         .validate()
         .map_err(|e| format_tagged_dnam_error(&e))?;
@@ -302,8 +306,8 @@ pub fn update_header_in_place_core(
     container_bytes: &[u8],
     new_header_json: &str,
 ) -> Result<Vec<u8>, String> {
-    let new_header: DnamJsonHeader =
-        serde_json::from_str(new_header_json).map_err(|e| validation_err(e.to_string()))?;
+    let new_header: DnamJsonHeader = DnamJsonHeader::from_json_str(new_header_json)
+        .map_err(|e| validation_err(e.to_string()))?;
     let mut buf = container_bytes.to_vec();
     update_header_in_place(&mut buf, &new_header).map_err(|e| format_tagged_dnam_error(&e))?;
     Ok(buf)

@@ -585,5 +585,40 @@ mod spec_tests {
         assert_eq!(decoded[0].base_main.len(), 24);
         assert_eq!(decoded[0].embedding.len(), 3);
         assert!(decoded[0].extra_factors.is_some());
+        let decoded_no_ultra = decode_cp1_contributor_stream(&base_bytes, None, &lanes).unwrap();
+        assert!(decoded_no_ultra[0].extra_factors.is_none());
+
+        let mut slots = [crate::control::Cp1ContributorSlot::zero(); 4];
+        let n_slots = decode_cp1_contributor_stream_into_slice(
+            &base_bytes,
+            Some(&ultra_bytes),
+            &lanes,
+            &mut slots,
+        )
+        .unwrap();
+        assert_eq!(n_slots, 3);
+        assert!(slots[0].has_ultra);
+
+        let mut shared_stream = Vec::new();
+        shared_stream.extend_from_slice(&CP1_MAGIC);
+        shared_stream.extend_from_slice(&2_u16.to_le_bytes());
+        shared_stream.push(1); // has_ultra = true
+        shared_stream.push(0);
+        // Entry 0: control_idx = 0, lanes = 3, ctrl_kind = 0, aux = 0xFF
+        shared_stream.extend_from_slice(&0_u16.to_le_bytes());
+        shared_stream.push(3);
+        shared_stream.push(0xFF);
+        // Entry 1: control_idx = 1, lanes = 1, ctrl_kind = 2 (dual-axis), aux = 2
+        shared_stream.extend_from_slice(&1_u16.to_le_bytes());
+        shared_stream.push((2 << 2) | 1);
+        shared_stream.push(2);
+        shared_stream.resize(8 + 8 + (124 + 52) + (112 + 48), 0);
+        let n_shared = decode_cp1_shared_stream_into_slice(&shared_stream, &mut slots).unwrap();
+        assert_eq!(n_shared, 2);
+        assert_eq!(slots[1].partner_control_id, 2);
+        assert_eq!(
+            decode_cp1_shared_stream_into_slice(&[], &mut slots).unwrap(),
+            0
+        );
     }
 }
