@@ -1,11 +1,8 @@
-//! `dnam-studio` — Unified Rust/Node `dnam` CLI, Audio I/O Primitives,
-//! and Tauri v2 Desktop Studio Core.
+//! `dnam-studio` — Standalone Tauri v2 Desktop Studio Core, Native Audio Device I/O,
+//! and Isolated IPC Bridge.
 
 #![forbid(unsafe_code)]
 
 pub mod capture;
-pub mod cli;
 pub mod error;
 pub mod ipc;
-pub mod project;
-pub mod runner;

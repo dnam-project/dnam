@@ -22,7 +22,6 @@
     "dist/*.js.map",
     "dist/*.d.ts",
     "dist/*.d.ts.map",
-    "dist/checkpoint",
     "dist/dsp",
     "dist/engine",
     "dist/internal",
@@ -69,10 +68,6 @@
     "./provenance": {
       "types": "./dist/provenance/index.d.ts",
       "default": "./dist/provenance/index.js"
-    },
-    "./checkpoint": {
-      "types": "./dist/checkpoint/index.d.ts",
-      "default": "./dist/checkpoint/index.js"
     },
     "./dsp": {
       "types": "./dist/dsp/index.d.ts",

@@ -14,14 +14,15 @@ requirements:
 adrs:
   - ADR-0009
   - ADR-0011
+  - ADR-0020
 ---
 
 # `.dnam` Hybrid Binary Container & `< 50 ns` Zero-Copy Hardware Loader
 
-DNAM defines four companion **64-byte cache-line and SIMD-aligned Hybrid Binary Container formats** engineered for zero-copy hardware loading ([`REQ-5.1`, `REQ-5.6`](../../requirements/system_goals_and_requirements.md#6-goal-5--single-run-slimmable-multi-tier-architecture-lite--full--pro--ultra), [`REQ-8.1`, `REQ-8.8`](../../requirements/system_goals_and_requirements.md#9-goal-8--model-provenance-hardware-drm-forensic-watermarking--marketplace-security), [`ADR-0009`](../../adr/0009-jcs-prefix-signing-hpke-and-preview-containment.md)):
+DNAM defines four companion **64-byte cache-line and SIMD-aligned `v2.0` Hybrid Binary Container formats** engineered for zero-copy hardware loading ([`REQ-5.1`, `REQ-5.6`](../../requirements/system_goals_and_requirements.md#6-goal-5--single-run-slimmable-multi-tier-architecture-lite--full--pro--ultra), [`REQ-8.1`, `REQ-8.8`](../../requirements/system_goals_and_requirements.md#9-goal-8--model-provenance-hardware-drm-forensic-watermarking--marketplace-security), [`ADR-0009`](../../adr/0009-jcs-prefix-signing-hpke-and-preview-containment.md), [`ADR-0020`](../../adr/0020-modular-monorepo-and-dnam-proj-container.md)):
 
 1. `r[container.dnam.formats]` **`.dnam` (Magic `b"DNAM"`, Version `2.0`):** Runtime deployment model with a 64B preamble, 128B directory, RFC 8785 JCS immutable header, Region 4 `shared_extent` (`P * 64 B` `ControlClampDescriptor` table + overflow `CP1` contributor stream), `DAU1`/`DAI1` authentication envelope, four nested tier payloads (`Arena 0..3`: `Lite ⊂ Full ⊂ Pro ⊂ Ultra`), and a growable `DMU1`/`DME1` + `DMUE` mutable suffix.
-2. **`.dnam-ckpt` (Magic `b"DNCK"`, Version `2.0`) & `.dnam-cache/*.dnce` (`v2.0`):** Single-file iterative training checkpoint organizing runtime weights, `uplo='U'` `Arena 4` sufficient statistics (`S1C1` + `DCA1`), and `DNCA` `Arena 5` calibration records (`24 KB` / `48 KB` `fp16` coresets) into truncatable tier bundles alongside workspace `.dnam-cache/*.dnce` (`v2.0`) sidecars ([`checkpoint_and_cache_format.md`](checkpoint_and_cache_format.md)).
+2. **`.dnam-proj` (Magic `b"DNPJ"`, Version `2.0`):** Single-file cloud-ready project and Capture Vault container front-loading a 64B preamble, content-addressed `SHA-256` chunk directory, and RFC 8785 JCS manifest for `HTTP Range` inspection alongside `CALB`, `SPCM`, `INPC`/`STMC` `fp16` coreset capsules, `STAT` `uplo='U'` sufficient statistics, `WGHT` embedded `.dnam` weights, and `AUTH` provenance ([`project_container_format.md`](project_container_format.md)).
 3. **`.dnam-seal` (Magic `b"DNSL"`, Version `2.0`):** Opaque 64-byte-aligned OEM hardware-enclave wrapper (`DnamProtectionProfile::EnclaveSealed`, `DSA1` manifest; see [`../security/provenance_and_enclave_drm.md` §3](../security/provenance_and_enclave_drm.md#3-pillar-2-hardware-enclave--oem-drm-oemdevicecertificate-attestation--dnam-seal-bdnsl-wrapper)).
 4. **`.dnam-prev`:** Dedicated `Lite`-only storefront auditioning container that physically omits `Full`, `Pro`, and `Ultra` payloads ([`../security/watermarking_and_marketplace.md` §3](../security/watermarking_and_marketplace.md#3-commercial-storefront-platform-auditioning-royalty-splits--storefront-metadata)).
 
@@ -60,7 +61,7 @@ flowchart LR
 ```text
 +-----------------------------------------------------------------------+ 0x0000 (Byte 0, 64B-aligned)
 | 1. Fixed 64-Byte Binary Preamble (#[repr(C, align(64))], Little-End.) |
-|    • 0..4:   magic = "DNAM" (or "DNCK" / "DNSL")                      |
+|    • 0..4:   magic = "DNAM" (or "DNSL" for enclave-sealed wrapper)    |
 |    • 4..8:   version_major = 2 (u16), version_minor = 0 (u16)         |
 |    • 8..12:  protection_profile (u8), auth_kind (u8), max_tier (u8)   |
 |    • 12..16: sample_rate_train_hz = 48000 (u32) | 16..64: zero (48 B) |
@@ -132,7 +133,7 @@ Protected containers replace `DMU1` with the HPKE-wrapped `DME1` frame using the
 | `presets` | Array of preset objects (`id`, `name`, `controls: dict[str, float \| str]`, optional `description`, `user_metadata`). |
 | `user_metadata` | Open JSON object for model-level catalog tags and host data. |
 | `control_user_metadata` | Object mapping signed `control_id` strings to open metadata objects. |
-| `stem_user_metadata` | Object mapping signed checkpoint `stem_id` strings to open metadata objects. |
+| `stem_user_metadata` | Object mapping signed `stem_id` strings to open metadata objects. |
 
 On container load, the loader validates the `DMU1`/`DME1` CRC-32C and `DMUE` footer and merges mutable `presets`, `user_metadata`, `control_user_metadata`, and `stem_user_metadata` over the signed immutable header view without modifying the authenticated prefix bytes. Loading a partial preset restores signed defaults for all omitted controls at the effective tier before overlaying the preset's assignments and applying whole-batch conditional clamping ([`../dsp/parametric_control_bus.md` §2.4.1](../dsp/parametric_control_bus.md#conditional-batch-safety)).
 

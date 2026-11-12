@@ -41,11 +41,11 @@ flowchart TB
 
     subgraph Formats ["Four 64-Byte-Aligned Container Formats"]
         direction LR
-        F_CKPT[".dnam-ckpt (Magic: DNCK) - Tier-Bundled Checkpoint"]
+        F_PROJ[".dnam-proj (Magic: DNPJ) - Cloud-Ready Capture Vault"]
         F_DNAM[".dnam (Magic: DNAM) - Zero-Copy Runtime Model"]
         F_SEAL[".dnam-seal (Magic: DNSL) - Encrypted OEM Enclave Wrapper"]
         F_PREV[".dnam-prev (container_kind: 'preview') - Lite-Only Storefront Preview"]
-        F_CKPT --> F_DNAM --> F_SEAL
+        F_PROJ --> F_DNAM --> F_SEAL
         F_DNAM --> F_PREV
     end
 

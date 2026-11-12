@@ -65,12 +65,12 @@ export function InteractiveStudioRoot() {
           void (async () => {
             if (isTauri()) {
               const selected = await openDialog({
-                title: "Open DNAM Container (.dnam / .dnam-ckpt)",
+                title: "Open DNAM Container (.dnam / .dnam-proj)",
                 multiple: false,
                 filters: [
                   {
-                    name: "DNAM Models & Workspaces",
-                    extensions: ["dnam", "dnam-ckpt", "toml", "wav"],
+                    name: "DNAM Models & Projects",
+                    extensions: ["dnam", "dnam-proj", "wav"],
                   },
                 ],
               });
@@ -80,7 +80,7 @@ export function InteractiveStudioRoot() {
                   : "dialog: File selection canceled",
               );
             } else {
-              setDesktopStatus("dialog: Opened native .dnam / .dnam-ckpt container picker");
+              setDesktopStatus("dialog: Opened native .dnam / .dnam-proj container picker");
             }
           })();
         },
@@ -140,12 +140,12 @@ export function InteractiveStudioRoot() {
           const nextEpoch = Math.min(40, lastEpoch + 5 || 10);
           if (nextEpoch >= 40) {
             setDesktopStatus(
-              "notification: Sweep 2 Kronecker .dnam-ckpt Export & 3-Phase Audit completed",
+              "notification: Sweep 2 Kronecker .dnam-proj Vault & 3-Phase Audit completed",
             );
             if (isTauri()) {
               void invoke("notify_studio_event", {
-                title: "DNAM Two-Sweep Trainer Complete",
-                body: "Sweep 2 Kronecker .dnam-ckpt exported (3-Phase Audit PASS)",
+                title: "DNAM Two-Sweep Capture Fit Complete",
+                body: "Sweep 2 Kronecker .dnam-proj sealed (3-Phase Audit PASS)",
               });
             }
           }
@@ -159,7 +159,7 @@ export function InteractiveStudioRoot() {
                 totalEpochs: 40,
                 stage:
                   nextEpoch >= 40
-                    ? "Sweep 2: Kronecker .dnam-ckpt Export & 3-Phase Audit"
+                    ? "Sweep 2: Kronecker .dnam-proj Vault & 3-Phase Audit"
                     : "Sweep 2: Joint Full-Rig Kronecker Polish",
                 esrLoss: Number((0.0025 * (40 / nextEpoch)).toFixed(5)),
                 mrIirLoss: Number((0.012 * (40 / nextEpoch)).toFixed(5)),

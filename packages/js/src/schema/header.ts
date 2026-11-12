@@ -1,5 +1,5 @@
 /**
- * Top-level `.dnam` / `.dnam-ckpt` `ModelHeader` interface, `SchemaVersion`, and bijective
+ * Top-level `.dnam` `ModelHeader` interface, `SchemaVersion`, and bijective
  * `decodeHeader` / `encodeHeader` functions backed by native Rust `serde` validation
  * (`ref[sdk.ts.schema.camel-case-codec-parity]`).
  *
@@ -13,7 +13,6 @@ import { deepFreeze } from "../internal/freeze.js";
 import { getActiveDriver } from "../internal/native/load.js";
 import { canonicalJson } from "./canonical-json.js";
 import { camelToWireObject, pruneRustSkipSerializingIf, wireToCamelObject } from "./case-codec.js";
-import type { AuditReport, StemRegistryEntry } from "./checkpoint.js";
 import type { IoConfig, SlimmableTiersConfig } from "./io.js";
 import type { ParameterDescriptor, Preset } from "./parameters.js";
 import type { ModelMetadata } from "./signatures.js";
@@ -28,7 +27,7 @@ import type {
 } from "./stages.js";
 
 /**
- * Parsed semantic version (`major.minor.patch`) of the `.dnam` / `.dnam-ckpt` container schema.
+ * Parsed semantic version (`major.minor.patch`) of the `.dnam` container schema.
  */
 export interface SchemaVersion {
   readonly major: number;
@@ -54,11 +53,11 @@ export function parseSchemaVersion(versionStr: string): SchemaVersion {
 }
 
 /**
- * Validated, deeply frozen camelCase `.dnam` / `.dnam-ckpt` JSON header (`ModelHeader`).
+ * Validated, deeply frozen camelCase `.dnam` JSON header (`ModelHeader`).
  */
 export interface ModelHeader {
   readonly version: string;
-  readonly containerKind: "dnam" | "dnam-ckpt" | "preview" | string;
+  readonly containerKind: "dnam" | "preview" | string;
   readonly architecture: string;
   readonly sampleRateTrainHz: number;
   readonly metadata: ModelMetadata;
@@ -74,37 +73,9 @@ export interface ModelHeader {
   readonly stage3Cabinet: Stage3CabinetKautzConfig;
   readonly stage4Tank: Stage4SpatialTankConfig;
   readonly tensorDirectory: Readonly<Record<string, TensorSliceEntry>>;
-  readonly stemsRegistry: readonly StemRegistryEntry[] | null;
-  readonly auditReport: AuditReport | null;
 }
 
 function normalizeOptionalNullableFields(camel: Record<string, unknown>): void {
-  if (!("stemsRegistry" in camel)) {
-    camel["stemsRegistry"] = null;
-  } else if (Array.isArray(camel["stemsRegistry"])) {
-    for (const stem of camel["stemsRegistry"]) {
-      if (stem !== null && typeof stem === "object") {
-        const sRec = stem as Record<string, unknown>;
-        if (!("extractedPhysics" in sRec)) {
-          sRec["extractedPhysics"] = null;
-        }
-        for (const sk of ["gAudioUploUF64", "cAudioTierF64"]) {
-          const sl = sRec[sk];
-          if (sl !== null && typeof sl === "object") {
-            const slRec = sl as Record<string, unknown>;
-            for (const ok of ["packing", "featureDim", "packedLen", "shape"]) {
-              if (!(ok in slRec)) {
-                slRec[ok] = null;
-              }
-            }
-          }
-        }
-      }
-    }
-  }
-  if (!("auditReport" in camel)) {
-    camel["auditReport"] = null;
-  }
   const meta = camel["metadata"];
   if (meta !== null && typeof meta === "object") {
     const mRec = meta as Record<string, unknown>;

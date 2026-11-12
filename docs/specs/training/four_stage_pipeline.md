@@ -1,14 +1,16 @@
 ---
 id: spec.train.pipeline
-title: "Two-Sweep Block-Coordinate Cholesky Training Pipeline & Accelerator Numerics"
+title: "Five-Stage Analytical Variable-Projection & Cholesky Training Pipeline"
 status: canonical
-version: "1.0.0"
+version: "2.0.0"
 domain: training
 rule_prefixes:
   - "r[train.pipeline."
   - "r[train.gram."
 requirements:
   - REQ-1.5
+  - REQ-1.8
+  - REQ-2.1
   - REQ-4.1
   - REQ-4.2
   - REQ-4.3
@@ -18,159 +20,96 @@ adrs:
   - ADR-0008
   - ADR-0017
   - ADR-0018
+  - ADR-0020
 ---
 
-# Two-Sweep Block-Coordinate Cholesky Training Pipeline & Accelerator Numerics
+# Five-Stage Analytical Variable-Projection & Cholesky Training Pipeline
 
-This specification defines the **Two-Sweep Block-Coordinate Cholesky Training Pipeline** and the **Accelerator-First 32-Bit Device Streaming + `float64`-Grade Gram Contraction + Batched Host-`float64` Solver Architecture** of **Dynamic Neural Audio Modeler (DNAM)** ([`packages/engine/`](../../../packages/engine/README.md), [`packages/trainer/src/`](../../../packages/trainer/README.md), [`tora_architecture.md`](../architecture/tora_architecture.md), [`ADR-0008`](../../adr/0008-per-stem-kronecker-statistics-and-wide-gram.md), [`ADR-0017`](../../adr/0017-pure-rust-analytical-varpro-solver-and-planar-decoupling.md)).
-
-For hardware capture and sub-sample latency alignment, see [`capture_and_alignment.md`](capture_and_alignment.md). For stem expansion and caching, see [`iterative_resume_and_caching.md`](iterative_resume_and_caching.md). For the Non-Stop 3-Phase Control-Space Audit and registry, see [`control_space_audit.md`](control_space_audit.md).
+This specification defines the **100% pure-Rust (`#![forbid(unsafe_code)]`) 5-Stage (`Stage A`–`Stage E`) Analytical Variable-Projection (`VarPro`), Selective `MM-Cholesky`, and Wide-Significand Gram Contraction Pipeline** in [`packages/capture/`](../../../packages/capture/README.md) (`dnam_capture::solver`), fulfilling [`REQ-1.5`, `REQ-1.8`, `REQ-2.1`, `REQ-4.1`–`REQ-4.3`, `REQ-5.2`](../../requirements/system_goals_and_requirements.md) (see [`../../adr/0008-per-stem-kronecker-statistics-and-wide-gram.md`](../../adr/0008-per-stem-kronecker-statistics-and-wide-gram.md), [`../../adr/0017-pure-rust-analytical-varpro-solver-and-planar-decoupling.md`](../../adr/0017-pure-rust-analytical-varpro-solver-and-planar-decoupling.md), [`../../adr/0018-signal-chain-fixtures-crate-and-whitebox-distillation.md`](../../adr/0018-signal-chain-fixtures-crate-and-whitebox-distillation.md), and [`../../adr/0020-modular-monorepo-and-dnam-proj-container.md`](../../adr/0020-modular-monorepo-and-dnam-proj-container.md)).
 
 ---
 
-## 1. End-to-End Two-Sweep Pipeline Topology
+## 1. Pipeline Overview & Dataflow Topology
 
 `r[train.pipeline.topology]`
 
 ```mermaid
-flowchart TD
-    Stems["Aligned 48 kHz Dry/Wet Stems (s = 1..S)<br/>& controls_schema"] --> Sw1["Sweep 1: Forward System-ID & Residual Solver"]
-
-    subgraph Sw1Group ["Sweep 1: Forward System-ID & Residual Solver"]
-        direction TB
-        S1A["Step 0: Order-Statistic Delay & Pole Extraction (Variance Gates)<br/>Phase 1 Pre-Flight Audit"]
-        S1B["Stage III Cabinet Fit: 16/32/48/64-Tap Early FIR + Shared Kautz Modal Poles"]
-        S1C["Stage II Closed-Form Amp Solve: Commuted Project-Then-Filter Cholesky"]
-        S1D["Stage IV Tank Optimization: Op-T[Tank] Surrogate Delay Gradients with Corner Barrier"]
-        S1E["Fit & Freeze Upstream Stage Weights, Control Projections & Dispatch Matrices"]
-        S1A --> S1B --> S1C --> S1D --> S1E
-    end
-
-    Sw1 --> Sw2["Sweep 2: Joint Full-Rig Kronecker Polish & Certification"]
-
-    subgraph Sw2Group ["Sweep 2: Joint Full-Rig Kronecker Polish & Certification"]
-        direction TB
-        S2A["Accumulate Per-Tier Feature Statistics (Lite..Ultra)<br/>After the Upstream Freeze"]
-        S2B["Joint Host-float64 Trajectory-Invariant Head & Control Fit"]
-        S2C["Phase 3 Export Certification: Dynamic Excursion, Head Gain & +-100 Envelope"]
-        S2A --> S2B --> S2C
-    end
-
-    Sw2 --> Out["Export .dnam + Tier-Bundled .dnam-ckpt<br/>(uplo='U' Arena 4 + DNCA Arena 5)"]
-```
-
----
-
-## 2. Two-Sweep Block-Coordinate Cholesky Training Pipeline
-
-### 2.1 Sweep 1 — Forward System-ID & Canonical Residual Solver
-
-`r[train.pipeline.sweep1]`
-
-Sweep 1 operates on aligned `48 kHz` working audio and controls (`sample_rate_train_hz = 48000`, with `FullBand64Tap` parallel alignment and `200 Hz` TPT LR4 crossover where configured):
-
-1. `r[train.pipeline.sweep1-step0]` **Step-0 Observable Extraction & Phase-1 Audit:**
-   - Extracts sorted delay times $\tau_{0,1} < \dots < \tau_{0,M}$ and modal pole frequencies across stems.
-   - Evaluates Step-0 Physical Variance Gates $\mathbf{G}_p \in \lbrace 0, 1 \rbrace$ and executes Phase 1 of the Non-Stop Control-Space Audit (`[CLAMP-RANGE]`, `[CLAMP-SWITCH]`, `[CLAMP-STABILITY]`).
-2. `r[train.pipeline.sweep1-stage3]` **Stage III Cabinet Acoustical Fit (`REQ-1.2`):**
-   - Fits independent L/R early FIR taps (`16 / 32 / 48 / 64` taps/ch) and shared Kautz modal poles (`4 / 8 / 16 / 32` pairs starting at sample 16) with independent L/R complex readouts ([`../dsp/op_m_modal_kautz.md` §4.1](../dsp/op_m_modal_kautz.md#41-stage-iii-architecture--tier-allocation)).
-3. `r[train.pipeline.sweep1-stage2]` **Stage II Closed-Form Commuted Amp Solve:**
-   - Solves each commuted sub-stage projection block `W_k^(s)(z_stage)` using the runtime's exact project-then-filter order ($\sum_{p,r} \mathcal{L}_k(u_p z_r)[n] U_{k,r,p,c}$, [`../dsp/op_n_commuted_cascade.md` §3.3](../dsp/op_n_commuted_cascade.md)).
-4. `r[train.pipeline.sweep1-stage4]` **Stage IV Spatial Tank Envelope Optimization:**
-   - Optimizes Stage IV delay lengths, blended feedback knees, and Givens/Householder mixing angles using Multi-Scale Gaussian Derivative Envelope Surrogates bounded by the stop-gradient corner barrier $\mathcal{L}_{\text{barrier}}$ (converging fractional delay identification within $< 0.05$ samples).
-5. `r[train.pipeline.sweep1-freeze]` **Upstream Stage & Control Freeze:**
-   - Fits the `16 × 16` base and `16 × 4` `Ultra` delta stage-dispatch matrices (preferring stage-control coordinates before base head-coordinate columns) and freezes all upstream stage weights and stage-coupled control projections prior to Sweep 2 statistics accumulation.
-
-### 2.2 Sweep 2 — Joint Full-Rig Kronecker Polish & Export Certification
-
-`r[train.pipeline.sweep2]`
-
-1. `r[train.pipeline.sweep2-stats]` **Per-Tier Feature Statistics Accumulation (`Arena 4`):**
-   - After the upstream freeze, evaluates each effective tier's trajectory (`Lite` `64-D`, `Full` `128-D`, `Pro` `192-D`, `Ultra` `256-D`) in a single statistics sweep and streams `uplo='U'` Gram and target cross-correlation records ([`../containers/checkpoint_and_cache_format.md` §2](../containers/checkpoint_and_cache_format.md#2-tier-ordered-column-major-upper-triangular-packing-uplou-for-mathbfg_textaudios)).
-2. `r[train.pipeline.sweep2-solve]` **Joint Host-`float64` Head & Control Solve:**
-   - Solves the block-diagonal lower-triangular Kronecker head weights and biases across all active tiers on the host CPU in `IEEE-754 float64`, preserving upstream trajectory invariance (`< -45 dB` synthetic polish ESR).
-3. `r[train.pipeline.sweep2-certify]` **Phase-3 Export Certification:**
-   - Audits `[CLAMP-DYNAMIC]` ($\tau_{\min} \ge 4.0\text{ samples}$, $r_c \le 0.9995$), `[CLAMP-HEAD-GAIN]` ($\le +6.0\text{ dB}$), and `[NUMERIC-ENVELOPE]` ($\ge \pm 100.0$ unclipped input/output operating range), plus per-output `bESR` / `MR-IIR` / `LTAS` / `SegESR` and monotone adjacent-tier non-regression ([`../architecture/psychoacoustic_quality_and_tiers.md` §4](../architecture/psychoacoustic_quality_and_tiers.md#4-canonical-4-tier-quality-benchmark-matrix)).
-
----
-
-## 3. Accelerator-First 32-Bit Execution, Gram Accuracy & Streaming
-
-```mermaid
 flowchart LR
-    subgraph Device ["32-Bit Hardware Accelerator (TPU / CUDA / ROCm / MPS)"]
-        D1["2-D Column & Window Streaming<br/>Zero 64-Bit Device Tensors"] --> D2["Weighted Gram & Cross-Correlations<br/>32-Bit Device Contraction"]
-    end
-
-    subgraph Host ["Host CPU Memory & LAPACK Solver"]
-        H1["Per-Window Offload (< 32 MiB Staging)<br/>& In-Place Device Buffer Release"] --> H2["HostDenseSolver (IEEE-754 float64):<br/>Batched LAPACK Cholesky / lstsq / eigh"]
-    end
-
-    D2 --> H1
-    H2 -->|"32-Bit Projection Weights"| D1
+    Stems["Aligned Stems / Targets<br/>(48 kHz Canonical Grid)"] --> SA["Stage A: Pole & Delay ID<br/>Steiglitz-McBride Kautz<br/>+ Envelope Tank Taps"]
+    SA --> SB["Stage B: Basis Harvest<br/>Exact dnam-engine 256-D<br/>Feature Bus + INPC/STMC"]
+    SB --> SC["Stage C: Nested Schur Solve<br/>64/128/192/256-D MM-Cholesky<br/>+ 33-Band LTAS KKT"]
+    SC --> SD["Stage D: Control Bus & Audit<br/>Triangular Newton CP1<br/>+ 3-Phase Safety Clamps"]
+    SD --> SE["Stage E: Kautz Contraction<br/>b_head = 0 + Watermark<br/>-> .dnam-proj & .dnam"]
 ```
 
-1. `r[train.gram.device-32bit]` **Zero 64-Bit Device Tensors:** All bulk $O(L)$ filtering, FFT band projections, nonlinear waveshaping, and Gram contractions execute on the accelerator using 32-bit or narrower device tensors (`float32`, `int32`, `bool`, `complex64`).
-2. `r[train.gram.window-streaming]` **2-D Column/Window Streaming (`< 32 MiB` Staging, `< 8 GiB` Host Ceiling, `REQ-4.3`):** Streams wide feature designs in bounded windows and column tiles, releasing device buffers immediately after each window offload.
-
-### 3.1 Weighted Gram Accuracy Contract
-
-`r[train.gram.accuracy-contract]`
-
-For selected `binary32` inputs $a_n, b_n$ and nonnegative `binary32` weights $w_n$ ($1 \le N < 2^{53}$, $u = 2^{-53}$, $\gamma_N = Nu/(1 - Nu)$), define the exact contraction $g = \sum_{n=1}^N w_n a_n b_n$ and absolute sum $S = \sum_{n=1}^N |w_n a_n b_n|$. Every nonzero weighted `binary32` product is an integer multiple of $2^{-447}$ with magnitude below $2^{437}$, so it never underflows or overflows `binary64`. The stored host `float64` statistic $\hat g$ must satisfy:
-$$|\hat g - g| \le \gamma_N S \quad (\text{binary32 inputs}), \qquad |\hat g - g| \le \gamma_N S + 2^{-1075} \quad (\text{binary64 inputs})$$
-
-### 3.2 Exponent-Aware Gram Accumulation
-
-`r[train.gram.exponent-aware]`
-
-To satisfy §3.1 on 32-bit-only accelerators without subblock-maximum underflow or `int32` symmetry-fold overflow:
-- `r[train.gram.radix256]` **Fixed-Anchor Radix-256 Digit Decomposition:** Express `binary32` $a_n w_n$ in units of $2^{-304}$ (at most `70` signed radix-256 digits in `[-255, 255]`) and $b_n$ in units of $2^{-152}$ (at most `35` signed digits), accumulating `128`-row chunks (`< 2^23`) into 16-bit limbs stored in `int32` words (`56` limbs = `896` bits) before a single `RNE` `float64` rounding on the host.
-- `r[train.gram.wide192]` **Wide-Significand (`192`-Bit) Streaming & Single-Sweep Range Triage:** Accumulate exact `159`-bit triple products into a signed `192`-bit significand (`8 × 24-bit` limbs in `int32`) plus a `16`-bit exponent (`36 B`/entry, $Q_N = (N-1)2^{-192}/(1 - (N-1)2^{-192}) < 2^{-138}$):
-  $$|\hat g - g| \le \big(u + (1 + u)Q_N\big)S + 2^{-1075}, \qquad S_{\mathrm{bound}} = N 2^{e_a + e_b + e_w}, \qquad B = 2N(N-1)2^{e_a + e_b + e_w - 192}$$
-  With $I = [g_{\mathrm{wide}} - B, g_{\mathrm{wide}} + B]$, an interval wholly inside $(-T, T)$ ($T = 2^{1024} - 2^{970}$) certifies a finite `binary64` result, while intersection with $(-U, U)$ ($U = 2^{-1022} - 2^{-1075}$) flags potential underflow.
-- `r[train.gram.group-merge]` **Disjoint Group Merging & Factor Assembly Bounds:** For $K$ disjoint `binary64`-rounded groups or post-hoc factors $h_i$:
-  $$|\hat g - g| \le \gamma_K S + K(1 + \gamma_{K-1})2^{-1075}, \qquad \left|\hat A - \sum_{i=1}^K h_i g_i\right| \le \gamma_{K+1} \sum_{i=1}^K |h_i| S_i$$
+`dnam-capture` trains all four nested runtime tiers (`Lite` `64-D` $\subset$ `Full` `128-D` $\subset$ `Pro` `192-D` $\subset$ `Ultra` `256-D`) simultaneously in a **single deterministic analytical pass** (`REQ-4.1`, `REQ-5.2`) without Python, PyTorch, autograd tape allocations, or stochastic gradient descent, staying strictly within `< 64 MiB` working RAM on single-stem/capsule runs (`REQ-4.3`).
 
 ---
 
-## 4. Trainer–Engine Isomorphism Protocol & Closed-Form Normal Equations
+## 2. Five-Stage Analytical Variable-Projection & Cholesky Solver
 
-### 4.1 Trainer–Engine Parity Conditions
+### 2.1 Stage A — Steiglitz–McBride Rational Pole & Delay Identification
+
+`r[train.pipeline.stage-a-poles]`
+
+On the aligned `StarCenter` stem (`s = 0`), `Stage A` identifies shared conjugate Kautz modal poles $\lbrace (r_m, \theta_m) \rbrace$ ($r_m \le 0.9995$, `ref[dsp.op-m.stage3.pole-extraction]`) via iterative prefiltered Steiglitz–McBride rational system identification and extracts Stage I / Stage IV fractional delay tap anchors ($\tau_m \ge 4.0$ samples) via coarse-to-fine envelope cross-correlation, clamping every pole and feedback gain into the unconditional BIBO/Lyapunov envelope (`ref[train.audit.phase1.clamp-stability]`).
+
+### 2.2 Stage B — Trajectory Basis Harvesting & Coreset Extraction
+
+`r[train.pipeline.stage-b-harvest]`
+
+Freezing upstream nonlinear/modal recurrences from `Stage A`, `Stage B` steps the **exact** `dnam_engine` operator pipeline (`step_frame_with_feature_bus`) across active stems to harvest the `256-D` physical feature bus $\boldsymbol{\phi}[n] \in \mathbb{R}^{256}$, accumulates tier-ordered `uplo = 'U'` Gram and two-channel cross-correlation statistics, and extracts the `12,000`-frame `fp16` `INPC` dry coreset plus per-stem `STMC` wet coreset, `R <= 36` `16 B` `StmcTrajectoryWindow` records, and `4,096 B` spectral summary (`ref[container.proj.inpc-capsule]`, `ref[container.proj.stmc-capsule]`).
+
+### 2.3 Stage C — Nested 4-Tier Schur-Complement & Selective MM-Cholesky Solve
+
+`r[train.pipeline.stage-c-schur]`
+
+`Stage C` solves the nested `Lite` (`64-D`), `Full` (`128-D`), `Pro` (`192-D`), and `Ultra` (`256-D`) Mid/Side Kronecker output heads simultaneously (`REQ-5.2`, `ADR-0017` Theorems 2 & 5):
+1. **Intra-Tier `64-D` Schur-Complement Re-Balancing:** Solves each lower tier's prefix submatrix ($\mathbf{G}_{1:D_T, 1:D_T} + \boldsymbol{\Lambda}_{D_T}$) via `IEEE-754 float64` Cholesky factorization (`solve_uplo_u_cholesky_2ch`) so `Lite`, `Full`, `Pro`, and `Ultra` each independently achieve optimal spectral balance without separate per-tier training jobs.
+2. **Psychoacoustic `bESR` + `33`-Band `LTAS` KKT Projection:** Weights normal equations across the 4th-order Bézout `LF`/`MF`/`HF` bands (`ref[qual.besr.bezout-crossover]`) and enforces `33`-band `1/3`-octave `LTAS` tilt bounds (`ref[qual.companion.ltas]`), baking the resulting effective cross-correlation into `STAT` (`ref[container.proj.stat-uplo-u]`).
+
+### 2.4 Stage D — Triangular Newton Control-Bus Projection & Corner Barrier
+
+`r[train.pipeline.stage-d-control]`
+
+Across multi-stem control schedules ($P \ge 1$), `Stage D` fits the `3 kHz` Parametric Control Bus (`CP1` arbitrary-$P$ contributor records, `ref[container.dnam.cp1-profile]`) via exact interpolation on the triangular Newton / Gauss–Lobatto basis (`Mode-0` locked at `StarCenter`), prunes below-floor `2D` interaction terms, and executes the non-stop 3-Phase Control-Space Audit (`[CLAMP-RANGE]`, `[CLAMP-SWITCH]`, `[CLAMP-STABILITY]`, Phase-2 corner barrier & `2,048`-sample `PolyADAA` rail occupancy check, and Phase-3 dynamic/head-gain certification; `ref[train.audit.phase1.clamp-stability]`).
+
+### 2.5 Stage E — Rank-1 Kautz Contraction, Zero-DC Enforcement & Container Packing
+
+`r[train.pipeline.stage-e-pack]`
+
+`Stage E` executes Rank-1 static Kautz readout contraction ($\tilde{\mathbf{G}}_0 = \mathbf{P}_c^\top \mathbf{G}_0 \mathbf{P}_c$, `ADR-0017` Theorem 6), hard-zeroes all output-head DC bias slots (`b_head = 0.0`, `[STAB-ZERO-DC]`), computes exact `tier_gain_trim_lin` loudness matching (`0.00 dB` inter-tier step), applies optional Mechanism A $\to$ Mechanism B watermarking (`ref[sec.watermark.reciprocal-gauge]`), certifies the 4-metric perceptual suite (`bESR`, `MR-IIR`, `LTAS`, `SegESR`), and emits the `64 B`-aligned `v2.0` `.dnam-proj` (`DNPJ`) and runtime `.dnam` (`DNAM`) containers.
+
+---
+
+## 3. Wide-Significand Gram Contraction & Cross-Platform Accuracy
+
+1. `r[train.gram.accuracy-contract]` **`IEEE-754 float64` & Deterministic Contraction Contract (`REQ-4.2`):** Every `uplo = 'U'` Gram matrix $\mathbf{G} = \sum_{n=0}^{N-1} w_n \boldsymbol{\phi}[n]\boldsymbol{\phi}[n]^\top$ and target cross-correlation $\mathbf{C} = \sum_{n=0}^{N-1} w_n \boldsymbol{\phi}[n]\mathbf{y}[n]^\top$ satisfies entrywise error bound $\lvert \hat{g}_{ij} - g_{ij} \rvert \le \gamma_N \sum_{n=0}^{N-1} w_n \lvert \phi_i[n] \phi_j[n] \rvert$ in `IEEE-754 float64` without `float32` normal-equation overflow or subblock underflow, binding the input stream to the `DNAM-GRAM-INPUT-v2` `SHA-256` fingerprint (`compute_gram_input_fingerprint`).
+2. `r[train.gram.wide192]` **192-Bit Wide-Significand Exact/Compensated Accumulator (`ADR-0008`):** For high-dynamic-range or multi-million-sample stems where cancellation spans $> 53$ bits of exponent range (e.g. $[1, 2^{-25}, -1]$), wide-significand (`192-bit` integer limb / Priest-compensated) accumulation preserves cross-platform reproducibility across `ARM64`, `x86_64`, and `WASM` workers before rounding once to `float64`.
+
+---
+
+## 4. Engine-Capture Isomorphism, Control Dispatch & Fixture Certification
+
+### 4.1 Zero-ULP Engine-Capture Isomorphism Parity
 
 `r[train.pipeline.isomorphism-parity]`
 
-By Theorem 1 ([`../dsp/op_n_commuted_cascade.md` §3](../dsp/op_n_commuted_cascade.md#3-exact-lti-basis-commutativity-theorem-theorem-1)), constant projection matrices commute with causal LTI filters in exact arithmetic, while automated controls filter the product columns `L_k(u_p z_r)[n]` to match the runtime's project-then-filter execution order.
+Because `dnam-capture` links `dnam-engine` directly and harvests features through the runtime's own `DnamEngine` / `StagePipeline` kernels, exporting `WGHT` from `.dnam-proj` via `export_runtime_dnam` and stepping `DnamEngine` reproduces the trainer's predicted waveform to `0 ULP` (on scalar/matched SIMD backends) and `bESR <= -60 dB` on structural `TORA` isomorphism oracles (`Oracle-01..03`).
 
-### 4.2 Dual-Execution Operation Matrix
-
-`r[train.pipeline.dual-execution-matrix]`
-
-| Stage / Component | Pure-Rust Training Operation (`packages/trainer/`) | Rust SIMD Inference Operation (`packages/engine/`) |
-| :--- | :--- | :--- |
-| **Stage I (`Op-T/M/N[Pre]`)** | Forward-faithful `T1` tracker, `H1` Hilbert pair, centered `M=2` grains, and fixed-hertz ZOH bitcrusher with surrogate backward gradients | 4-lane SIMD `Op-T`, `Op-M`, and `Op-N` kernels (`0 FDIV`, `0 FSQRT`, `0 libm`) |
-| **Stage II (`Op-N` Cascade)** | Product-column LTI filtering `L_k(u_p z_r)[n]` + host `float64` Cholesky solve | `3 kHz` bilinear matrix fold `W_k^(s)(z_stage)` + per-sample commuted projection `v_k[n] = u_nl[n] W_k[n]` |
-| **Stage III (`Op-M` Cabinet)** | Two-step warped Laguerre/Kautz shared-pole extraction + L/R readout solve | Separate 64B-aligned L/R early FIR (`16..64` taps) + 8-vector SoA Kautz modal blocks (`4..32` pairs) |
-| **Stage IV (`Op-T` Tank)** | Multi-scale Gaussian envelope delay surrogate + stop-gradient corner barrier | Partitioned `fp16` delay/all-pass rings + Givens/Householder mixing + blended knee & grouped max-tree guard |
-| **Output Head (`256-D` Mid/Side)** | Joint tier-aware host `float64` solve over `Arena 4` `uplo='U'` statistics | `3 kHz` SVD mode collapse (`D_h = 4` in `Lite..Pro`, `8` in `Ultra`) + `2 × D` SIMD dot-product |
-
-### 4.3 Host `float64` Fit for Base & Ultra Stage Dispatch (`16 × 20` & `4 × 4`)
+### 4.2 Closed-Form Control-Dispatch Normal Equations
 
 `r[train.pipeline.dispatch-solve]`
 
-Before the final Sweep 2 statistics pass, fit the shared `16 × 16` base dispatch matrix $\mathbf{W}_{\text{ctrl}}$ and the `Ultra`-only `16 × 4` delta $\mathbf{W}_{\text{ctrl},\Delta}^{\text{ultra}}$ ([`../dsp/parametric_control_bus.md` §3.1](../dsp/parametric_control_bus.md#31-stage-parameter-dispatch-matrix-mathbfw_textctrl)) in host `float64`. For observation $i$ with effective-tier bus $\mathbf{q}_i \in \mathbb{R}^{16}$, extra `Ultra` stage coordinates $\mathbf{h}_i \in \mathbb{R}^4$ ($\mathbf{h}_i = \mathbf{0}$ for `Lite..Pro`), target $\boldsymbol{\theta}_i \in \mathbb{R}^{16}$, nonnegative weight $w_i$, and positive diagonal regularizer $\mathbf{R} \in \mathbb{R}^{20 \times 20}$:
-$$\tilde{\mathbf{q}}_i = \big[\mathbf{q}_i^\top, \mathbf{h}_i^\top\big]^\top \in \mathbb{R}^{20}, \qquad \tilde{\mathbf{W}} = \big[\mathbf{W}_{\text{ctrl}} \quad \mathbf{W}_{\text{ctrl},\Delta}^{\text{ultra}}\big] \in \mathbb{R}^{16 \times 20}$$
-$$\mathbf{G} = \sum_i w_i \tilde{\mathbf{q}}_i \tilde{\mathbf{q}}_i^\top + \mathbf{R}, \qquad \mathbf{C} = \sum_i w_i \tilde{\mathbf{q}}_i \boldsymbol{\theta}_i^\top, \qquad \mathbf{G} \tilde{\mathbf{W}}^\top = \mathbf{C}$$
-When the base matrix is frozen, fit $\mathbf{W}_{\text{ctrl},\Delta}^{\text{ultra}}$ alone against the residual targets $\boldsymbol{\theta}_i - \mathbf{W}_{\text{ctrl}}\mathbf{q}_i$ using the analogous `4 × 4` regularized Cholesky solve over $\mathbf{h}_i$.
+Given per-stem feature Gram matrices $\mathbf{G}_s \in \mathbb{R}^{D \times D}$, cross-correlations $\mathbf{C}_s \in \mathbb{R}^{D \times C_{\text{out}}}$, and evaluated `3 kHz` control-basis vectors $\boldsymbol{\psi}_s \in \mathbb{R}^K$, the joint bilinear Kronecker head normal matrix assembles in closed form without re-streaming audio frames (`ref[train.resume.kronecker-reassembly]`):
+$$\mathbf{H}_{\text{kron}} = \sum_{s \in \mathcal{S}_{\text{enabled}}} \big(\boldsymbol{\psi}_s \boldsymbol{\psi}_s^\top\big) \otimes \mathbf{G}_s + \boldsymbol{\Lambda}_{\text{kron}}, \qquad \mathbf{B}_{\text{kron}} = \sum_{s \in \mathcal{S}_{\text{enabled}}} \boldsymbol{\psi}_s \otimes \mathbf{C}_s$$
 
-### 4.4 4-Tier Signal-Chain Fixture Matrix & White-Box Distillation (`packages/fixtures/` & `packages/trainer/`)
+### 4.3 Four-Tier Signal-Chain Fixture Matrix & White-Box Runners
 
 `r[train.pipeline.fixtures-matrix]`
 
-To verify end-to-end parameter recovery, white-box/grey-box distillation (`REQ-1.8`), and multi-rate / multi-bit-depth perceptual certification across all physical effect classes and pathological hardware faults (`REQ-1.5`, `REQ-1.6`), [`packages/fixtures/`](../../../packages/fixtures/README.md) (`dnam-fixtures`, [`ADR-0018`](../../adr/0018-signal-chain-fixtures-crate-and-whitebox-distillation.md)) provides a zero-dependency pure black-box ground-truth audio model crate (`BlackBoxModel`) with device-intrinsic format/control metadata (`FixtureDeviceMetadata`: `sample_rate_hz`, `FixtureBitDepth` across `Int12`/`Int16`/`Int24`/`Int32`/`Float32`, `FixtureControlSpec`, `FixtureSwitchSpec`, `expected_tail_ms`, and `supports_tempo_sync`), consumed strictly via `fixture <- trainer` (`[dev-dependencies]` in `packages/trainer/Cargo.toml`) alongside `engine <- trainer` (`[dependencies]` in `packages/trainer/Cargo.toml`, with zero `dnam-fixtures` dependency in `dnam-engine` or `dnam-studio`) and paired with `dnam-trainer`'s `DistillationTarget`, `CaptureBitDepth` (`Int12`/`Int16`/`Int24`/`Int32`/`Float32`), zero-phase `resampler`, `whitebox`, and `metrics` certification modules:
-
-1. **Tier 1 (`Oracle-01`..`Oracle-03` in `packages/trainer`):** Exact `TORA` structural isomorphism oracles (`Oracle-01-256D-Schur-And-Gauge`, `Oracle-02-CP1-ArbitraryP-And-Hadamard-FM` at $P = 6$ and $P = 16$, and `Oracle-03-Zero-WAV-Checkpoint-Resume`) verifying `0.000000 ULP` dyadic gauge/prefix/Star-Center invariance, continuous `f32` gauge equivalence (`< -100 dB`), `< -80 dB` 3-Layer buyer watermark transparency, and zero-WAV `Arena 4` / `Arena 5` (`STMC`/`INPC`) checkpoint resume.
-2. **Tier 2 (`Chain-01`..`Chain-12` in `packages/fixtures`):** Twelve independent $4\times$-oversampled ($4f_s$, e.g. $192\text{ kHz}$ at $f_s = 48\text{ kHz}$, configurable across arbitrary device `sample_rate_hz` and `FixtureBitDepth`) pure black-box physical signal-chain archetypes implementing `BlackBoxModel` and spanning symmetric overdrive, gated asymmetric fuzz, parallel clean blend, 3-triode `FMV` tube head + $4\times 12$ cabinet, bass-reflex cabinet + room, envelope-modulated resonant SVF, stereo chorus + rotary horn/drum with all 12 tempo subdivisions, dispersive BBD echo + $30\text{ s}$ FDN shimmer with timed freeze latch and `WDW` taps, optical `T4B` dual-release compressor with `2->1` Aux-Key sidechain, zero-crossing octave divider + ring modulator, bi-amp `200 Hz` LR4 bass crossover + `B-H` output iron, and full `P = 0` / `P = 16` stereo rigs (`1->2`, `2->2`, `4CM`, `WDW`).
-3. **Tier 3 (`Cases #1`..`#26` across `packages/fixtures` & `packages/trainer`):** Composable pure black-box hardware/interface fault decorators (`AdcClipAndPadDecorator`, `ConverterLoopbackDecorator`, `HumanHandTrajectoryDecorator`, `TubeThermalHysteresisDecorator`, `PotTaperAndSwitchDecorator`, `PolarityAndDcOffsetDecorator`, `GermaniumTempDriftDecorator`, `MainsHumAndNoiseFloorDecorator`, `HardwareNoiseGateDecorator`, `SpringChirpDecorator`, `DigitalQuirksDecorator`, `ScratchyPotAndSteppedAttenuatorDecorator`, `IdleSquealDecorator`, and `MicrophoneCapsuleClipDecorator` for `Case #26` sub-`0 dBFS` microphone capsule clipping + LF $X_{\max}$ excursion) wrapping any `M: BlackBoxModel` and forwarding its `FixtureDeviceMetadata` in `packages/fixtures`, paired with `Ed25519` + 3-Layer Tardos `N = 5` collusion/re-capture (`Case #8`), multi-rate ZOH (`Case #9`), and channel topology (`Case #19`) harnesses in `packages/trainer`.
-4. **Tier 4 (`DNWB` White-Box Runners & Perceptual Certification Suite in `packages/trainer`):** GPL-isolated out-of-process `FaustRunner` and `SpiceRunner` (`PCHIP` variable-step $4f_s$ resampling + `309`-tap Kaiser-sinc $4\times \to 1\times$ causal decimation in `dnam_trainer::whitebox`) over $64\text{-byte}$ `DNWB` pipes (`dnam-train dnwb-serve`) implementing `DistillationTarget`, paired with `CaptureBitDepth` quantization-floor calibration and the 4-metric perceptual certification suite (`bESR`, `MR-IIR`, `LTAS`, `SegESR`, and monotone 4-tier non-regression in `dnam_trainer::metrics` per [`../architecture/psychoacoustic_quality_and_tiers.md`](../architecture/psychoacoustic_quality_and_tiers.md)).
-
+`packages/capture` verifies end-to-end solver fidelity against [`packages/fixtures/`](../../../packages/fixtures/README.md) (`fixtures <- capture` `[dev-dependencies]` only, `ADR-0018`) across four automated verification tiers:
+1. **Tier 1 (`3` Structural Isomorphism Oracles, `Oracle-01..03`):** `256-D` Schur + gauge recovery, arbitrary-$P$ `CP1` (`P = 6`, `P = 16`), and zero-WAV `.dnam-proj` capsule vault editing.
+2. **Tier 2 (`12` `4x`-Oversampled Physical Signal-Chain Archetypes, `Chain-01..12`):** Clean preamp, overdrive, fuzz/wavefolder, compressor, zero-latency `4x12` cab, wah/phaser, octave/ring-mod, chorus/TZF, tape/BBD echo, spring/hall reverb, granular shimmer/freeze, and full `4CM`/`WDW` multi-control rigs.
+3. **Tier 3 (`14` Composable Hardware Fault Decorators, `Cases #1..#26`):** ADC clipping/pads, converter loopback lag, human knob trajectories, thermal hysteresis, pot tapers, polarity inversion/DC offset, mains hum/hiss, noise gates, spring chirp, digital bit-crush quirks, scratchy pots, idle squeal, and microphone capsule clipping.
+4. **Tier 4 (`DNWB` Out-of-Process White-Box Runners & Multi-Rate / 5-Bit-Depth Certification):** `FaustRunner` + `SpiceRunner` subprocess pipes and `32 / 44.1 / 48 / 88.2 / 96 / 192 kHz` $\times$ `Int12 / Int16 / Int24 / Int32 / Float32` 4-metric certification.

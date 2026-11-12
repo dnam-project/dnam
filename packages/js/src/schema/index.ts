@@ -16,12 +16,6 @@ export {
   snakeToCamelKey,
   wireToCamelObject,
 } from "./case-codec.js";
-export type {
-  AuditReport,
-  ExtractedPhysics,
-  StemProvenance,
-  StemRegistryEntry,
-} from "./checkpoint.js";
 export {
   decodeHeader,
   encodeHeader,

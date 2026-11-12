@@ -269,21 +269,6 @@ export interface RawWasmExports extends WebAssembly.Exports {
   dnam_wasm_parse_dmu1_frame(framePtr: number, frameLen: number): number;
   dnam_wasm_validate_v2_open_dnam_layout(cPtr: number, cLen: number): number;
   dnam_wasm_strip_v2_open_dnam_container(cPtr: number, cLen: number, targetTier: number): number;
-  dnam_wasm_build_reference_checkpoint(includeCalibStats: number): number;
-  dnam_wasm_verify_stem_arena4_crc32c(
-    arenaPtr: number,
-    arenaLen: number,
-    stemOffset: number,
-    stemLen: number,
-    expectedCrc32c: number,
-  ): number;
-  dnam_wasm_verify_arena5_calib_stats(
-    arenaPtr: number,
-    arenaLen: number,
-    arena5Offset: number,
-  ): number;
-  dnam_wasm_validate_v2_dnck_checkpoint(ckptPtr: number, ckptLen: number): number;
-  dnam_wasm_export_runtime_dnam_from_ckpt(ckptPtr: number, ckptLen: number): number;
   dnam_wasm_uplo_u_packed_len(nDim: number): number;
   dnam_wasm_pack_uplo_u_f64_into(
     densePtr: number,
@@ -1685,62 +1670,6 @@ export class WasmDriver implements NativeDriver {
       this.#mem.checkStatus(
         this.#mem.exports.dnam_wasm_strip_v2_open_dnam_container(cPtr, cLen, targetTier),
       );
-      return this.#mem.readResultBytes();
-    });
-  }
-
-  buildReferenceCheckpoint(includeCalibStats: boolean): Uint8Array {
-    this.#mem.checkStatus(
-      this.#mem.exports.dnam_wasm_build_reference_checkpoint(includeCalibStats ? 1 : 0),
-    );
-    return this.#mem.readResultBytes();
-  }
-
-  verifyStemArena4Crc32c(
-    arenaBytes: Uint8Array,
-    stemByteOffset: number,
-    stemByteLen: number,
-    expectedCrc32c: number,
-  ): void {
-    this.#mem.withBytes(arenaBytes, (aPtr, aLen) => {
-      this.#mem.checkStatus(
-        this.#mem.exports.dnam_wasm_verify_stem_arena4_crc32c(
-          aPtr,
-          aLen,
-          stemByteOffset,
-          stemByteLen,
-          expectedCrc32c,
-        ),
-      );
-    });
-  }
-
-  verifyArena5CalibStats(arenaBytes: Uint8Array, arena5Offset: number): number {
-    return this.#mem.withBytes(arenaBytes, (aPtr, aLen) =>
-      this.#mem.checkStatus(
-        this.#mem.exports.dnam_wasm_verify_arena5_calib_stats(aPtr, aLen, arena5Offset),
-      ),
-    );
-  }
-
-  validateV2DnckCheckpoint(ckptBytes: Uint8Array): {
-    readonly retainedTier: number;
-    readonly bundleEnds: readonly number[];
-    readonly mutableBoundary: number;
-  } {
-    return this.#mem.withBytes(ckptBytes, (cPtr, cLen) => {
-      this.#mem.checkStatus(this.#mem.exports.dnam_wasm_validate_v2_dnck_checkpoint(cPtr, cLen));
-      return JSON.parse(this.#mem.readResultString()) as {
-        readonly retainedTier: number;
-        readonly bundleEnds: readonly number[];
-        readonly mutableBoundary: number;
-      };
-    });
-  }
-
-  exportRuntimeDnamFromCkpt(ckptBytes: Uint8Array): Uint8Array {
-    return this.#mem.withBytes(ckptBytes, (cPtr, cLen) => {
-      this.#mem.checkStatus(this.#mem.exports.dnam_wasm_export_runtime_dnam_from_ckpt(cPtr, cLen));
       return this.#mem.readResultBytes();
     });
   }

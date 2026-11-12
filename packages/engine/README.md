@@ -2,7 +2,7 @@
 
 **`dnam-engine`** is the zero-audio-allocation, 16B/64B SIMD-aligned real-time inference, container, and provenance core for **Dynamic Neural Audio Modeler (DNAM)**.
 
-It is engineered for embedded ARMv8.2-A/ARMv9.2-A pedalboards (**Rockchip RK3582 / Darkglass Anagram**), desktop **VST3/CLAP/AU** audio plugins (`packages/plugin`), analytical **pure-Rust training** (`packages/trainer`), and **WebAssembly SIMD128 (`AudioWorklet`) / Node.js N-API** runtimes (`packages/js`, `packages/studio`).
+It is engineered for embedded ARMv8.2-A/ARMv9.2-A pedalboards (**Rockchip RK3582 / Darkglass Anagram**), desktop **VST3/CLAP/AU** audio plugins (`packages/plugin`), analytical **pure-Rust capture & training** (`packages/capture`), and **WebAssembly SIMD128 (`AudioWorklet`) / Node.js N-API** runtimes (`packages/js`, `packages/studio`).
 
 ---
 
@@ -86,7 +86,7 @@ packages/engine/
 ├── benches/                # Subsystem Criterion suites (pipeline, operators, stages_and_control,
 │                           # container_and_provenance) & WCET jitter audit (realtime_wcet)
 └── examples/               # 6 runnable API examples (realtime_audio_block, embedded_zero_alloc,
-                            # marketplace_provenance, container_slimming_and_ckpt,
+                            # marketplace_provenance, container_slimming,
                             # custom_operator_chain, c_abi_host_integration)
 ```
 
@@ -120,7 +120,7 @@ cargo bench -p dnam-engine --profile profiling --bench realtime_wcet --features 
 cargo run -p dnam-engine --example realtime_audio_block
 cargo run -p dnam-engine --example embedded_zero_alloc
 cargo run -p dnam-engine --example marketplace_provenance
-cargo run -p dnam-engine --example container_slimming_and_ckpt
+cargo run -p dnam-engine --example container_slimming
 cargo run -p dnam-engine --example custom_operator_chain
 cargo run -p dnam-engine --example c_abi_host_integration
 ```

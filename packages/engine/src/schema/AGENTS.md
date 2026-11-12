@@ -1,6 +1,6 @@
 # `src/schema` — `#![no_std]` + `alloc` JSON Header, Control Schema & Error Types
 
-Implements `#![no_std]` + `alloc` `serde` / `serde_json` parsing and validation (`#[forbid(unsafe_code)]`) for runtime `.dnam` JSON headers, UI power-skew gesture mapping, and compilation into 64-byte [`ControlClampDescriptor`](../control/descriptor.rs) cache lines. (`.dnam-ckpt` schema types live in `packages/trainer/src/ckpt/schema.rs`.)
+Implements `#![no_std]` + `alloc` `serde` / `serde_json` parsing and validation (`#[forbid(unsafe_code)]`) for runtime `.dnam` JSON headers, UI power-skew gesture mapping, and compilation into 64-byte [`ControlClampDescriptor`](../control/descriptor.rs) cache lines. (`.dnam-proj` manifest schema types live in `packages/capture/src/proj/schema.rs`.)
 
 ## 1. Submodule Map
 

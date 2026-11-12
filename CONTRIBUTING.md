@@ -33,10 +33,10 @@ DNAM is organized as a multi-language workspace across `docs/`, `packages/*`, an
 | **Specification Manual (`docs/`)** | `docs/` | [`docs/index.md`](docs/index.md) | [`docs/CONTRIBUTING.md`](docs/CONTRIBUTING.md) |
 | **Rust SIMD Engine (`dnam-engine`)** | `packages/engine/` | [`packages/engine/AGENTS.md`](packages/engine/AGENTS.md) | [`packages/engine/CONTRIBUTING.md`](packages/engine/CONTRIBUTING.md) |
 | **TypeScript / WebAudio SDK (`@dnam-project/dnam`)** | `packages/js/` | [`packages/js/AGENTS.md`](packages/js/AGENTS.md) | [`packages/js/CONTRIBUTING.md`](packages/js/CONTRIBUTING.md) |
-| **Pure-Rust Two-Sweep Trainer (`dnam-trainer`)** | `packages/trainer/` | [`packages/trainer/AGENTS.md`](packages/trainer/AGENTS.md) | [`packages/trainer/CONTRIBUTING.md`](packages/trainer/CONTRIBUTING.md) |
+| **Pure-Rust Capture, Solver & `.dnam-proj` (`dnam-capture`)** | `packages/capture/` | [`packages/capture/AGENTS.md`](packages/capture/AGENTS.md) | [`packages/capture/CONTRIBUTING.md`](packages/capture/CONTRIBUTING.md) |
 | **Black-Box Ground-Truth Audio Fixtures (`dnam-fixtures`)** | `packages/fixtures/` | [`packages/fixtures/AGENTS.md`](packages/fixtures/AGENTS.md) | [`packages/fixtures/CONTRIBUTING.md`](packages/fixtures/CONTRIBUTING.md) |
 | **Design System & Visualizers (`@dnam-project/ui`)** | `packages/ui/` | [`packages/ui/AGENTS.md`](packages/ui/AGENTS.md) | [`packages/ui/CONTRIBUTING.md`](packages/ui/CONTRIBUTING.md) |
-| **CLI & Desktop Studio (`@dnam-project/studio`)** | `packages/studio/` | [`packages/studio/AGENTS.md`](packages/studio/AGENTS.md) | [`packages/studio/CONTRIBUTING.md`](packages/studio/CONTRIBUTING.md) |
+| **Desktop Studio (`@dnam-project/studio`)** | `packages/studio/` | [`packages/studio/AGENTS.md`](packages/studio/AGENTS.md) | [`packages/studio/CONTRIBUTING.md`](packages/studio/CONTRIBUTING.md) |
 | **Project Guardrail Suite (`dnam-tests`)** | `tests/` | [`tests/AGENTS.md`](tests/AGENTS.md) | [`docs/CONTRIBUTING.md`](docs/CONTRIBUTING.md) |
 
 ---
@@ -45,17 +45,11 @@ DNAM is organized as a multi-language workspace across `docs/`, `packages/*`, an
 
 DNAM uses **`mise`** ([`mise.toml`](mise.toml)) to provision toolchains and **`moon`** ([`.moon/workspace.yml`](.moon/workspace.yml)) to orchestrate and cache tasks across **`cargo`** (Rust 2024 edition) and **`pnpm`** (Node.js `24` / `26` LTS):
 
-### 3.1 Setup & Local Development (CLI, Desktop Studio UI & React Cosmos)
+### 3.1 Setup & Local Development (Desktop Studio UI & React Cosmos)
 
 ```bash
 # Install pinned toolchains (moon, node, pnpm, rust)
 mise install
-
-# Run the unified `dnam` CLI (`init`, `status`, `model`, `control`, `preset`, `render`, `strip`, `inspect`, `studio`)
-moon run studio:cli -- --help
-
-# Run the pure-Rust Two-Sweep VarPro / Cholesky trainer worker CLI (`dnam-train`)
-moon run trainer:cli -- --help
 
 # Launch the Desktop Studio UI in browser dev mode (Vite HMR at http://localhost:1420)
 moon run studio:dev
@@ -84,7 +78,7 @@ moon run studio:test-e2e
 
 # Check a single project via moon
 moon check engine
-moon check trainer
+moon check capture
 moon check fixtures
 moon check js
 moon check ui
@@ -100,15 +94,15 @@ moon check tests
    - Never introduce floating-point division (`/`), hardware square-root (`FSQRT`), or `libm` transcendental calls (`sin`, `cos`, `exp`, `tanh`) into the $48\text{ kHz}$ per-sample audio loop or the $3\text{ kHz}$ control-bus update.
    - Always use the division-free algebraic `PolyADAA` ($m_n, d_n$ factorization) with $1\times$ passive B-spline weights $(0.875, 0.125)$ and the $3\text{ kHz}$ quadrant-reduced contractive rotor specified in [`docs/specs/dsp/op_n_commuted_cascade.md`](docs/specs/dsp/op_n_commuted_cascade.md) and [`docs/specs/dsp/op_m_modal_kautz.md`](docs/specs/dsp/op_m_modal_kautz.md).
 2. **128-Bit / 64-Byte SIMD Alignment:**
-   - Feature bus widths ($D$), channel counts ($C$), Kautz modal pole counts ($K$), and FDN delay line counts ($M$) must remain exact multiples of 4 (`D=64, C=4, K=4, M=4` for `Lite`; `D=128, C=8, K=8, M=8` for `Full`; `D=192, C=12, K=16, M=8` for `Pro`; `D=256, C=16, K=32, M=16` for `Ultra`), and `.dnam` / `.dnam-ckpt` tensor arenas must remain 64-byte cache-line aligned (`4,096 B` page offset).
+   - Feature bus widths ($D$), channel counts ($C$), Kautz modal pole counts ($K$), and FDN delay line counts ($M$) must remain exact multiples of 4 (`D=64, C=4, K=4, M=4` for `Lite`; `D=128, C=8, K=8, M=8` for `Full`; `D=192, C=12, K=16, M=8` for `Pro`; `D=256, C=16, K=32, M=16` for `Ultra`), and `.dnam` / `.dnam-proj` binary chunks and tensor arenas must remain 64-byte cache-line aligned.
 3. **Unconditional Stability & Registered Clamps:**
    - Every pole radius ($r_c \le 0.9995$), FDN loop gain ($g_{\text{lin},m} \le 0.9990$), all-pass diffusion coefficient ($|a_{\text{diff},m}| \le 0.75$), fractional delay ($\tau_m \ge 4.0$), and control range must obey the bounds in [`docs/specs/training/control_space_audit.md`](docs/specs/training/control_space_audit.md).
 4. **Fail-Fast Validation:**
-   - Never silently substitute default controls, sample rates, or tensor shapes when loading `.dnam` or `.dnam-ckpt` containers; return or raise explicit, typed diagnostic errors (`DnamError`).
+   - Never silently substitute default controls, sample rates, or tensor shapes when loading `.dnam` or `.dnam-proj` containers; return or raise explicit, typed diagnostic errors (`DnamError`).
 5. **Safe-Rust-First & Strict `#[allow(unsafe_code)]` Discipline (`ref[repo.code.type-safety-and-imports]`):**
    - Never be lazy and reach for `#[allow(unsafe_code)]` or `unsafe` (`UnsafeCell`, `AtomicPtr`, raw pointer casts, or `get_unchecked`) when a 100% safe Rust design exists (such as `AtomicU64` word arrays for lock-free SPSC rings and seqlocks, ping-pong slot indices, disjoint struct field borrows, `zerocopy::transmute!`, or checked `napi` buffer views).
    - `#[allow(unsafe_code)]` may **only** be used when **(a)** it is strictly unavoidable at a hardware/OS intrinsic or C-ABI boundary (`packages/engine/src/{math,types,memory,ffi}.rs`), or **(b)** benchmarks prove that the safe Rust version causes a high performance impact on a real-time hot path **and** the `unsafe` version can be formally guaranteed sound with an explicit `// SAFETY:` proof.
-   - All language SDK and application Rust crates (`packages/js/rust/`, `packages/studio/rust/`, `packages/trainer/`, `packages/fixtures/`) and all algorithmic/host modules in `packages/engine/src/` (`operators`, `stages`, `control`, `container`, `provenance`, `schema`, `engine`, `dynamic`, `host`) must remain 100% safe Rust with zero `#[allow(unsafe_code)]`.
+   - All language SDK and application Rust crates (`packages/js/rust/`, `packages/studio/rust/`, `packages/capture/`, `packages/fixtures/`) and all algorithmic/host modules in `packages/engine/src/` (`operators`, `stages`, `control`, `container`, `provenance`, `schema`, `engine`, `dynamic`, `host`) must remain 100% safe Rust with zero `#[allow(unsafe_code)]`.
 6. **Zero Duplicated Engine Logic in Language SDKs (`packages/js/`):**
    - Language SDKs (`@dnam-project/dnam`) and their FFI shims (`packages/js/rust/`) must **never** reimplement DSP math, ZOH rescaling, 3-Phase control clamping, Lobatto calibration inversion, schema validation, RFC 8785 JCS canonicalization, or provenance signature assembly in TypeScript (`ref[sdk.ts.runtime.dual-target-drivers]`).
    - Delegate 100% of domain logic to `dnam-engine` in Rust; keep SDK host-language layers strictly focused on idiomatic ergonomics, casing/type coercion, and zero-copy buffer/handle lifecycles.
@@ -130,7 +124,7 @@ DNAM enforces a **Progressive-Disclosure Documentation Architecture** and a **Si
    - Loaded into the agent context window on every turn.
    - Contains **only** the project summary, global `moon` + `mise` tooling rules, core cross-cutting invariants, and the top-level Progressive Disclosure & Codebase Discovery Map.
 2. **Tier 2 — Scoped Package & Subsystem `AGENTS.md` Files (`< 2,500` bytes each):**
-   - Located in package/test roots (e.g., [`packages/engine/AGENTS.md`](packages/engine/AGENTS.md), [`packages/trainer/AGENTS.md`](packages/trainer/AGENTS.md), [`packages/studio/AGENTS.md`](packages/studio/AGENTS.md), [`tests/AGENTS.md`](tests/AGENTS.md)) and multi-module subsystem directories (e.g., [`packages/engine/src/operators/AGENTS.md`](packages/engine/src/operators/AGENTS.md), [`packages/trainer/src/solver/AGENTS.md`](packages/trainer/src/solver/AGENTS.md)).
+   - Located in package/test roots (e.g., [`packages/engine/AGENTS.md`](packages/engine/AGENTS.md), [`packages/capture/AGENTS.md`](packages/capture/AGENTS.md), [`packages/studio/AGENTS.md`](packages/studio/AGENTS.md), [`tests/AGENTS.md`](tests/AGENTS.md)) and multi-module subsystem directories (e.g., [`packages/engine/src/operators/AGENTS.md`](packages/engine/src/operators/AGENTS.md), [`packages/capture/src/solver/AGENTS.md`](packages/capture/src/solver/AGENTS.md)).
    - Act **strictly as routing tables** (`Module / File` $\to$ `Responsibility` $\to$ `Canonical Spec / Contributing Guide`).
 3. **Offloading Rule (Never Wordsmith `AGENTS.md` to Fit Byte Budgets):**
    - When an `AGENTS.md` file approaches its byte budget as new modules are added, **do not** try to compress or reword implementation details inside `AGENTS.md`. Instead, offload non-routing information to its canonical destination:
@@ -156,7 +150,7 @@ Never copy mathematical equations, stability tables, or JSON schemas into `AGENT
 | **Op-T Transport, Catmull-Rom fractional delay, diffusers, or dynamic ducking (`r[dsp.op-t.*]`)** | [`docs/specs/dsp/op_t_transport.md`](docs/specs/dsp/op_t_transport.md) |
 | **8-Port Matrix Router, dual return aligners, or multi-stage rig topology (`r[dsp.router.*]`, `r[dsp.zoh.*]`)** | [`docs/specs/dsp/router_and_stages_topology.md`](docs/specs/dsp/router_and_stages_topology.md) |
 | **Parametric Control Bus, Lobatto HDMR, Rank-4/8 FM, Chebyshev LFO, or tempo sync (`r[dsp.ctrl.*]`, `r[dsp.tempo.*]`)** | [`docs/specs/dsp/parametric_control_bus.md`](docs/specs/dsp/parametric_control_bus.md) |
-| **`.dnam` / `.dnam-ckpt` 64B preamble, JSON header schema, SoA arena offsets, or `DNCA` (`r[container.*]`)** | [`docs/specs/containers/dnam_binary_format.md`](docs/specs/containers/dnam_binary_format.md), [`docs/specs/containers/checkpoint_and_cache_format.md`](docs/specs/containers/checkpoint_and_cache_format.md) |
+| **`.dnam` / `.dnam-proj` 64B preamble, JCS manifest, SoA arena offsets, or `INPC`/`STMC` capsules (`r[container.*]`)** | [`docs/specs/containers/dnam_binary_format.md`](docs/specs/containers/dnam_binary_format.md), [`docs/specs/containers/project_container_format.md`](docs/specs/containers/project_container_format.md) |
 | **JCS SHA-256, `Ed25519` signatures, `.dnam-seal` (`DNSL`), or Buyer Watermarking (`r[sec.*]`)** | [`docs/specs/security/provenance_and_enclave_drm.md`](docs/specs/security/provenance_and_enclave_drm.md), [`docs/specs/security/watermarking_and_marketplace.md`](docs/specs/security/watermarking_and_marketplace.md) |
 | **Capture alignment, Two-Sweep Cholesky pipeline, `uplo='U'` Gram matrices, or stem expansion (`r[train.*]`)** | [`docs/specs/training/capture_and_alignment.md`](docs/specs/training/capture_and_alignment.md), [`docs/specs/training/four_stage_pipeline.md`](docs/specs/training/four_stage_pipeline.md), [`docs/specs/training/iterative_resume_and_caching.md`](docs/specs/training/iterative_resume_and_caching.md) |
 | **Repository, code, or documentation quality rules (`r[repo.*]`)** | [`docs/specs/architecture/project_and_documentation_quality.md`](docs/specs/architecture/project_and_documentation_quality.md) |

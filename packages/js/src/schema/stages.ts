@@ -75,7 +75,7 @@ export interface Stage4SpatialTankConfig {
 }
 
 /**
- * Tensor slice descriptor in `header.tensorDirectory` or `.dnam-ckpt` stem records.
+ * Tensor slice descriptor in `header.tensorDirectory`.
  */
 export interface TensorSliceEntry {
   readonly arena: number;

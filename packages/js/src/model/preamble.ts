@@ -1,5 +1,5 @@
 /**
- * 64-byte `.dnam` / `.dnam-ckpt` preamble metadata (`PreambleInfo`) and cumulative tier arenas
+ * 64-byte `.dnam` preamble metadata (`PreambleInfo`) and cumulative tier arenas
  * (`TierArenas`) (`ref[sdk.ts.model.containers-and-checkpoints]`).
  *
  * @module
@@ -10,7 +10,7 @@ import type { NativeValidatedContainerInfo } from "../internal/native/driver.js"
 import type { ProtectionProfile, Tier } from "../types.js";
 
 /**
- * Validated 64-byte `.dnam` or `.dnam-ckpt` binary preamble metadata (`PreambleInfo`).
+ * Validated 64-byte `.dnam` binary preamble metadata (`PreambleInfo`).
  */
 export interface PreambleInfo {
   readonly magic: string;
@@ -34,14 +34,12 @@ export interface PreambleInfo {
   readonly arenaCrc32cFull: number;
   readonly arenaCrc32cPro: number;
   readonly arenaCrc32cUltra: number;
-  readonly numCkptStems: number;
   readonly tailTimeMs: number;
   readonly headerCrc32c: number;
   readonly maxTier: Tier;
   readonly isStereoOut: boolean;
   readonly hasSignatures: boolean;
   readonly isEncryptedArena: boolean;
-  readonly hasCalibStats: boolean;
   readonly protectionProfile: ProtectionProfile;
   readonly verificationStatus: string;
 }
@@ -86,14 +84,12 @@ export function extractPreambleAndArenas(info: NativeValidatedContainerInfo): {
     arenaCrc32cFull: info.arenaCrc32cFull >>> 0,
     arenaCrc32cPro: info.arenaCrc32cPro >>> 0,
     arenaCrc32cUltra: info.arenaCrc32cUltra >>> 0,
-    numCkptStems: info.numCkptStems,
     tailTimeMs: info.tailTimeMs,
     headerCrc32c: info.headerCrc32c >>> 0,
     maxTier,
     isStereoOut: info.isStereoOut,
     hasSignatures: info.hasSignatures,
     isEncryptedArena: info.isEncryptedArena,
-    hasCalibStats: info.hasCalibStats,
     protectionProfile: info.protectionProfile as ProtectionProfile,
     verificationStatus: info.verificationStatus,
   });

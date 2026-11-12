@@ -15,7 +15,7 @@ pub struct DnamEngineHandle {
     engine: DynamicDnamEngine<'static>,
 }
 
-/// Creates a new [`DnamEngineHandle`] from a `.dnam` or `.dnam-ckpt` byte buffer, copying the
+/// Creates a new [`DnamEngineHandle`] from a `.dnam` byte buffer, copying the
 /// 64-byte aligned tensor arena into owned memory so the caller can free `data_ptr` immediately.
 ///
 /// Returns `core::ptr::null_mut()` if `data_ptr` is null or container validation fails.

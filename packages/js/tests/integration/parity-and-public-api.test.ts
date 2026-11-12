@@ -15,7 +15,6 @@ import { dirname, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
-import * as checkpointMod from "../../src/checkpoint/index.js";
 import * as dspMod from "../../src/dsp/index.js";
 import { withDriver } from "../../src/internal/native/load.js";
 import {
@@ -54,7 +53,6 @@ describe("Public API surface, 0-ULP behavioral parity, WASM denormals & performa
       "./tempo": tempoMod,
       "./schema": schemaMod,
       "./provenance": provenanceMod,
-      "./checkpoint": checkpointMod,
       "./dsp": dspMod,
       "./web-audio": webAudioMod,
     };
@@ -73,7 +71,6 @@ describe("Public API surface, 0-ULP behavioral parity, WASM denormals & performa
     }
 
     expect(Object.keys(rootMod).sort()).toEqual([
-      "Checkpoint",
       "ControlSpace",
       "DnamError",
       "Engine",
@@ -382,7 +379,7 @@ describe("Public API surface, 0-ULP behavioral parity, WASM denormals & performa
   it.each([
     "01-quickstart-render.ts",
     "02-parameters-tempo-and-clamping.ts",
-    "03-checkpoints-and-gram-matrix.ts",
+    "03-gram-matrix-and-slimming.ts",
     "04-provenance-sealing-and-watermarking.ts",
     "05-reference-dsp-kernels.ts",
     "06-web-audio-worklet.ts",

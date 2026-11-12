@@ -6,9 +6,8 @@ use alloc::string::ToString;
 use alloc::vec::Vec;
 
 use crate::container::{
-    DNAM_MAGIC, DNCK_MAGIC, crc32c_update, parse_and_validate_dmu1_frame,
-    validate_mutable_json_schema, validate_v2_dnam_layout_with_max_profile,
-    validate_v2_dnam_layout_with_max_profile_no_alloc,
+    DNAM_MAGIC, crc32c_update, parse_and_validate_dmu1_frame, validate_mutable_json_schema,
+    validate_v2_dnam_layout_with_max_profile, validate_v2_dnam_layout_with_max_profile_no_alloc,
 };
 use crate::provenance::chacha20::chacha20_xor_arena_blocks;
 use crate::provenance::provider::CryptoProvider;
@@ -465,13 +464,13 @@ pub fn unseal_dnam_container<C: CryptoProvider>(
     chacha20_xor_arena_blocks(&mut plain_dnam, &cek_outer, &preamble.chacha20_nonce_96, 0)?;
 
     let inner_magic = [plain_dnam[0], plain_dnam[1], plain_dnam[2], plain_dnam[3]];
-    if inner_magic != DNAM_MAGIC && inner_magic != DNCK_MAGIC {
+    if inner_magic != DNAM_MAGIC {
         return Err(DnamError::CryptoVerificationFailed(
-            "decrypted .dnam-seal payload does not begin with valid DNAM/DNCK magic",
+            "decrypted .dnam-seal payload does not begin with valid DNAM magic",
         ));
     }
 
-    if (preamble.flags & crate::container::FLAG_ENCRYPTED_ARENA) != 0 && inner_magic == DNAM_MAGIC {
+    if (preamble.flags & crate::container::FLAG_ENCRYPTED_ARENA) != 0 {
         let layout = validate_v2_dnam_layout_with_max_profile_no_alloc(&plain_dnam, 2)?;
         let arena_off = layout.tier_start;
         let retained_end = layout.tier_ends[layout.retained_tier as usize];
@@ -676,7 +675,7 @@ mod tests {
         bad_crc[60] ^= 0xFF;
         assert!(unseal_dnam_container(&bad_crc, &crypto).is_err());
 
-        // Corrupt first ciphertext block so decrypted inner magic != DNAM/DNCK
+        // Corrupt first ciphertext block so decrypted inner magic != DNAM
         let mut bad_payload = sealed;
         bad_payload[192] ^= 0xFF;
         assert!(unseal_dnam_container(&bad_payload, &crypto).is_err());

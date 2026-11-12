@@ -20,7 +20,7 @@ adrs:
 
 This specification defines the **perceptual quality evaluation framework (`bESR`, `MR-IIR`, `LTAS` spectral tilt, and `SegESR`), device-agnostic noise-floor rules, quiet vs. muted stem classification, and 4-tier (`Lite` / `Full` / `Pro` / `Ultra`) acceptance benchmarks** for **Dynamic Neural Audio Modeler (DNAM)**.
 
-For the overarching system goals and hardware budgets, see [`../../requirements/system_goals_and_requirements.md`](../../requirements/system_goals_and_requirements.md). For why plain broadband `ESR` and fixed pre-emphasis fail, see [`../../adr/0003-band-balanced-besr-and-noise-qualification.md`](../../adr/0003-band-balanced-besr-and-noise-qualification.md). The relationship between band-specific fitting statistics, noise-floor clipping, and actual output certification is described in [`../training/four_stage_pipeline.md` §2.2](../training/four_stage_pipeline.md#22-sweep-2--joint-full-rig-kronecker-polish--export-certification).
+For the overarching system goals and hardware budgets, see [`../../requirements/system_goals_and_requirements.md`](../../requirements/system_goals_and_requirements.md). For why plain broadband `ESR` and fixed pre-emphasis fail, see [`../../adr/0003-band-balanced-besr-and-noise-qualification.md`](../../adr/0003-band-balanced-besr-and-noise-qualification.md). The relationship between band-specific fitting statistics, noise-floor clipping, and actual output certification is described in [`../training/four_stage_pipeline.md` §2.3](../training/four_stage_pipeline.md#23-stage-c--nested-4-tier-schur-complement--selective-mm-cholesky-solve).
 
 ---
 
@@ -100,7 +100,7 @@ In the **noise-qualified composite acceptance** score, replace each qualifying b
 1. **Single Zero-State Start per Timeline:** Initialize the `bESR` band filters with zero state at the first sample of the aligned prediction/target timeline, including any aligned pre-roll context.
 2. **Filter Before Selection:** Filter the complete available timeline in sample order and extract the declared sample selection only after filtering; never concatenate disjoint intervals or reset filter state at selection boundaries.
 3. **Selection-Matched Noise Energy:** Compute expected filtered noise energy $F_{b,c}$ over the exact same selected indices, zero-state start, timeline context, filter, and sample rate, setting $\epsilon_{\text{floor},b,c}^2 = F_{b,c}/T$.
-4. **Provenance Binding:** Bind the timeline origin, selected indices, output roles, sample rate, filter version, and matched floor energies into the certification metadata ([`../containers/checkpoint_and_cache_format.md` §3](../containers/checkpoint_and_cache_format.md#3-dnam-ckpt-json-header-extensions-stems_registry-with-per-stem-pcm-provenance--arena-4-crc32c)).
+4. **Provenance Binding:** Bind the timeline origin, selected indices, output roles, sample rate, filter version, and matched floor energies into the certification metadata ([`../containers/project_container_format.md` §1.2](../containers/project_container_format.md#12-rfc-8785-jcs-project-manifest)).
 
 ### 1.5 Conservative Decisions with Uncertain Noise Floors
 

@@ -1,7 +1,7 @@
 //! Strict JSON Parsing & RFC 8785 JCS Header Projection (`ref[container.dnam.jcs-header-schema]`,
 //! `ref[container.dnam.security-crossref]`, `ref[sec.jcs.immutable-header-digest]`).
 
-use alloc::collections::BTreeSet;
+use alloc::borrow::Cow;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
@@ -70,7 +70,8 @@ pub fn parse_strict_json_object_bytes(data: &[u8]) -> Result<Value, DnamError> {
 fn check_no_duplicate_json_keys(text: &str) -> Result<(), DnamError> {
     let bytes = text.as_bytes();
     let mut i = 0;
-    let mut stack: Vec<(bool, BTreeSet<String>, bool)> = Vec::new(); // (is_object, seen_keys, expect_key)
+    let mut stack: Vec<(bool, usize, bool)> = Vec::with_capacity(16); // (is_object, keys_start, expect_key)
+    let mut keys_arena: Vec<Cow<'_, str>> = Vec::with_capacity(64);
 
     while i < bytes.len() {
         let b = bytes[i];
@@ -79,18 +80,22 @@ fn check_no_duplicate_json_keys(text: &str) -> Result<(), DnamError> {
                 i += 1;
             }
             b'{' => {
-                stack.push((true, BTreeSet::new(), true));
+                stack.push((true, keys_arena.len(), true));
                 i += 1;
             }
             b'}' => {
-                stack.pop();
+                if let Some((is_obj, start_idx, _)) = stack.pop()
+                    && is_obj
+                {
+                    keys_arena.truncate(start_idx);
+                }
                 if let Some((true, _, expect_key)) = stack.last_mut() {
                     *expect_key = false;
                 }
                 i += 1;
             }
             b'[' => {
-                stack.push((false, BTreeSet::new(), false));
+                stack.push((false, keys_arena.len(), false));
                 i += 1;
             }
             b']' => {
@@ -120,31 +125,47 @@ fn check_no_duplicate_json_keys(text: &str) -> Result<(), DnamError> {
                 let start = i;
                 i += 1;
                 let mut closed = false;
+                let mut has_escape_or_ctrl = false;
                 while i < bytes.len() {
-                    if bytes[i] == b'\\' {
+                    let cur = bytes[i];
+                    if cur == b'\\' {
                         if i + 1 >= bytes.len() {
                             return Err(DnamError::SchemaValidationError(
                                 "unterminated JSON string escape".to_string(),
                             ));
                         }
+                        has_escape_or_ctrl = true;
                         i += 2;
-                    } else if bytes[i] == b'"' {
+                    } else if cur == b'"' {
                         i += 1;
                         closed = true;
                         break;
                     } else {
+                        if cur < 0x20 {
+                            has_escape_or_ctrl = true;
+                        }
                         i += 1;
                     }
                 }
                 reject_if(!closed, "unterminated JSON string")?;
-                let raw_str = &text[start..i];
-                if let Some((true, seen, expect_key)) = stack.last_mut()
+                if let Some((true, start_idx, expect_key)) = stack.last_mut()
                     && *expect_key
                 {
-                    let parsed_key: String = serde_json::from_str(raw_str).map_err(|_| {
-                        DnamError::SchemaValidationError("invalid Unicode".to_string())
-                    })?;
-                    reject_if(!seen.insert(parsed_key), "duplicate object member")?;
+                    let parsed_key: Cow<'_, str> = if has_escape_or_ctrl {
+                        let raw_str = &text[start..i];
+                        let s: String = serde_json::from_str(raw_str).map_err(|_| {
+                            DnamError::SchemaValidationError("invalid Unicode".to_string())
+                        })?;
+                        Cow::Owned(s)
+                    } else {
+                        Cow::Borrowed(&text[start + 1..i - 1])
+                    };
+                    let seen_slice = &keys_arena[*start_idx..];
+                    reject_if(
+                        seen_slice.iter().any(|k| k.as_ref() == parsed_key.as_ref()),
+                        "duplicate object member",
+                    )?;
+                    keys_arena.push(parsed_key);
                 }
             }
             _ => {

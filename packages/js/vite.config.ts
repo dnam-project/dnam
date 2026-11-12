@@ -47,7 +47,6 @@ export default defineConfig(({ mode }) => {
           "tempo/index": resolve(import.meta.dirname, "src/tempo/index.ts"),
           "schema/index": resolve(import.meta.dirname, "src/schema/index.ts"),
           "provenance/index": resolve(import.meta.dirname, "src/provenance/index.ts"),
-          "checkpoint/index": resolve(import.meta.dirname, "src/checkpoint/index.ts"),
           "dsp/index": resolve(import.meta.dirname, "src/dsp/index.ts"),
           "web-audio/index": resolve(import.meta.dirname, "src/web-audio/index.ts"),
           "web-audio/processor": resolve(import.meta.dirname, "src/web-audio/processor.ts"),

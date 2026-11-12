@@ -1,6 +1,6 @@
 # `src/container` — `.dnam` Runtime Binary Framing & Continuous-Time ZOH
 
-Implements the `#![no_std]` + `alloc` runtime `.dnam` parser, builder, `CRC32C`, `DMU1`/`DMUE` mutable suffix framing, and Continuous-Time ZOH sample-rate rescaling (`#[forbid(unsafe_code)]`). Training checkpoint (`.dnam-ckpt` / `DNCK`, `Arena 4`, `Arena 5`) types live in `packages/trainer/src/ckpt/`.
+Implements the `#![no_std]` + `alloc` runtime `.dnam` parser, builder, `CRC32C`, `DMU1`/`DMUE` mutable suffix framing, and Continuous-Time ZOH sample-rate rescaling (`#[forbid(unsafe_code)]`). Project container (`.dnam-proj` / `DNPJ`) types live in `packages/capture/src/proj/`.
 
 ## 1. Submodule Map
 

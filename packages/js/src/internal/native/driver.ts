@@ -37,14 +37,12 @@ export interface NativeValidatedContainerInfo {
   readonly arenaCrc32cFull: number;
   readonly arenaCrc32cPro: number;
   readonly arenaCrc32cUltra: number;
-  readonly numCkptStems: number;
   readonly tailTimeMs: number;
   readonly headerCrc32c: number;
   readonly highestTier: number;
   readonly isStereoOut: boolean;
   readonly hasSignatures: boolean;
   readonly isEncryptedArena: boolean;
-  readonly hasCalibStats: boolean;
   readonly verificationStatus: string;
   readonly protectionProfile: string;
   readonly headerJson: string;
@@ -154,7 +152,7 @@ export interface NativeDriver {
   createEngine(options: CreateNativeEngineOptions): NativeEngineHandle;
   createControlSpace(headerJson: string): NativeControlSpaceHandle;
 
-  // 2. Containers & Checkpoints
+  // 2. Containers & Gram Matrix
   validateContainer(
     containerBytes: Uint8Array,
     deviceIdHash?: string,
@@ -178,20 +176,6 @@ export interface NativeDriver {
   parseDmu1Frame(frameBytes: Uint8Array): string;
   validateV2OpenDnamLayout(containerBytes: Uint8Array): string;
   stripV2OpenDnamContainer(containerBytes: Uint8Array, targetTier: number): Uint8Array;
-  buildReferenceCheckpoint(includeCalibStats: boolean): Uint8Array;
-  verifyStemArena4Crc32c(
-    arenaBytes: Uint8Array,
-    stemByteOffset: number,
-    stemByteLen: number,
-    expectedCrc32c: number,
-  ): void;
-  verifyArena5CalibStats(arenaBytes: Uint8Array, arena5Offset: number): number;
-  validateV2DnckCheckpoint(ckptBytes: Uint8Array): {
-    readonly retainedTier: number;
-    readonly bundleEnds: readonly number[];
-    readonly mutableBoundary: number;
-  };
-  exportRuntimeDnamFromCkpt(ckptBytes: Uint8Array): Uint8Array;
   uploUPackedLen(nDim: number): number;
   packUploUF64Into(denseFlat: Float64Array, nDim: number, outPacked: Float64Array): void;
   unpackUploUF64Into(packedU: Float64Array, nTier: number, outDense: Float64Array): void;

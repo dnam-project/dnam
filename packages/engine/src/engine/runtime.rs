@@ -134,6 +134,8 @@ impl<'a, B: EngineBackend> DnamEngine<'a, B> {
         self.control_bus
             .update_sample_rate_params(arena, self.zoh.rho_ctrl);
         self.control_bus.refresh_static_state(arena);
+        self.current_stage_params = self.control_bus.stage_targets;
+        self.stage_ramp_deltas = [0.0; 16];
         self.stage_pipeline
             .load_kautz_and_fir_from_arena_with_zoh(arena, &self.zoh);
         self.stage_pipeline.reconfigure_sample_rate(&self.zoh);
@@ -146,6 +148,20 @@ impl<'a, B: EngineBackend> DnamEngine<'a, B> {
         self.ctrl_sub_counter = 0;
         self.ctrl_energy_accum = 0.0;
         self.refresh_cached_role_b_slices();
+        let arena_len = self.arena_storage.as_bytes().len();
+        let loop_tiers = crate::provenance::watermark::max_tiers_for_arena_len(arena_len)
+            .min((self.max_supported_tier as usize) + 1)
+            .max(1);
+        let dtheta = self.current_stage_params[9]
+            .clamp(-core::f32::consts::FRAC_PI_4, core::f32::consts::FRAC_PI_4);
+        let g_rad_pre = (0.5 + self.current_stage_params[6]).clamp(0.0, 1.0);
+        let g_kautz = (0.5 + self.control_bus.ctrl_basis_4[2] + self.current_stage_params[10])
+            .clamp(0.0, 1.0);
+        self.stage_pipeline
+            .stage1
+            .retune_op_m_pre_3khz(dtheta, g_rad_pre, true);
+        self.stage_pipeline
+            .retune_kautz_formant_3khz(loop_tiers, dtheta, g_kautz);
         self.cached_head_tiers = 0;
         Ok(())
     }
@@ -274,6 +290,8 @@ impl<'a, B: EngineBackend> DnamEngine<'a, B> {
             self.stage_pipeline
                 .load_from_arena_with_zoh(arena, &self.zoh);
         }
+        self.current_stage_params = self.control_bus.stage_targets;
+        self.stage_ramp_deltas = [0.0; 16];
         if self.control_bus.tank_mod_dirty {
             self.apply_tank_modulations();
             self.control_bus.tank_mod_dirty = false;
@@ -303,6 +321,20 @@ impl<'a, B: EngineBackend> DnamEngine<'a, B> {
         self.ctrl_sub_counter = 0;
         self.ctrl_energy_accum = 0.0;
         self.refresh_cached_role_b_slices();
+        let arena_len = self.arena_storage.as_bytes().len();
+        let loop_tiers = crate::provenance::watermark::max_tiers_for_arena_len(arena_len)
+            .min((self.max_supported_tier as usize) + 1)
+            .max(1);
+        let dtheta = self.current_stage_params[9]
+            .clamp(-core::f32::consts::FRAC_PI_4, core::f32::consts::FRAC_PI_4);
+        let g_rad_pre = (0.5 + self.current_stage_params[6]).clamp(0.0, 1.0);
+        let g_kautz = (0.5 + self.control_bus.ctrl_basis_4[2] + self.current_stage_params[10])
+            .clamp(0.0, 1.0);
+        self.stage_pipeline
+            .stage1
+            .retune_op_m_pre_3khz(dtheta, g_rad_pre, true);
+        self.stage_pipeline
+            .retune_kautz_formant_3khz(loop_tiers, dtheta, g_kautz);
         self.cached_head_tiers = 0;
         Ok(())
     }
@@ -484,6 +516,8 @@ impl<'a, B: EngineBackend> DnamEngine<'a, B> {
         self.control_bus.reset_dynamic_state();
         let arena = self.arena_storage.as_bytes();
         self.control_bus.refresh_static_state(arena);
+        self.current_stage_params = self.control_bus.stage_targets;
+        self.stage_ramp_deltas = [0.0; 16];
         self.stage_pipeline.reset_to_dc_equilibrium();
         if self.control_bus.tank_mod_dirty {
             self.apply_tank_modulations();

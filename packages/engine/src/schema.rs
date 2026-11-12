@@ -1,6 +1,6 @@
 //! `#![no_std]` + `alloc` JSON Schema, Control Descriptors, Signatures, and Error Types (`schema`).
 //!
-//! Parses and serializes the canonical `.dnam` and `.dnam-ckpt` UTF-8 JSON headers (`0x40..`)
+//! Parses and serializes the canonical `.dnam` UTF-8 JSON headers (`0x00C0..`)
 //! using `serde` and `serde_json` (`default-features = false, features = ["alloc"]`).
 //! Compiles human-readable `controls_schema` definitions into 64-byte binary
 //! [`crate::control::ControlClampDescriptor`] cache lines for zero-`FDIV`, zero-string-parsing

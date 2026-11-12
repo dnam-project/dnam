@@ -1,126 +1,77 @@
 ---
 id: spec.train.capture
-title: "Hardware Capture, Universal Excitation & Multi-Regime Latency Alignment"
+title: "Hardware Excitation, Multi-Mic Calibration & Router Alignment"
 status: canonical
-version: "1.0.0"
+version: "2.0.0"
 domain: training
 rule_prefixes:
   - "r[train.capture."
 requirements:
+  - REQ-1.5
   - REQ-1.6
   - REQ-1.7
   - REQ-1.8
+  - REQ-7.2
   - REQ-7.3
 adrs:
   - ADR-0002
   - ADR-0016
+  - ADR-0018
+  - ADR-0020
 ---
 
-# Hardware Capture, Universal Excitation & Multi-Regime Latency Alignment
+# Hardware Excitation, Multi-Mic Calibration & Router Alignment
 
-This specification defines the **capture-first validation methodology, 2-step hardware calibration, unclipped 32-bit float pad staging (`--clean-pad-db`), Star/Switch/Corner capture matrix planner, heuristic-free 30.0-second universal excitation, and multi-regime sub-sample latency alignment** for **Dynamic Neural Audio Modeler (DNAM)** ([`REQ-1.6`–`REQ-1.8`](../../requirements/system_goals_and_requirements.md#flexible-drywet-stem--excitation-requirements-req-16req-18), [`REQ-7.3`](../../requirements/system_goals_and_requirements.md#8-goal-7--unclipped-32-bit-ieee-754-float-f32-signal-chain-input--output)).
-
-For the Two-Sweep Block-Coordinate Cholesky training pipeline that consumes aligned stems, see [`four_stage_pipeline.md`](four_stage_pipeline.md). For `.dnam-ckpt` iterative stem expansion and calibration caching, see [`iterative_resume_and_caching.md`](iterative_resume_and_caching.md).
+This specification defines the **universal hardware excitation schedule, 2-step converter calibration, multi-regime sub-sample latency alignment, and white-box/grey-box distillation contracts** owned by [`packages/capture/`](../../../packages/capture/README.md), fulfilling [`REQ-1.5`–`REQ-1.8`, `REQ-7.2`, `REQ-7.3`](../../requirements/system_goals_and_requirements.md) (see [`../../adr/0002-tri-operator-recurrent-architecture.md`](../../adr/0002-tri-operator-recurrent-architecture.md), [`../../adr/0016-codesigned-disjoint-comb-stimulus-and-null-homing-capture.md`](../../adr/0016-codesigned-disjoint-comb-stimulus-and-null-homing-capture.md), [`../../adr/0018-signal-chain-fixtures-crate-and-whitebox-distillation.md`](../../adr/0018-signal-chain-fixtures-crate-and-whitebox-distillation.md), and [`../../adr/0020-modular-monorepo-and-dnam-proj-container.md`](../../adr/0020-modular-monorepo-and-dnam-proj-container.md)).
 
 ---
 
-## 1. End-to-End Capture & Alignment Pipeline
+## 1. Universal Hardware Capture, Calibration & Alignment
 
 ```mermaid
 flowchart LR
-    subgraph Calib ["1. 2-Step Hardware Calibration"]
-        C1["Step 1: Loopback / Reference Chirp<br/>Locks send_gain_db & calibrated_latency_samples"] --> C2["Step 2: 6s Target Acoustic Probe<br/>Measures unity_ref_dbfs, TargetExcitationProfile,<br/>Clipping (>= -0.2 dBFS) & Clean Pad (--clean-pad-db)"]
-    end
-
-    subgraph Plan ["2. Capture Matrix Planner"]
-        P1["Star Center + Single-Knob Axis Endpoints"] --> P2["Semantic Primary Gain x Tone/Body High Corner<br/>(Scheduled Before Switch Throws)"]
-        P2 --> P3["Switch Throws + Switch x Gain Corners<br/>+ 2x2 EQ/Morph & Envelope-Filter Corners<br/>+ Timed Freeze Transition Stems"]
-    end
-
-    subgraph Excite ["3. Universal 30s Excitation & Live Tail"]
-        E1["Canonical 30.0s Dry Signal<br/>0.55s Lead/Header + 26.45s Body + 3s Tail"] --> E2["Live Tail Monitor (+1.0s Steps up to +15.0s)<br/>Extends Recording if Wet Return > Noise Floor"]
-    end
-
-    subgraph Align ["4. Multi-Regime Sub-Sample Alignment"]
-        A1["Broadband Parabolic Cross-Corr (locked +- 48 samp)<br/>or Regime Proxy (Clipped Fuzz / 1.5 kHz HP / Pulse-1 Delay)"] --> A2["Post-Alignment Verification & Polish<br/>(Validate Lag & Uncertainty)"]
-    end
-
-    Calib --> Plan --> Excite --> Align
+    Calib["1.2 Two-Step Calibration<br/>Loopback CALB (64 B)<br/>+ Clean Float32/Int Pad"] --> Plan["1.3 Star + Commutator Planner<br/>Mode-0 StarCenter + 1D Sweeps<br/>+ Null-Homing Verification"]
+    Plan --> Excite["1.4 Co-Designed Excitation<br/>Disjoint-Comb + A5 Transients<br/>+ Live Tail / DNWB White-Box"]
+    Excite --> Align["1.5 Multi-Regime Alignment<br/>Parabolic Sub-Sample Lag<br/>& Converter Gain"]
 ```
 
-### 1.1 Capture-First Validation Across All Effect Families
+### 1.1 Fundamental Capture Invariants
 
 `r[train.capture.invariants]`
 
-Every hardware capture session enforces four physical invariants across all effect classes and complex full rigs (`REQ-1.1`–`REQ-1.8` in [`../../requirements/system_goals_and_requirements.md` §2](../../requirements/system_goals_and_requirements.md#2-goal-1--universal-instrument-system--flexible-input-coverage-nonlinear--lti--full-rigs)):
-1. **2-Step Reference Calibration:** Locks unclipped `send_gain_db`, `calibrated_latency_samples`, `unity_ref_dbfs`, and `TargetExcitationProfile` without backing off `send_gain_db` when a target device compresses or clips.
-2. **Capture Matrix Planning:** Schedules the minimal, physically complete set of `Star` + `Switch` + `2×2 Corner` stems needed to disambiguate coupled controls without relying on control-name heuristics for excitation synthesis.
-3. **Independent Dry/Wet Stem Pairing & Sample-Rate Anchoring:** Associates every captured wet target with its actual dry input, channel mapping, control-event timeline, and provenance. Captures at sample rates other than `48 kHz` are converted to aligned `48 kHz` working copies while preserving the unmodified source PCM (`sample_rate_train_hz = 48000`, [`../containers/dnam_binary_format.md` §4](../containers/dnam_binary_format.md#4-training-sample-rate-anchoring--continuous-time-zoh-cross-reference)).
-4. **WDW Target Identification:** Advertising `PreSpatialCore` or `DirectDry` requires aligned, separately identified core/direct and wet L/R targets (or a validated per-channel dry residual).
+All physical hardware captures and programmatic distillations enforce four device-agnostic invariants (`REQ-1.5`–`REQ-1.7`):
+1. **Zero Control-Name or Topology Heuristics (`REQ-1.6`):** Excitation synthesis, lag alignment, and solver staging never inspect control labels (`"Gain"`, `"Mix"`, `"Drive"`), UI hints, or device category tags; fixed `0`-control snapshots and multi-pedal + amp + cab + stereo rack rigs execute through the exact same signal-measured pipeline.
+2. **Multi-Rate & 5-Bit-Depth Lossless Staging (`REQ-1.7`, `REQ-7.3`):** Capture I/O natively encodes and decodes 5 PCM bit depths (`Int12` left-justified in `16-bit` container, `Int16`, `Int24`, `Int32`, and unclipped IEEE-754 `Float32` `WAVE_FORMAT_IEEE_FLOAT`) across `8..192 kHz`, resampling arbitrary device rates to and from the canonical `48 kHz` identification grid via zero-phase polyphase Kaiser-sinc filtering (`dnam_capture::resampler`).
+3. **True-Stereo & Multi-Port Channel Preservation (`REQ-7.2`):** Mono (`1->1`), mono-to-stereo (`1->2`), stereo-to-mono (`2->1`), true-stereo (`2->2`), `4CM`, and `WDW` channel assignments are preserved without mono downmixing prior to Stage 0 routing.
 
 ### 1.2 2-Step Hardware Calibration & Clean 32-Bit Float Pad Staging
 
-1. `r[train.capture.calib.loopback]` **Step 1 — Loopback & Reference Latency Calibration:** Measures deterministic round-trip DAC/ADC latency (`calibrated_latency_samples`) and locks unity reference send gain (`send_gain_db`) and `unity_ref_dbfs`.
-2. `r[train.capture.calib.clean-pad]` **Step 2 — Target Acoustic Probe & Clean Pad Staging (`--clean-pad-db`):** Plays a 6.0-second probe through the target hardware at default controls while keeping `send_gain_db` locked to Step 1:
-   - Inspects the unmodified raw ADC capture per channel before alignment or gain restoration. If the return approaches ADC full scale ($\ge -0.2\text{ dBFS}$), requires a verified linear analog attenuation before the limiting stage or ADC (`--clean-pad-db` records that external attenuation for `f32` makeup scaling $[g_{\min}/\hat g, g_{\max}/\hat g]$; digital gain after the ADC cannot undo analog or ADC clipping).
-   - Preserves raw PCM, attenuation metadata, gain uncertainty, and noise-floor provenance.
+1. `r[train.capture.calib.loopback]` **Step 1 — Direct Converter Loopback (`CALB`):** Measure round-trip DAC-to-ADC loopback latency $\hat{\tau}_{\text{loop}}$ to sub-sample precision, linear converter gain $g_{\text{conv}}$, and per-band quiescent noise-floor energy $\epsilon_{\text{floor},b,c}^2$, persisting the `64 B` `CALB` chunk inside `.dnam-proj` (`ref[container.proj.preamble-and-directory]`).
+2. `r[train.capture.calib.clean-pad]` **Step 2 — Clean Reference Level & Unclipped `Float32` Pad Staging (`REQ-7.3`):** Record a `0 dBu` / instrument-reference calibration burst to lock `input_ref_dbfs`, warn on converter clipping (`>= -0.1 dBFS`), and stage aligned signals in unclipped `32-bit` IEEE-754 floating-point buffers (`±100.0` = `+40 dBFS` linear headroom).
 
----
+### 1.3 Adaptive Star + Commutator Schedule & Null-Homing Verification
 
-### 1.3 Capture Matrix Planning (`Star`, `Switch` & Coupled-Corner Scheduling)
+1. `r[train.capture.planner.schedule]` **StarCenter + Triangular Newton 1D Schedule (`ADR-0016`):** Lock `Mode-0` at the declared `StarCenter` reference stem (`s = 0`), sweep each continuous knob across Gauss–Lobatto nodes (`1D` rays) and each discrete switch across observed non-reference options, and schedule targeted `2D` commutator probe bursts only on control pairs whose measured `1D` commutator norm exceeds the noise-qualified interaction gate.
+2. `r[train.capture.planner.null-homing]` **Hardware Null-Homing Verification (`REQ-1.7`):** Before committing non-reference knob stems on physical hardware, verify mechanical knob return repeatability back to `StarCenter` against the reference residual envelope so potentiometer backlash or thermal drift is separated from true parametric control variation.
 
-`r[train.capture.planner.schedule]`
-
-| Stem Schedule Group | Stem Naming Pattern | Physical Purpose & Ordering Rule |
-| :--- | :--- | :--- |
-| **1. Reference Star Center** | `stem_00_star_center` | Declared default knob and switch settings; auto-unity leveling reference. |
-| **2. Single-Knob Axis Sweeps** | `stem_axis_{ctrl}_{min\|max}` | Captures `{min, default, max}` for each continuous `range` control. |
-| **3. Primary High-Pair Corner** | `stem_corner_high_pair` | Pairs the primary gain/drive control with the primary tone/body control at maximum (`default` switch state), scheduled **before** any switch throws. |
-| **4. Switch Throws & Switch × Gain Corners** | `stem_switch_{sw}_{idx}`, `stem_corner_switch_{sw}_{idx}_{gain}_{min\|max}` | Records switch states and gain endpoints, plus timed engage/hold/release transitions for stateful switches. |
-| **5. Specialized Coupled Corners** | `stem_corner_{c1}_{c2}_...` | Schedules `2 × 2` corners for Dual-Engine Morph controls, Parametric Mid-EQ (`Gain × Freq`), and Resonant Envelope Filters. |
-
-#### Freeze Transition Capture
+#### Freeze-Transition Capture
 
 `r[train.capture.planner.freeze-transition]`
 
-For a physical hardware freeze control (`role = "freeze_latch"`), record aligned input and output while audio builds the device's internal state, engage the switch at a recorded frame boundary, capture the held response and play-over input behavior, and release the switch to capture decay recovery ([`../dsp/router_and_stages_topology.md` §6.1](../dsp/router_and_stages_topology.md#61-captured-freeze-and-modeled-controls)). Time-varying switch captures record their initial option and ordered `(frame_index, option_id)` transitions on the aligned `48 kHz` timeline (marking any `[n_earliest, n_latest)` timing-uncertainty interval so uncertain frames never unlock an unobserved option under `[CLAMP-SWITCH]`).
+When a rig exposes a hardware freeze/hold footswitch (`role == "freeze_latch"`), the capture schedule records at least one active sustain-entry transition (`unfrozen -> frozen` while harmonic energy is present, followed by live play-over phrases and `frozen -> unfrozen` release) so Stage IV tank input gating and play-over pass-through are identified directly from signal trajectories (`ref[dsp.stage4.captured-freeze]`).
 
----
+### 1.4 Co-Designed Disjoint-Comb Excitation, Live Tail Extension & White-Box Distillation
 
-### 1.4 Heuristic-Free 30.0-Second 5-Section Universal Excitation & Live Tail Extension
-
-`r[train.capture.excitation.universal-30s]`
-
-At `48 kHz`, the canonical **30.0-second** signal (`1,440,000` samples) comprises `0.10 s` lead silence, a `0.45 s` alignment header, a `26.45 s` five-section body, and a `3.00 s` baseline tail (`~4.126 s` total baseline input silence after the final `80 ms` chord burst):
-
-```mermaid
-flowchart LR
-    S1["Sec 1 (0-20%, ~5.29s):<br/>Dual-Regime Log Sweeps<br/>(Zone-A Knee + Zone-B Hot)"] --> S2["Sec 2 (20-48%, ~7.41s):<br/>12-Step Ballistic Attack/Release<br/>& Staccato Ladder (E1..E5)"]
-    S2 --> S3["Sec 3 (48-70%, ~5.82s):<br/>16-Burst Polyphonic Dyad/Triad<br/>Intermodulation Matrix"]
-    S3 --> S4["Sec 4 (70-88%, ~4.76s):<br/>Constant-Gain Multitone<br/>+ CCIF Hysteresis Swell"]
-    S4 --> S5["Sec 5 + Tail (88-100% + 3s..18s):<br/>High-Crest Cluster + 80ms Chord Burst<br/>+ Live Dynamic Tail Extension"]
-```
-
-| Section | Time Span (`%` of Active Body) | Signal Structure | Physical Identification Target |
-| :--- | :--- | :--- | :--- |
-| **Section 1** | `0–20%` (`~5.29 s`) | Dual-regime logarithmic sweeps (`20 Hz → 20 kHz`): `~2.38 s` Zone-A swell (`knee → sat → knee`), `0.37 s` settling gap, `~2.54 s` Zone-B swell (`sat → 0.98 → sat`) | Linear frequency response, cabinet/room modal poles, and level-dependent resonant filter trajectories |
-| **Section 2** | `20–48%` (`~7.41 s`) | 12-step multi-register ballistic attack/release & staccato re-trigger ladder (`-42 dBFS → 0.98`, `41.2 Hz E1 .. 659.3 Hz E5`) with sub/mid/high crossover anchors (`65, 330, 1320 Hz`) | Envelope-filter ballistics, optical/FET compressor attack/release time constants, and fast transient recovery |
-| **Section 3** | `48–70%` (`~5.82 s`) | 16-burst polyphonic dyad/triad saturation & intermodulation matrix (`sat → 0.98` across octaves, 5ths, 4ths, major/minor 3rds, tritones) | Multi-stage tube/transistor intermodulation distortion, octave wavefolding, and power-supply sag |
-| **Section 4** | `70–88%` (`~4.76 s`) | `~2.285 s` constant-gain harmonic/multitone signal followed by `~2.476 s` multitone/CCIF hysteresis swell | Continuous clipping knees, hysteresis, and modulation evidence |
-| **Section 5 + Tail** | `88–100%` (`~3.17 s`) + `3.0 s` Tail (`+0..15 s` Live) | `~1.90 s` high-crest cluster, `~63 ms` input gap, and `80 ms` windowed chord burst followed by `~4.126 s` baseline input silence | Reverb/echo decay `T₆₀` and late modal tail identification |
-
-- `r[train.capture.excitation.live-tail]` **Live Per-Stem Dynamic Reverb Tail Extension (`+0.0 s .. +15.0 s`, `REQ-1.7`):** Extends recording in `1.0 s` silent-input increments (up to `+15.0 s` extra) whenever the wet return at `30.0 s` remains above the pre-roll noise floor.
-- `r[train.capture.excitation.user-stems]` **Arbitrary User-Supplied Stems (`REQ-1.8`):** Supports independently paired user-supplied dry/wet stems of any duration or musical content.
-
----
+1. `r[train.capture.excitation.codesigned]` **Co-Designed Disjoint-Comb + `A5` Transient Stimulus (`ADR-0016`, `REQ-1.6`):** Synthesize a deterministic, crest-factor-controlled excitation combining odd/even disjoint harmonic combs (separating linear FRF pedestals from even/odd intermodulation sidebands), swept logarithmic chirps, multi-level dynamic steps (`-48 dBFS .. 0 dBFS`), and a `500 ms` `A5` musical transient coreset (`12,000` frames at `48 kHz` stored in `INPC`, `ref[container.proj.inpc-capsule]`).
+2. `r[train.capture.excitation.live-tail]` **Automatic Live Decay-Tail Extension:** Monitor the post-stimulus return energy against the calibrated `CALB` noise floor and automatically extend capture recording until reverb, delay, or feedback tails decay within `+1.0 dB` of $\epsilon_{\text{floor}}^2$ (up to the configured maximum tail ceiling).
+3. `r[train.capture.whitebox.distillation]` **Unified `DistillationTarget` & Out-of-Process `DNWB` White-Box Runners (`ADR-0018`, `REQ-1.8`):** Programmatic targets implement `DistillationTarget` (`render_stem` batch + `render_frame` closed-loop adaptive probing), while external circuit and DSP simulators (`FaustRunner`, `SpiceRunner` over `ngspice` variable-timestep `PCHIP` + `309`-tap Kaiser-sinc decimation) execute in GPL-isolated subprocesses over `64 B`-header `DNWB` binary stdin/stdout pipes.
 
 ### 1.5 Multi-Regime Sub-Sample Hardware Latency Alignment
 
 `r[train.capture.alignment.multi-regime]`
 
-| Hardware Regime | Detection Condition | Alignment Proxy & Verification Rule |
-| :--- | :--- | :--- |
-| **1. Standard Broadband (`Amps, Drives, Cabs`)** | Broadband dry-to-wet linear correlation `> 0.35` within `locked ± 48` samples | Parabolic sub-sample cross-correlation peak around `locked`; post-alignment polish gated on `c_dry > 0.40`. |
-| **2. Extreme Gated / Wavefolder Fuzz (`Family 1 / Op-N`)** | Broadband linear correlation `≤ 0.35` with high crest/clipping | Causal clipped-fuzz proxy `LPF_800(tanh(10 * HPF_80(x_dry)))` (`80 Hz` 1-pole HPF, `10x` `tanh` clip, `800 Hz` 1-pole LPF) cross-correlated against `y_wet` within `locked ± 48` samples. |
-| **3. Steep Resonant / High-Pass (`Wah, Phaser, Treble Booster`)** | Low broadband correlation with concentrated upper-band energy | Zero-phase `1.5 kHz` high-pass filtered dry/wet cross-correlation to lock transient leading edges without phase-delay bias. |
-| **4. Modulated Delay / Echo / Reverb (`Op-T[Tank]`)** | Strong delayed repeats or kill-dry wet output | `pulse1_onset_window` leading-edge alignment (or `kill_dry_locked` reference latency when dry feedthrough is absent), preserving intentional effect delay `τ_0,m`. |
+Given dry excitation $x[n]$ and recorded wet return $y[n]$ (after subtracting loopback offset $\hat{\tau}_{\text{loop}}$), `estimate_subsample_lag_and_gain` identifies sub-sample residual hardware/USB jitter $\Delta\tau$ and linear converter gain $\hat{g}$ across clean, high-gain distorting, phase-inverting, and dispersive all-pass regimes:
+1. Compute normalized cross-correlation (and broadband Hilbert/envelope cross-correlation fallback when heavy clipping or octave division suppresses fundamental phase coherence) over the causal search window.
+2. Fit a 3-point parabolic vertex around the correlation peak $k^\star$ (`|k^\star|` with sign restoration for phase-inverting preamps):
+$$\delta = \frac{R[k^\star - 1] - R[k^\star + 1]}{2\big(R[k^\star - 1] - 2 R[k^\star] + R[k^\star + 1]\big)} \in [-0.5, +0.5], \qquad \hat{\tau} = k^\star + \delta$$
+achieving `< 0.02` sample accuracy at `48 kHz` (`ref[qual.eval.jitter-floor]`) before resampling the wet stem onto the zero-phase `INPC` grid.

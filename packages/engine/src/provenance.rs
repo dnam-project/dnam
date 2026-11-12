@@ -51,7 +51,7 @@ pub use provider::RustCryptoProvider;
 pub use provider::{
     CryptoProvider, DefaultCryptoProvider, OpenArenaCryptoProvider, VerificationStatus,
 };
-pub use sha256::{decode_hex_array, encode_hex, sha256_digest};
+pub use sha256::{decode_hex_array, encode_hex, sha256_digest, sha256_software_digest};
 pub use verify::{
     DNSL_MAGIC, DnamSealEnvelopePreamble, DnamSealRecipientSlot, FLAG_SEAL_CHACHA20_FULL,
     MAX_SEAL_RECIPIENTS, build_creator_signing_message, build_marketplace_receipt_signing_message,

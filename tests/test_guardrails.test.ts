@@ -553,6 +553,7 @@ describe("DNAM Monorepo Architectural & Documentation Guardrails", () => {
       "Hann-windowed",
       "JSON header",
       ".dnam",
+      ".dnam-proj",
       ".dnam-ckpt",
       ".dnam-cache",
       ".dnam-seal",
@@ -847,7 +848,7 @@ describe("DNAM Monorepo Architectural & Documentation Guardrails", () => {
       path.join(PACKAGES_DIR, "engine", "src", "provenance"),
       path.join(PACKAGES_DIR, "engine", "src", "schema"),
       path.join(PACKAGES_DIR, "engine", "tests"),
-      path.join(PACKAGES_DIR, "trainer"),
+      path.join(PACKAGES_DIR, "capture"),
       path.join(PACKAGES_DIR, "fixtures"),
     ];
     for (const dirPath of proptestDirs) {
@@ -1364,13 +1365,13 @@ describe("DNAM Monorepo Architectural & Documentation Guardrails", () => {
 
     const strictForbidRootSet = new Set<string>([
       "packages/fixtures/src/lib.rs",
-      "packages/trainer/src/lib.rs",
+      "packages/capture/src/lib.rs",
       "packages/studio/rust/lib.rs",
       "packages/studio/rust/main.rs",
       "packages/studio/build.rs",
       "packages/js/build.rs",
     ]);
-    for (const safePkg of ["fixtures", "trainer", "studio"]) {
+    for (const safePkg of ["fixtures", "capture", "studio"]) {
       for (const subDir of ["src/bin", "rust/bin", "tests", "benches", "examples"]) {
         for (const p of walkFilesByExtensions(
           path.join(PACKAGES_DIR, safePkg, subDir),
@@ -1398,7 +1399,7 @@ describe("DNAM Monorepo Architectural & Documentation Guardrails", () => {
       /\bunsafe\s*(?:\{|fn\b|impl\b|trait\b|extern\b)|(?<!r#)\bunsafe\s*\(|#\s*!?\s*\[\s*unsafe\s*\(/;
     const unsafeBlockOrItemOnlyRe = /\bunsafe\s*(?:\{|fn\b|impl\b|trait\b|extern\b)/;
     const unsafeViolations: string[] = [];
-    for (const safePkg of ["fixtures", "trainer", "studio"]) {
+    for (const safePkg of ["fixtures", "capture", "studio"]) {
       const pkgDir = path.join(PACKAGES_DIR, safePkg);
       for (const rsFile of walkFilesByExtensions(pkgDir, new Set([".rs"]))) {
         const stripped = stripRustCommentsAndStrings(fs.readFileSync(rsFile, "utf8"));
@@ -1425,9 +1426,9 @@ describe("DNAM Monorepo Architectural & Documentation Guardrails", () => {
     }
     expect(unsafeViolations).toEqual([]);
 
-    // Enforce < 900 line ceiling across all .rs files in fixtures and trainer
+    // Enforce < 900 line ceiling across all .rs files in fixtures and capture
     const lineCeilingViolations: string[] = [];
-    for (const strictPkg of ["fixtures", "trainer"]) {
+    for (const strictPkg of ["fixtures", "capture"]) {
       for (const rsFile of walkFilesByExtensions(
         path.join(PACKAGES_DIR, strictPkg),
         new Set([".rs"]),
@@ -1564,7 +1565,16 @@ describe("DNAM Monorepo Architectural & Documentation Guardrails", () => {
         `packages/fixtures/Cargo.toml must not define inline or dotted dependency tables in [${sec.header}]`,
       ).toBe(false);
     }
+    expect(fs.existsSync(path.join(PACKAGES_DIR, "trainer"))).toBe(false);
+    expect(
+      fs.existsSync(path.join(DOCS_DIR, "specs", "containers", "checkpoint_and_cache_format.md")),
+    ).toBe(false);
+    expect(
+      fs.existsSync(path.join(DOCS_DIR, "specs", "containers", "project_container_format.md")),
+    ).toBe(true);
+
     expect(fixturesCargo).not.toContain("dnam-engine");
+    expect(fixturesCargo).not.toContain("dnam-capture");
     expect(fixturesCargo).not.toContain("dnam-trainer");
     expect(fixturesCargo).not.toContain("dnam-studio");
     expect(fixturesCargo).not.toContain("dnam-js");
@@ -1573,47 +1583,57 @@ describe("DNAM Monorepo Architectural & Documentation Guardrails", () => {
     const fixturesMoon = fs.readFileSync(path.join(PACKAGES_DIR, "fixtures", "moon.yml"), "utf8");
     expect(fixturesMoon).toMatch(/^dependsOn:\s*\[\]\s*$/m);
 
-    // Strict V-shaped leaf convergence:
-    // - engine: leaf crate (dependsOn: [], zero dnam-fixtures or dnam-trainer references)
-    // - trainer: engine <- trainer in [dependencies], fixture <- trainer in [dev-dependencies]
+    // Strict V-shaped leaf convergence & ADR-0020 pure-IO boundary:
+    // - engine: leaf crate (dependsOn: [], zero dnam-fixtures or dnam-capture references)
+    // - capture: engine <- capture in [dependencies], fixtures <- capture in [dev-dependencies], zero CLI/OS-audio
     // - studio & js: zero dnam-fixtures references
     const fixturesRefRegex = /dnam[-_]fixtures|packages\/fixtures|\.\.\/fixtures/;
     const engineCargo = fs.readFileSync(path.join(PACKAGES_DIR, "engine", "Cargo.toml"), "utf8");
     expect(engineCargo).not.toMatch(fixturesRefRegex);
-    expect(engineCargo).not.toMatch(/dnam[-_]trainer|packages\/trainer|\.\.\/trainer/);
+    expect(engineCargo).not.toMatch(
+      /dnam[-_](?:capture|trainer)|packages\/(?:capture|trainer)|\.\.\/(?:capture|trainer)/,
+    );
     const engineMoon = fs.readFileSync(path.join(PACKAGES_DIR, "engine", "moon.yml"), "utf8");
     expect(engineMoon).toMatch(/^dependsOn:\s*\[\]\s*$/m);
     expect(engineMoon).not.toContain("fixtures");
 
-    const trainerCargo = fs.readFileSync(path.join(PACKAGES_DIR, "trainer", "Cargo.toml"), "utf8");
-    let foundFixturesInTrainerDevDeps = false;
-    let foundEngineInTrainerDeps = false;
-    for (const sec of parseTomlSections(trainerCargo)) {
+    const captureCargo = fs.readFileSync(path.join(PACKAGES_DIR, "capture", "Cargo.toml"), "utf8");
+    let foundFixturesInCaptureDevDeps = false;
+    let foundEngineInCaptureDeps = false;
+    for (const sec of parseTomlSections(captureCargo)) {
+      expect(
+        sec.header,
+        "packages/capture/Cargo.toml must remain a pure library without [[bin]] targets (ADR-0020)",
+      ).not.toBe("bin");
       if (fixturesRefRegex.test(sec.header) || fixturesRefRegex.test(sec.body)) {
         expect(
           sec.header,
-          `packages/trainer/Cargo.toml must only reference dnam-fixtures in [dev-dependencies], found in [${sec.header}]`,
+          `packages/capture/Cargo.toml must only reference dnam-fixtures in [dev-dependencies], found in [${sec.header}]`,
         ).toBe("dev-dependencies");
-        foundFixturesInTrainerDevDeps = true;
+        foundFixturesInCaptureDevDeps = true;
       }
       if (sec.header === "dependencies" && sec.body.includes("dnam-engine")) {
-        foundEngineInTrainerDeps = true;
+        foundEngineInCaptureDeps = true;
       }
     }
     expect(
-      foundFixturesInTrainerDevDeps,
-      "packages/trainer/Cargo.toml must list dnam-fixtures in [dev-dependencies] (fixture <- trainer)",
+      foundFixturesInCaptureDevDeps,
+      "packages/capture/Cargo.toml must list dnam-fixtures in [dev-dependencies] (fixtures <- capture)",
     ).toBe(true);
     expect(
-      foundEngineInTrainerDeps,
-      "packages/trainer/Cargo.toml must list dnam-engine in [dependencies] (engine <- trainer)",
+      foundEngineInCaptureDeps,
+      "packages/capture/Cargo.toml must list dnam-engine in [dependencies] (engine <- capture)",
     ).toBe(true);
+    expect(captureCargo).not.toMatch(/\b(?:clap|cpal|toml)\b/);
 
-    const trainerMoon = fs.readFileSync(path.join(PACKAGES_DIR, "trainer", "moon.yml"), "utf8");
-    expect(trainerMoon).toMatch(/^\s*-\s*"engine"\s*$/m);
+    const studioCargo = fs.readFileSync(path.join(PACKAGES_DIR, "studio", "Cargo.toml"), "utf8");
+    expect(studioCargo).not.toMatch(/\b(?:clap|toml)\b/);
+
+    const captureMoon = fs.readFileSync(path.join(PACKAGES_DIR, "capture", "moon.yml"), "utf8");
+    expect(captureMoon).toMatch(/^\s*-\s*"engine"\s*$/m);
     expect(
-      trainerMoon,
-      "packages/trainer/moon.yml must scope fixtures dependency as development",
+      captureMoon,
+      "packages/capture/moon.yml must scope fixtures dependency as development",
     ).toMatch(/-\s*id:\s*"fixtures"\s*\n\s*scope:\s*"development"/);
 
     for (const nonConsumerPkg of ["studio", "js"]) {
@@ -1641,7 +1661,7 @@ describe("DNAM Monorepo Architectural & Documentation Guardrails", () => {
     for (const cargoManifest of [
       path.join(REPO_ROOT, "Cargo.toml"),
       path.join(REPO_ROOT, "Cargo.lock"),
-      ...["engine", "fixtures", "trainer", "studio", "js"].map((pkg) =>
+      ...["engine", "fixtures", "capture", "studio", "js"].map((pkg) =>
         path.join(PACKAGES_DIR, pkg, "Cargo.toml"),
       ),
     ]) {
@@ -1660,13 +1680,15 @@ describe("DNAM Monorepo Architectural & Documentation Guardrails", () => {
       );
     }
 
-    expect(fs.existsSync(path.join(PACKAGES_DIR, "trainer", "src", "metrics.rs"))).toBe(true);
-    expect(fs.existsSync(path.join(PACKAGES_DIR, "trainer", "src", "whitebox.rs"))).toBe(true);
+    expect(fs.existsSync(path.join(PACKAGES_DIR, "capture", "src", "metrics.rs"))).toBe(true);
+    expect(fs.existsSync(path.join(PACKAGES_DIR, "capture", "src", "whitebox.rs"))).toBe(true);
+    expect(fs.existsSync(path.join(PACKAGES_DIR, "capture", "src", "proj.rs"))).toBe(true);
+    expect(fs.existsSync(path.join(PACKAGES_DIR, "capture", "src", "align.rs"))).toBe(true);
 
-    // ADR-0018 source-level black-box isolation: zero engine/trainer/tier/distillation/DNWB leakage
-    // in packages/fixtures/**/*.rs, and zero dnam_fixtures imports in packages/trainer/src/**/*.rs.
+    // ADR-0018 & ADR-0020 source-level black-box isolation: zero engine/capture/tier/distillation/DNWB leakage
+    // in packages/fixtures/**/*.rs, and zero dnam_fixtures imports in packages/capture/src/**/*.rs.
     const forbiddenFixturesSymbolsRe =
-      /\b(?:Tier|DistillationTarget|internal_nodes|DnwbHeader64B|DNWB|dnam_engine|dnam_trainer)\b/;
+      /\b(?:Tier|DistillationTarget|internal_nodes|DnwbHeader64B|DNWB|dnam_engine|dnam_capture|dnam_trainer)\b/;
     const fixturesLeakViolations: string[] = [];
     for (const rsFile of walkFilesByExtensions(
       path.join(PACKAGES_DIR, "fixtures"),
@@ -1681,7 +1703,7 @@ describe("DNAM Monorepo Architectural & Documentation Guardrails", () => {
 
     const nonTestFixturesViolations: string[] = [];
     const nonTestScanDirs = [
-      path.join(PACKAGES_DIR, "trainer", "src"),
+      path.join(PACKAGES_DIR, "capture", "src"),
       path.join(PACKAGES_DIR, "engine"),
       path.join(PACKAGES_DIR, "studio"),
       path.join(PACKAGES_DIR, "js"),
@@ -1698,11 +1720,32 @@ describe("DNAM Monorepo Architectural & Documentation Guardrails", () => {
         }
       }
     }
-    const trainerBuildRs = path.join(PACKAGES_DIR, "trainer", "build.rs");
-    if (fs.existsSync(trainerBuildRs)) {
-      nonTestFixturesViolations.push(relPath(trainerBuildRs));
+    const captureBuildRs = path.join(PACKAGES_DIR, "capture", "build.rs");
+    if (fs.existsSync(captureBuildRs)) {
+      nonTestFixturesViolations.push(relPath(captureBuildRs));
     }
     expect(nonTestFixturesViolations).toEqual([]);
+
+    // Enforce zero retired prototype .dnam-ckpt / .dnam-cache / .dnce / DNCK / DNCE / dnam_trainer tokens
+    // across packages/ and canonical docs/specs/ (outside project_and_documentation_quality.md's forbidden list)
+    const retiredCkptOrTrainerRe =
+      /(?:\.dnam-ckpt|\.dnam-cache|\.dnce\b|\bDNCK\b|\bDNCE\b|\bdnam[-_]trainer\b)/;
+    const retiredTokenViolations: string[] = [];
+    for (const rootDir of [PACKAGES_DIR, SPECS_DIR]) {
+      for (const fPath of walkFilesByExtensions(
+        rootDir,
+        new Set([".md", ".rs", ".ts", ".tsx", ".json", ".toml", ".yml"]),
+      )) {
+        const rel = relPath(fPath);
+        if (rel === "docs/specs/architecture/project_and_documentation_quality.md") {
+          continue;
+        }
+        if (retiredCkptOrTrainerRe.test(fs.readFileSync(fPath, "utf8"))) {
+          retiredTokenViolations.push(rel);
+        }
+      }
+    }
+    expect(retiredTokenViolations).toEqual([]);
 
     // Enforce MR-IIR companion rule presence and zero retired MR-STFT references across docs, root & packages
     expect(collectSpecRules().has("qual.companion.mr-iir")).toBe(true);

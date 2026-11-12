@@ -270,15 +270,18 @@ impl<'a, B: EngineBackend> DnamEngine<'a, B> {
             wet_r = mid - self.stereo_width * side;
         }
 
+        let tier_trim = self.cached_tier_gain_trim[active_tiers.saturating_sub(1) & 3];
         let eff_dry_g = if self.bypassed {
             1.0
         } else {
-            self.mix_dry_gain
+            self.mix_dry_gain * tier_trim
         };
         let eff_wet_g = if self.bypassed && !self.trails_enabled {
             0.0
-        } else {
+        } else if self.bypassed {
             self.mix_wet_gain
+        } else {
+            self.mix_wet_gain * tier_trim
         };
 
         if self.stage_pipeline.stage0.wdw_mode {
@@ -369,6 +372,10 @@ impl<'a, B: EngineBackend> DnamEngine<'a, B> {
             crate::math::CERTIFIED_INPUT_ENVELOPE_MIN_F32,
             &mut self.saturation_flags,
         );
+        let arena_len = self.arena_storage.as_bytes().len();
+        let active_tiers =
+            (self.effective_tier() as usize + 1).min(max_tiers_for_arena_len(arena_len));
+        self.ensure_collapsed_head_weights(active_tiers);
         let up_main = self.oversampler.upsample_4x(in_l, in_r);
         let up_aux = if has_return {
             self.oversampler_aux.upsample_4x(ret_l, ret_r)
@@ -391,7 +398,12 @@ impl<'a, B: EngineBackend> DnamEngine<'a, B> {
             last_aux = [o3, o4];
         }
         let [dl, dr] = self.oversampler.downsample_4x(proc_main);
-        [dl, dr, last_aux[0], last_aux[1]]
+        [
+            crate::math::sanitize_output_sample(dl, &mut self.saturation_flags),
+            crate::math::sanitize_output_sample(dr, &mut self.saturation_flags),
+            last_aux[0],
+            last_aux[1],
+        ]
     }
 
     /// Steps a single stereo frame and writes the 256-D multi-tier feature bus $\phi[n] \in \mathbb{R}^{256}$

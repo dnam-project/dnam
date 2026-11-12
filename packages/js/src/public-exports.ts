@@ -8,12 +8,6 @@
  */
 
 export {
-  Checkpoint,
-  type DnckLayoutInfo,
-  type ReferenceCheckpointOptions,
-} from "./checkpoint/checkpoint.js";
-export { GramMatrix, uploUPackedLength } from "./checkpoint/gram-matrix.js";
-export {
   type BounceOptions,
   Engine,
   type EngineOptions,
@@ -36,6 +30,7 @@ export {
 } from "./errors.js";
 export { initWasm } from "./internal/native/load.js";
 export type { InitWasmOptions, WasmMemoryOptions } from "./internal/native/wasm.js";
+export { GramMatrix, uploUPackedLength } from "./model/gram-matrix.js";
 export type { ModelSource } from "./model/load.js";
 export {
   type BuildModelOptions,

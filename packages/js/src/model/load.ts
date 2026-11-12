@@ -9,7 +9,7 @@ import { DnamError } from "../errors.js";
 import { coerceBytes } from "../internal/coerce.js";
 
 /**
- * Input sources accepted by `await Model.load(source)` and `await Checkpoint.load(source)`.
+ * Input sources accepted by `await Model.load(source)`.
  */
 export type ModelSource =
   | string

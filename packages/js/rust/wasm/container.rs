@@ -1,15 +1,13 @@
-//! WASM `.dnam` container, `.dnam-ckpt` checkpoint & `uplo='U'` Gram matrix exports
+//! WASM `.dnam` container & `uplo='U'` Gram matrix exports
 //! (`ref[sdk.ts.model.containers-and-checkpoints]`, `ref[sdk.ts.runtime.zero-unsafe]`).
 
 use crate::core::container::{
-    build_dmu1_frame_core, build_dnam_container_core, build_reference_checkpoint_core,
-    build_reference_container_core, canonicalize_jcs_core, crc32c_compute_core,
-    export_runtime_dnam_from_ckpt_core, pack_uplo_u_f64_into_core, parse_dmu1_frame_core,
+    build_dmu1_frame_core, build_dnam_container_core, build_reference_container_core,
+    canonicalize_jcs_core, crc32c_compute_core, pack_uplo_u_f64_into_core, parse_dmu1_frame_core,
     parse_schema_version_core, strip_container_to_tier_core, strip_v2_open_dnam_container_core,
     unpack_uplo_u_f64_into_core, update_header_in_place_core, uplo_u_packed_len_core,
     validate_and_normalize_header_core, validate_container_with_key_core,
-    validate_v2_dnck_checkpoint_core, validate_v2_open_dnam_layout_core,
-    verify_arena5_calib_stats_core, verify_stem_arena4_crc32c_core,
+    validate_v2_open_dnam_layout_core,
 };
 use crate::error::validation_err;
 use crate::wasm::abi::{
@@ -68,14 +66,12 @@ pub extern "C" fn dnam_wasm_validate_container_with_key(
                 "arenaCrc32cFull": p.arena_crc32c_full,
                 "arenaCrc32cPro": p.arena_crc32c_pro,
                 "arenaCrc32cUltra": p.arena_crc32c_ultra,
-                "numCkptStems": p.num_ckpt_stems,
                 "tailTimeMs": p.tail_time_ms,
                 "headerCrc32c": p.header_crc32c,
                 "highestTier": p.highest_tier() as u8,
                 "isStereoOut": p.is_stereo_out(),
                 "hasSignatures": p.has_signatures(),
                 "isEncryptedArena": p.is_encrypted_arena(),
-                "hasCalibStats": p.has_calib_stats(),
                 "verificationStatus": info.verification_status,
                 "protectionProfile": info.protection_profile,
                 "headerJson": info.header_json,
@@ -261,70 +257,6 @@ pub extern "C" fn dnam_wasm_strip_v2_open_dnam_container(
 ) -> i32 {
     let container = read_bytes(container_ptr, container_len);
     match strip_v2_open_dnam_container_core(&container, target_tier) {
-        Ok(bytes) => set_result(bytes),
-        Err(msg) => set_error(msg),
-    }
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn dnam_wasm_build_reference_checkpoint(include_calib_stats: u8) -> i32 {
-    match build_reference_checkpoint_core(include_calib_stats != 0) {
-        Ok(bytes) => set_result(bytes),
-        Err(msg) => set_error(msg),
-    }
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn dnam_wasm_verify_stem_arena4_crc32c(
-    arena_ptr: usize,
-    arena_len: usize,
-    stem_offset: usize,
-    stem_len: usize,
-    expected_crc32c: u32,
-) -> i32 {
-    let arena = read_bytes(arena_ptr, arena_len);
-    match verify_stem_arena4_crc32c_core(&arena, stem_offset, stem_len, expected_crc32c) {
-        Ok(()) => 0,
-        Err(msg) => set_error(msg),
-    }
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn dnam_wasm_verify_arena5_calib_stats(
-    arena_ptr: usize,
-    arena_len: usize,
-    arena5_offset: usize,
-) -> i32 {
-    let arena = read_bytes(arena_ptr, arena_len);
-    match verify_arena5_calib_stats_core(&arena, arena5_offset) {
-        Ok(len) => len as i32,
-        Err(msg) => set_error(msg),
-    }
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn dnam_wasm_validate_v2_dnck_checkpoint(ckpt_ptr: usize, ckpt_len: usize) -> i32 {
-    let ckpt = read_bytes(ckpt_ptr, ckpt_len);
-    match validate_v2_dnck_checkpoint_core(&ckpt) {
-        Ok((tier, ends, boundary)) => {
-            let val = serde_json::json!({
-                "retainedTier": tier,
-                "bundleEnds": ends,
-                "mutableBoundary": boundary,
-            });
-            match serde_json::to_vec(&val) {
-                Ok(vec) => set_result(vec),
-                Err(e) => set_error(validation_err(e.to_string())),
-            }
-        }
-        Err(msg) => set_error(msg),
-    }
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn dnam_wasm_export_runtime_dnam_from_ckpt(ckpt_ptr: usize, ckpt_len: usize) -> i32 {
-    let ckpt = read_bytes(ckpt_ptr, ckpt_len);
-    match export_runtime_dnam_from_ckpt_core(&ckpt) {
         Ok(bytes) => set_result(bytes),
         Err(msg) => set_error(msg),
     }

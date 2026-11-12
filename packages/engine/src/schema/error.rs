@@ -14,7 +14,7 @@ pub enum DnamError {
         /// Actual byte length provided.
         actual: usize,
     },
-    /// Binary preamble magic bytes are neither `b"DNAM"` nor `b"DNCK"`.
+    /// Binary preamble magic bytes are not `b"DNAM"`.
     InvalidMagic([u8; 4]),
     /// Unsupported binary container major/minor schema version.
     UnsupportedVersion {
@@ -32,7 +32,7 @@ pub enum DnamError {
     },
     /// Castagnoli `CRC32C` checksum mismatch on the JSON header or tier arena prefix.
     Crc32cMismatch {
-        /// Region name (`"header"`, `"arena_lite"`, `"arena_full"`, `"arena_ultra"`, or `"arena4_stem"`).
+        /// Region name (`"header"`, `"arena_lite"`, `"arena_full"`, `"arena_pro"`, or `"arena_ultra"`).
         region: &'static str,
         /// Expected CRC32C stored in container.
         expected: u32,

@@ -42,8 +42,8 @@ This specification defines the normative architecture, feature-module organizati
 ```mermaid
 flowchart LR
     subgraph TsSDK ["@dnam-project/dnam TypeScript 7 SDK (packages/js/src/)"]
-        Top["index / node / browser: Model, Checkpoint, Engine, Parameter, DnamError"]
-        Mod["model/ & checkpoint/: Model, Checkpoint, GramMatrix"]
+        Top["index / node / browser: Model, GramMatrix, Engine, Parameter, DnamError"]
+        Mod["model/: Model, GramMatrix"]
         Eng["engine/: Engine, process, render, stream, bypass/freeze scopes"]
         Par["parameters/ & tempo/: Parameter, clampParameters, Tempo, Subdivisions"]
         Sch["schema/: Pure TS Interfaces, camelCase Codec, Native Rust serde + JCS"]
@@ -54,7 +54,7 @@ flowchart LR
     end
 
     subgraph RustCrate ["dnam-js Dual-Target Rust Crate (packages/js/rust/)"]
-        RCore["core.rs + core/* -> DnamHostHandle & dnam-engine"]
+        RCore["core.rs + core/* -> DnamHostHandle, dnam-engine & dnam-capture"]
         RNapi["napi.rs -> Node.js 26 N-API v10 Zero-Copy Addon"]
         RWasm["wasm.rs -> Raw extern C WASM SIMD128 Linear-Memory ABI"]
     end
@@ -65,7 +65,7 @@ flowchart LR
     RNapi & RWasm --> RCore
 ```
 
-1. **Package Name & Feature Subpaths:** The TypeScript SDK is published as `@dnam-project/dnam` (`packages/js/`) and organized into kebab-case feature directories under `src/`: `model/`, `checkpoint/`, `engine/`, `parameters/`, `tempo/`, `schema/`, `provenance/`, `dsp/`, `web-audio/`, and private `internal/`.
+1. **Package Name & Feature Subpaths:** The TypeScript SDK is published as `@dnam-project/dnam` (`packages/js/`) and organized into kebab-case feature directories under `src/`: `model/`, `engine/`, `parameters/`, `tempo/`, `schema/`, `provenance/`, `dsp/`, `web-audio/`, and private `internal/`.
 2. **Modern Rust 2018+ Module Layout:** `packages/js/rust/` uses the `foo.rs` + `foo/bar.rs` module layout with zero `mod.rs` files (`ref[repo.docs.spec-rules-and-adrs]`), separating target-agnostic engine logic (`rust/core.rs` + `rust/core/*`) from the thin `cfg(not(target_arch = "wasm32"))` N-API v10 adapter (`rust/napi.rs`) and `cfg(target_arch = "wasm32")` raw `extern "C"` WASM adapter (`rust/wasm.rs`).
 3. **Private Native Seam:** `src/internal/` is strictly internal; neither `NativeDriver` nor any raw N-API/WASM handle symbol may be exported from any public subpath.
 
@@ -73,7 +73,7 @@ flowchart LR
 
 `r[sdk.ts.layout.curated-exports]`
 
-1. **Explicit Named Exports Only:** Every public entrypoint (`index.ts`, `node.ts`, `browser.ts`, `parameters/index.ts`, `tempo/index.ts`, `schema/index.ts`, `provenance/index.ts`, `checkpoint/index.ts`, `dsp/index.ts`, `web-audio/index.ts`) uses explicit named exports (`export { ... }`) with zero wildcard re-exports (`export *`) and zero `default` exports.
+1. **Explicit Named Exports Only:** Every public entrypoint (`index.ts`, `node.ts`, `browser.ts`, `parameters/index.ts`, `tempo/index.ts`, `schema/index.ts`, `provenance/index.ts`, `dsp/index.ts`, `web-audio/index.ts`) uses explicit named exports (`export { ... }`) with zero wildcard re-exports (`export *`) and zero `default` exports.
 2. **TypeScript 7 Strictness & Zero `any`:** The package compiles cleanly under TypeScript `7.0+` with `strict: true`, `noUncheckedIndexedAccess: true`, `exactOptionalPropertyTypes: true`, and `verbatimModuleSyntax: true`, with zero `any` types or non-null assertions (`!`, `ref[repo.code.type-safety-and-imports]`).
 
 ### 1.3 Enforced Layered Dependency Direction & Runtime Isolation
@@ -81,7 +81,7 @@ flowchart LR
 `r[sdk.ts.layout.dependency-direction]`
 
 1. **Acyclic Feature Layering:** Internal imports follow the strict one-way hierarchy:
-   `errors.ts` / `types.ts` $\rightarrow$ `schema/` $\rightarrow$ `internal/` $\rightarrow$ `model/` $\rightarrow$ `parameters/` & `tempo/` $\rightarrow$ `engine/` $\rightarrow$ `web-audio/`, with `checkpoint/` and `provenance/` depending on `model/` and `dsp/` depending only on `internal/` and `errors.ts`.
+   `errors.ts` / `types.ts` $\rightarrow$ `schema/` $\rightarrow$ `internal/` $\rightarrow$ `model/` $\rightarrow$ `parameters/` & `tempo/` $\rightarrow$ `engine/` $\rightarrow$ `web-audio/`, with `provenance/` depending on `model/` and `dsp/` depending only on `internal/` and `errors.ts`.
 2. **Zero Runtime Dependencies & Browser / `AudioWorkletGlobalScope` Isolation:** `@dnam-project/dnam` has zero runtime npm dependencies (`"dependencies"` is omitted). `src/browser.ts`, `src/internal/native/wasm.ts`, `src/schema/**/*.ts`, and `src/web-audio/**/*.ts` must never import `node:*` built-in modules, and `src/web-audio/processor.ts` + `src/web-audio/shared-state.ts` must remain 100% self-contained for `AudioWorkletGlobalScope`.
 
 ---
@@ -94,7 +94,7 @@ flowchart LR
 
 | Category | Public Types / Classes | Ownership & Immutability Contract |
 | :--- | :--- | :--- |
-| **Stateful Resources (Classes)** | `Model`, `Checkpoint`, `Engine`, `Parameter` | Wrap native `DnamHostHandle` (`DynamicDnamEngine`) or validated container buffers; expose `.dispose()` and `[Symbol.dispose]()`. |
+| **Stateful Resources (Classes)** | `Model`, `Engine`, `Parameter` | Wrap native `DnamHostHandle` (`DynamicDnamEngine`) or validated container buffers; expose `.dispose()` and `[Symbol.dispose]()`. |
 | **Plain Metadata (Frozen Objects)** | `ModelHeader`, `PreambleInfo`, `ParameterDescriptor`, `Preset`, `TelemetrySnapshot`, `ClampReport`, `VerificationResult` | Deeply `readonly` and `Object.freeze`-d plain camelCase objects with zero prototype methods or hidden native pointers. |
 
 1. **Zero Legacy Tri-Physics Symbols:** Superseded Tri-Physics identifiers (`SelectiveRgLru`, `SelectiveRgLruParams`, `ModulatedUfdn`, `MufdnParams`, `Core1Config`, `Core2Config`, `core2Active`) must not exist anywhere in `@dnam-project/dnam`.
@@ -120,14 +120,14 @@ flowchart LR
 
 `r[sdk.ts.api.sync-init]`
 
-1. **Synchronous Core Constructors:** Both `src/node.ts` (synchronous `N-API v10` load with synchronous WASM fallback) and `src/browser.ts` (top-level `await` WASM instantiation) initialize the default `NativeDriver` at module evaluation time so `Model.from(...)`, `Model.reference(...)`, `Checkpoint.from(...)`, `model.createEngine(...)`, and `engine.process(...)` are synchronous across all runtimes.
+1. **Synchronous Core Constructors:** Both `src/node.ts` (synchronous `N-API v10` load with synchronous WASM fallback) and `src/browser.ts` (top-level `await` WASM instantiation) initialize the default `NativeDriver` at module evaluation time so `Model.from(...)`, `Model.reference(...)`, `model.createEngine(...)`, and `engine.process(...)` are synchronous across all runtimes.
 2. **Explicit `initWasm` & Imported `WebAssembly.Memory` Override:** `initWasm(options?: { module?: WebAssembly.Module; bytes?: BufferSource; url?: string | URL; memory?: WebAssembly.Memory; initialPages?: number; maximumPages?: number; shared?: boolean }): Promise<WebAssembly.Module>` allows custom CDN hosting, Web Worker pre-compilation, `AudioWorklet` module sharing, and pre-allocated or `shared: true` (`SharedArrayBuffer`) linear `WebAssembly.Memory` injection via `{ env: { memory } }`.
 
 ### 2.5 Dual-Mode Resource Disposal & Exception-Safe State Scopes
 
 `r[sdk.ts.api.disposable-scopes]`
 
-1. **Dual `.dispose()` and `[Symbol.dispose]()`:** `Model`, `Checkpoint`, and `Engine` implement both `.dispose(): void` and `[Symbol.dispose](): void` (idempotent) plus a `FinalizationRegistry` safety net. Entry `.d.ts` files include `/// <reference lib="esnext.disposable" />` so downstream `ES2024`/`ES2025` consumers compile without `tsconfig.json` changes even when `skipLibCheck` is `false`.
+1. **Dual `.dispose()` and `[Symbol.dispose]()`:** `Model` and `Engine` implement both `.dispose(): void` and `[Symbol.dispose](): void` (idempotent) plus a `FinalizationRegistry` safety net. Entry `.d.ts` files include `/// <reference lib="esnext.disposable" />` so downstream `ES2024`/`ES2025` consumers compile without `tsconfig.json` changes even when `skipLibCheck` is `false`.
 2. **Scoped Bypass & Freeze (`bypass` / `withBypass`, `freeze` / `withFreeze`):**
    - `engine.bypass(options?: { trails?: boolean }): StateScope` enters bypass (`SpilloverTrails` when `trails ?? true`, `HardBypass` when `trails === false`, `ref[arch.topology.spillover-trails]`) and returns a `StateScope` with both `.restore(): void` and `[Symbol.dispose](): void`.
    - `engine.withBypass(options, fn)` and `engine.withFreeze(options, fn)` execute `fn` inside a `try / finally` block and restore the prior state on return or throw.
@@ -210,15 +210,15 @@ flowchart LR
 
 `r[sdk.ts.schema.camel-case-codec-parity]`
 
-1. **Zero-Dependency Native-`serde` Schema Validation & CamelCase Codec (`@dnam-project/dnam/schema`):** Mirrors every struct and enum in `packages/engine/src/schema/` (`ModelHeader`, `IoConfig`, `ModelCapabilities`, `LevelingConfig`, `SlimmableTiersConfig`, `ControlBusConfig`, `RouterConfig`, `Stage1..4*Config`, `TensorSliceEntry`, `ParameterDescriptor`, `Preset`, `ModelSignatures`, `StemRegistryEntry`, `AuditReport`) as pure `readonly` TypeScript interfaces with zero runtime JS dependencies, delegating validation and default population directly to compiled Rust `serde` (`dnam_engine::schema::DnamJsonHeader`) in `decodeHeader(wireJson)` (returning deeply frozen camelCase `ModelHeader`) and `encodeHeader(header)` (emitting canonical snake_case wire JSON).
+1. **Zero-Dependency Native-`serde` Schema Validation & CamelCase Codec (`@dnam-project/dnam/schema`):** Mirrors every struct and enum in `packages/engine/src/schema/` (`ModelHeader`, `IoConfig`, `ModelCapabilities`, `LevelingConfig`, `SlimmableTiersConfig`, `ControlBusConfig`, `RouterConfig`, `Stage1..4*Config`, `TensorSliceEntry`, `ParameterDescriptor`, `Preset`, `ModelSignatures`) as pure `readonly` TypeScript interfaces with zero runtime JS dependencies, delegating validation and default population directly to compiled Rust `serde` (`dnam_engine::schema::DnamJsonHeader`) in `decodeHeader(wireJson)` (returning deeply frozen camelCase `ModelHeader`) and `encodeHeader(header)` (emitting canonical snake_case wire JSON).
 2. **Byte-Identical RFC 8785 JCS Round-Trip Parity:** Decoding any Rust-emitted `DnamJsonHeader` (both `default_reference()` and a fully populated header exercising every optional field and enum variant) via `decodeHeader` and re-encoding via `encodeHeader` + `canonicalJson` (`ref[sec.jcs.immutable-header-digest]`) produces byte-identical UTF-8 output and identical `immutableHeaderSha256` digests.
 
-### 4.2 `.dnam` Models, `.dnam-ckpt` Checkpoints, `GramMatrix` & Tempo
+### 4.2 `.dnam` Models, `GramMatrix` & Tempo
 
 `r[sdk.ts.model.containers-and-checkpoints]`
 
 1. **`Model` Operations:** `await Model.load(source)` (accepting filesystem path in Node.js, `URL`, `Response`, `Blob`, `ArrayBuffer`, or `Uint8Array`), `Model.from(bytes)`, `Model.reference(options?)`, and `Model.build(header, arenaBytes)` validate the 64-byte-aligned v2 `.dnam` container (`ref[container.dnam.load-validation]`, `REQ-8.8`), expose `model.preamble`, `model.header`, `model.parameters`, `model.presets`, `model.tierArenas`, `model.withHeader(updater)` (in-place within the 4 KB page budget when unsealed), `model.withMaxTier(tier)` (`strip_container_to_tier`, `ref[container.dnam.tier-prefix]`), and `model.createEngine(options?)`.
-2. **`Checkpoint` & `GramMatrix` (`@dnam-project/dnam/checkpoint`):** `await Checkpoint.load(source)`, `Checkpoint.from(bytes)`, and `Checkpoint.reference(options?)` validate `.dnam-ckpt` (`DNCK`, `ref[container.ckpt.bundle-framing]`) containers, verify `Arena 4` stem `CRC32C` and `Arena 5` `DNCA` calibration records, and export deployable runtime `Model` instances via `checkpoint.toModel()`. `GramMatrix.fromDense(matrix, dim)` and `gram.toDense()` pack/unpack symmetric matrices in `uplo='U'` upper-triangular `Float64Array` layout (`ref[container.ckpt.uplo-u]`).
+2. **`GramMatrix` (`@dnam-project/dnam`):** `GramMatrix.fromDense(matrix, dim)` and `gram.toDense()` pack and unpack symmetric sufficient-statistic matrices in canonical `uplo='U'` upper-triangular `Float64Array` layout (`ref[container.proj.stat-uplo-u]`).
 3. **Offline Parameter Clamping & Tempo Inversion (`@dnam-project/dnam/parameters`, `@dnam-project/dnam/tempo`):** Exposes `clampParameters(modelOrHeader, values): ClampReport` (`ref[train.audit.phase1.clamp-range]`, `ref[train.audit.phase1.clamp-switch]`, `ref[train.audit.phase1.clamp-stability]`), `computeZoh(...)`, `controlStride(sampleRate)`, `subdivisionPhase(...)`, and 32-step binary-search `invertTempoCalibration(...)` (`ref[dsp.tempo.physical-inversion]`).
 
 ### 4.3 Marketplace Provenance, Hardware Sealing & Forensic Watermarking

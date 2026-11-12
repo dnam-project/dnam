@@ -77,8 +77,22 @@ const fn sha256_compress(state: &mut [u32; 8], block: &[u8; 64]) {
     state[7] = state[7].wrapping_add(h);
 }
 
-/// Computes the FIPS 180-4 SHA-256 digest of `data` in `#![no_std]`.
-pub fn sha256_digest(data: &[u8]) -> [u8; 32] {
+#[inline(always)]
+fn compress_blocks(state: &mut [u32; 8], blocks: &[[u8; 64]]) {
+    #[cfg(all(target_arch = "aarch64", target_feature = "sha2"))]
+    {
+        crate::math::aarch64::neon::aarch64_sha256_compress(state, blocks, &SHA256_K);
+    }
+    #[cfg(not(all(target_arch = "aarch64", target_feature = "sha2")))]
+    {
+        for blk in blocks {
+            sha256_compress(state, blk);
+        }
+    }
+}
+
+/// Portable pure-Rust software FIPS 180-4 SHA-256 digest (`#![no_std]`).
+pub fn sha256_software_digest(data: &[u8]) -> [u8; 32] {
     let mut state: [u32; 8] = [
         0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab,
         0x5be0cd19,
@@ -104,6 +118,45 @@ pub fn sha256_digest(data: &[u8]) -> [u8; 32] {
         blk1.copy_from_slice(&pad[64..128]);
         sha256_compress(&mut state, &blk0);
         sha256_compress(&mut state, &blk1);
+    }
+    let mut out = [0u8; 32];
+    let mut i = 0;
+    while i < 8 {
+        let b = state[i].to_be_bytes();
+        out[i * 4] = b[0];
+        out[i * 4 + 1] = b[1];
+        out[i * 4 + 2] = b[2];
+        out[i * 4 + 3] = b[3];
+        i += 1;
+    }
+    out
+}
+
+/// Computes the FIPS 180-4 SHA-256 digest of `data` in `#![no_std]` (using hardware `FEAT_SHA2` on `aarch64`).
+pub fn sha256_digest(data: &[u8]) -> [u8; 32] {
+    let mut state: [u32; 8] = [
+        0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab,
+        0x5be0cd19,
+    ];
+    let (chunks, rem) = data.as_chunks::<64>();
+    if !chunks.is_empty() {
+        compress_blocks(&mut state, chunks);
+    }
+    let mut pad = [0u8; 128];
+    pad[..rem.len()].copy_from_slice(rem);
+    pad[rem.len()] = 0x80;
+    let bit_len = (data.len() as u64) * 8;
+    if rem.len() < 56 {
+        pad[56..64].copy_from_slice(&bit_len.to_be_bytes());
+        let mut blk = [[0u8; 64]; 1];
+        blk[0].copy_from_slice(&pad[0..64]);
+        compress_blocks(&mut state, &blk);
+    } else {
+        pad[120..128].copy_from_slice(&bit_len.to_be_bytes());
+        let mut blks = [[0u8; 64]; 2];
+        blks[0].copy_from_slice(&pad[0..64]);
+        blks[1].copy_from_slice(&pad[64..128]);
+        compress_blocks(&mut state, &blks);
     }
 
     let mut out = [0u8; 32];
@@ -194,6 +247,8 @@ mod tests {
             data in prop::collection::vec(any::<u8>(), 0..512),
         ) {
             let digest = sha256_digest(&data);
+            let sw = sha256_software_digest(&data);
+            prop_assert_eq!(digest, sw);
             let hex = encode_hex(&digest);
             let decoded = decode_hex_array::<32>(&hex).unwrap();
             prop_assert_eq!(digest, decoded);

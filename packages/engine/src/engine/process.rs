@@ -66,6 +66,48 @@ impl<'a, B: EngineBackend> DnamEngine<'a, B> {
                 }
             }
             self.cached_role_b_slices[t] = m_slices;
+            let trim_off = crate::stages::weights::ARENA0_TIER_GAIN_TRIM_OFFSET + t * 4;
+            let raw_trim = if arena.len() >= trim_off + 4 {
+                read_f32_le(arena, trim_off)
+            } else {
+                1.0
+            };
+            self.cached_tier_gain_trim[t] = if (0.0625..=16.0).contains(&raw_trim) {
+                raw_trim
+            } else {
+                1.0
+            };
+        }
+    }
+
+    /// Synchronizes static control projections, `current_stage_params`, modal formant retuning,
+    /// and collapsed output-head weights immediately without waiting for the next `3 kHz` tick.
+    pub(crate) fn sync_immediate_control_state_inner(&mut self) {
+        let arena = self.arena_storage.as_bytes();
+        let arena_len = arena.len();
+        self.control_bus.refresh_static_state(arena);
+        self.current_stage_params = self.control_bus.stage_targets;
+        self.stage_ramp_deltas = [0.0; 16];
+        if self.control_bus.tank_mod_dirty {
+            self.apply_tank_modulations();
+            self.control_bus.tank_mod_dirty = false;
+        }
+        let loop_tiers = max_tiers_for_arena_len(arena_len)
+            .min((self.max_supported_tier as usize) + 1)
+            .max(1);
+        let dtheta = self.current_stage_params[9]
+            .clamp(-core::f32::consts::FRAC_PI_4, core::f32::consts::FRAC_PI_4);
+        let g_rad_pre = (0.5 + self.current_stage_params[6]).clamp(0.0, 1.0);
+        let g_kautz = (0.5 + self.control_bus.ctrl_basis_4[2] + self.current_stage_params[10])
+            .clamp(0.0, 1.0);
+        self.stage_pipeline
+            .stage1
+            .retune_op_m_pre_3khz(dtheta, g_rad_pre, true);
+        self.stage_pipeline
+            .retune_kautz_formant_3khz(loop_tiers, dtheta, g_kautz);
+        let active_tiers = (self.effective_tier() as usize + 1).min(loop_tiers).max(1);
+        if arena_len >= crate::container::ARENA_OFFSET_LITE_END as usize {
+            self.refresh_collapsed_head_weights(active_tiers);
         }
     }
 
@@ -420,15 +462,18 @@ impl<'a, B: EngineBackend> DnamEngine<'a, B> {
             wet_r = mid - self.stereo_width * side;
         }
 
+        let tier_trim = self.cached_tier_gain_trim[active_tiers.saturating_sub(1) & 3];
         let eff_dry_g = if self.bypassed {
             1.0
         } else {
-            self.mix_dry_gain
+            self.mix_dry_gain * tier_trim
         };
         let eff_wet_g = if self.bypassed && !self.trails_enabled {
             0.0
-        } else {
+        } else if self.bypassed {
             self.mix_wet_gain
+        } else {
+            self.mix_wet_gain * tier_trim
         };
 
         let out_l = crate::math::sanitize_output_sample(
@@ -460,12 +505,20 @@ impl<'a, B: EngineBackend> DnamEngine<'a, B> {
             crate::math::CERTIFIED_INPUT_ENVELOPE_MIN_F32,
             &mut self.saturation_flags,
         );
+        let arena_len = self.arena_storage.as_bytes().len();
+        let active_tiers =
+            (self.effective_tier() as usize + 1).min(max_tiers_for_arena_len(arena_len));
+        self.ensure_collapsed_head_weights(active_tiers);
         let up_frames = self.oversampler.upsample_4x(in_l, in_r);
         let mut proc_frames = [[0.0_f32; 2]; 4];
         for (m, frame) in up_frames.iter().enumerate() {
             proc_frames[m] = self.step_frame_tora(frame[0], frame[1], mono_only);
         }
-        self.oversampler.downsample_4x(proc_frames)
+        let [dl, dr] = self.oversampler.downsample_4x(proc_frames);
+        [
+            crate::math::sanitize_output_sample(dl, &mut self.saturation_flags),
+            crate::math::sanitize_output_sample(dr, &mut self.saturation_flags),
+        ]
     }
 
     /// Processes a stereo audio block (`Stereo -> Stereo`).

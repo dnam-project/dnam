@@ -2,22 +2,20 @@
 
 use std::fmt;
 
-/// Canonical error variants returned by `dnam-studio` workspace, capture, trainer, and IPC operations.
+/// Canonical error variants returned by `dnam-studio` audio device, `.dnam-proj` project, and IPC operations.
 #[derive(Debug)]
 pub enum StudioError {
-    /// Filesystem or subprocess I/O failure.
+    /// Filesystem I/O failure.
     Io(std::io::Error),
-    /// TOML manifest parse or serialization error.
-    Toml(String),
     /// JSON wire-contract parse or serialization error.
     Json(String),
-    /// Invalid user control, preset, or stem specification.
+    /// Invalid user parameter, path, or IPC payload.
     Validation(String),
-    /// WAV format or alignment failure.
+    /// Audio device or buffer failure.
     Audio(String),
-    /// Rust trainer worker (`dnam-train`) environment or execution error.
-    Trainer(String),
-    /// Underlying `dnam-engine` container or DSP error.
+    /// Underlying `dnam-capture` `.dnam-proj` container or fit error.
+    Capture(String),
+    /// Underlying `dnam-engine` `.dnam` container or DSP error.
     Engine(String),
 }
 
@@ -25,11 +23,10 @@ impl fmt::Display for StudioError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Io(err) => write!(f, "I/O error: {err}"),
-            Self::Toml(msg) => write!(f, "TOML manifest error: {msg}"),
             Self::Json(msg) => write!(f, "JSON protocol error: {msg}"),
             Self::Validation(msg) => write!(f, "Validation error: {msg}"),
-            Self::Audio(msg) => write!(f, "Audio capture error: {msg}"),
-            Self::Trainer(msg) => write!(f, "Trainer worker error: {msg}"),
+            Self::Audio(msg) => write!(f, "Audio device error: {msg}"),
+            Self::Capture(msg) => write!(f, "Capture engine error: {msg}"),
             Self::Engine(msg) => write!(f, "DNAM engine error: {msg}"),
         }
     }
@@ -46,6 +43,12 @@ impl From<std::io::Error> for StudioError {
 impl From<serde_json::Error> for StudioError {
     fn from(err: serde_json::Error) -> Self {
         Self::Json(err.to_string())
+    }
+}
+
+impl From<dnam_engine::schema::DnamError> for StudioError {
+    fn from(err: dnam_engine::schema::DnamError) -> Self {
+        Self::Capture(err.to_string())
     }
 }
 
@@ -68,21 +71,16 @@ mod tests {
         let json_err = StudioError::from(json_raw);
         assert!(json_err.to_string().contains("JSON protocol error:"));
 
-        assert_eq!(
-            StudioError::Toml("bad toml".to_string()).to_string(),
-            "TOML manifest error: bad toml"
-        );
+        let cap_err = StudioError::from(dnam_engine::schema::DnamError::InvalidMagic(*b"BAD!"));
+        assert!(cap_err.to_string().contains("Capture engine error:"));
+
         assert_eq!(
             StudioError::Validation("bad spec".to_string()).to_string(),
             "Validation error: bad spec"
         );
         assert_eq!(
-            StudioError::Audio("bad wav".to_string()).to_string(),
-            "Audio capture error: bad wav"
-        );
-        assert_eq!(
-            StudioError::Trainer("worker failed".to_string()).to_string(),
-            "Trainer worker error: worker failed"
+            StudioError::Audio("bad stream".to_string()).to_string(),
+            "Audio device error: bad stream"
         );
         assert_eq!(
             StudioError::Engine("invalid magic".to_string()).to_string(),

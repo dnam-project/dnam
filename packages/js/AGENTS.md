@@ -6,7 +6,7 @@
 
 - [`rust/`](rust/lib.rs): Target-agnostic safe Rust core (`rust/core/`) + conditional N-API v10 (`rust/napi/`) and WASM SIMD128 FFI (`rust/wasm/`).
 - [`src/index.ts`](src/index.ts), [`src/node.ts`](src/node.ts), [`src/browser.ts`](src/browser.ts), [`src/internal/native/`](src/internal/native/driver.ts): Dual-target `NapiDriver` and `WasmDriver` routing.
-- [`src/model/`](src/model/index.ts), [`src/checkpoint/`](src/checkpoint/index.ts): `Model<TParams>`, `Checkpoint`, `GramMatrix` (`uplo='U'`), and `crc32c`.
+- [`src/model/`](src/model/index.ts): `Model<TParams>`, `GramMatrix` (`uplo='U'`), and `crc32c`.
 - [`src/engine/`](src/engine/index.ts): Stateful `Engine<TParams>` (`process`, `processAsync`, `render`, `bounce`, `stream`, `bypass`/`freeze` scopes, `telemetry`).
 - [`src/parameters/`](src/parameters/index.ts), [`src/tempo/`](src/tempo/index.ts): WebAudio `AudioParam`-style `Parameter`, `ParameterMap`, `ControlSpace`, `clampParameters`, `defineModelTypes`, and `TempoController`.
 - [`src/schema/`](src/schema/index.ts), [`src/errors.ts`](src/errors.ts): Native Rust `serde`-backed `decodeHeader`/`encodeHeader`, RFC 8785 JCS `headerToJcs`, and coded `DnamError`.

@@ -1,0 +1,191 @@
+$schema: "https://moonrepo.dev/schemas/project.json"
+
+id: "capture"
+language: "rust"
+layer: "library"
+stack: "systems"
+tags:
+  - "rust"
+  - "dsp"
+  - "capture"
+  - "ml"
+  - "wasm"
+
+project:
+  name: "dnam-capture"
+  description: "Pure-Rust Wasm32-Safe Capture, Analytical VarPro System-ID Engine & Single-File .dnam-proj (DNPJ) Container for DNAM"
+
+dependsOn:
+  - "engine"
+  - id: "fixtures"
+    scope: "development"
+
+tasks:
+  format:
+    type: "run"
+    command: "cargo"
+    args:
+      - "fmt"
+      - "--package"
+      - "dnam-capture"
+    options:
+      cache: false
+      runInCI: false
+    tags:
+      - "format"
+
+  format-check:
+    command: "cargo"
+    args:
+      - "fmt"
+      - "--package"
+      - "dnam-capture"
+      - "--"
+      - "--check"
+    inputs:
+      - "Cargo.toml"
+      - "src/**/*"
+      - "tests/**/*"
+      - "benches/**/*"
+      - "/Cargo.toml"
+    tags:
+      - "quality"
+      - "format"
+
+  lint:
+    script: "cargo clippy --package dnam-capture --all-targets --all-features -- -D warnings && cargo clippy --package dnam-capture --target wasm32-unknown-unknown --all-features -- -D warnings"
+    inputs:
+      - "Cargo.toml"
+      - "src/**/*"
+      - "tests/**/*"
+      - "benches/**/*"
+      - "/.cargo/config.toml"
+      - "/Cargo.toml"
+      - "/Cargo.lock"
+      - "/packages/engine/Cargo.toml"
+      - "/packages/engine/src/**/*"
+      - "/packages/fixtures/Cargo.toml"
+      - "/packages/fixtures/src/**/*"
+    options:
+      mutex: "cargo"
+    tags:
+      - "quality"
+      - "lint"
+
+  typecheck:
+    command: "cargo"
+    args:
+      - "check"
+      - "--package"
+      - "dnam-capture"
+      - "--all-targets"
+      - "--all-features"
+    inputs:
+      - "Cargo.toml"
+      - "src/**/*"
+      - "tests/**/*"
+      - "benches/**/*"
+      - "/Cargo.toml"
+      - "/Cargo.lock"
+      - "/packages/engine/Cargo.toml"
+      - "/packages/engine/src/**/*"
+      - "/packages/fixtures/Cargo.toml"
+      - "/packages/fixtures/src/**/*"
+    options:
+      mutex: "cargo"
+    tags:
+      - "quality"
+      - "typecheck"
+
+  build:
+    type: "build"
+    command: "cargo"
+    args:
+      - "build"
+      - "--package"
+      - "dnam-capture"
+      - "--release"
+    inputs:
+      - "Cargo.toml"
+      - "src/**/*"
+      - "/Cargo.toml"
+      - "/Cargo.lock"
+      - "/packages/engine/Cargo.toml"
+      - "/packages/engine/src/**/*"
+    options:
+      mutex: "cargo"
+      outputStyle: "buffer-only-failure"
+    tags:
+      - "build"
+
+  test:
+    command: "cargo"
+    args:
+      - "test"
+      - "--package"
+      - "dnam-capture"
+      - "--all-features"
+    inputs:
+      - "Cargo.toml"
+      - "src/**/*"
+      - "tests/**/*"
+      - "/Cargo.toml"
+      - "/Cargo.lock"
+      - "/packages/engine/Cargo.toml"
+      - "/packages/engine/src/**/*"
+      - "/packages/fixtures/Cargo.toml"
+      - "/packages/fixtures/src/**/*"
+    options:
+      mutex: "cargo"
+    tags:
+      - "test"
+
+  coverage:
+    type: "run"
+    command: "cargo"
+    args:
+      - "llvm-cov"
+      - "--package"
+      - "dnam-capture"
+      - "--all-features"
+      - "--fail-under-lines"
+      - "95"
+    inputs:
+      - "Cargo.toml"
+      - "src/**/*"
+      - "tests/**/*"
+      - "/Cargo.toml"
+      - "/Cargo.lock"
+      - "/packages/engine/Cargo.toml"
+      - "/packages/engine/src/**/*"
+      - "/packages/fixtures/Cargo.toml"
+      - "/packages/fixtures/src/**/*"
+    options:
+      mutex: "cargo"
+      runInCI: "skip"
+    tags:
+      - "coverage"
+
+  bench:
+    type: "run"
+    command: "cargo"
+    args:
+      - "bench"
+      - "--package"
+      - "dnam-capture"
+    inputs:
+      - "Cargo.toml"
+      - "src/**/*"
+      - "benches/**/*"
+      - "/Cargo.toml"
+      - "/Cargo.lock"
+      - "/packages/engine/Cargo.toml"
+      - "/packages/engine/src/**/*"
+      - "/packages/fixtures/Cargo.toml"
+      - "/packages/fixtures/src/**/*"
+    options:
+      cache: false
+      mutex: "cargo"
+      runInCI: false
+    tags:
+      - "bench"

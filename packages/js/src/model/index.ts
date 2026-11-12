@@ -4,6 +4,7 @@
  * @module
  */
 
+export { GramMatrix, uploUPackedLength } from "./gram-matrix.js";
 export { type ModelSource, readModelSourceBytes } from "./load.js";
 export {
   type BuildModelOptions,

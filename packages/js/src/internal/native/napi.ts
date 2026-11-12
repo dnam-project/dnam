@@ -182,16 +182,6 @@ interface RawNapiAddon extends NativeTestingBindings {
   parseDmu1FrameNative(frameBytes: Uint8Array): string;
   validateV2OpenDnamLayoutNative(containerBytes: Uint8Array): string;
   stripV2OpenDnamContainerNative(containerBytes: Uint8Array, targetTier: number): Uint8Array;
-  buildReferenceCheckpointNative(includeCalibStats?: boolean): Uint8Array;
-  verifyStemArena4Crc32CNative(
-    arenaBytes: Uint8Array,
-    stemByteOffset: number,
-    stemByteLen: number,
-    expectedCrc32c: number,
-  ): void;
-  verifyArena5CalibStatsNative(arenaBytes: Uint8Array, arena5Offset: number): number;
-  validateV2DnckCheckpointNative(ckptBytes: Uint8Array): number[];
-  exportRuntimeDnamFromCkptNative(ckptBytes: Uint8Array): Uint8Array;
   uploUPackedLenNative(nDim: number): number;
   packUploUF64IntoNative(denseFlat: Float64Array, nDim: number, outPacked: Float64Array): void;
   unpackUploUF64IntoNative(packedU: Float64Array, nTier: number, outDense: Float64Array): void;
@@ -908,46 +898,6 @@ export class NapiDriver implements NativeDriver {
 
   stripV2OpenDnamContainer(containerBytes: Uint8Array, targetTier: number): Uint8Array {
     return callNapi(() => this.#addon.stripV2OpenDnamContainerNative(containerBytes, targetTier));
-  }
-
-  buildReferenceCheckpoint(includeCalibStats: boolean): Uint8Array {
-    return callNapi(() => this.#addon.buildReferenceCheckpointNative(includeCalibStats));
-  }
-
-  verifyStemArena4Crc32c(
-    arenaBytes: Uint8Array,
-    stemByteOffset: number,
-    stemByteLen: number,
-    expectedCrc32c: number,
-  ): void {
-    callNapi(() =>
-      this.#addon.verifyStemArena4Crc32CNative(
-        arenaBytes,
-        stemByteOffset,
-        stemByteLen,
-        expectedCrc32c,
-      ),
-    );
-  }
-
-  verifyArena5CalibStats(arenaBytes: Uint8Array, arena5Offset: number): number {
-    return callNapi(() => this.#addon.verifyArena5CalibStatsNative(arenaBytes, arena5Offset));
-  }
-
-  validateV2DnckCheckpoint(ckptBytes: Uint8Array): {
-    readonly retainedTier: number;
-    readonly bundleEnds: readonly number[];
-    readonly mutableBoundary: number;
-  } {
-    const arr = callNapi(() => this.#addon.validateV2DnckCheckpointNative(ckptBytes));
-    const retainedTier = arr[0] ?? 0;
-    const mutableBoundary = arr[arr.length - 1] ?? 0;
-    const bundleEnds = arr.slice(1, arr.length - 1);
-    return { retainedTier, bundleEnds, mutableBoundary };
-  }
-
-  exportRuntimeDnamFromCkpt(ckptBytes: Uint8Array): Uint8Array {
-    return callNapi(() => this.#addon.exportRuntimeDnamFromCkptNative(ckptBytes));
   }
 
   uploUPackedLen(nDim: number): number {

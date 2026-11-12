@@ -1,8 +1,9 @@
-//! Target-agnostic `.dnam` model, `.dnam-ckpt` (`DNCK`) checkpoint, `DMU1` mutable frame, JCS,
-//! `CRC32C`, and `uplo='U'` Gram matrix core functions (`ref[sdk.ts.model.containers-and-checkpoints]`).
+//! Target-agnostic `.dnam` model, `DMU1` mutable frame, JCS, `CRC32C`,
+//! and `uplo='U'` Gram matrix core functions (`ref[sdk.ts.model.containers-and-checkpoints]`).
 
 use std::collections::BTreeMap;
 
+use dnam_capture::proj::{pack_uplo_u_f64, unpack_uplo_u_f64, uplo_u_packed_len};
 use dnam_engine::Tier;
 use dnam_engine::container::{
     ARENA_OFFSET_ULTRA_END, DnamContainerView, DnamPreamble, build_dmu1_mutable_frame,
@@ -14,13 +15,7 @@ use dnam_engine::container::{
 use dnam_engine::provenance::{RustCryptoProvider, decode_hex_array};
 use dnam_engine::schema::{
     ControlCalibration, ControlCalibrationRole, ControlKind, ControlSchemaDef, ControlUiHints,
-    DnamJsonHeader, PresetDef, SchemaVersion, TempoSubdivision, TensorSliceEntry,
-};
-use dnam_trainer::ckpt::{
-    AuditReport, DnamCkptHeader, DnamCkptView, ExtractedPhysics, StemProvenance, StemRegistryEntry,
-    build_dnam_ckpt_container, export_runtime_dnam_from_ckpt, pack_uplo_u_f64, unpack_uplo_u_f64,
-    uplo_u_packed_len, validate_v2_dnck_checkpoint, verify_ckpt_arena5_calib_stats,
-    verify_ckpt_stem_arena4_crc32c,
+    DnamJsonHeader, PresetDef, SchemaVersion, TempoSubdivision,
 };
 
 use crate::error::{format_tagged_dnam_error, validation_err};
@@ -58,22 +53,6 @@ pub fn validate_container_with_key_core(
         let mkt_pk =
             decode_hex_array::<32>(mkt_pk_hex).map_err(|e| format_tagged_dnam_error(&e))?;
         crypto = crypto.with_marketplace_pubkey(mkt_pk);
-    }
-    if container_bytes.starts_with(b"DNCK") {
-        let view = DnamCkptView::from_bytes(container_bytes, &crypto)
-            .map_err(|e| format_tagged_dnam_error(&e))?;
-        let header_json = view
-            .header
-            .to_json_string()
-            .map_err(|e| validation_err(e.to_string()))?;
-        return Ok(ValidatedContainerInfo {
-            preamble: view.preamble,
-            magic_str: String::from_utf8_lossy(&view.preamble.magic).into_owned(),
-            verification_status: format!("{:?}", view.verification_status),
-            protection_profile: view.protection_profile.as_str().to_string(),
-            header_json,
-            arena_bytes: view.arena_storage.as_bytes().to_vec(),
-        });
     }
     let view = DnamContainerView::from_bytes(container_bytes, &crypto)
         .map_err(|e| format_tagged_dnam_error(&e))?;
@@ -372,15 +351,9 @@ pub fn canonicalize_jcs_core(
     serialize_jcs_value(&projected, reject_floats).map_err(|e| format_tagged_dnam_error(&e))
 }
 
-/// Validates and normalizes a snake_case `DnamJsonHeader` or `DnamCkptHeader` JSON string using
+/// Validates and normalizes a snake_case `DnamJsonHeader` JSON string using
 /// Rust `serde` and `.validate()`, rejecting unknown fields and returning canonical wire JSON.
 pub fn validate_and_normalize_header_core(header_json: &str) -> Result<String, String> {
-    if let Ok(val) = serde_json::from_str::<serde_json::Value>(header_json)
-        && val.get("container_kind").and_then(|v| v.as_str()) == Some("dnam-ckpt")
-    {
-        return DnamCkptHeader::validate_and_normalize_json_str(header_json)
-            .map_err(|e| format_tagged_dnam_error(&e));
-    }
     DnamJsonHeader::validate_and_normalize_json_str(header_json)
         .map_err(|e| format_tagged_dnam_error(&e))
 }
@@ -426,118 +399,8 @@ pub fn strip_v2_open_dnam_container_core(
 }
 
 // ============================================================================
-// .dnam-ckpt (DNCK) Checkpoints & uplo='U' Gram Matrix
+// uplo='U' Gram Matrix Packing (`ref[container.proj.stat-uplo-u]`)
 // ============================================================================
-
-pub fn build_reference_checkpoint_core(include_calib_stats: bool) -> Result<Vec<u8>, String> {
-    let mut header = DnamCkptHeader::default_reference();
-    header.base.container_kind = "dnam-ckpt".to_string();
-    header.base.version = "2.0.0".to_string();
-
-    let mut arena = populate_reference_controls_and_arena(&mut header.base, true)?;
-    let stem_offset = arena.len();
-    let stem_record_bytes = vec![0x2A_u8; 4_096];
-    let stem_crc = crc32c_compute(&stem_record_bytes);
-    arena.extend_from_slice(&stem_record_bytes);
-
-    header.stems_registry = Some(vec![StemRegistryEntry {
-        stem_id: "stem_00_noon".to_string(),
-        enabled: true,
-        controls_meta: BTreeMap::from([
-            ("gain".to_string(), serde_json::json!(5.0)),
-            ("boost".to_string(), serde_json::json!("off")),
-        ]),
-        provenance: StemProvenance {
-            input_pcm_sha256: "11".repeat(32),
-            target_pcm_sha256: "22".repeat(32),
-            num_frames: 48_000,
-        },
-        stem_arena4_crc32c: stem_crc,
-        user_metadata: BTreeMap::new(),
-        extracted_physics: Some(ExtractedPhysics {
-            delays_ms: vec![250.0],
-            lfo_freqs_hz: vec![1.5],
-            decay_gains_lin: vec![0.65],
-            detected_grain_size_ms: 0.0,
-            detected_pitch_shift_semitones: 0.0,
-        }),
-        g_audio_uplo_u_f64: TensorSliceEntry {
-            arena: 4,
-            dtype: "f64".to_string(),
-            packing: Some("uplo_upper_col_major_tier_ordered".to_string()),
-            feature_dim: Some(64),
-            packed_len: Some(2_080),
-            shape: None,
-            byte_offset: stem_offset as u32,
-            byte_length: 2_048,
-        },
-        c_audio_tier_f64: TensorSliceEntry {
-            arena: 4,
-            dtype: "f64".to_string(),
-            packing: None,
-            feature_dim: None,
-            packed_len: None,
-            shape: Some(vec![64, 2]),
-            byte_offset: (stem_offset + 2_048) as u32,
-            byte_length: 2_048,
-        },
-    }]);
-
-    header.audit_report = Some(AuditReport {
-        phase1_clamps: vec!["CLAMP-RANGE".to_string(), "CLAMP-SWITCH".to_string()],
-        phase2_rail_warnings: Vec::new(),
-        phase3_clamps: Vec::new(),
-        prescriptions: vec!["Record stem with boost=ultra to unlock switch option".to_string()],
-    });
-
-    if include_calib_stats {
-        let mut a5 = vec![0u8; 64];
-        a5[0..4].copy_from_slice(b"DNCA");
-        a5[4..6].copy_from_slice(&1u16.to_le_bytes());
-        a5[8..10].copy_from_slice(&0u16.to_le_bytes());
-        a5[10..12].copy_from_slice(&0u16.to_le_bytes());
-        a5[12..16].copy_from_slice(&64u32.to_le_bytes());
-        let body_crc = crc32c_compute(&[]);
-        a5[16..20].copy_from_slice(&body_crc.to_le_bytes());
-        arena.extend_from_slice(&a5);
-    }
-
-    build_dnam_ckpt_container(&mut header, &arena, &arena, false)
-        .map_err(|e| format_tagged_dnam_error(&e))
-}
-
-pub fn verify_stem_arena4_crc32c_core(
-    arena_bytes: &[u8],
-    stem_byte_offset: usize,
-    stem_byte_len: usize,
-    expected_crc32c: u32,
-) -> Result<(), String> {
-    verify_ckpt_stem_arena4_crc32c(
-        arena_bytes,
-        stem_byte_offset,
-        stem_byte_len,
-        expected_crc32c,
-    )
-    .map_err(|e| format_tagged_dnam_error(&e))
-}
-
-pub fn verify_arena5_calib_stats_core(
-    arena_bytes: &[u8],
-    arena5_offset: usize,
-) -> Result<usize, String> {
-    verify_ckpt_arena5_calib_stats(arena_bytes, arena5_offset)
-        .map_err(|e| format_tagged_dnam_error(&e))
-}
-
-pub fn validate_v2_dnck_checkpoint_core(
-    ckpt_bytes: &[u8],
-) -> Result<(u8, Vec<usize>, usize), String> {
-    validate_v2_dnck_checkpoint(ckpt_bytes).map_err(|e| format_tagged_dnam_error(&e))
-}
-
-pub fn export_runtime_dnam_from_ckpt_core(ckpt_bytes: &[u8]) -> Result<Vec<u8>, String> {
-    export_runtime_dnam_from_ckpt(ckpt_bytes).map_err(|e| format_tagged_dnam_error(&e))
-}
 
 #[inline]
 pub fn uplo_u_packed_len_core(n_dim: usize) -> usize {

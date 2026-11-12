@@ -148,29 +148,6 @@ function pruneTensorSliceEntry(sl: Record<string, unknown>): void {
  * so `encodeHeader` produces byte-identical JSON to `serde_json::to_string(&DnamJsonHeader)`.
  */
 export function pruneRustSkipSerializingIf(raw: Record<string, unknown>): Record<string, unknown> {
-  if (raw["stems_registry"] === null || raw["stems_registry"] === undefined) {
-    raw["stems_registry"] = undefined;
-  } else if (Array.isArray(raw["stems_registry"])) {
-    for (const stem of raw["stems_registry"]) {
-      if (stem !== null && typeof stem === "object") {
-        const stemRec = stem as Record<string, unknown>;
-        if (stemRec["extracted_physics"] === null || stemRec["extracted_physics"] === undefined) {
-          stemRec["extracted_physics"] = undefined;
-        }
-        for (const sliceKey of ["g_audio_uplo_u_f64", "c_audio_tier_f64"]) {
-          const sl = stemRec[sliceKey];
-          if (sl !== null && typeof sl === "object") {
-            pruneTensorSliceEntry(sl as Record<string, unknown>);
-          }
-        }
-      }
-    }
-  }
-
-  if (raw["audit_report"] === null || raw["audit_report"] === undefined) {
-    raw["audit_report"] = undefined;
-  }
-
   const meta = raw["metadata"];
   if (meta !== null && typeof meta === "object") {
     const metaRec = meta as Record<string, unknown>;

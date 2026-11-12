@@ -8,34 +8,19 @@ tags:
   - "typescript"
   - "rust"
   - "tauri"
-  - "cli"
   - "react"
 
 project:
   name: "@dnam-project/studio"
-  description: "Unified Rust/Node dnam CLI and Tauri v2 Desktop Studio for DNAM"
+  description: "Standalone Tauri v2 Desktop Studio for DNAM"
 
 dependsOn:
   - "engine"
+  - "capture"
   - "js"
   - "ui"
-  - "trainer"
 
 tasks:
-  cli:
-    command: "node"
-    args:
-      - "./packages/studio/bin/dnam.mjs"
-    deps:
-      - "~:build-rust-debug"
-    env:
-      DNAM_CARGO_PROFILE: "debug"
-    preset: "utility"
-    options:
-      runFromWorkspaceRoot: true
-    tags:
-      - "cli"
-
   dev:
     command: "pnpm"
     args:
@@ -76,7 +61,6 @@ tasks:
       - "tauri.conf.json"
       - "tsconfig*.json"
       - "vite.config.ts"
-      - "bin/**/*"
       - "capabilities/**/*"
       - "rust/**/*"
       - "src/**/*"
@@ -100,7 +84,6 @@ tasks:
       - "tauri.conf.json"
       - "tsconfig*.json"
       - "vite.config.ts"
-      - "bin/**/*"
       - "capabilities/**/*"
       - "icons/**/*"
       - "isolation/**/*"
@@ -113,8 +96,8 @@ tasks:
       - "/pnpm-lock.yaml"
       - "/packages/engine/Cargo.toml"
       - "/packages/engine/src/**/*"
-      - "/packages/trainer/Cargo.toml"
-      - "/packages/trainer/src/**/*"
+      - "/packages/capture/Cargo.toml"
+      - "/packages/capture/src/**/*"
     options:
       mutex: "cargo"
     tags:
@@ -146,8 +129,8 @@ tasks:
       - "/pnpm-lock.yaml"
       - "/packages/engine/Cargo.toml"
       - "/packages/engine/src/**/*"
-      - "/packages/trainer/Cargo.toml"
-      - "/packages/trainer/src/**/*"
+      - "/packages/capture/Cargo.toml"
+      - "/packages/capture/src/**/*"
     options:
       mutex: "cargo"
     tags:
@@ -175,8 +158,8 @@ tasks:
       - "/Cargo.lock"
       - "/packages/engine/Cargo.toml"
       - "/packages/engine/src/**/*"
-      - "/packages/trainer/Cargo.toml"
-      - "/packages/trainer/src/**/*"
+      - "/packages/capture/Cargo.toml"
+      - "/packages/capture/src/**/*"
     options:
       cache: false
       mutex: "cargo"
@@ -206,8 +189,8 @@ tasks:
       - "/Cargo.lock"
       - "/packages/engine/Cargo.toml"
       - "/packages/engine/src/**/*"
-      - "/packages/trainer/Cargo.toml"
-      - "/packages/trainer/src/**/*"
+      - "/packages/capture/Cargo.toml"
+      - "/packages/capture/src/**/*"
     options:
       cache: false
       mutex: "cargo"
@@ -269,8 +252,8 @@ tasks:
       - "/Cargo.lock"
       - "/packages/engine/Cargo.toml"
       - "/packages/engine/src/**/*"
-      - "/packages/trainer/Cargo.toml"
-      - "/packages/trainer/src/**/*"
+      - "/packages/capture/Cargo.toml"
+      - "/packages/capture/src/**/*"
     options:
       mutex: "cargo"
     tags:
@@ -289,7 +272,6 @@ tasks:
       - "package.json"
       - "tsconfig*.json"
       - "vite.config.ts"
-      - "bin/**/*"
       - "isolation/**/*"
       - "src/**/*"
       - "tests/**/*.ts"
@@ -345,8 +327,8 @@ tasks:
       - "/Cargo.lock"
       - "/packages/engine/Cargo.toml"
       - "/packages/engine/src/**/*"
-      - "/packages/trainer/Cargo.toml"
-      - "/packages/trainer/src/**/*"
+      - "/packages/capture/Cargo.toml"
+      - "/packages/capture/src/**/*"
     options:
       mutex: "cargo"
       runInCI: "skip"
@@ -368,7 +350,6 @@ tasks:
       - "package.json"
       - "tsconfig*.json"
       - "vite.config.ts"
-      - "bin/**/*"
       - "isolation/**/*"
       - "src/**/*"
       - "tests/**/*.ts"

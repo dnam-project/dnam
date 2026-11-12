@@ -36,7 +36,7 @@ DNAM models individual pieces of gear, offline circuit simulations, or an entire
 | **Knobs & Switches** | Vendor-defined parameters per block | None (1 static snapshot per file) | 1–3 continuous knobs (`Proteus` / `ParametricOD`) | **Any number of continuous knobs and discrete switches (`0` controls for a snapshot, or full panel controls)** |
 | **CPU Cost of Stationary Knobs** | Low (control-rate biquad/SVF updates) | None | Extra per-sample `48 kHz` CPU cost for every knob | **Zero extra audio-rate CPU cost when knobs are not moving (`3 kHz` dual-rate control bus)** |
 | **Tempo Sync, Trails & Freeze** | Yes (on factory time/mod blocks only) | No | No | **Host BPM & MIDI Clock sync (`20–400 BPM`, 12 subdivisions), bypass spillover trails, and captured freeze on any model** |
-| **Adding Knob Settings Later** | Requires vendor firmware update | Capture a separate file | Retrain from scratch | **Incremental checkpoint resume (`.dnam-ckpt`)—add new knob or switch captures in seconds without altering existing tones** |
+| **Adding Knob Settings Later** | Requires vendor firmware update | Capture a separate file | Retrain from scratch | **Single-file Capture Vault (`.dnam-proj`)—add, toggle, replace, or remove knob/switch captures in milliseconds without altering existing tones** |
 | **Uncaptured Knob Range Safety** | Hand-tuned per factory block | N/A | Manual `[0, 1]` UI limits; can become unstable | **Automatic 3-Phase safety clamping keeps uncaptured knob ranges, switches, and extreme multi-knob corners stable** |
 | **Quality Scaling** | Fixed per block (or separate "Legacy/Eco" blocks) | Separate model files per size (`Lite` vs. `Standard`) | Single fixed size per export | **4 nested tiers (`Lite ⊂ Full ⊂ Pro ⊂ Ultra`) in one `.dnam` file, plus automatic `4×` oversampled `Ultra` DAW bounce** |
 | **Est. Max LV2 Instances at Equivalent Quality (`1× RK3582 Cortex-A76` @ 80% Cap, incl. LV2 Overhead)** | Scales as `O(N blocks)`: `4–7×` chained blocks per rig (`~3–6×` full stereo rigs per core) | **Studio (`Standard`):** `3–5×` mono LV2s (`1–2×` stereo pairs / full rigs)<br/>**Live (`Lite`):** `8–12×` mono LV2s (`4–6×` stereo pairs) | **`Proteus` (`LSTM-40`):** `4–6×` mono LV2s (`2–3×` stereo pairs / full rigs)<br/>**`ParametricOD`:** `3–4×` mono LV2s (`1–2×` stereo pairs) | **Studio (`Full`):** **`13–19×` true-stereo LV2s / full rigs** (`26–38×` on `2× A76`)<br/>**Live (`Lite`):** **`21–30×` true-stereo LV2s / full rigs** (`42–60×` on `2× A76`) |
@@ -75,21 +75,21 @@ Instead of forcing tone creators to train and distribute separate "feather", "li
 ## 4. How Capturing, Training & Playing Works
 
 > [!NOTE]
-> **Project Status:** The real-time Rust engine (`dnam-engine`), TypeScript/WebAudio SDK (`@dnam-project/dnam`), and pure-Rust Two-Sweep VarPro/Cholesky trainer (`dnam-trainer`) are implemented and verified. The **DNAM Desktop Studio** app, unified **`dnam` CLI**, and **Creator Marketplace** are currently in active development.
+> **Project Status:** The real-time Rust engine (`dnam-engine`), TypeScript/WebAudio SDK (`@dnam-project/dnam`), and pure-Rust Capture & 5-Stage `VarPro` solver (`dnam-capture` + `.dnam-proj` Capture Vault) are implemented and verified. **DNAM Web Studio**, **DAW Plugins**, **Desktop Studio**, and the **Creator Marketplace** are currently in active development.
 
 ```mermaid
 flowchart LR
     Step1["1. Calibrate Interface<br/>Loopback latency, jitter<br/>& reference level check"]
-    Step2["2. Capture Gear<br/>30s universal test signal<br/>or your own dry/wet audio"]
-    Step3["3. Train & Expand<br/>Single-run 4-tier fit<br/>+ instant checkpoint resume"]
+    Step2["2. Capture Gear<br/>Co-designed test signal<br/>or your own dry/wet audio"]
+    Step3["3. Train & Expand<br/>Single-run 4-tier fit<br/>+ .dnam-proj Capture Vault"]
     Step4["4. Play & Share<br/>Hardware pedals, DAWs,<br/>web players & storefronts"]
 
     Step1 --> Step2 --> Step3 --> Step4
 ```
 
 1. **Calibrate Your Audio Interface:** A guided two-step check measures your interface's loopback latency (down to sub-sample accuracy), noise floor, and analog reference level so your captured model responds to input levels just like the real hardware.
-2. **Capture One Setting or a Full Panel:** Send DNAM's 30-second universal test signal through your pedal, amp, or full rig (recording automatically extends if a long reverb or delay tail is still ringing out), or bring your own custom dry/wet recordings of any length. DNAM does not rely on knob-name guesswork, so unmarked gear and black-box full rigs work out of the box.
-3. **Train Once, Add More Knobs Anytime:** Training produces both a ready-to-play `.dnam` model (with all four tiers included) and a `.dnam-ckpt` checkpoint. If you decide later to capture a `Bright` switch or a few more `Gain` positions, you can resume from the checkpoint in seconds without retraining from scratch or shifting your already-captured tones.
+2. **Capture One Setting or a Full Panel:** Send DNAM's co-designed excitation signal through your pedal, amp, or full rig (recording automatically extends if a long reverb or delay tail is still ringing out), or bring your own custom dry/wet recordings. DNAM does not rely on knob-name guesswork, so unmarked gear and black-box full rigs work out of the box.
+3. **Train Once, Edit Your Capture Vault Anytime:** Training produces a portable `.dnam-proj` Capture Vault alongside a ready-to-play `.dnam` model (with all four tiers included). If you decide later to capture a `Bright` switch or add more `Gain` positions, you can add, toggle, or replace captures directly inside `.dnam-proj` in milliseconds—locally or in the cloud—without retraining from scratch or shifting your already-captured tones.
 4. **Play, Audition & Publish:** Load `.dnam` models into compatible hardware pedalboards, desktop apps, or browser players. Tone creators can sign their models for verifiable attribution, generate lightweight `.dnam-prev` audition files for web storefronts, and optionally enable buyer watermarking and hardware device authorization.
 
 ---
@@ -102,17 +102,17 @@ DNAM is designed to run anywhere audio lives—from bare-metal embedded DSP boar
 | :--- | :--- | :--- | :--- |
 | **Embedded & Native DSP Engine** | `dnam-engine` (Rust / C ABI) | Zero-allocation `#![no_std]` real-time engine with `ARM64 NEON`, `ARM SVE2`, `ARM SME`, `x86_64 SSE2/SSE4.2/AVX2`, and `WASM SIMD128` backends (`~162–257 ns` per stereo frame at `48 kHz`) for hardware pedalboards (such as Rockchip RK3582 / Darkglass Anagram) and native C/C++/Rust hosts. | [`packages/engine/README.md`](packages/engine/README.md) |
 | **WebAudio & Node.js SDK** | `@dnam-project/dnam` | TypeScript SDK providing a real-time browser `AudioWorklet` (`WASM SIMD128`) and native Node.js `N-API` runtime for web tone previews, cloud rendering, and Electron/Tauri apps. | [`packages/js/README.md`](packages/js/README.md) |
-| **Pure-Rust Trainer** | `dnam-trainer` | Analytical Two-Sweep VarPro / Cholesky training pipeline (100% safe pure-Rust Cholesky + time-domain IIR cascades), incremental `.dnam-ckpt` stem expansion, and automatic 3-Phase control-space safety auditing. | [`packages/trainer/README.md`](packages/trainer/README.md) |
-| **Desktop Studio & CLI** *(In Progress)* | `@dnam-project/studio` | Unified `dnam` CLI (`init`, `status`, `model`, `control`, `preset`, `render`, `strip`, `inspect`, `studio`) and native Tauri v2 Desktop Studio for workspace management, container auditing, offline bounce rendering, and live playing. | [`packages/studio/README.md`](packages/studio/README.md) |
+| **Capture, Solver & `.dnam-proj` Vault** | `dnam-capture` | Pure-Rust 5-Stage `VarPro` / Cholesky solver, sub-sample alignment, 5-bit-depth WAV I/O, non-destructive `.dnam-proj` (`DNPJ`) Capture Vault editing, and automatic 3-Phase control-space safety auditing. | [`packages/capture/README.md`](packages/capture/README.md) |
+| **Desktop Studio** *(In Progress)* | `@dnam-project/studio` | Native Tauri v2 Desktop Studio for hardware calibration, `.dnam-proj` Capture Vault workflows, container auditing, offline bounce rendering, and live playing. | [`packages/studio/README.md`](packages/studio/README.md) |
 | **Audio UI Design System** | `@dnam-project/ui` | Shared React 19 component library featuring rotary knobs, switches, and real-time spectrum, transfer-curve, and `bESR` visualizers. | [`packages/ui/README.md`](packages/ui/README.md) |
-| **Specifications & Architecture** | `docs/` | Complete system requirements, psychoacoustic quality standards, TORA DSP specifications, `.dnam` binary container format, and security/provenance architecture. | [`docs/index.md`](docs/index.md) |
+| **Specifications & Architecture** | `docs/` | Complete system requirements, psychoacoustic quality standards, TORA DSP specifications, `.dnam` / `.dnam-proj` binary container formats, and security/provenance architecture. | [`docs/index.md`](docs/index.md) |
 
 ---
 
 ## 6. Contributing & License
 
-Interested in building DNAM from source or contributing to the engine, trainer, SDKs, or Desktop Studio?
-- **Developer Setup & Tooling (`mise` + `moon`):** See [`CONTRIBUTING.md`](CONTRIBUTING.md) for toolchain installation, CLI/Studio dev server commands, and test/benchmark workflows.
+Interested in building DNAM from source or contributing to the engine, capture engine, SDKs, or Studio?
+- **Developer Setup & Tooling (`mise` + `moon`):** See [`CONTRIBUTING.md`](CONTRIBUTING.md) for toolchain installation, Studio dev server commands, and test/benchmark workflows.
 - **Specification & Documentation Guide:** See [`docs/index.md`](docs/index.md) and [`docs/CONTRIBUTING.md`](docs/CONTRIBUTING.md).
 - **Contributor License Agreement:** All commits must be signed off (`git commit -s`) under [`CLA.md`](CLA.md).
 
@@ -120,7 +120,7 @@ Licensed under the [DNAM Source-Available & Branding License 1.0.0 (`LICENSE`)](
 - **Free for Musicians & Tone Creators:** Capture, train, play, and share `.dnam` models freely. Creators retain full ownership of the `.dnam` models they train and may freely publish or sell their own first-party models directly (for example via their own website, Gumroad, Shopify, Bandcamp, or Patreon, or bundled with compliant hardware/plugins).
 - **Hardware & Closed-Source Plugin Linking Allowed:** Hardware manufacturers and plugin developers may link `dnam-engine` (`packages/engine`, `packages/js`) into commercial hardware firmware and closed-source audio plugins without open-sourcing their own host or plugin code.
 - **Mandatory DNAM Branding, Format & Provenance Integrity:** Products linking `dnam-engine` or loading `.dnam` models must retain user-facing **"DNAM"** ("Dynamic Neural Audio Modeler" / **"Powered by DNAM"**) branding, unmodified `.dnam` container compatibility, and intact `Ed25519` signatures, device authorization, and buyer watermarks (no white-labeling or DRM/watermark circumvention).
-- **No Unlicensed Marketplaces, Hosted Cloud Training, or Bulk Distillation:** Repackaging the standalone Desktop Studio (`packages/studio`), UI library (`packages/ui`), or trainer (`packages/trainer`), offering third-party hosted cloud training-as-a-service, operating an unlicensed multi-vendor `.dnam` model marketplace or aggregation hub, or bulk-distilling third-party `.dnam` models into competing formats is prohibited without a commercial license.
+- **No Unlicensed Marketplaces, Hosted Cloud Training, or Bulk Distillation:** Repackaging the standalone Desktop Studio (`packages/studio`), UI library (`packages/ui`), or capture/training engine (`packages/capture`), offering third-party hosted cloud training-as-a-service, operating an unlicensed multi-vendor `.dnam` model marketplace or aggregation hub, or bulk-distilling third-party `.dnam` models into competing formats is prohibited without a commercial license.
 
 For bespoke OEM, marketplace, cloud-training, or commercial licensing inquiries, contact **Peter Nguyen** (<peter@phn.dev>).
 

@@ -65,6 +65,7 @@ pub struct DnamEngine<'a, B: EngineBackend = DefaultMathBackend> {
     pub(crate) cached_z_head: [f32; 4],
     pub(crate) cached_z_head_ultra: [f32; 4],
     pub(crate) cached_head_tiers: usize,
+    pub(crate) cached_tier_gain_trim: [f32; 4],
     pub saturation_flags: u32,
     pub control_bus: ControlBus<B>,
     pub stage_pipeline: StagePipeline,
@@ -104,7 +105,7 @@ impl<'a, B: EngineBackend> DnamEngine<'a, B> {
             arena_crc32c_full: 0,
             arena_crc32c_pro: 0,
             arena_crc32c_ultra: 0,
-            num_ckpt_stems: 0,
+            _reserved_stems: 0,
             _reserved: 0,
             tail_time_ms: 0.0,
             header_crc32c: 0,
@@ -142,6 +143,7 @@ impl<'a, B: EngineBackend> DnamEngine<'a, B> {
             cached_z_head: [f32::NAN; 4],
             cached_z_head_ultra: [f32::NAN; 4],
             cached_head_tiers: 0,
+            cached_tier_gain_trim: [1.0; 4],
             saturation_flags: 0,
             control_bus: ControlBus::new(),
             stage_pipeline: StagePipeline::new(),
@@ -150,13 +152,13 @@ impl<'a, B: EngineBackend> DnamEngine<'a, B> {
         }
     }
 
-    /// Loads a `.dnam` or `.dnam-ckpt` container from `bytes` using the default [`CryptoProvider`].
+    /// Loads a `.dnam` container from `bytes` using the default [`CryptoProvider`].
     pub fn from_bytes(bytes: &'a [u8], tier: Tier, sample_rate_hz: u32) -> Result<Self, DnamError> {
         let crypto = DefaultCryptoProvider::default();
         Self::from_bytes_with_crypto(bytes, tier, sample_rate_hz, &crypto)
     }
 
-    /// Loads a `.dnam` or `.dnam-ckpt` container capped at `max_supported_tier`.
+    /// Loads a `.dnam` container capped at `max_supported_tier`.
     pub fn from_bytes_with_max_tier(
         bytes: &'a [u8],
         tier: Tier,
@@ -426,12 +428,7 @@ impl<'a, B: EngineBackend> DnamEngine<'a, B> {
                 self.refresh_calibrated_control_effects(idx, val);
             }
         }
-        let arena = self.arena_storage.as_bytes();
-        self.control_bus.refresh_static_state(arena);
-        if self.control_bus.tank_mod_dirty {
-            self.apply_tank_modulations();
-            self.control_bus.tank_mod_dirty = false;
-        }
+        self.sync_immediate_control_state();
     }
 
     #[inline]
@@ -445,12 +442,11 @@ impl<'a, B: EngineBackend> DnamEngine<'a, B> {
         self.control_bus
             .set_control_immediate(ctrl_idx, physical_value);
         self.refresh_calibrated_control_effects(ctrl_idx, physical_value);
-        let arena = self.arena_storage.as_bytes();
-        self.control_bus.refresh_static_state(arena);
-        if self.control_bus.tank_mod_dirty {
-            self.apply_tank_modulations();
-            self.control_bus.tank_mod_dirty = false;
-        }
+        self.sync_immediate_control_state();
+    }
+
+    fn sync_immediate_control_state(&mut self) {
+        self.sync_immediate_control_state_inner();
     }
 
     fn refresh_calibrated_control_effects(&mut self, ctrl_idx: usize, physical_value: f32) {

@@ -93,7 +93,7 @@ export function StudioApp({
               </div>
               <p className="text-xs text-slate-400">
                 {desktopStatusMessage ??
-                  "Tauri v2 Native Desktop Studio + Headless dnam-train Orchestrator"}
+                  "Tauri v2 Native Desktop Studio + dnam-capture (.dnam-proj) Orchestrator"}
               </p>
             </div>
           </div>
@@ -134,7 +134,7 @@ export function StudioApp({
           <TabsList aria-label="Studio Workspace Tabs">
             <TabsTrigger value="rack">Rack Audition</TabsTrigger>
             <TabsTrigger value="capture">Capture Schedule</TabsTrigger>
-            <TabsTrigger value="trainer">Rust Trainer (dnam-train)</TabsTrigger>
+            <TabsTrigger value="trainer">Capture Fit (.dnam-proj)</TabsTrigger>
             <TabsTrigger value="visualizers">Tri-Physics Visualizers</TabsTrigger>
           </TabsList>
 

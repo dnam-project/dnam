@@ -8,7 +8,7 @@ use crate::schema::{AuthorizedDevice, DnamError, MarketplaceReceipt, OemDeviceCe
 #[cfg(feature = "crypto")]
 use super::sha256::{decode_hex_array, encode_hex};
 
-/// Provenance verification status returned when loading a `.dnam` or `.dnam-ckpt` container.
+/// Provenance verification status returned when loading a `.dnam` container.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VerificationStatus {
     /// Local / community model without signatures (`HAS_SIGNATURES == 0`).
@@ -101,6 +101,47 @@ pub trait CryptoProvider {
     /// Optional pinned marketplace `Ed25519` public key (`32 B`).
     fn marketplace_pubkey(&self) -> Option<&[u8; 32]> {
         None
+    }
+}
+
+impl<T: CryptoProvider + ?Sized> CryptoProvider for &T {
+    #[inline]
+    fn ed25519_verify(
+        &self,
+        pubkey: &[u8; 32],
+        message: &[u8],
+        signature: &[u8; 64],
+    ) -> Result<(), DnamError> {
+        (**self).ed25519_verify(pubkey, message, signature)
+    }
+
+    #[inline]
+    fn unwrap_device_cek(
+        &self,
+        receipt: &MarketplaceReceipt,
+        device: &AuthorizedDevice,
+    ) -> Result<Zeroizing<[u8; 32]>, DnamError> {
+        (**self).unwrap_device_cek(receipt, device)
+    }
+
+    #[inline]
+    fn unwrap_seal_slot_cek(
+        &self,
+        ephemeral_pubkey_x25519: &[u8; 32],
+        device_id_hash_16: &[u8; 16],
+        wrapped_cek_48: &[u8; 48],
+    ) -> Result<Zeroizing<[u8; 32]>, DnamError> {
+        (**self).unwrap_seal_slot_cek(ephemeral_pubkey_x25519, device_id_hash_16, wrapped_cek_48)
+    }
+
+    #[inline]
+    fn local_device_id_hash(&self) -> Option<&str> {
+        (**self).local_device_id_hash()
+    }
+
+    #[inline]
+    fn marketplace_pubkey(&self) -> Option<&[u8; 32]> {
+        (**self).marketplace_pubkey()
     }
 }
 

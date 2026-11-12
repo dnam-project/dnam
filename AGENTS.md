@@ -2,8 +2,8 @@
 
 ## 1. Global Tech Stack & Tooling Rules
 
-- **Monorepo Orchestration (`moon` + `mise`):** Run all builds, quality gates, tests, CLIs, and dev servers via `moon` ([`.moon/workspace.yml`](.moon/workspace.yml) & [`mise.toml`](mise.toml)): `moon check --all`, `moon check <project>`, or `moon run <project>:<task>`.
-- **CLIs & Dev Servers:** `moon run studio:cli -- <args>`, `moon run trainer:cli -- <args>`, `moon run studio:dev`, `moon run studio:tauri-dev`, and `moon run ui:dev`.
+- **Monorepo Orchestration (`moon` + `mise`):** Run builds, gates, tests, and dev servers via `moon` ([`.moon/workspace.yml`](.moon/workspace.yml) & [`mise.toml`](mise.toml)): `moon check --all`, `moon check <project>`, or `moon run <project>:<task>`.
+- **Dev Servers:** `moon run studio:dev`, `moon run studio:tauri-dev`, and `moon run ui:dev`.
 - **Quality Gates:** `moon check <project>`, `moon run <project>:coverage` (≥ 95%), `moon run :format-check`, `moon run :lint`, `moon run :typecheck` (zero `# type: ignore` or `any`), and `moon run :bench`.
 - **Git & Contributing:** Read `packages/<pkg>/CONTRIBUTING.md` before editing; sign off commits via `git commit -s` per [`CLA.md`](CLA.md) and [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
@@ -12,7 +12,7 @@
 1. **Zero Stalls or Nondeterministic Calls in Real-Time Loops (`REQ-6.2`, `REQ-6.3`):** Never use `FDIV`, `FSQRT`, integer division (`IDIV`/`DIV`/`SDIV`/`UDIV`), `libm` calls (including `fmodf`), unbounded loops, heap allocations, locks, or uncached syscalls in $48\text{ kHz}$ or $3\text{ kHz}$ loops; use [`op_n_commuted_cascade.md`](docs/specs/dsp/op_n_commuted_cascade.md) and [`op_m_modal_kautz.md`](docs/specs/dsp/op_m_modal_kautz.md).
 2. **Unconditional BIBO, Lyapunov, $\mathcal{H}_2$ & Zero-DC Stability:** Enforce all stability bounds in [`control_space_audit.md`](docs/specs/training/control_space_audit.md).
 3. **Non-Stop 3-Phase Control Clamping:** Automatically clamp unobserved ranges, switches, and corners per [`parametric_control_bus.md`](docs/specs/dsp/parametric_control_bus.md) without pausing training.
-4. **Fail-Fast & 64B-Aligned Containers:** Validate all `.dnam` and `.dnam-ckpt` containers, `Ed25519` signatures, and `uplo='U'` stem statistics per [`dnam_binary_format.md`](docs/specs/containers/dnam_binary_format.md).
+4. **Fail-Fast & 64B-Aligned Containers:** Validate `v2.0` `.dnam` and `.dnam-proj` containers, `Ed25519` signatures, and `uplo='U'` statistics per [`dnam_binary_format.md`](docs/specs/containers/dnam_binary_format.md) and [`project_container_format.md`](docs/specs/containers/project_container_format.md).
 
 ## 3. Progressive Disclosure & Codebase Discovery Map
 
@@ -20,14 +20,14 @@
 | :--- | :--- | :--- |
 | **Monorepo & Guardrails (`tests/`)** | [`README.md`](README.md), [`tests/AGENTS.md`](tests/AGENTS.md), [`CONTRIBUTING.md`](CONTRIBUTING.md), [`docs/CONTRIBUTING.md`](docs/CONTRIBUTING.md) | [`index.md`](docs/index.md), [`project_and_documentation_quality.md`](docs/specs/architecture/project_and_documentation_quality.md) |
 | **Rust Engine (`packages/engine/`)** | [`engine/AGENTS.md`](packages/engine/AGENTS.md), [`engine/CONTRIBUTING.md`](packages/engine/CONTRIBUTING.md) | [`tora_architecture.md`](docs/specs/architecture/tora_architecture.md), [`router_and_stages_topology.md`](docs/specs/dsp/router_and_stages_topology.md) |
+| **Capture (`packages/capture/`)** | [`capture/AGENTS.md`](packages/capture/AGENTS.md), [`capture/CONTRIBUTING.md`](packages/capture/CONTRIBUTING.md) | [`project_container_format.md`](docs/specs/containers/project_container_format.md), [`four_stage_pipeline.md`](docs/specs/training/four_stage_pipeline.md) |
 | **JS / WebAudio (`packages/js/`)** | [`js/AGENTS.md`](packages/js/AGENTS.md), [`js/CONTRIBUTING.md`](packages/js/CONTRIBUTING.md) | [`typescript_sdk.md`](docs/specs/sdks/typescript_sdk.md), [`dnam_binary_format.md`](docs/specs/containers/dnam_binary_format.md) |
 | **Design System (`packages/ui/`)** | [`ui/AGENTS.md`](packages/ui/AGENTS.md), [`ui/CONTRIBUTING.md`](packages/ui/CONTRIBUTING.md) | [`control_space_audit.md`](docs/specs/training/control_space_audit.md), [`watermarking_and_marketplace.md`](docs/specs/security/watermarking_and_marketplace.md) |
-| **CLI & Studio (`packages/studio/`)** | [`studio/AGENTS.md`](packages/studio/AGENTS.md), [`studio/CONTRIBUTING.md`](packages/studio/CONTRIBUTING.md) | [`capture_and_alignment.md`](docs/specs/training/capture_and_alignment.md), [`dnam_binary_format.md`](docs/specs/containers/dnam_binary_format.md) |
-| **Trainer (`packages/trainer/`)** | [`trainer/AGENTS.md`](packages/trainer/AGENTS.md), [`trainer/CONTRIBUTING.md`](packages/trainer/CONTRIBUTING.md) | [`four_stage_pipeline.md`](docs/specs/training/four_stage_pipeline.md), [`control_space_audit.md`](docs/specs/training/control_space_audit.md) |
+| **Studio (`packages/studio/`)** | [`studio/AGENTS.md`](packages/studio/AGENTS.md), [`studio/CONTRIBUTING.md`](packages/studio/CONTRIBUTING.md) | [`capture_and_alignment.md`](docs/specs/training/capture_and_alignment.md), [`project_container_format.md`](docs/specs/containers/project_container_format.md) |
 | **Fixtures (`packages/fixtures/`)** | [`fixtures/AGENTS.md`](packages/fixtures/AGENTS.md), [`fixtures/CONTRIBUTING.md`](packages/fixtures/CONTRIBUTING.md) | [`four_stage_pipeline.md`](docs/specs/training/four_stage_pipeline.md), [`capture_and_alignment.md`](docs/specs/training/capture_and_alignment.md) |
 
 ## 4. Maintaining `AGENTS.md` & Documentation
 
-- **Root `README.md` Audience:** Keep [`README.md`](README.md) tailored for musicians, tone creators, and producers first (plus a concise OEM/SDK overview); keep developer setup and internal specs in [`CONTRIBUTING.md`](CONTRIBUTING.md), package `README.md`s, and [`docs/`](docs/index.md).
+- **Root `README.md` Audience:** Keep [`README.md`](README.md) tailored for musicians, creators, and producers first (plus concise OEM/SDK info); keep developer setup and internal specs in [`CONTRIBUTING.md`](CONTRIBUTING.md), package `README.md`s, and [`docs/`](docs/index.md).
 - **Zero Duplication:** Keep `AGENTS.md` files strictly as routing maps (`< 5,000` B root, `< 2,500` B scoped).
 - **Single Source of Truth:** Document every equation, stability rule (`r[...]`), or workflow rule in its canonical `docs/` file per [`docs/CONTRIBUTING.md`](docs/CONTRIBUTING.md).

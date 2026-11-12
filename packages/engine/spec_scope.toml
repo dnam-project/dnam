@@ -41,75 +41,75 @@ reason = "Repository-wide Markdown link and anchor resolution guardrail verified
 # ==============================================================================
 [rules."qual.besr.bezout-crossover"]
 scope = "out-of-scope"
-reason = "Offline psychoacoustic bESR qualification metric owned by trainer/evaluation suite"
+reason = "Offline psychoacoustic bESR qualification metric owned by packages/capture"
 
 [rules."qual.besr.filter-response"]
 scope = "out-of-scope"
-reason = "Offline psychoacoustic bESR filter-response qualification owned by trainer/evaluation suite"
+reason = "Offline psychoacoustic bESR filter-response qualification owned by packages/capture"
 
 [rules."qual.besr.noise-subtracted"]
 scope = "out-of-scope"
-reason = "Offline noise-subtracted bESR evaluator owned by trainer/evaluation suite"
+reason = "Offline noise-subtracted bESR evaluator owned by packages/capture"
 
 [rules."qual.besr.zero-denominator"]
 scope = "out-of-scope"
-reason = "Offline bESR zero-denominator convention owned by trainer/evaluation suite"
+reason = "Offline bESR zero-denominator convention owned by packages/capture"
 
 [rules."qual.besr.per-output"]
 scope = "out-of-scope"
-reason = "Offline per-output bESR qualification rule owned by trainer/evaluation suite"
+reason = "Offline per-output bESR qualification rule owned by packages/capture"
 
 [rules."qual.besr.noise-qualified"]
 scope = "out-of-scope"
-reason = "Offline noise-qualified band gating owned by trainer/evaluation suite"
+reason = "Offline noise-qualified band gating owned by packages/capture"
 
 [rules."qual.besr.finite-timeline"]
 scope = "out-of-scope"
-reason = "Offline finite-timeline segmental frame evaluation owned by trainer/evaluation suite"
+reason = "Offline finite-timeline segmental frame evaluation owned by packages/capture"
 
 [rules."qual.besr.uncertain-floor"]
 scope = "out-of-scope"
-reason = "Offline conservative noise-floor interval evaluation owned by trainer/evaluation suite"
+reason = "Offline conservative noise-floor interval evaluation owned by packages/capture"
 
 [rules."qual.besr.joint-intervals"]
 scope = "out-of-scope"
-reason = "Offline joint confidence interval qualification owned by trainer/evaluation suite"
+reason = "Offline joint confidence interval qualification owned by packages/capture"
 
 [rules."qual.eval.jitter-floor"]
 scope = "out-of-scope"
-reason = "Offline hardware capture jitter floor qualification owned by trainer/evaluation suite"
+reason = "Offline hardware capture jitter floor qualification owned by packages/capture"
 
 [rules."qual.eval.thermal-hiss"]
 scope = "out-of-scope"
-reason = "Offline analog thermal-hiss floor qualification owned by trainer/evaluation suite"
+reason = "Offline analog thermal-hiss floor qualification owned by packages/capture"
 
 [rules."qual.eval.metric-scope"]
 scope = "out-of-scope"
-reason = "Offline evaluation metric scope separation owned by trainer/evaluation suite"
+reason = "Offline evaluation metric scope separation owned by packages/capture"
 
 [rules."qual.eval.quiet-vs-muted"]
 scope = "out-of-scope"
-reason = "Offline quiet/autonomous/muted evaluation classification owned by trainer/evaluation suite"
+reason = "Offline quiet/autonomous/muted evaluation classification owned by packages/capture"
 
 [rules."qual.companion.suite"]
 scope = "out-of-scope"
-reason = "Offline companion psychoacoustic metric suite owned by trainer/evaluation suite"
+reason = "Offline companion psychoacoustic metric suite owned by packages/capture"
 
 [rules."qual.companion.mr-iir"]
 scope = "out-of-scope"
-reason = "Offline multi-resolution IIR resonator companion metric owned by trainer/evaluation suite"
+reason = "Offline multi-resolution IIR resonator companion metric owned by packages/capture"
 
 [rules."qual.companion.ltas"]
 scope = "out-of-scope"
-reason = "Offline 33-band LTAS companion metric owned by trainer/evaluation suite"
+reason = "Offline 33-band LTAS companion metric owned by packages/capture"
 
 [rules."qual.companion.seg-esr"]
 scope = "out-of-scope"
-reason = "Offline duration-weighted SegESR companion metric owned by trainer/evaluation suite"
+reason = "Offline duration-weighted SegESR companion metric owned by packages/capture"
 
 [rules."qual.tiers.benchmark-matrix"]
 scope = "out-of-scope"
-reason = "Offline 4-tier psychoacoustic benchmark qualification matrix owned by trainer/evaluation suite"
+reason = "Offline 4-tier psychoacoustic benchmark qualification matrix owned by packages/capture"
 
 # ==============================================================================
 # 3. Architecture: TORA System Overview (`docs/specs/architecture/tora_architecture.md`)
@@ -209,11 +209,11 @@ scope = "engine"
 
 [rules."arch.isomorphism.two-sweep"]
 scope = "out-of-scope"
-reason = "Two-sweep Block-Coordinate Cholesky training solver owned by packages/trainer"
+reason = "Five-stage analytical VarPro and Cholesky solver owned by packages/capture"
 
 [rules."arch.isomorphism.audit-wiring"]
 scope = "out-of-scope"
-reason = "Trainer fit_job Step-0 and 3-phase audit pipeline wiring owned by packages/trainer"
+reason = "Capture pre-flight and 3-phase audit pipeline wiring owned by packages/capture"
 
 [rules."arch.isomorphism.stereo-preservation"]
 scope = "engine"
@@ -232,63 +232,39 @@ scope = "out-of-scope"
 reason = "Documentation subsystem navigation index verified by relative-link guardrails in tests/test_guardrails.test.ts"
 
 # ==============================================================================
-# 4. Containers: Checkpoint & Cache Format (`docs/specs/containers/checkpoint_and_cache_format.md`)
+# 4. Containers: Project & Capture Vault Format (`docs/specs/containers/project_container_format.md`)
 # ==============================================================================
-[rules."container.ckpt.bundle-framing"]
+[rules."container.proj.preamble-and-directory"]
 scope = "out-of-scope"
-reason = "Owned and verified by packages/trainer"
+reason = "Owned and verified by packages/capture"
 
-[rules."container.ckpt.dca1-signature"]
+[rules."container.proj.jcs-manifest"]
 scope = "out-of-scope"
-reason = "Owned and verified by packages/trainer"
+reason = "Owned and verified by packages/capture"
 
-[rules."container.ckpt.export-template"]
+[rules."container.proj.lifecycle-states"]
 scope = "out-of-scope"
-reason = "Owned and verified by packages/trainer"
+reason = "Owned and verified by packages/capture"
 
-[rules."container.ckpt.declarative-no-pickle"]
+[rules."container.proj.inpc-capsule"]
 scope = "out-of-scope"
-reason = "Owned and verified by packages/trainer"
+reason = "Owned and verified by packages/capture"
 
-[rules."container.ckpt.uplo-u"]
+[rules."container.proj.stmc-capsule"]
 scope = "out-of-scope"
-reason = "Owned and verified by packages/trainer"
+reason = "Owned and verified by packages/capture"
 
-[rules."container.ckpt.standalone-full"]
+[rules."container.proj.stat-uplo-u"]
 scope = "out-of-scope"
-reason = "Owned and verified by packages/trainer"
+reason = "Owned and verified by packages/capture"
 
-[rules."container.ckpt.prefix-delta"]
+[rules."container.proj.wght-and-export"]
 scope = "out-of-scope"
-reason = "Owned and verified by packages/trainer"
+reason = "Owned and verified by packages/capture"
 
-[rules."container.ckpt.objective-records"]
+[rules."container.proj.auth-signature"]
 scope = "out-of-scope"
-reason = "Owned and verified by packages/trainer"
-
-[rules."container.ckpt.stems-registry"]
-scope = "out-of-scope"
-reason = "Owned and verified by packages/trainer"
-
-[rules."container.ckpt.gram-fingerprint"]
-scope = "out-of-scope"
-reason = "Owned and verified by packages/trainer"
-
-[rules."container.dnca.inpc"]
-scope = "out-of-scope"
-reason = "Owned and verified by packages/trainer"
-
-[rules."container.dnca.stmc"]
-scope = "out-of-scope"
-reason = "Owned and verified by packages/trainer"
-
-[rules."container.dnca.dnce-sidecar"]
-scope = "out-of-scope"
-reason = "Owned and verified by packages/trainer"
-
-[rules."container.dnca.coreset-fp16"]
-scope = "out-of-scope"
-reason = "Owned and verified by packages/trainer"
+reason = "Owned and verified by packages/capture"
 
 # ==============================================================================
 # 5. Containers: DNAM Binary Format (`docs/specs/containers/dnam_binary_format.md`)
@@ -391,7 +367,7 @@ scope = "engine"
 
 [rules."dsp.op-m.tracker.training"]
 scope = "out-of-scope"
-reason = "Trainer differentiable sub-harmonic tracker forward/surrogate pass owned by packages/trainer"
+reason = "Capture differentiable sub-harmonic tracker forward/surrogate pass owned by packages/capture"
 
 [rules."dsp.op-m.stage3.kautz-allocation"]
 scope = "engine"
@@ -413,7 +389,7 @@ scope = "engine"
 
 [rules."dsp.op-m.stage3.pole-extraction"]
 scope = "out-of-scope"
-reason = "Offline two-step Warped Laguerre/Kautz pole-extraction solver owned by packages/trainer"
+reason = "Offline Steiglitz-McBride / Warped Kautz pole-extraction solver owned by packages/capture"
 
 [rules."dsp.op-m.ctrl.engine"]
 scope = "engine"
@@ -456,7 +432,7 @@ scope = "engine"
 
 [rules."dsp.op-n.bitcrusher.surrogate"]
 scope = "out-of-scope"
-reason = "Trainer STE / 4-term Fourier backward surrogate for bitcrusher owned by packages/trainer"
+reason = "Capture 4-term Fourier surrogate for bitcrusher identification owned by packages/capture"
 
 [rules."dsp.op-n.commuted.theorem1"]
 scope = "engine"
@@ -619,7 +595,7 @@ scope = "engine"
 
 [rules."dsp.ctrl.step0.variance-gating"]
 scope = "out-of-scope"
-reason = "Offline Step-0 transport and variance-based control locking owned by packages/trainer"
+reason = "Offline Step-0 transport and variance-based control locking owned by packages/capture"
 
 [rules."dsp.ctrl.math.pitch-profile"]
 scope = "engine"
@@ -818,212 +794,168 @@ scope = "engine"
 # ==============================================================================
 [rules."train.capture.invariants"]
 scope = "out-of-scope"
-reason = "Studio/Trainer hardware capture invariants owned by packages/studio and packages/trainer"
+reason = "Hardware capture and multi-rate/bit-depth invariants owned by packages/capture"
 
 [rules."train.capture.calib.loopback"]
 scope = "out-of-scope"
-reason = "Studio loopback latency calibration owned by packages/studio"
+reason = "Loopback latency calibration (CALB) owned by packages/capture and packages/studio"
 
 [rules."train.capture.calib.clean-pad"]
 scope = "out-of-scope"
-reason = "Studio clean-pad level calibration owned by packages/studio"
+reason = "Clean-pad level calibration owned by packages/capture and packages/studio"
 
 [rules."train.capture.planner.schedule"]
 scope = "out-of-scope"
-reason = "Studio/Trainer capture schedule planner owned by packages/studio and packages/trainer"
+reason = "StarCenter + commutator capture schedule planner owned by packages/capture"
+
+[rules."train.capture.planner.null-homing"]
+scope = "out-of-scope"
+reason = "Hardware null-homing repeatability check owned by packages/capture"
 
 [rules."train.capture.planner.freeze-transition"]
 scope = "out-of-scope"
-reason = "Studio/Trainer freeze-transition capture planner owned by packages/studio and packages/trainer"
+reason = "Freeze-transition capture planner owned by packages/capture"
 
-[rules."train.capture.excitation.universal-30s"]
+[rules."train.capture.excitation.codesigned"]
 scope = "out-of-scope"
-reason = "Studio 30s 5-section universal hardware excitation owned by packages/studio"
+reason = "Co-designed disjoint-comb and A5 transient excitation owned by packages/capture"
 
 [rules."train.capture.excitation.live-tail"]
 scope = "out-of-scope"
-reason = "Studio live energy-gated tail recording owned by packages/studio"
+reason = "Live energy-gated tail recording owned by packages/capture and packages/studio"
 
-[rules."train.capture.excitation.user-stems"]
+[rules."train.capture.whitebox.distillation"]
 scope = "out-of-scope"
-reason = "Studio/Trainer user stem validation owned by packages/studio and packages/trainer"
+reason = "DistillationTarget and DNWB out-of-process white-box runners owned by packages/capture"
 
 [rules."train.capture.alignment.multi-regime"]
 scope = "out-of-scope"
-reason = "Trainer/Studio multi-regime sub-sample capture alignment owned by packages/trainer and packages/studio"
+reason = "Multi-regime parabolic sub-sample capture alignment owned by packages/capture"
 
 # ==============================================================================
 # 14. Training: Control Space Audit (`docs/specs/training/control_space_audit.md`)
 # ==============================================================================
 [rules."train.audit.phase1.clamp-range"]
 scope = "out-of-scope"
-reason = "Owned and verified by packages/trainer"
+reason = "Owned and verified by packages/capture"
 
 [rules."train.audit.phase1.clamp-switch"]
 scope = "out-of-scope"
-reason = "Owned and verified by packages/trainer"
+reason = "Owned and verified by packages/capture"
 
 [rules."train.audit.phase1.clamp-stability"]
 scope = "out-of-scope"
-reason = "Owned and verified by packages/trainer"
+reason = "Owned and verified by packages/capture"
 
 [rules."train.audit.phase2.corner-barrier"]
 scope = "out-of-scope"
-reason = "Trainer Phase-2 optimizer step stop-gradient corner barrier loss owned by packages/trainer"
+reason = "Stage D analytical VarPro corner barrier owned by packages/capture"
 
 [rules."train.audit.phase2.clamp-rail"]
 scope = "out-of-scope"
-reason = "Trainer Phase-2 2048-sample periodic PolyADAA rail occupancy auditor owned by packages/trainer"
+reason = "Phase-2 2048-sample PolyADAA rail occupancy auditor owned by packages/capture"
 
 [rules."train.audit.phase3.clamp-dynamic"]
 scope = "out-of-scope"
-reason = "Owned and verified by packages/trainer"
+reason = "Owned and verified by packages/capture"
 
 [rules."train.audit.phase3.clamp-head-gain"]
 scope = "out-of-scope"
-reason = "Owned and verified by packages/trainer"
+reason = "Owned and verified by packages/capture"
 
 [rules."train.audit.phase3.numeric-envelope"]
 scope = "out-of-scope"
-reason = "Owned and verified by packages/trainer"
+reason = "Owned and verified by packages/capture"
 
 [rules."train.audit.report.prescription"]
 scope = "out-of-scope"
-reason = "Owned and verified by packages/trainer"
+reason = "Owned and verified by packages/capture"
 
 # ==============================================================================
-# 15. Training: Four-Stage Pipeline (`docs/specs/training/four_stage_pipeline.md`)
+# 15. Training: Five-Stage Pipeline (`docs/specs/training/four_stage_pipeline.md`)
 # ==============================================================================
 [rules."train.pipeline.topology"]
 scope = "out-of-scope"
-reason = "Trainer four-stage pipeline orchestration owned by packages/trainer"
+reason = "Five-stage analytical VarPro pipeline orchestration owned by packages/capture"
 
-[rules."train.pipeline.sweep1"]
+[rules."train.pipeline.stage-a-poles"]
 scope = "out-of-scope"
-reason = "Trainer Sweep-1 sequential stage fitting owned by packages/trainer"
+reason = "Stage A Steiglitz-McBride rational pole and delay identification owned by packages/capture"
 
-[rules."train.pipeline.sweep1-step0"]
+[rules."train.pipeline.stage-b-harvest"]
 scope = "out-of-scope"
-reason = "Trainer Sweep-1 Step-0 system identification owned by packages/trainer"
+reason = "Stage B exact 256-D feature harvesting and INPC/STMC extraction owned by packages/capture"
 
-[rules."train.pipeline.sweep1-stage3"]
+[rules."train.pipeline.stage-c-schur"]
 scope = "out-of-scope"
-reason = "Trainer Sweep-1 Stage III cabinet fitting owned by packages/trainer"
+reason = "Stage C nested 4-tier Schur-complement MM-Cholesky and LTAS KKT solver owned by packages/capture"
 
-[rules."train.pipeline.sweep1-stage2"]
+[rules."train.pipeline.stage-d-control"]
 scope = "out-of-scope"
-reason = "Trainer Sweep-1 Stage II cascade fitting owned by packages/trainer"
+reason = "Stage D triangular Newton CP1 control-bus projection solver owned by packages/capture"
 
-[rules."train.pipeline.sweep1-stage4"]
+[rules."train.pipeline.stage-e-pack"]
 scope = "out-of-scope"
-reason = "Trainer Sweep-1 Stage IV tank fitting owned by packages/trainer"
-
-[rules."train.pipeline.sweep1-freeze"]
-scope = "out-of-scope"
-reason = "Trainer Sweep-1 upstream parameter freezing owned by packages/trainer"
-
-[rules."train.pipeline.sweep2"]
-scope = "out-of-scope"
-reason = "Trainer Sweep-2 joint Kronecker head fitting owned by packages/trainer"
-
-[rules."train.pipeline.sweep2-stats"]
-scope = "out-of-scope"
-reason = "Trainer Sweep-2 sufficient-statistic accumulation owned by packages/trainer"
-
-[rules."train.pipeline.sweep2-solve"]
-scope = "out-of-scope"
-reason = "Trainer Sweep-2 Cholesky normal-equation solver owned by packages/trainer"
-
-[rules."train.pipeline.sweep2-certify"]
-scope = "out-of-scope"
-reason = "Trainer Sweep-2 post-polish certification owned by packages/trainer"
-
-[rules."train.gram.device-32bit"]
-scope = "out-of-scope"
-reason = "Trainer 32-bit accelerator streaming Gram accumulation owned by packages/trainer"
-
-[rules."train.gram.window-streaming"]
-scope = "out-of-scope"
-reason = "Trainer windowed streaming Gram accumulation owned by packages/trainer"
+reason = "Stage E Rank-1 Kautz contraction, [STAB-ZERO-DC], and container emission owned by packages/capture"
 
 [rules."train.gram.accuracy-contract"]
 scope = "out-of-scope"
-reason = "Trainer Gram contraction accuracy contract owned by packages/trainer"
-
-[rules."train.gram.exponent-aware"]
-scope = "out-of-scope"
-reason = "Trainer exponent-aware Gram accumulation owned by packages/trainer"
-
-[rules."train.gram.radix256"]
-scope = "out-of-scope"
-reason = "Trainer radix-256 accelerator Gram accumulation owned by packages/trainer"
+reason = "IEEE-754 float64 Gram contraction accuracy contract owned by packages/capture"
 
 [rules."train.gram.wide192"]
 scope = "out-of-scope"
-reason = "Trainer 192-bit wide integer Gram accumulation owned by packages/trainer"
-
-[rules."train.gram.group-merge"]
-scope = "out-of-scope"
-reason = "Trainer Gram group-merge reduction owned by packages/trainer"
+reason = "192-bit wide-significand Gram accumulation owned by packages/capture"
 
 [rules."train.pipeline.isomorphism-parity"]
 scope = "out-of-scope"
-reason = "Trainer-to-engine isomorphism parity test in training pipeline owned by packages/trainer"
-
-[rules."train.pipeline.dual-execution-matrix"]
-scope = "out-of-scope"
-reason = "Trainer accelerator/host dual-execution matrix owned by packages/trainer"
+reason = "Capture-to-engine isomorphism parity test owned by packages/capture"
 
 [rules."train.pipeline.dispatch-solve"]
 scope = "out-of-scope"
-reason = "Trainer control-dispatch normal-equation solver owned by packages/trainer"
+reason = "Closed-form control-dispatch normal-equation solver owned by packages/capture"
 
 [rules."train.pipeline.fixtures-matrix"]
 scope = "out-of-scope"
-reason = "Black-box signal-chain fixtures (packages/fixtures) and 4-Tier fixture matrix + DNWB white-box runner verification owned by packages/trainer"
+reason = "Black-box signal-chain fixtures (packages/fixtures) and 4-Tier fixture matrix + DNWB white-box runner verification owned by packages/capture"
 
 # ==============================================================================
-# 16. Training: Iterative Resume & Caching (`docs/specs/training/iterative_resume_and_caching.md`)
+# 16. Training: Capture Vault & Cloud Sync (`docs/specs/training/iterative_resume_and_caching.md`)
 # ==============================================================================
 [rules."train.resume.kronecker-reassembly"]
 scope = "out-of-scope"
-reason = "Trainer Kronecker Gram reassembly on stem resume owned by packages/trainer"
+reason = "Kronecker Gram reassembly on vault editing owned by packages/capture"
 
 [rules."train.resume.constant-factor-records"]
 scope = "out-of-scope"
-reason = "Trainer constant-factor stem statistics records owned by packages/trainer"
+reason = "Constant-factor stem statistics records owned by packages/capture"
 
 [rules."train.resume.time-varying-records"]
 scope = "out-of-scope"
-reason = "Trainer time-varying stem statistics records owned by packages/trainer"
+reason = "Time-varying stem statistics and trajectory windows owned by packages/capture"
 
 [rules."train.resume.two-tier-execution"]
 scope = "out-of-scope"
-reason = "Trainer two-tier resume execution owned by packages/trainer"
+reason = "Two-Path (<5-10ms Fast-Path vs <15-25ms Full Re-Pool) vault execution owned by packages/capture"
 
 [rules."train.resume.dependency-digests"]
 scope = "out-of-scope"
-reason = "Trainer stem dependency digest invalidation owned by packages/trainer"
+reason = "Stem SHA-256 and DNAM-GRAM-INPUT-v2 dependency digest invalidation owned by packages/capture"
 
 [rules."train.resume.old-stem-nonregression"]
 scope = "out-of-scope"
-reason = "Trainer old-stem non-regression verification owned by packages/trainer"
+reason = "Unchanged-stem non-regression verification owned by packages/capture"
 
 [rules."train.resume.windowed-refresh"]
 scope = "out-of-scope"
-reason = "Trainer <32 MiB windowed Gram refresh owned by packages/trainer"
+reason = "Bounded <32 MiB windowed Gram refresh owned by packages/capture"
 
-[rules."train.cache.arena5-dnca"]
+[rules."train.cache.proj-vault"]
 scope = "out-of-scope"
-reason = "Trainer Arena 5 DNCA calibration cache management owned by packages/trainer"
-
-[rules."train.cache.workspace-sidecar"]
-scope = "out-of-scope"
-reason = "Studio/Trainer workspace sidecar cache owned by packages/studio and packages/trainer"
+reason = "Single-file .dnam-proj INPC/STMC capsule vault persistence owned by packages/capture"
 
 [rules."train.cloud.job-protocol"]
 scope = "out-of-scope"
-reason = "Cloud training job protocol owned by packages/trainer and packages/studio"
+reason = "HTTP Range cloud object-storage sync and remote distillation protocol owned by packages/capture"
 
 # ==============================================================================
 # 17. SDKs: TypeScript SDK (`docs/specs/sdks/typescript_sdk.md`)

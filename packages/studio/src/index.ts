@@ -1,10 +1,4 @@
 export {
-  buildCliArgs,
-  dnamExecutableName,
-  type ResolveBinaryOptions,
-  resolveDnamBinaryPath,
-} from "./binary.js";
-export {
   TauriNativeAudioHost,
   type TauriNativeAudioHostOptions,
 } from "./host.js";

@@ -524,7 +524,7 @@ export interface ParsedTrainingEvent {
 }
 
 /**
- * Parses a single JSONL or SSE (`data: {...}`) line emitted by `dnam-train`.
+ * Parses a single JSONL or SSE (`data: {...}`) line emitted by `dnam-capture`.
  */
 export function parseTrainingEventLine(line: string): ParsedTrainingEvent | null {
   const trimmed = line.trim();

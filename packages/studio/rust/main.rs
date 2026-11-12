@@ -1,4 +1,4 @@
-//! Dual-mode `dnam` binary entrypoint (`dnam` CLI in terminal + `dnam studio` Tauri v2 Desktop GUI).
+//! Standalone Tauri v2 Desktop Studio binary entrypoint (`dnam-studio`).
 
 #![forbid(unsafe_code)]
 
@@ -6,15 +6,12 @@ use std::process::ExitCode;
 #[cfg(all(feature = "desktop", not(coverage)))]
 use std::sync::Mutex;
 
-use clap::Parser;
-use dnam_studio::cli::{DnamCli, DnamCommand, execute_cli};
+use dnam_studio::ipc::detect_native_backend_str;
 #[cfg(all(feature = "desktop", not(coverage)))]
 use dnam_studio::ipc::{
-    StudioIpcHandler, StudioIpcRequest, StudioIpcResponse, parse_dnam_deep_link,
+    StudioIpcHandler, StudioIpcRequest, StudioIpcResponse, default_user_config_dir,
+    parse_dnam_deep_link, write_private_studio_export_file,
 };
-
-#[cfg(all(feature = "desktop", not(coverage)))]
-use dnam_studio::project::{default_user_config_dir, write_private_studio_export_file};
 
 #[cfg(all(feature = "desktop", not(coverage)))]
 #[tauri::command]
@@ -35,7 +32,7 @@ fn prepare_studio_export() -> Result<String, String> {
     let path = write_private_studio_export_file(
         &dir,
         "reference_tri_physics_mk1.dnam",
-        b"DNAM\x01\x00\x00\x00reference_tri_physics_mk1",
+        b"DNAM\x02\x00\x00\x00reference_tri_physics_mk1",
         false,
     )
     .map_err(|e| e.to_string())?;
@@ -174,31 +171,24 @@ fn launch_desktop_window() -> Result<(), String> {
 }
 
 fn main() -> ExitCode {
-    let cli = DnamCli::parse();
-    let _should_open_desktop = matches!(
-        cli.command,
-        Some(DnamCommand::Studio {
-            headless_check: false
-        })
-    ) || (cli.command.is_none() && std::env::args_os().len() == 1);
-
-    #[cfg(all(feature = "desktop", not(coverage)))]
-    if _should_open_desktop {
-        if let Err(err) = launch_desktop_window() {
-            eprintln!("Error launching DNAM Studio window: {err}");
-            return ExitCode::FAILURE;
-        }
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.iter().any(|a| a == "--headless-check") {
+        println!(
+            "dnam-studio desktop ready (backend={})",
+            detect_native_backend_str()
+        );
         return ExitCode::SUCCESS;
     }
-
-    match execute_cli(&cli) {
-        Ok(output) => {
-            println!("{output}");
-            ExitCode::SUCCESS
-        }
-        Err(err) => {
-            eprintln!("Error: {err}");
-            ExitCode::FAILURE
-        }
+    if let Some(unknown) = args.iter().find(|a| a.starts_with('-')) {
+        eprintln!("Unsupported dnam-studio desktop argument: {unknown}");
+        return ExitCode::FAILURE;
     }
+
+    #[cfg(all(feature = "desktop", not(coverage)))]
+    if let Err(err) = launch_desktop_window() {
+        eprintln!("Error launching DNAM Studio window: {err}");
+        return ExitCode::FAILURE;
+    }
+
+    ExitCode::SUCCESS
 }

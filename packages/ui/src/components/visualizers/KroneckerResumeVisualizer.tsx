@@ -17,7 +17,7 @@ export function KroneckerResumeVisualizer({
     <Card data-testid="visualizer-kronecker-resume">
       <CardHeader className="flex flex-col gap-1.5 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <CardTitle>Trainer: Surrogate Delay & Kronecker .dnam-ckpt Expansion</CardTitle>
+          <CardTitle>Capture: Surrogate Delay & Kronecker .dnam-proj Expansion</CardTitle>
           <CardDescription>
             Envelope-Guided Convex Delay Basin & Rank-1 Sufficient-Statistic Stem Resume
           </CardDescription>

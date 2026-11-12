@@ -91,7 +91,7 @@ describe("CapturePlanPanel and TrainingTimelinePanel", () => {
     );
 
     await expect.element(page.getByText(/Sweep 2: Joint Full-Rig Kronecker Polish/)).toBeVisible();
-    await userEvent.click(page.getByRole("button", { name: "Run dnam-train" }));
+    await userEvent.click(page.getByRole("button", { name: "Run Capture Fit" }));
     expect(onTrain).toHaveBeenCalledOnce();
     await expectZeroAxeViolations(screen.container);
   });

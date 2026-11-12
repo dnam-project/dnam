@@ -16,7 +16,7 @@ project:
 
 dependsOn:
   - "engine"
-  - "trainer"
+  - "capture"
 
 tasks:
   format:
@@ -68,8 +68,8 @@ tasks:
       - "/pnpm-lock.yaml"
       - "/packages/engine/Cargo.toml"
       - "/packages/engine/src/**/*"
-      - "/packages/trainer/Cargo.toml"
-      - "/packages/trainer/src/**/*"
+      - "/packages/capture/Cargo.toml"
+      - "/packages/capture/src/**/*"
     options:
       mutex: "cargo"
     tags:
@@ -135,8 +135,8 @@ tasks:
       - "/Cargo.lock"
       - "/packages/engine/Cargo.toml"
       - "/packages/engine/src/**/*"
-      - "/packages/trainer/Cargo.toml"
-      - "/packages/trainer/src/**/*"
+      - "/packages/capture/Cargo.toml"
+      - "/packages/capture/src/**/*"
     outputs:
       - "dist/native/debug/dnam.*.node"
       - "dist/wasm/debug/dnam.wasm"
@@ -162,8 +162,8 @@ tasks:
       - "/Cargo.lock"
       - "/packages/engine/Cargo.toml"
       - "/packages/engine/src/**/*"
-      - "/packages/trainer/Cargo.toml"
-      - "/packages/trainer/src/**/*"
+      - "/packages/capture/Cargo.toml"
+      - "/packages/capture/src/**/*"
     outputs:
       - "dist/native/release/dnam.*.node"
       - "dist/wasm/release/dnam.wasm"
@@ -189,8 +189,8 @@ tasks:
       - "/Cargo.lock"
       - "/packages/engine/Cargo.toml"
       - "/packages/engine/src/**/*"
-      - "/packages/trainer/Cargo.toml"
-      - "/packages/trainer/src/**/*"
+      - "/packages/capture/Cargo.toml"
+      - "/packages/capture/src/**/*"
     outputs:
       - "dist/native/profiling/dnam.*.node"
       - "dist/wasm/profiling/dnam.wasm"

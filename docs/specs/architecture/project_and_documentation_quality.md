@@ -15,11 +15,12 @@ requirements:
 adrs:
   - ADR-0010
   - ADR-0019
+  - ADR-0020
 ---
 
 # Repository, Code & Documentation Quality Specification
 
-This specification defines the normative repository structure, static type-safety and import rules, progressive-disclosure `AGENTS.md` byte budgets, 3-layer documentation separation (`requirements/`, `specs/`, `adr/`), Rust Reference `r[...]` / `ref[...]` / `verify[...]` specification rule identifiers, Markdown YAML frontmatter schemas, and GitHub CommonMark + MathJax / Mermaid rendering contracts across **Dynamic Neural Audio Modeler (DNAM)** ([`CONTRIBUTING.md`](../../../CONTRIBUTING.md), [`docs/CONTRIBUTING.md`](../../CONTRIBUTING.md)). For the architectural rationale behind these rules, see [`../../adr/0010-rust-reference-spec-rules-and-madr-decisions.md`](../../adr/0010-rust-reference-spec-rules-and-madr-decisions.md).
+This specification defines the normative repository structure, static type-safety and import rules, progressive-disclosure `AGENTS.md` byte budgets, 3-layer documentation separation (`requirements/`, `specs/`, `adr/`), Rust Reference `r[...]` / `ref[...]` / `verify[...]` specification rule identifiers, Markdown YAML frontmatter schemas, and GitHub CommonMark + MathJax / Mermaid rendering contracts across **Dynamic Neural Audio Modeler (DNAM)** ([`CONTRIBUTING.md`](../../../CONTRIBUTING.md), [`docs/CONTRIBUTING.md`](../../CONTRIBUTING.md)). For the architectural rationale behind these rules, see [`../../adr/0010-rust-reference-spec-rules-and-madr-decisions.md`](../../adr/0010-rust-reference-spec-rules-and-madr-decisions.md) and [`../../adr/0020-modular-monorepo-and-dnam-proj-container.md`](../../adr/0020-modular-monorepo-and-dnam-proj-container.md).
 
 ---
 
@@ -29,9 +30,9 @@ This specification defines the normative repository structure, static type-safet
 
 All packages across the monorepo must enforce strict static typing and lightweight runtime dependency boundaries:
 
-1. **Zero Type Suppressions:** Zero `any` or `@ts-ignore` / `@ts-expect-error` directives in TypeScript (`packages/js/`, `packages/ui/`, `packages/studio/`, `tests/`), and strict `#![forbid(unsafe_code)]` / `#![deny(unsafe_code)]` across all Rust crates (`packages/engine/`, `packages/fixtures/`, `packages/trainer/`, `packages/js/rust/`, `packages/studio/rust/`).
-2. **Zero Forbidden Heavy Runtime Imports:** `packages/trainer/` must remain 100% pure Rust (`dnam-trainer`) without external Python/PyTorch/CUDA runtime dependencies; all linear-algebra, FFT, and container operations execute natively in safe Rust.
-3. **Safe-Rust-First & Strict `#[allow(unsafe_code)]` Discipline:** All Rust crates (`packages/engine/`, `packages/fixtures/`, `packages/trainer/`, `packages/js/rust/`, `packages/studio/rust/`) must enforce `#![forbid(unsafe_code)]` or `#![deny(unsafe_code)]`. Contributors and AI coding agents must **exhaustively search for safe Rust formulations first** (e.g., `core::sync::atomic::AtomicU64` word arrays for lock-free rings and seqlocks, atomic index ping-pong slots, disjoint struct field borrows, `zerocopy`, and checked `napi` slice borrows) and must never add `#[allow(unsafe_code)]` or `unsafe` blocks out of convenience. `#[allow(unsafe_code)]` is permitted **only** when:
+1. **Zero Type Suppressions:** Zero `any` or `@ts-ignore` / `@ts-expect-error` directives in TypeScript (`packages/js/`, `packages/ui/`, `packages/studio/`, `tests/`), and strict `#![forbid(unsafe_code)]` / `#![deny(unsafe_code)]` across all Rust crates (`packages/engine/`, `packages/fixtures/`, `packages/capture/`, `packages/js/rust/`, `packages/studio/rust/`).
+2. **Zero Forbidden Heavy Runtime Imports & Pure-IO Capture Boundaries:** `packages/capture/` must remain 100% pure Rust (`dnam-capture`) over pure IO buffers without external Python/PyTorch/CUDA runtime dependencies, CLI parsers (`clap`), or OS audio drivers (`cpal`); all linear-algebra, FFT, alignment, and `.dnam-proj` container operations execute natively in safe Rust (`ADR-0020`).
+3. **Safe-Rust-First & Strict `#[allow(unsafe_code)]` Discipline:** All Rust crates (`packages/engine/`, `packages/fixtures/`, `packages/capture/`, `packages/js/rust/`, `packages/studio/rust/`) must enforce `#![forbid(unsafe_code)]` or `#![deny(unsafe_code)]`. Contributors and AI coding agents must **exhaustively search for safe Rust formulations first** (e.g., `core::sync::atomic::AtomicU64` word arrays for lock-free rings and seqlocks, atomic index ping-pong slots, disjoint struct field borrows, `zerocopy`, and checked `napi` slice borrows) and must never add `#[allow(unsafe_code)]` or `unsafe` blocks out of convenience. `#[allow(unsafe_code)]` is permitted **only** when:
    - **Strictly required by a hardware or C-ABI boundary** that has no safe Rust abstraction (CPU SIMD intrinsics in `packages/engine/src/math/`, hardware `FTZ`/`DAZ` CSR registers in `packages/engine/src/types.rs`, aligned heap allocation in `packages/engine/src/memory.rs`, or raw C-ABI entrypoints in `packages/engine/src/ffi.rs`); or
    - **Proven by benchmark to eliminate a high-impact real-time performance bottleneck** where the safe borrow-/bounds-checked formulation measurably violates real-time throughput/WCET budgets **and** every `unsafe` block is accompanied by a complete `// SAFETY:` proof covering aliasing, alignment, lifetimes, and thread-safety invariants.
 4. `r[repo.code.realtime-disassembly-audit]` **Automated Release-Binary Disassembly Audit & Real-Time Source Guardrails (`REQ-6.2`, `REQ-6.3`, [`ADR-0019`](../../adr/0019-simd-kernel-architecture-and-realtime-execution-optimizations.md)):**
@@ -65,7 +66,7 @@ All packages across the monorepo must enforce strict static typing and lightweig
 [`system_goals_and_requirements.md`](../../requirements/system_goals_and_requirements.md) defines **what** the system must achieve (`REQ-1.1` through `REQ-8.8`, 40 requirements across 8 top-level goals):
 
 1. Every requirement ID `REQ-1.1` through `REQ-8.8` must appear in a canonical Markdown table row (`| **\`REQ-X.Y\`** | ... |`).
-2. Outside Markdown link targets (`](...)`), the prose of `docs/requirements/` must remain strictly **implementation-agnostic**, containing zero container file extensions (`.dnam`, `.dnam-ckpt`, `.dnam-cache`, `.dnam-seal`, `.dnce`) and zero internal wire-schema field names (`max_supported_tier`, `user_metadata`, `royalty_splits`, `allowed_protection_profiles`, `allowed_oem_vendors`).
+2. Outside Markdown link targets (`](...)`), the prose of `docs/requirements/` must remain strictly **implementation-agnostic**, containing zero container file extensions (`.dnam`, `.dnam-proj`, `.dnam-ckpt`, `.dnam-cache`, `.dnam-seal`, `.dnce`) and zero internal wire-schema field names (`max_supported_tier`, `user_metadata`, `royalty_splits`, `allowed_protection_profiles`, `allowed_oem_vendors`).
 
 ### 3.2 Specification Rules (`r[...]`, `ref[...]`, `verify[...]`), MADR Records & Frontmatter
 

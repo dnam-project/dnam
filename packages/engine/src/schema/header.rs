@@ -1,5 +1,5 @@
-//! Canonical `.dnam` and `.dnam-ckpt` UTF-8 JSON Header (`DnamJsonHeader`), subsystem configurations,
-//! tensor directory (`TensorSliceEntry`), stem registry (`StemRegistryEntry`), and binary clamp compiler.
+//! Canonical `.dnam` UTF-8 JSON Header (`DnamJsonHeader`), subsystem configurations,
+//! tensor directory (`TensorSliceEntry`), and binary clamp compiler.
 
 use alloc::collections::BTreeMap;
 use alloc::string::{String, ToString};
@@ -30,7 +30,7 @@ pub use super::stages::{
     deserialize_allpass_delays,
 };
 
-/// Semantic version (`major.minor.patch`) of the `.dnam` and `.dnam-ckpt` container schema.
+/// Semantic version (`major.minor.patch`) of the `.dnam` container schema.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct SchemaVersion {
     /// Breaking container wire format or tensor layout version (`CONTAINER_VERSION_MAJOR`).
@@ -164,13 +164,13 @@ const fn default_sample_rate() -> u32 {
     48_000
 }
 
-/// Top-level UTF-8 JSON header in Region 3 of a canonical `v2.0` `.dnam` or `.dnam-ckpt` container.
+/// Top-level UTF-8 JSON header in Region 3 of a canonical `v2.0` `.dnam` container.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct DnamJsonHeader {
     /// Semantic version of the container schema (`"2.0.0"`).
     #[serde(default = "default_version")]
     pub version: String,
-    /// Container kind: `"dnam"` or `"dnam-ckpt"`.
+    /// Container kind: `"dnam"` or `"preview"`.
     #[serde(default = "default_container_kind")]
     pub container_kind: String,
     /// Target engine architecture tag (`"DNAM_TORA"`).
@@ -353,12 +353,9 @@ impl DnamJsonHeader {
     /// Validates all structural, alignment, and safety invariants of the JSON header.
     pub fn validate(&self) -> Result<(), DnamError> {
         let _ = self.schema_version()?;
-        if self.container_kind != "dnam"
-            && self.container_kind != "dnam-ckpt"
-            && self.container_kind != "preview"
-        {
+        if self.container_kind != "dnam" && self.container_kind != "preview" {
             return Err(DnamError::SchemaValidationError(
-                "container_kind must be 'dnam', 'dnam-ckpt', or 'preview'".to_string(),
+                "container_kind must be 'dnam' or 'preview'".to_string(),
             ));
         }
         if self.sample_rate_train_hz < 44_100 || self.sample_rate_train_hz > 96_000 {

@@ -18,7 +18,7 @@ describe("InteractiveStudioRoot component + IPC integration", () => {
     // 1. Desktop header & Tier 1 actions (Web mode fallback)
     await userEvent.click(page.getByTestId("studio-open-dialog-btn"));
     await expect
-      .element(page.getByText("dialog: Opened native .dnam / .dnam-ckpt container picker"))
+      .element(page.getByText("dialog: Opened native .dnam / .dnam-proj container picker"))
       .toBeVisible();
 
     await userEvent.click(page.getByTestId("studio-reveal-export-btn"));
@@ -45,14 +45,14 @@ describe("InteractiveStudioRoot component + IPC integration", () => {
       .element(page.getByText(/notification: Captured and aligned stem stem_axis_drive_max/))
       .toBeVisible();
 
-    // 3. Two-Sweep Analytical Trainer workflow: advance sweeps to completion
-    await userEvent.click(page.getByRole("tab", { name: "Rust Trainer (dnam-train)" }));
-    const trainBtn = page.getByRole("button", { name: "Run dnam-train" });
+    // 3. Two-Sweep Analytical Capture Fit workflow: advance sweeps to completion
+    await userEvent.click(page.getByRole("tab", { name: "Capture Fit (.dnam-proj)" }));
+    const trainBtn = page.getByRole("button", { name: "Run Capture Fit" });
     await userEvent.click(trainBtn);
     await expect
       .element(
         page.getByText(
-          "notification: Sweep 2 Kronecker .dnam-ckpt Export & 3-Phase Audit completed",
+          "notification: Sweep 2 Kronecker .dnam-proj Vault & 3-Phase Audit completed",
         ),
       )
       .toBeVisible();
@@ -160,8 +160,8 @@ describe("InteractiveStudioRoot component + IPC integration", () => {
     await userEvent.click(page.getByRole("button", { name: "Record Stem" }));
     expect(invokedCommands).toContain("notify_studio_event");
 
-    await userEvent.click(page.getByRole("tab", { name: "Rust Trainer (dnam-train)" }));
-    await userEvent.click(page.getByRole("button", { name: "Run dnam-train" }));
+    await userEvent.click(page.getByRole("tab", { name: "Capture Fit (.dnam-proj)" }));
+    await userEvent.click(page.getByRole("button", { name: "Run Capture Fit" }));
 
     bridgeState.deepLinkHandler?.({ payload: { kind: "model", target: "b7k_ultra" } });
     await expect.element(page.getByText("deep-link: Routed model → b7k_ultra")).toBeVisible();

@@ -15,7 +15,7 @@ hasher:
   walkStrategy: "vcs"
   ignorePatterns:
     - "**/*.dnam"
-    - "**/*.dnam-ckpt"
+    - "**/*.dnam-proj"
     - "**/*.nam"
     - "**/*.nam-ckpt"
     - "**/*.wav"

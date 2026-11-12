@@ -1,11 +1,10 @@
-//! `.dnam` & `.dnam-ckpt` Hybrid Binary Container Parser, Builder, ZOH Rescaling & `Arena 4` `uplo='U'` Packing (`container`).
+//! `.dnam` Hybrid Binary Container Parser, Builder & Continuous-Time ZOH Rescaling (`container`).
 //!
 //! Implements the canonical `v2.0` 64B-aligned wire framing, zero-copy `mmap` loader (`< 50 ns` zero-JSON hardware fast-path),
 //! `DMU1`/`DMUE` in-place mutable suffix editor, Castagnoli `CRC32C` verification,
 //! and Continuous-Time Zero-Order Hold (ZOH) sample-rate rescaling ($44.1\text{--}96\text{ kHz}$ live,
 //! plus $4\times$ internal ZOH oversampling for offline bounce)
-//! from [`docs/containers/dnam_binary_format.md`](../../../docs/containers/dnam_binary_format.md)
-//! and [`docs/containers/checkpoint_and_cache_format.md`](../../../docs/containers/checkpoint_and_cache_format.md).
+//! from [`docs/specs/containers/dnam_binary_format.md`](../../../docs/specs/containers/dnam_binary_format.md).
 
 pub mod builder;
 pub mod preamble;
@@ -50,9 +49,6 @@ pub use zoh::ZohRescaledParams;
 /// Magic bytes for a `.dnam` deployment model container (`0x4D414E44` little-endian).
 pub const DNAM_MAGIC: [u8; 4] = *b"DNAM";
 
-/// Magic bytes for a `.dnam-ckpt` iterative training checkpoint container (`0x4B434E44` little-endian).
-pub const DNCK_MAGIC: [u8; 4] = *b"DNCK";
-
 /// Current container major version (`2`).
 pub const CONTAINER_VERSION_MAJOR: u16 = 2;
 
@@ -95,16 +91,12 @@ pub const FLAG_HAS_FULL_DELTA: u16 = 1 << 1;
 pub const FLAG_HAS_PRO_DELTA: u16 = 1 << 2;
 /// Bit 3 (`8`): `Arena 3 (Ultra Delta)` is present.
 pub const FLAG_HAS_ULTRA_DELTA: u16 = 1 << 3;
-/// Bit 4 (`16`): `.dnam-ckpt` stem statistics are present.
-pub const FLAG_HAS_CKPT_STEMS: u16 = 1 << 4;
 /// Bit 9 (`512`): Stereo output head enabled (`1 = stereo`, `0 = mono` saving 50% head MACs).
 pub const FLAG_STEREO_OUT: u16 = 1 << 9;
 /// Bit 10 (`1024`): Split-payload `Ed25519` signatures are present in `metadata.signatures`.
 pub const FLAG_HAS_SIGNATURES: u16 = 1 << 10;
 /// Bit 11 (`2048`): `Arena 0..3` is `ChaCha20` 64-byte block encrypted for `authorized_devices`.
 pub const FLAG_ENCRYPTED_ARENA: u16 = 1 << 11;
-/// Bit 12 (`4096`): `.dnam-ckpt` calibration statistics (`DNCA`) are present.
-pub const FLAG_HAS_CALIB_STATS: u16 = 1 << 12;
 
 /// Updates an incremental Castagnoli `CRC32C` state with `data` using hardware `CRC32C` when available.
 #[inline]

@@ -1,18 +1,16 @@
-//! Node-API v10 container, checkpoint & `uplo='U'` Gram matrix bindings
+//! Node-API v10 `.dnam` container & `uplo='U'` Gram matrix bindings
 //! (`ref[sdk.ts.model.containers-and-checkpoints]`).
 
 use napi::bindgen_prelude::{Float64Array, Result, Uint8Array};
 use napi_derive::napi;
 
 use crate::core::container::{
-    build_dmu1_frame_core, build_dnam_container_core, build_reference_checkpoint_core,
-    build_reference_container_core, canonicalize_jcs_core, crc32c_compute_core,
-    export_runtime_dnam_from_ckpt_core, pack_uplo_u_f64_into_core, parse_dmu1_frame_core,
+    build_dmu1_frame_core, build_dnam_container_core, build_reference_container_core,
+    canonicalize_jcs_core, crc32c_compute_core, pack_uplo_u_f64_into_core, parse_dmu1_frame_core,
     parse_schema_version_core, strip_container_to_tier_core, strip_v2_open_dnam_container_core,
     unpack_uplo_u_f64_into_core, update_header_in_place_core, uplo_u_packed_len_core,
     validate_and_normalize_header_core, validate_container_with_key_core,
-    validate_v2_dnck_checkpoint_core, validate_v2_open_dnam_layout_core,
-    verify_arena5_calib_stats_core, verify_stem_arena4_crc32c_core,
+    validate_v2_open_dnam_layout_core,
 };
 use crate::napi::{MutF64Slice, napi_err};
 
@@ -39,14 +37,12 @@ pub struct NativeValidatedContainer {
     pub arena_crc32c_full: u32,
     pub arena_crc32c_pro: u32,
     pub arena_crc32c_ultra: u32,
-    pub num_ckpt_stems: u32,
     pub tail_time_ms: f64,
     pub header_crc32c: u32,
     pub highest_tier: u32,
     pub is_stereo_out: bool,
     pub has_signatures: bool,
     pub is_encrypted_arena: bool,
-    pub has_calib_stats: bool,
     pub verification_status: String,
     pub protection_profile: String,
     pub header_json: String,
@@ -99,14 +95,12 @@ pub fn validate_container_with_key_native(
         arena_crc32c_full: p.arena_crc32c_full,
         arena_crc32c_pro: p.arena_crc32c_pro,
         arena_crc32c_ultra: p.arena_crc32c_ultra,
-        num_ckpt_stems: u32::from(p.num_ckpt_stems),
         tail_time_ms: f64::from(p.tail_time_ms),
         header_crc32c: p.header_crc32c,
         highest_tier: u32::from(p.highest_tier() as u8),
         is_stereo_out: p.is_stereo_out(),
         has_signatures: p.has_signatures(),
         is_encrypted_arena: p.is_encrypted_arena(),
-        has_calib_stats: p.has_calib_stats(),
         verification_status: info.verification_status,
         protection_profile: info.protection_profile,
         header_json: info.header_json,
@@ -221,58 +215,6 @@ pub fn strip_v2_open_dnam_container_native(
     target_tier: u8,
 ) -> Result<Uint8Array> {
     strip_v2_open_dnam_container_core(&container_bytes, target_tier)
-        .map(Uint8Array::new)
-        .map_err(napi_err)
-}
-
-#[napi]
-pub fn build_reference_checkpoint_native(include_calib_stats: Option<bool>) -> Result<Uint8Array> {
-    build_reference_checkpoint_core(include_calib_stats.unwrap_or(true))
-        .map(Uint8Array::new)
-        .map_err(napi_err)
-}
-
-#[napi]
-pub fn verify_stem_arena4_crc32c_native(
-    arena_bytes: Uint8Array,
-    stem_byte_offset: u32,
-    stem_byte_len: u32,
-    expected_crc32c: u32,
-) -> Result<()> {
-    verify_stem_arena4_crc32c_core(
-        &arena_bytes,
-        stem_byte_offset as usize,
-        stem_byte_len as usize,
-        expected_crc32c,
-    )
-    .map_err(napi_err)
-}
-
-#[napi]
-pub fn verify_arena5_calib_stats_native(
-    arena_bytes: Uint8Array,
-    arena5_offset: u32,
-) -> Result<u32> {
-    verify_arena5_calib_stats_core(&arena_bytes, arena5_offset as usize)
-        .map(|len| len as u32)
-        .map_err(napi_err)
-}
-
-#[napi]
-pub fn validate_v2_dnck_checkpoint_native(ckpt_bytes: Uint8Array) -> Result<Vec<f64>> {
-    let (tier, ends, boundary) = validate_v2_dnck_checkpoint_core(&ckpt_bytes).map_err(napi_err)?;
-    let mut out = Vec::with_capacity(2 + ends.len());
-    out.push(f64::from(tier));
-    for e in ends {
-        out.push(e as f64);
-    }
-    out.push(boundary as f64);
-    Ok(out)
-}
-
-#[napi]
-pub fn export_runtime_dnam_from_ckpt_native(ckpt_bytes: Uint8Array) -> Result<Uint8Array> {
-    export_runtime_dnam_from_ckpt_core(&ckpt_bytes)
         .map(Uint8Array::new)
         .map_err(napi_err)
 }

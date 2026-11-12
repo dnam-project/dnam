@@ -56,9 +56,7 @@ pub fn strip_container_to_tier(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::container::{
-        ARENA_OFFSET_ULTRA_END, DNCK_MAGIC, DnamPreamble, build_dnam_container,
-    };
+    use crate::container::{ARENA_OFFSET_ULTRA_END, DnamPreamble, build_dnam_container};
     use crate::schema::DnamJsonHeader;
     use alloc::vec;
 
@@ -72,10 +70,10 @@ mod tests {
         assert!(strip_container_to_tier(&container[..32], Tier::Lite).is_err());
         assert!(strip_container_to_tier(&container[..512], Tier::Lite).is_err());
 
-        // Non-DNAM magic (e.g. DNCK checkpoint) must be rejected
-        let mut ckpt_magic = container.clone();
-        ckpt_magic[0..4].copy_from_slice(&DNCK_MAGIC);
-        assert!(strip_container_to_tier(&ckpt_magic, Tier::Lite).is_err());
+        // Non-DNAM magic (e.g. DNPJ project container) must be rejected
+        let mut proj_magic = container.clone();
+        proj_magic[0..4].copy_from_slice(b"DNPJ");
+        assert!(strip_container_to_tier(&proj_magic, Tier::Lite).is_err());
 
         // Stripping to Ultra preserves all flags and 8 SVD modes
         let ultra_stripped = strip_container_to_tier(&container, Tier::Ultra).unwrap();

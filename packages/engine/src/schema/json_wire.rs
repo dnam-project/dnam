@@ -1,19 +1,19 @@
 //! Tensor directory wire format for 64B-aligned slices in Arena 0..3.
 //!
-//! Canonical Reference: `docs/containers/dnam_binary_format.md`.
+//! Canonical Reference: `docs/specs/containers/dnam_binary_format.md`.
 
 use alloc::string::String;
 use alloc::vec::Vec;
 use serde::{Deserialize, Serialize};
 
-/// Tensor directory entry describing a 64-byte aligned slice in `Arena 0..3` (or `.dnam-ckpt` `Arena 4..5`).
+/// Tensor directory entry describing a 64-byte aligned slice in `Arena 0..3`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TensorSliceEntry {
-    /// Arena index (`0` = Lite, `1` = Full Delta, `2` = Pro Delta, `3` = Ultra Delta, `4` = `.dnam-ckpt` Stem Records).
+    /// Arena index (`0` = Lite, `1` = Full Delta, `2` = Pro Delta, `3` = Ultra Delta).
     pub arena: u8,
     /// Data type (`"f32"` or `"f64"`).
     pub dtype: String,
-    /// Optional packing tag (`"uplo_upper_col_major_tier_ordered"` for `.dnam-ckpt` Stem Record Gram matrices).
+    /// Optional packing tag (`"uplo_upper_col_major_tier_ordered"` for packed Gram matrices).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub packing: Option<String>,
     /// Optional feature dimension $N \in \{64, 128, 192, 256\}$ for `uplo='U'` packed Gram matrices.

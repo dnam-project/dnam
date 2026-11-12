@@ -322,7 +322,7 @@ pub fn decode_cp1_inline_contributors(
 }
 
 #[cfg(test)]
-mod ckpt_and_control_tests {
+mod control_bus_tests {
     #[allow(unused_imports)]
     use alloc::{
         boxed::Box,

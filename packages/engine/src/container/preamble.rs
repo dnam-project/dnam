@@ -11,20 +11,20 @@ use super::wire::{
     V2_PREAMBLE_SIZE, align64_u64, parse_dcrc_record,
 };
 use super::{
-    CONTAINER_VERSION_MAJOR, CONTAINER_VERSION_MINOR, DNAM_MAGIC, DNCK_MAGIC, FLAG_ENCRYPTED_ARENA,
-    FLAG_HAS_CALIB_STATS, FLAG_HAS_CKPT_STEMS, FLAG_HAS_FULL_DELTA, FLAG_HAS_LITE,
-    FLAG_HAS_PRO_DELTA, FLAG_HAS_SIGNATURES, FLAG_HAS_ULTRA_DELTA, FLAG_STEREO_OUT,
+    CONTAINER_VERSION_MAJOR, CONTAINER_VERSION_MINOR, DNAM_MAGIC, FLAG_ENCRYPTED_ARENA,
+    FLAG_HAS_FULL_DELTA, FLAG_HAS_LITE, FLAG_HAS_PRO_DELTA, FLAG_HAS_SIGNATURES,
+    FLAG_HAS_ULTRA_DELTA, FLAG_STEREO_OUT,
 };
 
-/// Minimum byte length of a valid v2.0 `.dnam` or `.dnam-ckpt` container (`192 + 18 + 16 = 226 B`).
+/// Minimum byte length of a valid v2.0 `.dnam` container (`192 + 18 + 16 = 226 B`).
 const MIN_V2_CONTAINER_BYTES: usize = V2_HEADER_OFFSET + DMU1_HEADER_SIZE + 2 + DMUE_FOOTER_SIZE;
 
 /// Fixed 64-byte logical preamble descriptor (`#[repr(C, align(64))]`) summarizing a validated
-/// v2.0 `.dnam` or `.dnam-ckpt` container without heap allocation.
+/// v2.0 `.dnam` container without heap allocation.
 #[repr(C, align(64))]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DnamPreamble {
-    /// `b"DNAM"` (`0x4D414E44`) or `b"DNCK"` (`0x4B434E44`).
+    /// `b"DNAM"` (`0x4D414E44`).
     pub magic: [u8; 4],
     /// Container major version (`2`).
     pub version_major: u16,
@@ -38,9 +38,9 @@ pub struct DnamPreamble {
     pub sample_rate_train_hz: u32,
     /// Unpadded UTF-8 byte length of Region 3 JCS JSON header starting at `0x00C0` (`192`).
     pub json_header_byte_len: u32,
-    /// File byte offset of `tier_start` / `bundle_start` (`% 64 == 0`).
+    /// File byte offset of `tier_start` (`% 64 == 0`).
     pub tensor_arena_offset: u32,
-    /// Total retained byte length of tier slices / checkpoint bundles (`% 64 == 0`).
+    /// Total retained byte length of tier slices (`% 64 == 0`).
     pub tensor_arena_byte_len: u32,
     /// Arena-relative end of `Lite` (`tier 0`) in 64B cache lines (`168` $\to$ `10,752 B`).
     pub arena_lite_end_cl: u16,
@@ -58,8 +58,8 @@ pub struct DnamPreamble {
     pub arena_crc32c_pro: u32,
     /// Castagnoli `CRC32C` over `arena[0..arena_offset_ultra_end]`.
     pub arena_crc32c_ultra: u32,
-    /// Number of stem records in `Arena 4` (`0` for `.dnam`, $\ge 1$ for `.dnam-ckpt`).
-    pub num_ckpt_stems: u16,
+    /// Reserved 16-bit alignment slot (`0`).
+    pub _reserved_stems: u16,
     /// Reserved 16-bit alignment gap (`0`).
     pub _reserved: u16,
     /// Estimated $T_{60}$ decay tail time in milliseconds for DAW sleep management.
@@ -99,7 +99,7 @@ fn scan_shared_control_count(shared_slice: &[u8]) -> u16 {
 }
 
 impl DnamPreamble {
-    /// Parses a [`DnamPreamble`] from a canonical `v2.0` `.dnam` or `.dnam-ckpt` container buffer
+    /// Parses a [`DnamPreamble`] from a canonical `v2.0` `.dnam` container buffer
     /// without heap allocation.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, DnamError> {
         if bytes.len() < V2_PREAMBLE_SIZE {
@@ -109,7 +109,7 @@ impl DnamPreamble {
             });
         }
         let magic = [bytes[0], bytes[1], bytes[2], bytes[3]];
-        if magic != DNAM_MAGIC && magic != DNCK_MAGIC {
+        if magic != DNAM_MAGIC {
             return Err(DnamError::InvalidMagic(magic));
         }
         let version_major = u16::from_le_bytes([bytes[4], bytes[5]]);
@@ -271,31 +271,21 @@ impl DnamPreamble {
         let auth_slice = &bytes[auth_offset as usize..auth_end as usize];
 
         let num_controls: u16;
-        let mut num_ckpt_stems = 0u16;
         let mut tail_time_ms = 0.0f32;
         let mut header_crc32c = 0u32;
         let mut crc_tiers = [0u32; 4];
 
-        if magic == DNAM_MAGIC {
-            if auth_slice.starts_with(b"DAU1") {
-                flags |= FLAG_HAS_SIGNATURES;
-                num_controls = scan_shared_control_count(shared_slice);
-            } else if let Some(dcrc) = parse_dcrc_record(auth_slice)? {
-                let hint_mask = FLAG_STEREO_OUT
-                    | FLAG_ENCRYPTED_ARENA
-                    | FLAG_HAS_SIGNATURES
-                    | FLAG_HAS_CALIB_STATS;
-                flags = (flags & !FLAG_STEREO_OUT) | (dcrc.flags_hint & hint_mask);
-                num_controls = dcrc.num_controls;
-                tail_time_ms = f32::from_bits(dcrc.tail_time_ms_bits);
-                header_crc32c = dcrc.crc_prefix;
-                crc_tiers = dcrc.crc_tiers;
-            } else {
-                num_controls = scan_shared_control_count(shared_slice);
-            }
+        if auth_slice.starts_with(b"DAU1") {
+            flags |= FLAG_HAS_SIGNATURES;
+            num_controls = scan_shared_control_count(shared_slice);
+        } else if let Some(dcrc) = parse_dcrc_record(auth_slice)? {
+            let hint_mask = FLAG_STEREO_OUT | FLAG_ENCRYPTED_ARENA | FLAG_HAS_SIGNATURES;
+            flags = (flags & !FLAG_STEREO_OUT) | (dcrc.flags_hint & hint_mask);
+            num_controls = dcrc.num_controls;
+            tail_time_ms = f32::from_bits(dcrc.tail_time_ms_bits);
+            header_crc32c = dcrc.crc_prefix;
+            crc_tiers = dcrc.crc_tiers;
         } else {
-            flags |= FLAG_HAS_CKPT_STEMS | FLAG_HAS_SIGNATURES;
-            num_ckpt_stems = 1;
             num_controls = scan_shared_control_count(shared_slice);
         }
 
@@ -317,7 +307,7 @@ impl DnamPreamble {
             arena_crc32c_full: crc_tiers[1],
             arena_crc32c_pro: crc_tiers[2],
             arena_crc32c_ultra: crc_tiers[3],
-            num_ckpt_stems,
+            _reserved_stems: 0,
             _reserved: 0,
             tail_time_ms,
             header_crc32c,
@@ -414,12 +404,6 @@ impl DnamPreamble {
     #[inline]
     pub const fn is_encrypted_arena(&self) -> bool {
         (self.flags & FLAG_ENCRYPTED_ARENA) != 0
-    }
-
-    /// Returns `true` if `HAS_CALIB_STATS` (`bit 12`) is set.
-    #[inline]
-    pub const fn has_calib_stats(&self) -> bool {
-        (self.flags & FLAG_HAS_CALIB_STATS) != 0
     }
 }
 

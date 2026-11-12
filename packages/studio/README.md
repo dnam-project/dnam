@@ -1,12 +1,11 @@
-# `@dnam-project/studio` (`dnam-studio`) — DNAM CLI & Tauri v2 Desktop Studio
+# `@dnam-project/studio` (`dnam-studio`) — Tauri v2 Desktop Studio
 
-Unified Rust + Node.js/TypeScript CLI (`dnam`) and Tauri v2 Desktop Studio for the **Dynamic Neural Audio Modeler (DNAM)**.
+Standalone Tauri v2 Desktop Studio for the **Dynamic Neural Audio Modeler (DNAM)**.
 
 ## Highlights
 
-- **`dnam` CLI:** Workspace initialization (`dnam init`, `dnam status`), model, control & preset definition (`dnam model`, `dnam control`, `dnam preset`), offline `.dnam` / `.dnam-ckpt` WAV bounce rendering (`dnam render`), slimmable tier stripping (`dnam strip`), `.dnam` / `.dnam-ckpt` container & `Ed25519` inspection (`dnam inspect`), and desktop Studio launch (`dnam studio`).
-- **Tauri v2 Desktop Studio (`dnam studio`):** Built on `@dnam-project/ui` (React 19, Tailwind CSS v4, `shadcn/ui` Base UI, `lucide-react`) and `TauriNativeAudioHost` backed by native Rust `dnam-engine` SIMD (`ARM SME`, `ARM64 NEON`, `x86_64 AVX2+FMA`).
+- **Tauri v2 Desktop Studio (`dnam-studio`):** Built on `@dnam-project/ui` (React 19, Tailwind CSS v4, `shadcn/ui` Base UI, `lucide-react`), `dnam-capture` (`.dnam-proj` single-file project container), and `TauriNativeAudioHost` backed by native Rust `dnam-engine` SIMD (`ARM SME`, `ARM64 NEON`, `x86_64 AVX2+FMA`).
 - **Tier 1 & Tier 2 Official Tauri v2 Plugins:**
-  - **Tier 1:** `dialog` (native `.dnam`/`.dnam-ckpt`/`.wav` file & workspace folder pickers), `opener` (reveal exported `.dnam`/`.wav` in Finder/Explorer & open HTML convergence reports), `window-state` (multi-monitor window geometry persistence).
-  - **Tier 2:** `single-instance` (exclusive USB audio interface protection), `deep-link` (`dnam://` Marketplace $\to$ Studio model handoff), `notification` (OS toasts on capture/training completion), and `updater` + `process` (`Ed25519`-signed OTA desktop updates).
+  - **Tier 1:** `dialog` (native `.dnam`/`.dnam-proj`/`.wav` file pickers), `opener` (reveal exported `.dnam`/`.wav` in Finder/Explorer & open HTML convergence reports), `window-state` (multi-monitor window geometry persistence).
+  - **Tier 2:** `single-instance` (exclusive USB audio interface protection), `deep-link` (`dnam://` Marketplace $\to$ Studio model handoff), `notification` (OS toasts on capture/fit completion), and `updater` + `process` (`Ed25519`-signed OTA desktop updates).
 - **Tauri v2 IPC Isolation Pattern (`isolation/index.html` + `tauriIsolationHook`):** Enforces command allowlisting, blocks `..` path traversal and `NaN`/`±Infinity` parameters, and encrypts IPC payloads with `AES-GCM` (`SubtleCrypto`) before forwarding to Rust.

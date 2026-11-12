@@ -1,6 +1,6 @@
 # Contributing to `@dnam-project/studio` / `dnam-studio` (`packages/studio/`)
 
-This guide covers the Rust 2024 CLI & Audio I/O core (`rust/`), the Node.js binary wrapper (`bin/dnam.mjs`), and the Tauri v2 React 19 Desktop Studio (`src/`) using `@dnam-project/ui` (Tailwind CSS v4 + `shadcn/ui` Base UI + `lucide-react`).
+This guide covers the standalone Tauri v2 Desktop Studio Rust core (`rust/`) and React 19 UI (`src/`) built on `@dnam-project/ui` (Tailwind CSS v4 + `shadcn/ui` Base UI + `lucide-react`), `dnam-engine`, and `dnam-capture`.
 
 All contributions must also comply with the root [`CONTRIBUTING.md`](../../CONTRIBUTING.md) and [`CLA.md`](../../CLA.md) (`git commit -s`).
 
@@ -8,8 +8,8 @@ All contributions must also comply with the root [`CONTRIBUTING.md`](../../CONTR
 
 ## 1. Architecture Invariants
 
-- **Rust 2024 Non-`mod.rs` Module Roots:** Use `rust/project.rs` + `rust/project/*.rs`, `rust/capture.rs` + `rust/capture/*.rs`, and `rust/cli.rs` + `rust/cli/*.rs` with `#![forbid(unsafe_code)]`.
-- **Single Ownership of Workspace & WAV I/O:** `packages/studio` owns `dnam.toml`, `models/<id>/model.toml`, and 12/16/24/32-bit PCM & unclipped 32-bit IEEE-754 float WAV I/O ([`rust/capture/wav.rs`](rust/capture/wav.rs)).
+- **Rust 2024 Non-`mod.rs` Module Roots:** Use `rust/capture.rs` + `rust/capture/backends.rs`, `rust/ipc.rs`, and `rust/main.rs` with `#![forbid(unsafe_code)]`.
+- **Single-File `.dnam-proj` & Native Audio Separation:** Capture math, WAV I/O, and `.dnam-proj` (`DNPJ`) container persistence live in `dnam-capture`; `packages/studio` owns only native OS audio device enumeration (`cpal`), `AtomicF32RingBuffer`, and the Tauri v2 Desktop Studio host.
 - **Native Hardware Acceleration in Tauri Studio:** [`src/host.ts`](src/host.ts) (`TauriNativeAudioHost`) implements `@dnam-project/ui`'s `DnamAudioHost` over native Rust SIMD (`ARM SME`, `ARM64 NEON`, `x86_64 AVX2+FMA`).
 
 ---
@@ -17,9 +17,6 @@ All contributions must also comply with the root [`CONTRIBUTING.md`](../../CONTR
 ## 2. Local Development & Verification Commands
 
 ```bash
-# Run the `dnam` CLI (`init`, `model`, `control`, `preset`, `inspect`, `render`, `strip`, `studio`)
-moon run studio:cli -- --help
-
 # Launch the Studio UI Vite dev server (http://localhost:1420)
 moon run studio:dev
 

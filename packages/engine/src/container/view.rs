@@ -22,9 +22,11 @@ use super::wire::{
 };
 use super::{
     CONTAINER_VERSION_MAJOR, CONTAINER_VERSION_MINOR, DNAM_MAGIC, FLAG_ENCRYPTED_ARENA,
-    FLAG_HAS_CALIB_STATS, FLAG_HAS_FULL_DELTA, FLAG_HAS_PRO_DELTA, FLAG_HAS_SIGNATURES,
-    FLAG_HAS_ULTRA_DELTA, crc32c_update,
+    FLAG_HAS_FULL_DELTA, FLAG_HAS_PRO_DELTA, FLAG_HAS_SIGNATURES, FLAG_HAS_ULTRA_DELTA,
+    crc32c_update,
 };
+
+const FORBIDDEN_DCRC_RESERVED_FLAG: u16 = 1 << 12;
 
 /// Decoded shared control descriptors, `CP1\0` contributor slots, and unified 128-byte control records.
 pub type SharedControlsExtent = (
@@ -34,7 +36,7 @@ pub type SharedControlsExtent = (
 );
 
 /// Decodes the shared controls extent (`ControlClampDescriptor[0..P]` + optional `CP1\0` stream)
-/// for a runtime `.dnam` or checkpoint `.dnam-ckpt` header.
+/// for a runtime `.dnam` header.
 pub fn decode_shared_controls_extent(
     shared_slice: &[u8],
     header: &DnamJsonHeader,
@@ -172,9 +174,9 @@ impl<'a> DnamContainerView<'a> {
                     computed: calc_prefix_crc,
                 });
             }
-            if (dcrc.flags_hint & FLAG_HAS_CALIB_STATS) != 0 {
+            if (dcrc.flags_hint & FORBIDDEN_DCRC_RESERVED_FLAG) != 0 {
                 return Err(DnamError::SchemaValidationError(
-                    "FLAG_HAS_CALIB_STATS (Arena 5) is forbidden in runtime .dnam containers"
+                    "reserved flags_hint bit 12 is forbidden in runtime .dnam containers"
                         .to_string(),
                 ));
             }
@@ -182,17 +184,16 @@ impl<'a> DnamContainerView<'a> {
 
         let json_slice =
             &bytes[layout.header_extent.0..layout.header_extent.0 + layout.header_extent.1];
-        if let Ok(raw_val) = serde_json::from_slice::<serde_json::Value>(json_slice)
-            && raw_val
-                .get("metadata")
-                .and_then(|m| m.get("container_kind"))
-                .and_then(|v| v.as_str())
-                .is_some_and(|k| k != "runtime")
+        let raw_val = parse_strict_json_object_bytes(json_slice)?;
+        if raw_val
+            .get("metadata")
+            .and_then(|m| m.get("container_kind"))
+            .and_then(|v| v.as_str())
+            .is_some_and(|k| k != "runtime")
         {
             return Err(DnamError::PreviewContainerRejected);
         }
-        parse_strict_json_object_bytes(json_slice)?;
-        let mut header: DnamJsonHeader = DnamJsonHeader::from_json_slice(json_slice)
+        let mut header: DnamJsonHeader = serde_json::from_value(raw_val)
             .map_err(|e| DnamError::InvalidJsonHeader(e.to_string()))?;
 
         let mutable_slice =
@@ -719,11 +720,11 @@ mod tests {
         assert_eq!(capped_lite.preamble.highest_tier(), Tier::Lite);
 
         // Error branch tests:
-        // 1. Forbidden calib stats flag in DCRC
+        // 1. Forbidden reserved flag in DCRC
         let mut bad_calib = ultra_bytes.clone();
         let flags_off = layout.auth_extent.0 + 26;
         let cur_flags = u16::from_le_bytes([bad_calib[flags_off], bad_calib[flags_off + 1]])
-            | FLAG_HAS_CALIB_STATS;
+            | FORBIDDEN_DCRC_RESERVED_FLAG;
         bad_calib[flags_off..flags_off + 2].copy_from_slice(&cur_flags.to_le_bytes());
         assert!(DnamContainerView::from_bytes(&bad_calib, &crypto).is_err());
 

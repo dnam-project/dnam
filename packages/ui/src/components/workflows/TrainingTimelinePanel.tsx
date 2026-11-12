@@ -28,7 +28,7 @@ export function TrainingTimelinePanel({ timeline, onStartTraining }: TrainingTim
             <CardTitle>Two-Sweep Analytical Trainer ({timeline.modelId})</CardTitle>
           </div>
           <CardDescription>
-            Non-Stop 3-Phase Control Clamping + Kronecker .dnam-ckpt Solver (
+            Non-Stop 3-Phase Control Clamping + Kronecker .dnam-proj Solver (
             {timeline.backendDevice})
           </CardDescription>
         </div>
@@ -38,7 +38,7 @@ export function TrainingTimelinePanel({ timeline, onStartTraining }: TrainingTim
           {onStartTraining ? (
             <Button size="sm" onClick={onStartTraining}>
               <Play data-icon="inline-start" />
-              Run dnam-train
+              Run Capture Fit
             </Button>
           ) : null}
         </div>

@@ -13,25 +13,27 @@ requirements:
 adrs:
   - ADR-0006
   - ADR-0007
+  - ADR-0017
+  - ADR-0020
 ---
 
 # Non-Stop 3-Phase Control-Space Audit & Automatic Clamping
 
-Because neural audio training runs unattended across multi-stem captures, **DNAM never blocks or pauses training on user confirmation prompts** ([`REQ-2.4`, `REQ-7.1`, `REQ-7.2`](../../requirements/system_goals_and_requirements.md)). The **Non-Stop 3-Phase Control-Space Audit & Automatic Clamping Pipeline** enforces all stability, control-range, and numeric bounds across [`packages/trainer/src/solver/stages.rs`](../../../packages/trainer/README.md) and [`packages/engine/src/control/bus.rs`](../../../packages/engine/README.md) automatically.
+Because neural audio training runs unattended across multi-stem captures, **DNAM never blocks or pauses training on user confirmation prompts** ([`REQ-2.4`, `REQ-7.1`, `REQ-7.2`](../../requirements/system_goals_and_requirements.md)). The **Non-Stop 3-Phase Control-Space Audit & Automatic Clamping Pipeline** enforces all stability, control-range, and numeric bounds across [`packages/capture/src/audit.rs`](../../../packages/capture/README.md) and [`packages/engine/src/control/bus.rs`](../../../packages/engine/README.md) automatically.
 
 ```mermaid
 flowchart TD
-    subgraph P1 ["Phase 1: Step-0 Pre-Flight Audit (< 200 ms Before Epoch 1)"]
+    subgraph P1 ["Phase 1: Pre-Flight Control-Space Audit (< 200 ms)"]
         direction TB
         S0["Load controls_schema + Stem Metadata + Calibration Roles"] --> CRange["1. [CLAMP-RANGE]: Clamp range to observed [u_obs_min, u_obs_max]<br/>Lock K_p = 0 if control never moved (U_p = 1)"]
         CRange --> CSwitch["2. [CLAMP-SWITCH]: Restrict physical active_options to observed stem options"]
         CSwitch --> CStab["3. [CLAMP-STABILITY]: Audit 3^(P_range) x prod|O_q| corners<br/>Bound r_c <= 0.9995, g_lin <= 0.9990, |a_diff| <= 0.75, tau_m >= 4.0 samp"]
-        CStab --> Warn["Emit Non-Blocking Warning Banner & Proceed Immediately to Epoch 1"]
+        CStab --> Warn["Emit Non-Blocking Warning Banner & Proceed Immediately to Stage A-E Solve"]
     end
 
-    subgraph P2 ["Phase 2: During-Training Barrier & Rail Audit (Epochs 1..E)"]
+    subgraph P2 ["Phase 2: Stage D Analytical VarPro Corner Barrier & Rail Audit"]
         direction TB
-        Step["Every Optimizer Step (< 0.05 ms, Zero Audio Rendering):<br/>Stop-Gradient Corner Barrier L_barrier steers Rank-4/8 FM weights"] --> Rail["Every 10 Epochs ([CLAMP-RAIL]):<br/>Run 2,048-sample burst across corners —<br/>if PolyADAA hits > 95% hard rail (|u_n| = 1.0), record conditional ceiling"]
+        Step["Every Stage D Control-Projection Step (< 0.05 ms, Zero Audio Rendering):<br/>Stop-Gradient Corner Barrier L_barrier steers Rank-4/8 FM weights"] --> Rail["Corner Rail Check ([CLAMP-RAIL]):<br/>Run 2,048-sample burst across corners —<br/>if PolyADAA hits > 95% hard rail (|u_n| = 1.0), record conditional ceiling"]
     end
 
     subgraph P3 ["Phase 3: Post-Polish Export Certification (At .dnam Export)"]
@@ -77,7 +79,7 @@ flowchart TD
 
 ```text
 ================================================================================
-DNAM TRAINING COMPLETE — EXPORTED: model.dnam | model.dnam-ckpt
+DNAM TRAINING COMPLETE — EXPORTED: model.dnam | project.dnam-proj
 ================================================================================
 Active Control Clamps Applied (4):
   1. [CLAMP-RANGE]     'gain': Clamped declared [0.0, 10.0] -> safe [2.0, 8.0]
@@ -88,7 +90,6 @@ Active Control Clamps Applied (4):
                        -> Prescription: Add corner stem (feedback=10.0, boost='on')
   4. [CLAMP-DYNAMIC]   'delay_ms': Tightened min 0.00 -> 0.08 (LFO trough >= 4.0 samp)
 
-To refine with these additional stems, run:
-  moon run trainer:cli -- --resume model.dnam-ckpt --add-stems stems_extra.json
+Refine non-destructively in the Capture Vault by adding these stems to project.dnam-proj.
 ================================================================================
 ```

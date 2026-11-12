@@ -112,7 +112,7 @@ pub const fn align64_u64(value: u64) -> Option<u64> {
     }
 }
 
-/// Validated v2.0 Open `.dnam` or `.dnam-ckpt` layout (`ref[container.dnam.open-layout]`, `ref[container.ckpt.bundle-framing]`).
+/// Validated v2.0 Open `.dnam` layout (`ref[container.dnam.open-layout]`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct V2ContainerLayout {
     pub magic: [u8; 4],
@@ -658,7 +658,7 @@ pub fn compute_v2_open_retained_prefix_sha256(
 #[cfg(test)]
 mod spec_tests {
     use super::*;
-    use crate::container::{DNAM_MAGIC, DNCK_MAGIC, DNSL_MAGIC};
+    use crate::container::{DNAM_MAGIC, DNSL_MAGIC};
 
     /// verify[container.dnam.formats]
     /// verify[container.dnam.wire-framing]
@@ -671,7 +671,6 @@ mod spec_tests {
     #[test]
     fn test_v2_open_dnam_framing_preamble_directory_and_tier_stripping() {
         assert_eq!(&DNAM_MAGIC, b"DNAM");
-        assert_eq!(&DNCK_MAGIC, b"DNCK");
         assert_eq!(&DNSL_MAGIC, b"DNSL");
 
         let header = br#"{"version":1}"#;

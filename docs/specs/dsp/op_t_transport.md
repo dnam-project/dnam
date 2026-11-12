@@ -16,7 +16,7 @@ adrs:
 
 # Op-T: Universal Transport, Granular Windowing & All-Pass Diffusion Operator
 
-This specification defines **Op-T (Transport)** ([`packages/engine/src/operators/op_t.rs`](../../../packages/engine/README.md), [`packages/trainer/src/`](../../../packages/trainer/README.md)), the universal operator kernel governing fractional delay transport, pitch shifting, time-warped granular grains, barberpole phase sweeps, bounded-history feedback guards, and in-buffer Schroeder all-pass diffusion across **Dynamic Neural Audio Modeler (DNAM)** ([`tora_architecture.md`](../architecture/tora_architecture.md)). For R&D counterexamples and candidate comparisons, see [`../../adr/0006-model-declared-delays-and-tank-feedback-guard.md`](../../adr/0006-model-declared-delays-and-tank-feedback-guard.md).
+This specification defines **Op-T (Transport)** ([`packages/engine/src/operators/op_t.rs`](../../../packages/engine/README.md), [`packages/capture/src/`](../../../packages/capture/README.md)), the universal operator kernel governing fractional delay transport, pitch shifting, time-warped granular grains, barberpole phase sweeps, bounded-history feedback guards, and in-buffer Schroeder all-pass diffusion across **Dynamic Neural Audio Modeler (DNAM)** ([`tora_architecture.md`](../architecture/tora_architecture.md)). For R&D counterexamples and candidate comparisons, see [`../../adr/0006-model-declared-delays-and-tank-feedback-guard.md`](../../adr/0006-model-declared-delays-and-tank-feedback-guard.md).
 
 ---
 

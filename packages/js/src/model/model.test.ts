@@ -1,5 +1,5 @@
 /**
- * Tests for `Model`, `Checkpoint`, `GramMatrix`, and `crc32c` across both `NapiDriver` and `WasmDriver`.
+ * Tests for `Model`, `GramMatrix`, and `crc32c` across both `NapiDriver` and `WasmDriver`.
  */
 
 import "../node.js";
@@ -10,14 +10,13 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
-import { Checkpoint } from "../checkpoint/checkpoint.js";
-import { GramMatrix, uploUPackedLength } from "../checkpoint/gram-matrix.js";
 import { DnamError } from "../errors.js";
 import { withDriver } from "../internal/native/load.js";
 import { loadNodeDriverSync, loadNodeWasmDriverSync } from "../internal/native/napi.js";
+import { GramMatrix, uploUPackedLength } from "./gram-matrix.js";
 import { crc32c, Model } from "./model.js";
 
-describe("Model, Checkpoint & GramMatrix", () => {
+describe("Model & GramMatrix", () => {
   it.each(["napi", "wasm"] as const)(
     "loads, inspects, updates headers in-place, and strips tiers on %s driver",
     (driverKind) => {
@@ -105,28 +104,19 @@ describe("Model, Checkpoint & GramMatrix", () => {
   });
 
   it.each(["napi", "wasm"] as const)(
-    "validates Checkpoint (DNCK), verifies stems/DNCA, exports runtime Model, and packs GramMatrix on %s",
-    async (driverKind) => {
+    "validates canonical v2.0 Model layout, rejects non-DNAM magic, and packs GramMatrix on %s",
+    (driverKind) => {
       // verify[sdk.ts.model.containers-and-checkpoints]
       const driver = driverKind === "napi" ? loadNodeDriverSync() : loadNodeWasmDriverSync();
-      await withDriver(driver, async () => {
-        using ckpt = Checkpoint.reference({ includeCalibStats: true });
-        expect(ckpt.preamble.magic).toBe("DNCK");
-        expect(ckpt.stems.length).toBe(1);
-        expect(ckpt.auditReport?.phase1Clamps).toContain("CLAMP-RANGE");
-        ckpt.verifyStems();
-        expect(ckpt.verifyCalibrationStats(68_096)).toBe(64);
+      withDriver(driver, () => {
+        using model = Model.reference();
+        expect(model.preamble.magic).toBe("DNAM");
+        expect(model.maxTier).toBe("ultra");
 
-        const loadedCkpt = await Checkpoint.load(ckpt.toBytes());
-        expect(loadedCkpt.stems.length).toBe(1);
-
-        const exported = ckpt.toModel();
-        expect(exported.preamble.magic).toBe("DNAM");
-        expect(exported.maxTier).toBe("ultra");
-        expect(exported.header.stemsRegistry).toBeNull();
-
-        // Rejects non-DNCK container in Checkpoint.from
-        expect(() => Checkpoint.from(exported.toBytes())).toThrow(DnamError);
+        // Rejects non-DNAM magic (e.g. DNPJ project container magic) in Model.from
+        const dnpjBytes = model.toBytes();
+        dnpjBytes.set(new TextEncoder().encode("DNPJ"), 0);
+        expect(() => Model.from(dnpjBytes)).toThrow(DnamError);
 
         // GramMatrix uplo='U' round-trip
         expect(uploUPackedLength(4)).toBe(10);
@@ -142,10 +132,9 @@ describe("Model, Checkpoint & GramMatrix", () => {
         expect(() => GramMatrix.fromDense(dense4x4, 0)).toThrow(DnamError);
         expect(() => gram.toDense({ tierDimension: 99 })).toThrow(DnamError);
 
-        // Canonical v2.0 layout / bundle validation and invalid-buffer rejection
-        expect(exported.validateOpenLayout().retainedTier).toBe(3);
-        expect(Checkpoint.validateV2Bundle(ckpt.toBytes()).retainedTier).toBe(3);
-        expect(() => Checkpoint.validateV2Bundle(new Uint8Array(64))).toThrow(DnamError);
+        // Canonical v2.0 layout validation and invalid-buffer rejection
+        expect(model.validateOpenLayout().retainedTier).toBe(3);
+        expect(() => Model.from(new Uint8Array(64))).toThrow(DnamError);
       });
     },
   );

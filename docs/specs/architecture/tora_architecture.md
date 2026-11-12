@@ -25,11 +25,12 @@ adrs:
   - ADR-0002
   - ADR-0015
   - ADR-0019
+  - ADR-0020
 ---
 
 # Tri-Operator Recurrent Architecture (`TORA`) System Overview
 
-This specification defines the **Tri-Operator Recurrent Architecture (`TORA`)** for **Dynamic Neural Audio Modeler (DNAM)** across [`packages/engine/`](../../../packages/engine/README.md) and [`packages/trainer/`](../../../packages/trainer/README.md). TORA unifies the modeling of all analog and digital audio gear across **three universal zero-`FDIV` SIMD operator kernels** (`Op-T`, `Op-M`, `Op-N`), four canonical physical stages, an **8-Port Matrix Router** (`Stage 0`), a **Self-Similar 3 kHz Dual-Rate Control Plane**, and a **256-D Mid/Side Kronecker Output Head**.
+This specification defines the **Tri-Operator Recurrent Architecture (`TORA`)** for **Dynamic Neural Audio Modeler (DNAM)** across [`packages/engine/`](../../../packages/engine/README.md) and [`packages/capture/`](../../../packages/capture/README.md). TORA unifies the modeling of all analog and digital audio gear across **three universal zero-`FDIV` SIMD operator kernels** (`Op-T`, `Op-M`, `Op-N`), four canonical physical stages, an **8-Port Matrix Router** (`Stage 0`), a **Self-Similar 3 kHz Dual-Rate Control Plane**, and a **256-D Mid/Side Kronecker Output Head**.
 
 For implementation-agnostic requirements, see [`../../requirements/system_goals_and_requirements.md`](../../requirements/system_goals_and_requirements.md). For psychoacoustic quality tiers, see [`psychoacoustic_quality_and_tiers.md`](psychoacoustic_quality_and_tiers.md). For architectural decision records, see [`../../adr/0002-tri-operator-recurrent-architecture.md`](../../adr/0002-tri-operator-recurrent-architecture.md).
 
@@ -42,7 +43,7 @@ For implementation-agnostic requirements, see [`../../requirements/system_goals_
 The **Tri-Operator Recurrent Architecture (`TORA`)** unifies all physical audio hardware into **three universal zero-`FDIV` SIMD operator kernels** (`Op-T`, `Op-M`, `Op-N`) orchestrated across **four canonical physical stages**, an **8-Port Matrix Router**, and a **Unified Dual-Rate Self-Similar Control Plane**:
 
 1. `r[arch.pillars.dual-space-control]` **Pillar 1: Dual-Space Factored Control Architecture:**  
-   Factors kinematic controls and nonlinear drive to support progressive stem refinement ([`../training/iterative_resume_and_caching.md` §1.2](../training/iterative_resume_and_caching.md#12-conditions-for-old-stem-trajectory--arena-4-gram-reuse-on-stem-resume-req-3)).
+   Factors kinematic controls and nonlinear drive to support non-destructive Capture Vault stem refinement ([`../training/iterative_resume_and_caching.md` §1.2](../training/iterative_resume_and_caching.md#12-two-path-vault-editing--dependency-digests)).
 2. `r[arch.pillars.dual-rate-plane]` **Pillar 2: Unified Self-Similar Dual-Rate Control Plane (`Op-M[Ctrl]` & `Op-N[Ctrl]`):**  
    Executes the control plane using the `Op-M` and `Op-N` kernels at a 16-sample stride at the `48 kHz` reference rate (`3 kHz`), and the rate-dependent stride $K_{\text{ctrl}}(f_{s,\text{eff}})$ at other effective rates ([router §9](../dsp/router_and_stages_topology.md#9-continuous-time-zero-order-hold-zoh-sample-rate-adaptability-44196-khz--4-bounce)).
 3. `r[arch.pillars.cp1-projections]` **Pillar 3: Shared Control Descriptors & Tier-Local `CP1` Projections:**  
@@ -588,27 +589,27 @@ flowchart TD
 
 `r[arch.isomorphism.guarantees]`
 
-TORA establishes five end-to-end trainer–engine isomorphism and pipeline guarantees across [`packages/trainer/`](../../../packages/trainer/README.md) and [`packages/engine/`](../../../packages/engine/README.md) (for architectural rationale, see [`../../adr/0002-tri-operator-recurrent-architecture.md` §1](../../adr/0002-tri-operator-recurrent-architecture.md#1-context-five-structural-bottlenecks-in-conventional-neural-audio)):
+TORA establishes five end-to-end capture–engine isomorphism and pipeline guarantees across [`packages/capture/`](../../../packages/capture/README.md) and [`packages/engine/`](../../../packages/engine/README.md) (for architectural rationale, see [`../../adr/0002-tri-operator-recurrent-architecture.md` §1](../../adr/0002-tri-operator-recurrent-architecture.md#1-context-five-structural-bottlenecks-in-conventional-neural-audio)):
 
 | Guarantee ID | Subsystem Scope | TORA Architectural Realization |
 | :--- | :--- | :--- |
 | **1. Direct Commuted Stage Serialization (§5.1)** | Stage II (`stages/stage2.rs` / `op_n.rs`) | Directly serializes fitted `W_stage^(2.1..2.3)` matrices into `Arena 0..3` using identical project-then-filter ordering in training and runtime. |
-| **2. Joint Full-Rig Training (§5.2)** | Two-Sweep Pipeline (`packages/trainer/src/solver.rs`) | Freezes upstream stage/control behavior before accumulating tier-specific sufficient statistics, solving Stages I–IV sequentially in Sweep 1 and polishing the joint head in Sweep 2. |
-| **3. End-to-End 3-Phase Audit Wiring (§5.3)** | Step 0 & Audit Engine (`packages/trainer/src/solver/stages.rs`) | Wires Step-0 order-statistic calibration, physical variance gates, non-stop 3-phase clamping, and export certification into the training pipeline. |
+| **2. Joint Full-Rig Training (§5.2)** | 5-Stage `VarPro` Pipeline (`packages/capture/src/solver.rs`) | Identifies rational poles and delays (`Stage A`), harvests the exact `256-D` feature bus (`Stage B`), and solves all 4 nested tiers via Schur-complement `MM-Cholesky` (`Stage C`). |
+| **3. End-to-End 3-Phase Audit Wiring (§5.3)** | Audit Engine (`packages/capture/src/audit.rs`) | Wires pre-flight calibration, physical variance gates, non-stop 3-phase clamping, and `[STAB-ZERO-DC]` export certification into the training pipeline. |
 | **4. True-Stereo Calibration & 8-Port Routing (§5.4)** | Stem Extractor & Router | Preserves 2-channel stem arrays `X ∈ R^(N×2)` (`[Left, Right]` or `[Main, Aux]`) with causal parallel alignment and return-to-send isolation. |
-| **5. Nested 4-Tier Physical Hierarchy (§5.5)** | Feature Bus & Arenas (`Arena 0..3`, `stages/head.rs`) | Extracts four nested physical feature definitions (`64 / 128 / 192 / 256 D`) and stores tier-bundled per-stem sufficient statistics in `.dnam-ckpt`. |
+| **5. Nested 4-Tier Physical Hierarchy (§5.5)** | Feature Bus & Arenas (`Arena 0..3`, `stages/head.rs`) | Extracts four nested physical feature definitions (`64 / 128 / 192 / 256 D`) and stores `uplo='U'` sufficient statistics and compact capsules in `.dnam-proj`. |
 
 ### 5.1 Direct Stage II Commuted Cascade Serialization & Runtime Parity
 
 `r[arch.isomorphism.stage2-serialization]`
 
-Stage II serializes the fitted commuted projection matrices $\mathbf{W}_{\mathrm{stage}}^{(2.1..2.3)}$ directly into `Arena 0..3` and models the runtime's project-then-filter ordering under control automation ([`../training/four_stage_pipeline.md` §4](../training/four_stage_pipeline.md#4-trainerengine-isomorphism-protocol--closed-form-normal-equations)).
+Stage II serializes the fitted commuted projection matrices $\mathbf{W}_{\mathrm{stage}}^{(2.1..2.3)}$ directly into `Arena 0..3` and models the runtime's project-then-filter ordering under control automation ([`../training/four_stage_pipeline.md` §4.1](../training/four_stage_pipeline.md#41-zero-ulp-engine-capture-isomorphism-parity)).
 
 ### 5.2 Joint Stage I–IV Full-Rig Training via Two-Sweep Block-Coordinate Cholesky
 
 `r[arch.isomorphism.two-sweep]`
 
-The **Two-Sweep Block-Coordinate Cholesky Pipeline** ([`../training/four_stage_pipeline.md`](../training/four_stage_pipeline.md)) solves Stage III (Cabinet), Stage II (Amp Cascade), and Stage IV (`Op-T[Tank]`) sequentially on forward residuals in Sweep 1, and solves the joint 256-D Mid/Side Kronecker head across all 4 stages in Sweep 2, enabling single-run full-rig training (`REQ-1.5`).
+The **Five-Stage Analytical Variable-Projection & Cholesky Pipeline** ([`../training/four_stage_pipeline.md`](../training/four_stage_pipeline.md)) identifies upstream rational poles and delays (`Stage A`), harvests the `256-D` feature bus (`Stage B`), and solves the joint 4-tier Mid/Side Kronecker head across all 4 stages via Schur-complement `MM-Cholesky` (`Stage C`), enabling single-run full-rig training (`REQ-1.5`).
 
 ### 5.3 Step-0 System-ID & Non-Stop 3-Phase Audit Wiring in `fit_job`
 
@@ -626,7 +627,7 @@ Stem extraction preserves 2-channel audio arrays $\mathbf{X} \in \mathbb{R}^{N \
 
 `r[arch.isomorphism.nested-bus]`
 
-TORA builds a nested 4-tier physical hierarchy matching `REQ-5`: `Lite` ($64\text{ D}$), `Full` ($128\text{ D}$), `Pro` ($192\text{ D}$), and `Ultra` ($256\text{ D}$), with tier-bundled runtime weights and sufficient statistics in `.dnam-ckpt` ([`../containers/checkpoint_and_cache_format.md` §2](../containers/checkpoint_and_cache_format.md#2-tier-ordered-column-major-upper-triangular-packing-uplou-for-mathbfg_textaudios)).
+TORA builds a nested 4-tier physical hierarchy matching `REQ-5`: `Lite` ($64\text{ D}$), `Full` ($128\text{ D}$), `Pro` ($192\text{ D}$), and `Ultra` ($256\text{ D}$), with embedded runtime weights (`WGHT`) and tier-ordered `uplo='U'` sufficient statistics (`STAT`) in `.dnam-proj` ([`../containers/project_container_format.md` §2.3](../containers/project_container_format.md#23-tier-ordered-upper-triangular-starcenter-statistics-stat)).
 
 ---
 
@@ -668,8 +669,8 @@ TORA builds a nested 4-tier physical hierarchy matching `REQ-5`: `Lite` ($64\tex
 | **`REQ-1.5`** | **Full-Rig Multi-Control Modeling** | Packed tier-local `CP1` projections (`8-D` Rank-4 in `Lite..Pro`, `16-D` Rank-8 + `16×4` stage-dispatch delta in `Ultra`). | [`parametric_control_bus.md`](../dsp/parametric_control_bus.md), [`four_stage_pipeline.md`](../training/four_stage_pipeline.md) |
 | **`REQ-2`** | **Quality, Control Bus & Tempo Sync** | Per-output noise-adjusted `bESR`, `MR-IIR`, 33-band `LTAS`, and duration-weighted `SegESR` with non-stop 3-phase clamping. | [`psychoacoustic_quality_and_tiers.md`](psychoacoustic_quality_and_tiers.md), [`control_space_audit.md`](../training/control_space_audit.md) |
 | **`REQ-2.5`** | **MIDI / Host Tempo Sync** | `20–400 BPM` `Q64`/`Q32` tempo tracking across 12 subdivisions, reachable `f32` physical inversion, and `SmoothRelock` / `ImmediatePhaseLock`. | [`parametric_control_bus.md` §7](../dsp/parametric_control_bus.md#7-host-midi-and-tap-tempo-synchronization-req-25) |
-| **`REQ-3`** | **Continuous Checkpointing & Stem Resume** | Tier-bundled `.dnam-ckpt` (`DCA1`), `uplo='U'` `Arena 4` slices, SHA-256 Gram-input fingerprint, and windowed `< 32 MiB` refresh. | [`iterative_resume_and_caching.md`](../training/iterative_resume_and_caching.md), [`checkpoint_and_cache_format.md`](../containers/checkpoint_and_cache_format.md) |
-| **`REQ-4`** | **Accelerator-First, Accurate & Memory-Scaled Training** | 32-bit device streaming, weighted Gram contraction bound (`∣ĝ - g∣ ≤ γ_N S`), batched host `float64` solver, and `< 8 GiB` host budget. | [`four_stage_pipeline.md` §3](../training/four_stage_pipeline.md#3-accelerator-first-32-bit-execution-gram-accuracy--streaming) |
+| **`REQ-3`** | **Capture Vault Editing & Capsule Persistence** | Single-file `.dnam-proj` (`DNPJ`), `INPC`/`STMC` `fp16` coreset capsules, `STAT` `uplo='U'` slices, `HTTP Range` cloud sync, and `< 5–25 ms` Two-Path vault editing. | [`iterative_resume_and_caching.md`](../training/iterative_resume_and_caching.md), [`project_container_format.md`](../containers/project_container_format.md) |
+| **`REQ-4`** | **Deterministic Zero-GPU & Low-Memory Training** | Pure-Rust 5-Stage `VarPro` + Schur-complement `MM-Cholesky`, wide-significand Gram bound (`∣ĝ - g∣ ≤ γ_N S`), and `< 64 MiB` worker RAM ceiling. | [`four_stage_pipeline.md` §3](../training/four_stage_pipeline.md#3-wide-significand-gram-contraction--cross-platform-accuracy) |
 | **`REQ-5`** | **Multi-Tier Slimmable Scaling** | Four nested tiers (`Lite ⊂ Full ⊂ Pro ⊂ Ultra`), single-run joint training, on-demand bounded tier crossfade, and keyless prefix stripping. | [`tora_architecture.md` §2–§3](#2-4-tier-slimmable-simd-hierarchy-lite--full--pro--ultra), [`dnam_binary_format.md`](../containers/dnam_binary_format.md) |
 | **`REQ-6`** | **Embedded Real-Time Execution** | `≥ 10× Lite`, `≥ 6× Full`, `≥ 2× Pro` @ `48 kHz` on `1×` Cortex-A76, zero real-time `FDIV`/`FSQRT`/`IDIV`/`UDIV`/`SDIV`/`libm`/`fmodf`, zero unbounded loops, and zero callback allocations or nondeterministic syscalls. | [`tora_architecture.md` §1–§2](#1-executive-summary--core-architectural-pillars) |
 | **`REQ-7`** | **Unclipped `f32` Signal Chain, Topologies & Stability** | `±100.0` (`+40 dBFS`) certified unclipped envelope, `±1e9` all-finite safety guards, `1→1`/`2→1`/`1→2`/`2→2` topologies, and 3-phase control-space clamping (`ref[train.audit.phase1.clamp-stability]`). | [`router_and_stages_topology.md`](../dsp/router_and_stages_topology.md), [`control_space_audit.md`](../training/control_space_audit.md) |
@@ -697,9 +698,9 @@ TORA builds a nested 4-tier physical hierarchy matching `REQ-5`: `Lite` ($64\tex
   - [`capture_and_alignment.md`](../training/capture_and_alignment.md): Hardware Excitation, Multi-Mic Calibration & Router Alignment.
 - **Container Binary Formats (`docs/specs/containers/`)**
   - [`dnam_binary_format.md`](../containers/dnam_binary_format.md): 64B-Aligned Hybrid Binary Wire Format (`DNAM`).
-  - [`checkpoint_and_cache_format.md`](../containers/checkpoint_and_cache_format.md): Checkpoint (`.dnam-ckpt`) & Sidecar Cache (`.dnam-cache`).
+  - [`project_container_format.md`](../containers/project_container_format.md): Single-File Cloud-Ready Project & Capture Vault Container (`.dnam-proj` / `DNPJ`).
 - **Security, Provenance & Marketplace (`docs/specs/security/`)**
   - [`provenance_and_enclave_drm.md`](../security/provenance_and_enclave_drm.md): Ed25519 Signatures, Enclave DRM & Protection Profiles.
   - [`watermarking_and_marketplace.md`](../security/watermarking_and_marketplace.md): Buyer Watermarking, Structural Fingerprint & Storefront Previews.
 - **Architectural Decision Records (`docs/adr/`)**
-  - [`0002-tri-operator-recurrent-architecture.md`](../../adr/0002-tri-operator-recurrent-architecture.md) through [`0019-simd-kernel-architecture-and-realtime-execution-optimizations.md`](../../adr/0019-simd-kernel-architecture-and-realtime-execution-optimizations.md).
+  - [`0002-tri-operator-recurrent-architecture.md`](../../adr/0002-tri-operator-recurrent-architecture.md) through [`0020-modular-monorepo-and-dnam-proj-container.md`](../../adr/0020-modular-monorepo-and-dnam-proj-container.md).

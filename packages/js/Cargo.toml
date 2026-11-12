@@ -19,8 +19,8 @@ default = ["testing"]
 testing = []
 
 [dependencies]
+dnam-capture.workspace = true
 dnam-engine.workspace = true
-dnam-trainer.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 zerocopy.workspace = true
